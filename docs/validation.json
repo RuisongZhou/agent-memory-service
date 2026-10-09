@@ -1,0 +1,104 @@
+{
+  "date": "2026-10-09",
+  "platform": "macOS Apple Silicon",
+  "status": "passed",
+  "scope": "Post-reorganization local correctness and inference checks; historical LoCoMo accuracy was not rerun.",
+  "paidGenerativeCalls": 0,
+  "fullLoCoMoRun": false,
+  "build": {
+    "binary": "agent-memoryd",
+    "profile": "fast",
+    "features": [
+      "metal"
+    ],
+    "status": "passed"
+  },
+  "tests": {
+    "rust": {
+      "memory-rules": 33,
+      "memory-fulltext": 19,
+      "memory-models": 7,
+      "memory-models-bench": 2,
+      "ignoredBenchmarks": 1
+    },
+    "python": {
+      "evaluation": 96,
+      "modelValidation": 12
+    },
+    "totalPassed": 169
+  },
+  "serviceSelftests": {
+    "status": "passed",
+    "groups": [
+      "accounting",
+      "store",
+      "retrieval",
+      "formation",
+      "consolidation"
+    ],
+    "mockModels": true
+  },
+  "httpMcpSmoke": {
+    "status": "passed",
+    "mockModels": true,
+    "stubCalls": 8,
+    "checks": [
+      "HTTP P1 retry",
+      "P1-b",
+      "P2 summary",
+      "P3 profiles",
+      "P4 proposal",
+      "P5 candidate/idempotency",
+      "span validation",
+      "receipt idempotency",
+      "purge keeps evidence",
+      "tenant prompt",
+      "retry billing",
+      "restart vectors",
+      "MCP initialize/list/call/tenant",
+      "zero-generation retrieval",
+      "loopback and config guards",
+      "strict embedding input",
+      "reindex failure exit status"
+    ]
+  },
+  "metalSmoke": {
+    "status": "passed",
+    "backend": "candle-metal",
+    "dtype": "f32",
+    "embeddingModel": "BAAI/bge-m3",
+    "rerankerModel": "BAAI/bge-reranker-v2-m3",
+    "generationBackend": "localhost-deterministic-stub",
+    "paidGenerativeCalls": 0,
+    "checks": {
+      "realBgeMetalModels": true,
+      "formationTasksCompleted": true,
+      "allIndexTasksDrained": true,
+      "registeredEntityLinks": true,
+      "finite1024UnitVectors": true,
+      "rerankedPortFactFirst": true,
+      "concurrentSharedDeviceCalls": true,
+      "exactlyOneP1AndP2NoRealGenerativeCalls": true
+    },
+    "latencyMs": {
+      "startupIncludingBothModels": 11633.86,
+      "formationAndIndexDrain": 9812.54,
+      "embeddingTwoFreshTexts": 27.31,
+      "searchIncludingReranker": 74.25,
+      "concurrentEmbeddingAndSearchWall": 90.31
+    },
+    "timingNote": "One local smoke run; not a repeated performance benchmark."
+  },
+  "publication": {
+    "newGitHistory": true,
+    "excluded": [
+      "all model weights including synthetic checkpoints",
+      "credentials and local configuration",
+      "downloaded dataset",
+      "databases and caches",
+      "raw traces and billing logs"
+    ],
+    "indexCheck": "scripts/check_public.py"
+  },
+  "ci": "Local results above; hosted verification runs separately on each push."
+}

@@ -1,0 +1,4 @@
+* text=auto eol=lf
+# Preserve pinned upstream source and licenses verbatim.
+eval/third_party/** -whitespace
+licenses/** -whitespace

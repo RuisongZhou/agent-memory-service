@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "shared-memory": {
+      "command": "agent-memoryd",
+      "args": ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "my-agent"]
+    }
+  }
+}

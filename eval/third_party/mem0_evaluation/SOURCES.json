@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/mem0ai/mem0",
+  "revision": "b3ede5b7c0ac0e847b03786a603c107ac943b3ee",
+  "files": [
+    {
+      "path": "prompts.py",
+      "source": "https://raw.githubusercontent.com/mem0ai/mem0/b3ede5b7c0ac0e847b03786a603c107ac943b3ee/evaluation/prompts.py",
+      "sha256": "407bea1c1453dc6832c234bb1ed936d401d796fabcc0b28337a47ba63517d3ba"
+    },
+    {
+      "path": "metrics/llm_judge.py",
+      "source": "https://raw.githubusercontent.com/mem0ai/mem0/b3ede5b7c0ac0e847b03786a603c107ac943b3ee/evaluation/metrics/llm_judge.py",
+      "sha256": "ac2e242f6ea0b817ba1b229ff9e5271f6846b7b8a9aefa8a5a5a81ea58df3b3c"
+    },
+    {
+      "path": "metrics/utils.py",
+      "source": "https://raw.githubusercontent.com/mem0ai/mem0/b3ede5b7c0ac0e847b03786a603c107ac943b3ee/evaluation/metrics/utils.py",
+      "sha256": "83f3fc14e4eff62be1ab07501ba61a912f15aa20856c7a008bb8799706e0e11d"
+    },
+    {
+      "path": "src/memzero/add.py",
+      "source": "https://raw.githubusercontent.com/mem0ai/mem0/b3ede5b7c0ac0e847b03786a603c107ac943b3ee/evaluation/src/memzero/add.py",
+      "sha256": "beae2344fcaccf243b0b594a9b4cdca974bf88201ea73b2dbfc0cde8e145dfa0"
+    }
+  ]
+}

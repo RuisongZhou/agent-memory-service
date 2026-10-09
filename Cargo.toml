@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/memory-service", "crates/memory-models", "crates/memory-fulltext", "crates/memory-rules"]
+default-members = ["crates/memory-service"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/RuisongZhou/agent-memory-service"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.fast]
+inherits = "release"
+lto = "off"
+codegen-units = 256
+incremental = true
+
+[profile.fast.package.memory-service]
+opt-level = 1

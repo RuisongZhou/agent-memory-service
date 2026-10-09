@@ -1,0 +1,8 @@
+{
+  "batchTurns": 3,
+  "rerankThreshold": 0.3,
+  "mmrLambda": 0.7,
+  "defaultTopK": 10,
+  "defaultTokenBudget": 2000,
+  "bufferRetentionDays": 3.0
+}

@@ -1,0 +1,44 @@
+# Secrets and machine settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+
+# Builds and Python environments
+/target/
+/target-native/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.cache/
+*.py[cod]
+*.egg-info/
+
+# Every model weight, including synthetic test weights
+/models/
+*.safetensors
+*.bin
+*.onnx
+*.gguf
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.ot
+*.tflite
+
+# Downloaded datasets and generated runtime state
+/data/*.json
+/results/
+/eval/results/
+/eval/stores/
+/eval/pilot-plan*.json
+**/*-store/
+**/mem0-stores/
+*.sqlite*
+*.db
+*.log
+*.tar.gz
+*.zip

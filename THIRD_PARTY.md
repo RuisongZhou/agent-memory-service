@@ -1,0 +1,6 @@
+# Third-party attribution
+
+- **memory-mcp-1file**, Pomazan Bohdan, MIT. Source: https://github.com/pomazanbohdan/memory-mcp-1file . The original copyright notice remains in `LICENSE`. This project exports the shared memory engine and excludes the unrelated legacy code-indexing server and vendored transformer fork.
+- **Mem0 evaluation assets**, Apache-2.0. Four files under `eval/third_party/mem0_evaluation/` are copied without modification from `mem0ai/mem0` at commit `b3ede5b7c0ac0e847b03786a603c107ac943b3ee`. Exact source URLs and SHA256 values are in `SOURCES.json`. Copyright and terms are retained in `licenses/mem0-evaluation-Apache-2.0.txt`. These files supply prompts, custom extraction instructions, and metric equivalence references; they are read via AST instead of executed.
+- **LoCoMo**, snap-research, CC BY-NC 4.0. The dataset is not shipped in this repository. `scripts/download_data.py` downloads and verifies it locally for research evaluation. Terms: `licenses/locomo-LICENSE.txt`; source: https://github.com/snap-research/locomo . Its terms are separate from this project's code license.
+- **Model and crate dependencies** are downloaded separately under their own licenses. No BGE weights, synthetic checkpoints or vendored Candle source are included.
