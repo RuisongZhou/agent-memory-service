@@ -9,32 +9,22 @@ FIELDS = ("modelBackend", "modelDevice", "modelDtype", "embedModel", "rerankMode
 
 
 def capture(health: dict) -> dict:
-    values = {key: health.get(key) for key in FIELDS}
-    if "modelBackend" not in health:
-        return {"schema": "legacy-unknown", "verified": False, "isMock": None, **values}
     missing = [key for key in FIELDS if key not in health]
     if missing:
-        raise ValueError(f"new daemon model metadata is incomplete: {', '.join(missing)}")
+        raise ValueError(f"daemon model metadata is incomplete: {', '.join(missing)}")
+    values = {key: health[key] for key in FIELDS}
     backend, device, dtype = values["modelBackend"], values["modelDevice"], values["modelDtype"]
-    if backend not in ("llama-server", "candle-metal", "candle-gemm", "apple-accelerate", "mock"):
-        raise ValueError(f"unrecognized actual model backend {backend!r}")
     if backend == "llama-server":
         # GGUF file type reported by the server, e.g. Q8_0 or F16; device is the embedding server URL.
         if not isinstance(dtype, str) or not dtype or dtype == "unknown":
             raise ValueError("llama-server backend must report its GGUF file type")
-    elif str(dtype).lower() not in ("f32", "float32", "fp32"):
-        raise ValueError("actual daemon model dtype must be f32")
-    if backend == "llama-server":
         if not isinstance(device, str) or not device.startswith(("http://", "https://")):
             raise ValueError("llama-server backend must report its embedding server URL")
-    elif backend == "candle-metal":
-        if not isinstance(device, str) or not device.startswith("metal:"):
-            raise ValueError("Metal backend must report its actual metal registry/device id")
     elif backend == "mock":
-        if device not in ("mock", "cpu"):
-            raise ValueError("mock backend must report mock or legacy cpu device")
-    elif device != "cpu":
-        raise ValueError("CPU backend must report actual cpu device")
+        if device != "mock":
+            raise ValueError("mock backend must report the mock device")
+    else:
+        raise ValueError(f"unrecognized actual model backend {backend!r}")
     if not isinstance(values["embedModel"], str) or not values["embedModel"]:
         raise ValueError("actual embedModel is missing")
     if values["rerankModel"] is not None and not isinstance(values["rerankModel"], str):
