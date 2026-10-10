@@ -6,10 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 import answer_and_judge
-import costs
+import usage_stats
 import report
 from common import jsonl
-from common.llm import LLM, BudgetExceeded, LLMOutputError, LLMResult, Ledger, cost_usd, is_peak, usage_tokens
+from common.llm import LLM, LLMOutputError, LLMResult, Ledger, usage_tokens
 from common.protocol import guard
 
 
@@ -45,18 +45,17 @@ def test_changed_conditions_cannot_resume(tmp_path):
         guard(path, {"sessions": None})
 
 
-def test_usage_fallback_and_peak_boundaries(tmp_path):
+def test_usage_fallback_and_token_summary(tmp_path):
     assert usage_tokens({"prompt_tokens": 120, "prompt_cache_hit_tokens": 20,
                          "completion_tokens": 30}) == (20, 100, 30, 0)
+    assert usage_tokens({"prompt_tokens": 120, "prompt_tokens_details": {"cached_tokens": 20},
+                         "completion_tokens": 30}) == (20, 100, 30, 0)
     weekday = datetime(2026, 10, 9, 1, tzinfo=timezone.utc)
-    assert is_peak(weekday)
-    assert not is_peak(weekday.replace(hour=4))
-    assert not is_peak(weekday.replace(day=10))
-    assert cost_usd(100, 200, 30, weekday) == 2 * cost_usd(100, 200, 30, weekday.replace(hour=4))
-    ledger = Ledger(tmp_path / "cost.jsonl")
+    ledger = Ledger(tmp_path / "usage.jsonl")
     ledger.record("fake.ingest", 100, 200, 30, ts=weekday, calls=3)
-    summary = costs.summarize(list(jsonl.read(ledger.path)))
-    assert summary["components"]["fake.ingest"]["peak_calls"] == 3
+    summary = usage_stats.summarize(list(jsonl.read(ledger.path)))
+    assert summary["total"]["hit"] == 100
+    assert "usd" not in summary["total"] and "peak_calls" not in summary["components"]["fake.ingest"]
     assert summary["total"]["calls"] == 3
 
 
@@ -68,7 +67,7 @@ def test_invalid_judge_label_retries_only_judge(tmp_path):
         async def chat(self, messages, *, component, **kwargs):
             self.calls.append(component)
             if component == "answer":
-                return LLMResult(text="7 May 2023", miss=20, out=5, usd=.001)
+                return LLMResult(text="7 May 2023", miss=20, out=5)
             return LLMResult(text='{"label":"CORRECT"}', json={"label": self.label})
     llm = FakeLLM()
     args = Namespace(answer_prompt="unified", answer_max_tokens=20, judge_max_tokens=20)
@@ -84,9 +83,9 @@ def test_invalid_judge_label_retries_only_judge(tmp_path):
     assert list(jsonl.read(out))[0]["J"] == 1
 
 
-def test_queued_llm_calls_recheck_budget_and_disable_thinking(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-test-key")
-    ledger = Ledger(tmp_path / "costs.jsonl")
+def test_queued_llm_calls_record_usage_and_disable_thinking(tmp_path, monkeypatch):
+    monkeypatch.setenv("QWEN_API_KEY", "offline-test-key")
+    ledger = Ledger(tmp_path / "usage_stats.jsonl")
     calls = []
     async def fake_create(**kwargs):
         calls.append(kwargs)
@@ -95,17 +94,18 @@ def test_queued_llm_calls_recheck_budget_and_disable_thinking(tmp_path, monkeypa
                                choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok":true}',
                                                         reasoning_content=None), finish_reason="stop")])
     async def run():
-        llm = LLM(concurrency=1, ledger=ledger, budget_usd=1e-8)
+        llm = LLM(concurrency=1, ledger=ledger)
         monkeypatch.setattr(llm.client.chat.completions, "create", fake_create)
         try:
             results = await asyncio.gather(*(llm.chat([{"role": "user", "content": "JSON please"}],
                         component="offline", json_mode=True) for _ in range(3)), return_exceptions=True)
-            assert sum(isinstance(r, BudgetExceeded) for r in results) == 2
+            assert all(isinstance(r, LLMResult) for r in results)
         finally:
             await llm.aclose()
     asyncio.run(run())
-    assert len(calls) == ledger.calls == 1
-    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert len(calls) == ledger.calls == 3
+    assert all("usd" not in row and "peak" not in row for row in jsonl.read(ledger.path))
+    assert calls[0]["extra_body"] == {"enable_thinking": False}
     assert calls[0]["temperature"] == 0
     assert calls[0]["response_format"] == {"type": "json_object"}
 
@@ -146,6 +146,9 @@ def test_summary_and_report_exclude_stale_answers(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.argv", ["report.py", "--results-dir", str(tmp_path)])
     report.main()
     assert (tmp_path / "report.md").exists() and (tmp_path / "report.json").exists()
+    rendered = json.loads((tmp_path / "report.json").read_text())
+    assert "usage_total" in rendered and "conditional_cost_scenarios" not in rendered
+    assert "USD" not in (tmp_path / "report.md").read_text() and "CNY" not in (tmp_path / "report.md").read_text()
     rec["context"] = "new context"
     stale = answer_and_judge.summarize(path, [rec], "offline", "main", "unified", tmp_path / "ledger.jsonl")
     assert stale["n_answered"] == 0

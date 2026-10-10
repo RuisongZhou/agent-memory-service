@@ -73,8 +73,8 @@ def sanitized_environment():
     # CA-bundle, mock-model and dotenv settings are deliberately absent rather than overwritten.
     allowed = {"PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"}
     result = {key: value for key, value in os.environ.items() if key in allowed}
-    result.update({"DEEPSEEK_API_KEY": "localhost-stub-placeholder", "MEMORY_OFF_PEAK_ONLY": "0",
-                   "MEMORY_LLM_MAX_CALLS": "2", "MEMORY_LLM_MAX_USD": "0.00001",
+    result.update({"QWEN_API_KEY": "localhost-stub-placeholder",
+                   "MEMORY_LLM_MAX_CALLS": "2",
                    "RAYON_NUM_THREADS": "2", "OMP_NUM_THREADS": "2", "PYTHONDONTWRITEBYTECODE": "1"})
     return result
 
@@ -108,15 +108,19 @@ def main():
                 if self.path != "/chat/completions":
                     raise AssertionError("stub accepts only the local chat-completions path")
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                if body.get("temperature") != 0 or body.get("thinking") != {"type": "disabled"}:
+                if body.get("model") != "qwen3.8-flash":
+                    raise AssertionError("daemon must use the configured Qwen model")
+                if body.get("temperature") != 0 or body.get("enable_thinking") is not False or "thinking" in body:
                     raise AssertionError("daemon changed the configured generation protocol")
-                if body.get("response_format") != {"type": "json_object"} or body.get("stream") is not False:
-                    raise AssertionError("daemon must request non-streaming JSON")
+                if body.get("stream") is not False:
+                    raise AssertionError("daemon must request non-streaming output")
                 if self.headers.get("Authorization") != "Bearer localhost-stub-placeholder":
                     raise AssertionError("daemon did not use the explicit local placeholder credential")
                 system, user = [message["content"] for message in body["messages"]]
                 if "<current batch>" in user:
-                    stage = "P1"
+                    stage = "P1+P2"
+                    if "response_format" in body or "formation-values-v1" not in system:
+                        raise AssertionError("P1 must request positional values, not object mode")
                     batch = re.search(r"<current batch>\n(.*?)\n</current batch>", user, re.S).group(1)
                     chunks = re.findall(r"\[([^|\]\n]+)\s*\|\s*([^\]\n]+)\]\n(.*?)(?=\n\n\[|\Z)", batch, re.S)
                     if len(chunks) != 3:
@@ -126,12 +130,13 @@ def main():
                         span = messages.splitlines()[0]
                         if span != FACT_TEXTS[index]:
                             raise AssertionError("stub source text differs from the actual batch")
-                        facts.append({"text": span, "scope": "project", "entities": FACT_ENTITIES[index],
-                                      "effectiveAt": timestamp.strip()[:10], "origin": "user",
-                                      "source": {"turnId": turn_id.strip(), "span": span}, "relations": []})
-                    output = {"facts": facts}
+                        facts.append([span, "project", FACT_ENTITIES[index], timestamp.strip()[:10],
+                                      "user", turn_id.strip(), span, [], None])
+                    output = [facts, [], [], ["Remember configuration", "facts recorded", [], []]]
                 elif "experience extractor" in system:
                     stage = "P2"
+                    if body.get("response_format") != {"type": "json_object"}:
+                        raise AssertionError("P2 must retain JSON object mode")
                     output = {"analysis": [], "experiences": [], "summary": {
                         "goal": "Remember the demo service and BGE model configuration",
                         "outcome": "The three configuration facts were recorded",
@@ -188,7 +193,7 @@ def main():
                     start = time.perf_counter()
                     process = subprocess.Popen([str(binary), "serve", "--data-dir", str(temp / "data"),
                         "--models-dir", str(models_dir), "--model-device", "metal", "--port", str(port),
-                        "--prompt-variant", "en", "--llm-model", "localhost-stub",
+                        "--prompt-variant", "en",
                         "--llm-base-url", f"http://127.0.0.1:{stub.server_port}", "--llm-concurrency", "1", "--log-level", "warn"],
                         env=sanitized_environment(), stdout=logfile, stderr=logfile)
                     while time.perf_counter() - start < args.startup_timeout:
@@ -267,16 +272,16 @@ def main():
                     report["healthAfter"] = request(base, "/health")
                     with stub_lock:
                         calls = list(stub_calls)
-                    if Counter(calls) != {"P1": 1, "P2": 1} or stub_errors:
-                        raise AssertionError("expected exactly one P1 and one P2 localhost stub response")
-                    if report["healthAfter"]["llm"]["calls"] != 2 or report["healthAfter"]["llm"]["attempts"] != 2:
+                    if Counter(calls) != {"P1+P2": 1} or stub_errors:
+                        raise AssertionError("expected exactly one combined P1/P2 localhost stub response")
+                    if report["healthAfter"]["llm"]["calls"] != 1 or report["healthAfter"]["llm"]["attempts"] != 1:
                         raise AssertionError("unexpected generative stage retry or extra daemon model request")
                     for key, expected in EXPECTED_DEVICE.items():
                         if report["healthAfter"].get(key) != expected:
                             raise AssertionError("device metadata changed during concurrent model calls")
                     if report["healthAfter"].get("modelDevice") != health["modelDevice"]:
                         raise AssertionError("the selected Metal registry device changed during the run")
-                    report["checks"]["exactlyOneP1AndP2NoRealGenerativeCalls"] = True
+                    report["checks"]["oneCombinedFormationCallNoRealGenerativeCalls"] = True
                     report["status"] = "passed"
                 finally:
                     if process is not None:

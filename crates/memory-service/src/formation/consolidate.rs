@@ -719,6 +719,12 @@ pub async fn purge(t: &Arc<Tenant>, as_of: &str, days: f64) -> Result<Value> {
         let Some(s) = t.store.get_session(&tr.platform, &tr.session).await? else {
             continue;
         };
+        if s.pending_tasks
+            .iter()
+            .any(|task| task.turn_ids.contains(&tr.turn_id))
+        {
+            continue; // Keep the original approach until a later batch verifies the task outcome.
+        }
         if s.last_experience_seq < tr.seq {
             continue;
         }

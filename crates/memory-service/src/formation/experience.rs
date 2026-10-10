@@ -1,9 +1,6 @@
-//! P2 extracts verified outcomes and updates the session summary at one committed watermark.
+//! P2 validation and write preparation for the combined P1/P2 formation transaction.
 use super::{
-    engine::Engine,
-    extract, prompts,
     store::{self, to_doc, Tx},
-    tenant::Tenant,
     types::*,
     util,
 };
@@ -11,7 +8,6 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 struct Output {
@@ -22,6 +18,8 @@ struct Output {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Analysis {
+    #[serde(default)]
+    task: String,
     result: String,
     turn_ids: Vec<String>,
 }
@@ -62,6 +60,17 @@ fn result_kind(result: &str) -> Option<&str> {
                 .unwrap_or(false)
     })
 }
+/// Model task names are free text; trivial case/whitespace drift must not orphan a retained task.
+fn same_task(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// Retention bounds: an unresolved (or renamed) task releases its turns instead of holding them
+/// from purge and re-sending them in every later prompt.
+const PENDING_TASK_TTL_TURNS: i64 = 30;
+const PENDING_TASK_MAX_TURNS: usize = 12;
+const MAX_PENDING_TASKS: usize = 5;
+
 fn push_unique(to: &mut Vec<String>, extra: Vec<String>) {
     for s in extra {
         if !s.trim().is_empty() && !to.contains(&s) {
@@ -99,64 +108,66 @@ fn relation_target<'a>(r: &Relation, old: &'a [MemoryRec]) -> Option<&'a MemoryR
     old.get(n - 1)
 }
 
-/// Caller holds extract_lock. New turns received while the model runs remain beyond the saved watermark.
-pub async fn process(eng: &Arc<Engine>, t: &Arc<Tenant>, session: &SessionRec) -> Result<()> {
-    let turns: Vec<TurnRec> = t
-        .store
-        .session_turns(&session.platform, &session.session)
-        .await?
-        .into_iter()
-        .filter(|tr| tr.seq > session.last_experience_seq && tr.seq <= session.turn_count)
-        .collect();
-    if turns.is_empty() {
-        return Ok(());
+/// Prepared P2 changes are appended to the fact transaction; no writes happen during preparation.
+pub struct Prepared {
+    memories: Vec<MemoryRec>,
+    evidence: Vec<EvidenceRec>,
+    session: String,
+    summary: Value,
+    log: Value,
+    created: Vec<String>,
+    per_turn: HashMap<String, Vec<String>>,
+}
+
+impl Prepared {
+    pub fn append(
+        self,
+        tx: &mut Tx,
+        out: &mut super::relations::Applied,
+        texts: &mut HashMap<String, String>,
+    ) -> Result<()> {
+        for m in self.memories {
+            texts.insert(m.id.clone(), m.text.clone());
+            tx.put(
+                "memories",
+                &m.id,
+                super::relations::strip_nulls(to_doc(&m)?),
+            )?;
+            tx.index_task("memories", &m.id, "upsert")?;
+        }
+        for ev in self.evidence {
+            tx.put("evidence", &ev.id, to_doc(&ev)?)?;
+        }
+        tx.merge("sessions", &self.session, self.summary)?;
+        let log_id = util::new_id("l");
+        tx.put("extract_log", &log_id, self.log)?;
+        out.created.extend(self.created);
+        for (turn, ids) in self.per_turn {
+            let mapped = out.per_turn.entry(turn).or_default();
+            for id in ids {
+                if !mapped.contains(&id) {
+                    mapped.push(id.clone());
+                }
+                if !out.all_ids.contains(&id) {
+                    out.all_ids.push(id);
+                }
+            }
+        }
+        Ok(())
     }
-    if turns.iter().any(|tr| tr.extract_state != "done") {
-        return Err(anyhow!(
-            "P2 supporting turns have not completed fact extraction"
-        ));
-    }
-    let p = eng.prompts_for(t);
-    let query = turns
-        .iter()
-        .map(TurnRec::full_text)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let old = extract::recall(
-        eng,
-        t,
-        &query,
-        &session.project,
-        &session.platform,
-        Some(T_EXPERIENCE),
-        5,
-    )
-    .await?;
-    let rows = old
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            let detail = m.detail.as_ref().unwrap_or(&Value::Null);
-            format!(
-                "E{} | {} | {} | {}",
-                i + 1,
-                m.scope.kind,
-                detail["situation"].as_str().unwrap_or(&m.text),
-                detail["lesson"].as_str().unwrap_or("")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let user = format!(
-        "{}\n\n{}\n\n{}",
-        prompts::block(p.l.summary, &serde_json::to_string(session)?),
-        prompts::block(
-            p.l.old_experiences,
-            if rows.is_empty() { p.l.none } else { &rows }
-        ),
-        prompts::block(p.l.conversation, &extract::conversation(&turns, p))
-    );
-    let raw = extract::call_logged(eng, t, "P2", p.p2, &user, 4096).await?;
+}
+
+/// Caller holds extract_lock and ingest_lock. Current and retained unfinished-task turns may supply evidence.
+pub fn prepare(
+    session: &SessionRec,
+    turns: &[TurnRec],
+    current_ids: &HashSet<String>,
+    old: &[MemoryRec],
+    raw: Value,
+    watermark: i64,
+    variant: &str,
+    now: &str,
+) -> Result<Prepared> {
     let output_hash = blake3::hash(raw.to_string().as_bytes())
         .to_hex()
         .to_string();
@@ -174,15 +185,66 @@ pub async fn process(eng: &Arc<Engine>, t: &Arc<Tenant>, session: &SessionRec) -
     let mut used_tasks = HashSet::new();
     let mut memories: HashMap<String, MemoryRec> =
         old.iter().map(|m| (m.id.clone(), m.clone())).collect();
-    let mut tx = Tx::new();
-    let now = util::now_str();
-    let watermark = turns
-        .iter()
-        .map(|tr| tr.seq)
-        .max()
-        .unwrap_or(session.last_experience_seq);
+    let mut evidence = Vec::new();
+    let mut created = Vec::new();
+    let mut per_turn: HashMap<String, Vec<String>> = HashMap::new();
+    let now = now.to_string();
+    let mut pending = session.pending_tasks.clone();
+    for a in &output.analysis {
+        if a.task.trim().is_empty()
+            || a.turn_ids.is_empty()
+            || a.turn_ids.iter().any(|id| !tids.contains(id))
+        {
+            continue;
+        }
+        // `partial` is a verified outcome (it may form an experience), so only `unknown` stays open.
+        if a.result == "unknown" {
+            if let Some(task) = pending
+                .iter_mut()
+                .find(|task| same_task(&task.task, &a.task))
+            {
+                push_unique(&mut task.turn_ids, a.turn_ids.clone());
+                task.updated_seq = watermark;
+            } else {
+                pending.push(PendingTask {
+                    task: a.task.clone(),
+                    turn_ids: a.turn_ids.clone(),
+                    updated_seq: watermark,
+                });
+            }
+        } else if matches!(a.result.as_str(), "success" | "failure" | "partial")
+            && a.turn_ids.iter().any(|id| current_ids.contains(id))
+        {
+            // A named unfinished task can close only with current evidence and all retained sources.
+            pending.retain(|task| {
+                !same_task(&task.task, &a.task)
+                    || !task.turn_ids.iter().all(|id| a.turn_ids.contains(id))
+            });
+        }
+    }
+    let mut expired = Vec::new();
+    pending.retain(|task| {
+        let keep = watermark - task.updated_seq <= PENDING_TASK_TTL_TURNS
+            && task.turn_ids.len() <= PENDING_TASK_MAX_TURNS;
+        if !keep {
+            expired.push(task.task.clone());
+        }
+        keep
+    });
+    if pending.len() > MAX_PENDING_TASKS {
+        pending.sort_by_key(|task| std::cmp::Reverse(task.updated_seq));
+        expired.extend(
+            pending
+                .split_off(MAX_PENDING_TASKS)
+                .into_iter()
+                .map(|task| task.task),
+        );
+    }
     for (i, e) in output.experiences.into_iter().enumerate() {
-        if i >= 3 || !valid_experience(&e, &output.analysis, &tids) {
+        if i >= 3
+            || !valid_experience(&e, &output.analysis, &tids)
+            || !e.turn_ids.iter().any(|id| current_ids.contains(id))
+        {
             let reason = if i >= 3 {
                 "experience_limit_exceeded"
             } else if !["global", "project"].contains(&e.scope.as_str()) {
@@ -210,10 +272,15 @@ pub async fn process(eng: &Arc<Engine>, t: &Arc<Tenant>, session: &SessionRec) -
                 !used_tasks.contains(index)
                     && Some(a.result.as_str()) == result_kind(&e.result)
                     && e.turn_ids.iter().all(|id| a.turn_ids.contains(id))
+                    && session
+                        .pending_tasks
+                        .iter()
+                        .filter(|task| same_task(&task.task, &a.task))
+                        .all(|task| task.turn_ids.iter().all(|id| e.turn_ids.contains(id)))
             })
             .map(|(index, _)| index);
         let Some(task) = task else {
-            rejected.push(json!({"experience":i+1,"kind":"experience_discarded","reason":"task_already_has_experience"}));
+            rejected.push(json!({"experience":i+1,"kind":"experience_discarded","reason":"task_unmatched_or_sources_incomplete"}));
             continue;
         };
         used_tasks.insert(task);
@@ -249,7 +316,8 @@ pub async fn process(eng: &Arc<Engine>, t: &Arc<Tenant>, session: &SessionRec) -
         } else {
             created_count += 1;
             let id = util::new_id("m");
-            let separator = if p.variant == "en" { ": " } else { "：" };
+            created.push(id.clone());
+            let separator = if variant == "en" { ": " } else { "：" };
             let m = MemoryRec {
                 id: id.clone(),
                 mtype: T_EXPERIENCE.into(),
@@ -297,6 +365,12 @@ pub async fn process(eng: &Arc<Engine>, t: &Arc<Tenant>, session: &SessionRec) -
             }
             id
         };
+        for turn_id in &e.turn_ids {
+            per_turn
+                .entry(turn_id.clone())
+                .or_default()
+                .push(id.clone());
+        }
         // P2 cites whole supporting turns; copy their stored original content before buffer purge.
         for tr in turns.iter().filter(|tr| e.turn_ids.contains(&tr.turn_id)) {
             for (role, span, stated) in [
@@ -306,7 +380,7 @@ pub async fn process(eng: &Arc<Engine>, t: &Arc<Tenant>, session: &SessionRec) -
                 if span.is_empty() {
                     continue;
                 }
-                let evidence = EvidenceRec {
+                let ev = EvidenceRec {
                     id: util::new_id("e"),
                     memory_ids: vec![id.clone()],
                     platform: session.platform.clone(),
@@ -316,54 +390,59 @@ pub async fn process(eng: &Arc<Engine>, t: &Arc<Tenant>, session: &SessionRec) -
                     stated_at: stated.clone(),
                     created_at: now.clone(),
                 };
-                tx.put("evidence", &evidence.id, to_doc(&evidence)?)?;
+                evidence.push(ev);
             }
         }
     }
-    // This lock protects session sequence changes while we preserve turns that arrived during P2.
-    let _ingest = t.ingest_lock.lock().await;
-    let mut updated = t
-        .store
-        .get_session(&session.platform, &session.session)
-        .await?
-        .ok_or_else(|| anyhow!("session disappeared during P2"))?;
-    if !output.summary.goal.trim().is_empty() {
-        updated.goal = output.summary.goal;
-    }
-    if !output.summary.outcome.trim().is_empty() {
-        updated.outcome = output.summary.outcome;
-    }
-    push_unique(&mut updated.decisions, output.summary.decisions);
-    push_unique(&mut updated.open_issues, output.summary.open_issues);
-    updated.last_experience_seq = watermark;
-    updated.updated_at = now.clone();
-    tx.put(
-        "sessions",
-        &store::session_rid(&session.platform, &session.session),
-        to_doc(&updated)?,
-    )?;
-    for (id, m) in memories {
-        // Unchanged recalled experiences do not need a write or a redundant index task.
-        if old
-            .iter()
-            .find(|o| o.id == id)
-            .map(|o| serde_json::to_value(o).ok() == serde_json::to_value(&m).ok())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        tx.put("memories", &id, to_doc(&m)?)?;
-        tx.index_task("memories", &id, "upsert")?;
-    }
-    t.store.commit(tx).await?;
-    t.store.log("extract_log",json!({"stage":"P2_validation","createdAt":now,"outputHash":output_hash,
-        "promptVariant":p.variant,"groupLabel":format!("{}::{}::{}",session.platform,session.project,session.session),
+    let goal = if output.summary.goal.trim().is_empty() {
+        &session.goal
+    } else {
+        &output.summary.goal
+    };
+    let outcome = if output.summary.outcome.trim().is_empty() {
+        &session.outcome
+    } else {
+        &output.summary.outcome
+    };
+    let no_summary_change = output.summary.goal.trim().is_empty()
+        && output.summary.outcome.trim().is_empty()
+        && output.summary.decisions.is_empty()
+        && output.summary.open_issues.is_empty();
+    let issues = if no_summary_change {
+        session.open_issues.clone()
+    } else {
+        output.summary.open_issues
+    };
+    let mut decisions = session.decisions.clone();
+    push_unique(&mut decisions, output.summary.decisions);
+    let summary = json!({"goal":goal,"outcome":outcome,"decisions":decisions,
+        "openIssues":issues,"pendingTasks":pending,
+        "lastExperienceSeq":watermark,"updatedAt":now,
+        "experienceFailures":0,"experienceState":"done","experienceError":Value::Null});
+    let changed = memories
+        .into_values()
+        .filter(|m| {
+            old.iter()
+                .find(|o| o.id == m.id)
+                .map(|o| serde_json::to_value(o).ok() != serde_json::to_value(m).ok())
+                .unwrap_or(true)
+        })
+        .collect();
+    let log = json!({"stage":"P2_validation","createdAt":now,"outputHash":output_hash,
+        "promptVariant":variant,"groupLabel":format!("{}::{}::{}",session.platform,session.project,session.session),
         "sourceTurnIds":turns.iter().map(|tr|tr.turn_id.clone()).collect::<Vec<_>>(),
         "inputCounts":{"analysisTasks":output.analysis.len(),"modelExperiences":model_experiences,"accepted":used_tasks.len()},
         "analysisResults":analysis_results,"same":same_count,"created":created_count,
-        "rejected":rejected,"accepted":used_tasks.len(),"session":session.session,"watermark":watermark})).await?;
-    t.index_notify.notify_one();
-    Ok(())
+        "rejected":rejected,"accepted":used_tasks.len(),"expiredTasks":expired,"session":session.session,"watermark":watermark});
+    Ok(Prepared {
+        memories: changed,
+        evidence,
+        session: store::session_rid(&session.platform, &session.session),
+        summary,
+        log,
+        created,
+        per_turn,
+    })
 }
 
 /// Pure acceptance checks callable from the daemon selftest without loading a model or a test build.
@@ -381,6 +460,7 @@ pub fn rule_selftest() {
     assert!(!valid_experience(
         &e,
         &[Analysis {
+            task: "slow query".into(),
             result: "unknown".into(),
             turn_ids: vec!["T1".into()]
         }],
@@ -389,6 +469,7 @@ pub fn rule_selftest() {
     assert!(valid_experience(
         &e,
         &[Analysis {
+            task: "slow query".into(),
             result: "success".into(),
             turn_ids: vec!["T1".into()]
         }],
@@ -397,6 +478,7 @@ pub fn rule_selftest() {
     assert!(!valid_experience(
         &e,
         &[Analysis {
+            task: "slow query".into(),
             result: "success".into(),
             turn_ids: vec!["T2".into()]
         }],
@@ -405,6 +487,89 @@ pub fn rule_selftest() {
     assert_eq!(result_kind("successful maybe"), None);
     assert_eq!(result_kind("failure：测试失败"), Some("failure"));
     assert_eq!(result_kind("unknown: interrupted"), None);
+    let session = SessionRec {
+        open_issues: vec!["await verification".into()],
+        pending_tasks: vec![PendingTask {
+            task: "deployment".into(),
+            turn_ids: vec!["T0".into()],
+            updated_seq: 1,
+        }],
+        ..Default::default()
+    };
+    let turns = vec![
+        TurnRec {
+            turn_id: "T0".into(),
+            ..Default::default()
+        },
+        TurnRec {
+            turn_id: "T1".into(),
+            ..Default::default()
+        },
+    ];
+    let run = |session: &SessionRec, analysis: Value, experiences: Value, watermark: i64| {
+        let raw = json!({"analysis":analysis,"experiences":experiences,
+            "summary":{"goal":"","outcome":"","decisions":[],"openIssues":[]}});
+        prepare(
+            session,
+            &turns,
+            &HashSet::from(["T1".into()]),
+            &[],
+            raw,
+            watermark,
+            "en",
+            "2026-10-10T00:00:00Z",
+        )
+        .unwrap()
+    };
+    // Unknown outcomes stay open; case/whitespace drift in the task name still extends the task.
+    let pending = run(
+        &session,
+        json!([{"task":" Deployment","result":"unknown","turnIds":["T0","T1"]}]),
+        json!([]),
+        2,
+    );
+    assert_eq!(
+        pending.summary["pendingTasks"][0]["turnIds"],
+        json!(["T0", "T1"])
+    );
+    assert_eq!(pending.summary["pendingTasks"][0]["updatedSeq"], 2);
+    assert_eq!(pending.summary["openIssues"], json!(["await verification"]));
+    // Partial is a verified outcome: it forms at most one experience and closes the task.
+    let partial = run(
+        &session,
+        json!([{"task":"deployment","result":"partial","turnIds":["T0","T1"]}]),
+        json!([{"situation":"deploy","approach":"apply half","result":"partial: one host left",
+            "lesson":"stage hosts","scope":"project","turnIds":["T0","T1"],"relations":[]}]),
+        2,
+    );
+    assert_eq!(partial.summary["pendingTasks"], json!([]));
+    assert_eq!(partial.created.len(), 1);
+    // Tasks never resolved (for example renamed by the model) expire instead of holding turns forever.
+    let stale = run(
+        &session,
+        json!([{"task":"deploy service","result":"unknown","turnIds":["T1"]}]),
+        json!([]),
+        1 + PENDING_TASK_TTL_TURNS + 1,
+    );
+    assert_eq!(stale.summary["pendingTasks"].as_array().unwrap().len(), 1);
+    assert_eq!(stale.summary["pendingTasks"][0]["task"], "deploy service");
+    assert_eq!(stale.log["expiredTasks"], json!(["deployment"]));
+    let crowded = SessionRec {
+        pending_tasks: (0..MAX_PENDING_TASKS as i64 + 2)
+            .map(|i| PendingTask {
+                task: format!("task {i}"),
+                turn_ids: vec!["T0".into()],
+                updated_seq: i,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let capped = run(&crowded, json!([]), json!([]), 8);
+    assert_eq!(
+        capped.summary["pendingTasks"].as_array().unwrap().len(),
+        MAX_PENDING_TASKS
+    );
+    assert_eq!(capped.log["expiredTasks"], json!(["task 1", "task 0"]));
 }
 
 #[cfg(test)]
@@ -425,6 +590,7 @@ mod tests {
         assert!(!valid_experience(
             &e,
             &[Analysis {
+                task: "slow query".into(),
                 result: "unknown".into(),
                 turn_ids: vec!["T1".into()]
             }],
@@ -433,6 +599,7 @@ mod tests {
         assert!(valid_experience(
             &e,
             &[Analysis {
+                task: "slow query".into(),
                 result: "success".into(),
                 turn_ids: vec!["T1".into()]
             }],
@@ -441,6 +608,7 @@ mod tests {
         assert!(!valid_experience(
             &e,
             &[Analysis {
+                task: "slow query".into(),
                 result: "success".into(),
                 turn_ids: vec!["T2".into()]
             }],

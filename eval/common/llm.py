@@ -1,12 +1,10 @@
-"""DeepSeek client (OpenAI-compatible) with concurrency limit, retries and a cost ledger.
+"""Qwen client (OpenAI-compatible) with concurrency limit, retries and a usage ledger.
 
-Every request: model deepseek-flash, temperature 0, thinking disabled via
-extra_body={"thinking": {"type": "disabled"}} (deepseek-flash defaults to thinking mode).
+Every request: model qwen3.8-flash, temperature 0, thinking disabled via
+extra_body={"enable_thinking": False} (qwen3.8-flash defaults to thinking mode).
 
-Ledger: results/cost_ledger.jsonl, one JSON line per billed request:
-  {ts, component, model, hit, miss, out, usd, peak, latency_ms, ...}
-Prices (USD / 1M tokens, off-peak): cache hit 0.003, cache miss 0.15, output 0.6;
-peak (01:00-04:00 and 06:00-10:00 UTC, Mon-Fri) is 2x.
+Ledger: results/usage_ledger.jsonl, one JSON line per response:
+  {ts, component, model, hit, miss, out, latency_ms, ...}
 """
 from __future__ import annotations
 
@@ -26,35 +24,24 @@ from typing import Any, Optional
 from . import env  # noqa: F401  (environment + key loading)
 from .env import RESULTS_DIR
 
-DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-MODEL = os.environ.get("EVAL_MODEL", "deepseek-flash")
-NO_THINKING: dict = {"thinking": {"type": "disabled"}}
-PRICE_OFFPEAK = {"hit": 0.003, "miss": 0.15, "out": 0.6}  # USD per 1M tokens
-CNY_PER_USD = 7.2
-LEDGER_PATH = Path(os.environ.get("EVAL_LEDGER", RESULTS_DIR / "cost_ledger.jsonl"))
-
-
-# ----------------------------------------------------------------------------- pricing
-
-def is_peak(ts: datetime) -> bool:
-    ts = ts.astimezone(timezone.utc)
-    return ts.weekday() < 5 and (1 <= ts.hour < 4 or 6 <= ts.hour < 10)
-
-
-def cost_usd(hit: int, miss: int, out: int, ts: Optional[datetime] = None) -> float:
-    ts = ts or datetime.now(timezone.utc)
-    mult = 2.0 if is_peak(ts) else 1.0
-    return mult * (hit * PRICE_OFFPEAK["hit"] + miss * PRICE_OFFPEAK["miss"] + out * PRICE_OFFPEAK["out"]) / 1e6
+QWEN_BASE_URL = os.environ.get("QWEN_BASE_URL", "https://maas.qianwenaiapi.com/compatible-mode/v1")
+MODEL = os.environ.get("EVAL_MODEL", os.environ.get("LLM_MODEL", "qwen3.8-flash"))
+NO_THINKING: dict = {"enable_thinking": False}
+LEDGER_PATH = Path(os.environ.get("EVAL_LEDGER", RESULTS_DIR / "usage_ledger.jsonl"))
 
 
 def usage_tokens(usage: Any) -> tuple[int, int, int, int]:
-    """(hit, miss, out, reasoning) from an OpenAI-style usage object or dict (DeepSeek extra fields)."""
+    """(hit, miss, out, reasoning) from an OpenAI-style usage object or dict, including cached-token details."""
     if usage is None:
         return 0, 0, 0, 0
     get = (lambda k: usage.get(k)) if isinstance(usage, dict) else (lambda k: getattr(usage, k, None))
     prompt = int(get("prompt_tokens") or 0)
     out = int(get("completion_tokens") or 0)
     hit = get("prompt_cache_hit_tokens")
+    if hit is None:
+        details = get("prompt_tokens_details")
+        if details is not None:
+            hit = details.get("cached_tokens") if isinstance(details, dict) else getattr(details, "cached_tokens", None)
     miss = get("prompt_cache_miss_tokens")
     hit = int(hit) if hit is not None else 0
     miss = int(miss) if miss is not None else max(prompt - hit, 0)
@@ -75,7 +62,6 @@ class Ledger:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self.spent_usd = 0.0  # spent by this process
         self.calls = 0
 
     @staticmethod
@@ -89,8 +75,6 @@ class Ledger:
             "hit": int(hit),
             "miss": int(miss),
             "out": int(out),
-            "usd": round(cost_usd(hit, miss, out, ts), 12),
-            "peak": is_peak(ts),
         }
         if latency_ms is not None:
             row["latency_ms"] = round(latency_ms, 1)
@@ -143,7 +127,6 @@ class Ledger:
                     added.append(row)
                 f.flush()
                 fcntl.flock(f, fcntl.LOCK_UN)
-            self.spent_usd += sum(row["usd"] for row in added)
             self.calls += sum(int(row.get("calls", 1)) for row in added)
         return added
 
@@ -167,10 +150,6 @@ def set_ledger_path(path: Path | str) -> Ledger:
 
 # ----------------------------------------------------------------------------- client
 
-class BudgetExceeded(RuntimeError):
-    pass
-
-
 class LLMOutputError(RuntimeError):
     pass
 
@@ -186,7 +165,6 @@ class LLMResult:
     hit: int = 0
     miss: int = 0
     out: int = 0
-    usd: float = 0.0
     latency_ms: float = 0.0
     finish_reason: Optional[str] = None
     attempts: int = 1
@@ -206,31 +184,24 @@ def extract_json(text: str) -> str:
 
 
 def api_key() -> str:
-    key = os.environ.get("DEEPSEEK_API_KEY")
+    key = os.environ.get("QWEN_API_KEY")
     if not key:
-        raise RuntimeError("DEEPSEEK_API_KEY not set; add it to the project root .env or process environment")
+        raise RuntimeError("QWEN_API_KEY not set; add it to the project root .env or process environment")
     return key
 
 
 class LLM:
-    """Async DeepSeek chat client. One instance per process is enough."""
+    """Async Qwen chat client. One instance per process is enough."""
 
     def __init__(self, *, concurrency: int = 8, max_attempts: int = 6, timeout: float = 180.0,
-                 ledger: Optional[Ledger] = None, budget_usd: Optional[float] = None, model: str = MODEL):
+                 ledger: Optional[Ledger] = None, model: str = MODEL):
         from openai import AsyncOpenAI
 
         self.model = model
-        self.client = AsyncOpenAI(api_key=api_key(), base_url=DEEPSEEK_BASE_URL, max_retries=0, timeout=timeout)
+        self.client = AsyncOpenAI(api_key=api_key(), base_url=QWEN_BASE_URL, max_retries=0, timeout=timeout)
         self.sem = asyncio.Semaphore(concurrency)
         self.max_attempts = max_attempts
         self.ledger = ledger or default_ledger()
-        self.budget_usd = budget_usd
-        self.start_spent = self.ledger.spent_usd
-
-    def _check_budget(self) -> None:
-        if self.budget_usd is not None and self.ledger.spent_usd - self.start_spent >= self.budget_usd:
-            raise BudgetExceeded(
-                f"process budget {self.budget_usd:.4f} USD reached ({self.ledger.spent_usd - self.start_spent:.4f})")
 
     async def chat(self, messages: list[dict], *, component: str, json_mode: bool = False,
                    max_tokens: Optional[int] = None, meta: Optional[dict] = None) -> LLMResult:
@@ -238,7 +209,6 @@ class LLM:
 
         last_err: Optional[BaseException] = None
         for attempt in range(1, self.max_attempts + 1):
-            self._check_budget()
             kwargs: dict[str, Any] = dict(model=self.model, messages=messages, temperature=0.0, extra_body=NO_THINKING)
             if max_tokens:
                 kwargs["max_tokens"] = max_tokens
@@ -247,7 +217,6 @@ class LLM:
             t0 = time.perf_counter()
             try:
                 async with self.sem:
-                    self._check_budget()  # queued calls must recheck after earlier calls are billed
                     resp = await self.client.chat.completions.create(**kwargs)
             except (openai.RateLimitError, openai.APIConnectionError, openai.InternalServerError) as e:
                 last_err = e
@@ -255,7 +224,7 @@ class LLM:
                 if e.status_code >= 500 or e.status_code in (408, 409, 429):
                     last_err = e
                 else:  # 400 bad request, 401 auth, 402 insufficient balance, 422 ...
-                    raise FatalAPIError(f"DeepSeek API {e.status_code}: {str(e)[:300]}") from e
+                    raise FatalAPIError(f"Qwen API {e.status_code}: {str(e)[:300]}") from e
             else:
                 latency_ms = (time.perf_counter() - t0) * 1000
                 hit, miss, out, reasoning = usage_tokens(resp.usage)
@@ -271,7 +240,7 @@ class LLM:
                         parse_ok = parsed is not None
                     except json.JSONDecodeError:
                         parse_ok = False
-                row = self.ledger.record(
+                self.ledger.record(
                     component, hit, miss, out, latency_ms=latency_ms, model=self.model,
                     reasoning_tokens=reasoning or None,
                     reasoning_chars=len(reasoning_content) if reasoning_content else None,
@@ -280,7 +249,7 @@ class LLM:
                     **(meta or {}),
                 )
                 if parse_ok:
-                    return LLMResult(text=text, json=parsed, hit=hit, miss=miss, out=out, usd=row["usd"],
+                    return LLMResult(text=text, json=parsed, hit=hit, miss=miss, out=out,
                                      latency_ms=latency_ms, finish_reason=finish, attempts=attempt,
                                      extra={"reasoning_tokens": reasoning,
                                             "reasoning_chars": len(reasoning_content or "")})

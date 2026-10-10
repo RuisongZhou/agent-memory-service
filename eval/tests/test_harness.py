@@ -20,7 +20,7 @@ def args_for(tmp_path, base_url):
 def test_full_fake_http_pipeline_and_resume(tmp_path):
     srv, state = start()
     args = args_for(tmp_path, f"http://127.0.0.1:{srv.server_port}")
-    set_ledger_path(tmp_path / "cost_ledger.jsonl")
+    set_ledger_path(tmp_path / "usage_ledger.jsonl")
     try:
         asyncio.run(memory_run.amain(args))
         assert not state.errors
@@ -40,7 +40,7 @@ def test_full_fake_http_pipeline_and_resume(tmp_path):
         asyncio.run(memory_run.amain(args))
         assert sum(p in mutating for p, *_ in state.calls) == mutations_before
         assert len(list(jsonl.read(root / "main/contexts.jsonl"))) == 3
-        ledger = list(jsonl.read(tmp_path / "cost_ledger.jsonl"))
+        ledger = list(jsonl.read(tmp_path / "usage_ledger.jsonl"))
         assert sum(r["calls"] for r in ledger) == state.llm["calls"]
     finally:
         srv.shutdown()
@@ -76,7 +76,7 @@ def test_profile_field_and_legacy_profile_are_deduplicated():
 
 def test_two_prompt_variants_are_isolated_on_one_daemon(tmp_path):
     srv, state = start()
-    set_ledger_path(tmp_path / "cost_ledger.jsonl")
+    set_ledger_path(tmp_path / "usage_ledger.jsonl")
     try:
         for variant in ("en", "zh"):
             args = args_for(tmp_path, f"http://127.0.0.1:{srv.server_port}")
@@ -107,7 +107,7 @@ def test_two_prompt_variants_are_isolated_on_one_daemon(tmp_path):
 def test_legacy_resume_refuses_changed_daemon_default(tmp_path):
     srv, state = start()
     args = args_for(tmp_path, f"http://127.0.0.1:{srv.server_port}")
-    set_ledger_path(tmp_path / "cost_ledger.jsonl")
+    set_ledger_path(tmp_path / "usage_ledger.jsonl")
     try:
         asyncio.run(memory_run.amain(args))
         before = len(state.calls)

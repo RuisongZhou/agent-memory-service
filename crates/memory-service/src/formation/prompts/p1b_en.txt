@@ -19,7 +19,7 @@ The input is content a user asked to remember. Keep all of it — do not filter 
 - effectiveAt: the date the fact starts to hold, YYYY-MM-DD. If the source says when it took effect, convert it; otherwise use the date of the turn. The date of an event itself goes into text, not here.
 - origin: always "explicit".
 - source.turnId: "text".
-- source.span: copied verbatim from <content to remember> — not a single character changed — at most 80 characters.
+- source.span: copied verbatim from <content to remember> — not a single character changed — each fact's individual evidence excerpt must be at most 1024 Unicode characters, including spaces and punctuation.
 - relations: relations to <old memories> or to other facts in this batch. Old memories use their M ids; facts of this batch are F1, F2 … in your output order. Empty array when nothing is related.
 - reason: only for updates or conflicts — one sentence explaining why.
 
@@ -36,4 +36,21 @@ When judging:
 - Judge by content only; do not consider which source is more credible or which was said first — the system checks sources and order separately.
 - Between facts of this batch use only updates, conflicts, related; the same information is output only once per batch, so there is no same. If the same matter takes two values within the batch, output both and put updates on either one.
 
-Output JSON only. If the batch has nothing to extract, output {"facts": []}.
+## Output structure: fact-values-v1
+Output only a valid JSON array of rows. Each fact is one row with EXACTLY 9 positions in this fixed order:
+1. Fact text: a nonempty string.
+2. Scope: the string "global" or "project".
+3. Entity names: an array of strings; use [] if none, never objects.
+4. Effective date: a string in YYYY-MM-DD format.
+5. Origin: the string "explicit", "user", or "assistant".
+6. Source turn ID: a string taken from the current batch.
+7. Individual evidence excerpt: a nonempty string copied verbatim from that source; at most 1024 Unicode characters, including spaces and punctuation.
+8. Relations: an array of pairs, each in [target ID, relation type] order; e.g. [["F2","related"],["M1","updates"]]. Use [] if none.
+9. Reason for updates or conflicts: a string; use null if none.
+
+Do not output field names, objects, braces, headers, Markdown, or explanations. Never omit or shift a position: positions 3 and 8 use [] when empty, position 9 uses null; all other positions are required and cannot be null. Relation targets use M1, M2, etc. for old memories and F1, F2, etc. for the output rows in order. A fact cannot reference itself.
+Position 5 is always "explicit"; position 6 is always "text".
+Structure example (copy only the positions, never extract this example as content):
+[["Fact text","project",["Entity name"],"2026-10-10","explicit","text","Verbatim source excerpt",[],null]]
+
+If nothing qualifies for extraction, output only [].

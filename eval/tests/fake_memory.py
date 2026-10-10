@@ -43,7 +43,7 @@ class State:
         self.llm["cacheHitTokens"] += hit
         self.llm["completionTokens"] += out
         self.usage[tenant].append({"mid": f"usage-{len(self.usage[tenant])+1}", "stage": stage,
-                                  "model": "deepseek-flash", "createdAt": "2026-10-09T12:00:00Z",
+                                  "model": "qwen3.8-flash", "createdAt": "2026-10-09T12:00:00Z",
                                   "promptTokens": hit + miss, "cacheHitTokens": hit, "cacheMissTokens": miss,
                                   "completionTokens": out, "latencyMs": 5, "attempt": 1, "validJson": True})
 
@@ -142,7 +142,7 @@ def make_handler(state: State):
                                                 else state.default_prompt) for tenant in state.turns}
                     return self._send(200, {"ok": True, "promptVariant": state.default_prompt,
                                            "tenantPromptVariants": tenant_variants,
-                                           "llm": dict(state.llm, model="deepseek-flash")})
+                                           "llm": dict(state.llm, model="qwen3.8-flash")})
             self._send(404, {})
 
         def do_POST(self):

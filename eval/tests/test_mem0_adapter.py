@@ -11,7 +11,7 @@ from common.llm import set_ledger_path
 
 
 def test_mem0_real_class_disables_thinking_and_records_usage(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-not-a-real-key")
+    monkeypatch.setenv("QWEN_API_KEY", "test-not-a-real-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     ledger = set_ledger_path(tmp_path / "ledger.jsonl")
     _, cls = mem0_run._install_mem0_patches(True)
@@ -20,7 +20,7 @@ def test_mem0_real_class_disables_thinking_and_records_usage(tmp_path, monkeypat
                                      "prompt_cache_hit_tokens": 20},
                                choices=[SimpleNamespace(message=SimpleNamespace(content='{"memory":[]}',
                                                         reasoning_content=None), finish_reason="stop")])
-    llm = cls({"model": "deepseek-flash", "openai_base_url": "https://api.deepseek.com",
+    llm = cls({"model": "qwen3.8-flash", "openai_base_url": "https://maas.qianwenaiapi.com/compatible-mode/v1",
                "api_key": "test-not-a-real-key", "temperature": 0,
                "response_callback": mem0_run._ledger_callback("offline.add")})
     def fake_create(**kwargs):
@@ -29,11 +29,11 @@ def test_mem0_real_class_disables_thinking_and_records_usage(tmp_path, monkeypat
     monkeypatch.setattr(llm.client.chat.completions, "create", fake_create)
     output = llm.generate_response([{"role": "user", "content": "Return JSON"}],
                                   response_format={"type": "json_object"},
-                                  extra_body={"thinking": {"type": "enabled"}})
+                                  extra_body={"enable_thinking": True})
     assert output == '{"memory":[]}'
-    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert calls[0]["extra_body"] == {"enable_thinking": False}
     assert calls[0]["temperature"] == 0
-    assert calls[0]["model"] == "deepseek-flash"
+    assert calls[0]["model"] == "qwen3.8-flash"
     assert ledger.calls == 1
     assert list(jsonl.read(ledger.path))[0]["miss"] == 100
     llm.client.close()
@@ -75,13 +75,13 @@ def test_search_refuses_partially_ingested_session(tmp_path):
 
 def test_real_mem0_qdrant_pipeline_two_sessions_ten_questions(tmp_path, monkeypatch):
     """Real mem0 and Qdrant; every model response is intercepted in-process."""
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-test-key")
+    monkeypatch.setenv("QWEN_API_KEY", "offline-test-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     from openai.resources.chat.completions import Completions
     from openai.resources.embeddings import Embeddings
     calls = []
     def fake_chat(self, **kwargs):
-        assert kwargs["extra_body"]["thinking"]["type"] == "disabled"
+        assert kwargs["extra_body"]["enable_thinking"] is False
         calls.append(kwargs)
         text = "Offline fact " + hashlib.sha256(json.dumps(kwargs["messages"]).encode()).hexdigest()[:12]
         content = json.dumps({"memory": [{"text": text}]})
@@ -100,11 +100,11 @@ def test_real_mem0_qdrant_pipeline_two_sessions_ten_questions(tmp_path, monkeypa
         return SimpleNamespace(data=data)
     monkeypatch.setattr(Completions, "create", fake_chat)
     monkeypatch.setattr(Embeddings, "create", fake_embed)
-    ledger = set_ledger_path(tmp_path / "cost_ledger.jsonl")
+    ledger = set_ledger_path(tmp_path / "usage_ledger.jsonl")
     args = Namespace(observation_date="session", stores_dir=str(tmp_path / "stores"), tag="offline",
                      embed_url="http://127.0.0.1:8773/v1", no_custom_instructions=False,
                      sessions=2, batch_size=2, perspectives="both", workers=2, retries=1,
-                     max_usd=None, results_dir=str(tmp_path), top_k=30, setting=None,
+                     results_dir=str(tmp_path), top_k=30, setting=None,
                      limit=10, qids=None)
     data = locomo.load()[:1]
     stores = mem0_run.Mem0Stores(args)
@@ -124,7 +124,7 @@ def test_real_mem0_qdrant_pipeline_two_sessions_ten_questions(tmp_path, monkeypa
     recorded = list(jsonl.read(ledger.path))
     assert all(r.get("add_id") and r.get("session") and r.get("user_id") and r.get("attempt") for r in recorded)
     progress = list(jsonl.read(tmp_path / "offline/ingest_progress.jsonl"))
-    assert all(r["cost"]["llm_calls"] == 1 and r["cost"]["usd"] > 0 for r in progress)
+    assert all(r["usage"]["llm_calls"] == 1 and r["usage"]["miss"] > 0 for r in progress)
     assert all(r["speaker_1"] == "Caroline" and r["speaker_2"] == "Melanie" for r in rows)
     assert all(r["token_counter"] == "tiktoken/cl100k_base" for r in rows)
     reopened = mem0_run.Mem0Stores(args)

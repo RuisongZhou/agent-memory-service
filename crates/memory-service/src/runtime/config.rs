@@ -10,7 +10,7 @@ pub struct ServiceConfig {
     /// Prompt set: "zh" (verbatim design prompts) or "en" (LoCoMo-adapted, English memories).
     pub prompt_variant: String,
 
-    // ---- LLM (DeepSeek, OpenAI-compatible) ----
+    // ---- LLM (Qwen, OpenAI-compatible) ----
     pub llm_base_url: String,
     pub llm_model: String,
     pub llm_max_concurrency: usize,
@@ -60,8 +60,8 @@ impl Default for ServiceConfig {
             data_dir: PathBuf::from("./memory-data"),
             models_dir: PathBuf::from("./models"),
             prompt_variant: "zh".into(),
-            llm_base_url: "https://api.deepseek.com".into(),
-            llm_model: "deepseek-flash".into(),
+            llm_base_url: "https://maas.qianwenaiapi.com/compatible-mode/v1".into(),
+            llm_model: "qwen3.8-flash".into(),
             llm_max_concurrency: 24,
             llm_timeout_secs: 180,
             max_message_bytes: 8 * 1024,

@@ -43,12 +43,12 @@ enum Cmd {
         model_device: String,
         #[arg(long)]
         no_reranker: bool,
-        #[arg(long, env = "LLM_MODEL", default_value = "deepseek-flash")]
+        #[arg(long, env = "LLM_MODEL", default_value = "qwen3.8-flash")]
         llm_model: String,
         #[arg(
             long,
-            env = "DEEPSEEK_BASE_URL",
-            default_value = "https://api.deepseek.com"
+            env = "QWEN_BASE_URL",
+            default_value = "https://maas.qianwenaiapi.com/compatible-mode/v1"
         )]
         llm_base_url: String,
         #[arg(long, env = "LLM_MAX_CONCURRENCY", default_value_t = 24)]
@@ -144,7 +144,7 @@ fn main() -> anyhow::Result<()> {
                     cfg.use_reranker = false;
                 }
                 cfg.validate()?;
-                let api_key = std::env::var("DEEPSEEK_API_KEY").unwrap_or_default();
+                let api_key = std::env::var("QWEN_API_KEY").unwrap_or_default();
                 let llm = Llm::new(
                     &llm_base_url,
                     &api_key,
@@ -172,7 +172,6 @@ fn main() -> anyhow::Result<()> {
                 axum::serve(listener, app).await?;
             }
             Cmd::Selftest => {
-                memory_service::llm::accounting_selftest();
                 memory_service::selftest::store_roundtrip().await;
                 memory_service::selftest::retrieval_roundtrip().await;
                 memory_service::extract::formation_selftest().await;

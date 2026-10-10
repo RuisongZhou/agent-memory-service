@@ -1846,7 +1846,9 @@ mod tests {
         assert!((recency_mult(0.0) - 1.0).abs() < 1e-12);
         assert!((recency_mult(30.0) - 0.925).abs() < 1e-12);
         assert!((recency_mult(-5.0) - 1.0).abs() < 1e-12); // clamped
-        assert!(recency_mult(10_000.0) > 0.85 && recency_mult(10_000.0) < 0.851);
+
+        // At extreme ages the tiny decay term rounds away, so the lower bound is inclusive.
+        assert!((0.85..0.851).contains(&recency_mult(10_000.0)));
         assert!((evidence_mult(1) - 1.0).abs() < 1e-12);
         assert!((evidence_mult(2) - 1.05).abs() < 1e-12);
         assert!((evidence_mult(8) - 1.15).abs() < 1e-12);

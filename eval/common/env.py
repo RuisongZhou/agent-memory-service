@@ -1,7 +1,7 @@
 """Process environment for every eval entry point.
 
 Import this module first (before mem0 / nltk / tiktoken / fastembed): it pins caches to eval/.cache,
-disables mem0 telemetry and loads DEEPSEEK_API_KEY from the project root .env when it is not
+disables mem0 telemetry and loads QWEN_API_KEY from the project root .env when it is not
 already exported. The key is never printed or written anywhere.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 warnings.filterwarnings("ignore", message=r".*\[W095\].*")
 
 
-def load_dotenv_key(name: str = "DEEPSEEK_API_KEY") -> None:
+def load_dotenv_key(name: str = "QWEN_API_KEY") -> None:
     """Populate os.environ[name] from ROOT/.env if unset (value never echoed)."""
     if os.environ.get(name) or not DOTENV_PATH.exists():
         return
@@ -46,4 +46,5 @@ def load_dotenv_key(name: str = "DEEPSEEK_API_KEY") -> None:
             return
 
 
-load_dotenv_key()
+for name in ("QWEN_API_KEY", "QWEN_BASE_URL", "LLM_MODEL", "EVAL_MODEL"):
+    load_dotenv_key(name)

@@ -580,7 +580,10 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
 pub async fn export(_eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResult<Value> {
     // Read-only evaluation extensions for request-level billing and proposal/discard audits.
     if let Some(table) = body.get("table").and_then(Value::as_str) {
-        if !matches!(table, "llm_usage" | "extract_log" | "proposals") {
+        if !matches!(
+            table,
+            "llm_usage" | "extract_log" | "retrieval_log" | "proposals"
+        ) {
             return Err(ApiError::InvalidArgument("unsupported export table".into()));
         }
         let records = t

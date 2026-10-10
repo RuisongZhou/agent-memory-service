@@ -227,6 +227,20 @@ pub async fn apply(
     facts: Vec<NewFact>,
     ctx: WriteCtx,
 ) -> Result<Applied> {
+    apply_with(eng, t, facts, ctx, |_, _, _| Ok(())).await
+}
+
+/// Append experience/summary changes before the same atomic fact/turn/receipt commit.
+pub async fn apply_with<F>(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    facts: Vec<NewFact>,
+    ctx: WriteCtx,
+    additional: F,
+) -> Result<Applied>
+where
+    F: FnOnce(&mut Tx, &mut Applied, &mut HashMap<String, String>) -> Result<()> + Send,
+{
     let _ = eng;
     // 1. old memories referenced by the model, with their chains
     let mut recs: HashMap<String, MemoryRec> = HashMap::new();
@@ -374,9 +388,29 @@ pub async fn apply(
             }
         }
     }
+    additional(&mut tx, &mut out, &mut texts)?;
     for (rid, tr) in &ctx.turns {
-        let ids = out.per_turn.get(&tr.turn_id).cloned().unwrap_or_default();
-        let derived: Vec<String> = ids.iter().filter_map(|i| texts.get(i).cloned()).collect();
+        let mut ids = if tr.extract_state == "done" {
+            tr.derived_memory_ids.clone()
+        } else {
+            Vec::new()
+        };
+        for id in out.per_turn.get(&tr.turn_id).into_iter().flatten() {
+            if !ids.contains(id) {
+                ids.push(id.clone());
+            }
+        }
+        let mut derived: Vec<String> = if tr.extract_state == "done" && !tr.derived_text.is_empty()
+        {
+            vec![tr.derived_text.clone()]
+        } else {
+            Vec::new()
+        };
+        for text in ids.iter().filter_map(|i| texts.get(i)) {
+            if !derived.contains(text) {
+                derived.push(text.clone());
+            }
+        }
         tx.merge(
             "turns",
             rid,

@@ -6,11 +6,11 @@ import pytest
 
 import memory_run
 from common import jsonl
-from common.llm import Ledger, cost_usd, set_ledger_path
+from common.llm import Ledger, set_ledger_path
 
 
 def usage(mid, *, ts="2026-10-09T02:30:00Z", stage="P1", valid=True):
-    return {"mid": mid, "createdAt": ts, "stage": stage, "model": "deepseek-flash",
+    return {"mid": mid, "createdAt": ts, "stage": stage, "model": "qwen3.8-flash",
             "promptTokens": 120, "cacheHitTokens": 20, "cacheMissTokens": 100,
             "completionTokens": 30, "attempt": 1, "latencyMs": 15, "validJson": valid}
 
@@ -24,7 +24,7 @@ class ExportDaemon:
         self.calls.append(tenant)
         return {"records": self.records[tenant]}
     async def health(self):
-        raise AssertionError("billing must never read process counters")
+        raise AssertionError("usage must never read process counters")
 
 
 def test_persisted_collector_recovers_restart_without_cross_tenant_mix(tmp_path):
@@ -53,8 +53,8 @@ def test_persisted_collector_recovers_restart_without_cross_tenant_mix(tmp_path)
     assert {r["event_id"] for r in rows} == {"memory/conv-26-en/shared-id", "memory/conv-26-en/second",
                                               "memory/conv-26-zh/shared-id"}
     assert all(r["source"] == "daemon/llm_usage" and r["calls"] == 1 for r in rows)
-    assert rows[0]["peak"] and not rows[-1]["peak"]
-    assert rows[0]["usd"] == 2 * rows[-1]["usd"]
+    assert rows[0]["hit"] == rows[-1]["hit"]
+    assert all("usd" not in row and "peak" not in row for row in rows)
     assert rows[1]["parse_error"] is True and rows[1]["attempt"] == 1
     assert rows[1]["component"] == "en.daemon/P3"
 
@@ -81,16 +81,13 @@ def test_invalid_persisted_usage_stops_collection(tmp_path, field, value):
     assert not list(jsonl.read(tmp_path / "ledger.jsonl"))
 
 
-def test_source_price_matches_verified_rates(tmp_path):
+def test_legacy_price_metadata_is_ignored(tmp_path):
     set_ledger_path(tmp_path / "ledger.jsonl")
     record = usage("u1")
-    record.update(estimatedUsd=cost_usd(20, 100, 30, datetime(2026, 10, 9, 2, tzinfo=timezone.utc)),
-                  pricingPeakUtc=True, receivedAt="2026-10-09T02:30:01Z")
+    record.update(estimatedUsd=.1, pricingPeakUtc=True, receivedAt="2026-10-09T02:30:01Z")
     collector = memory_run.UsagePoller(ExportDaemon({"conv-26-en": [record]}), "en", 60)
     collector.tenants = ["conv-26-en"]
     asyncio.run(collector.flush())
-    assert list(jsonl.read(tmp_path / "ledger.jsonl"))[0]["received_at"] == record["receivedAt"]
-    record["mid"] = "u2"
-    record["estimatedUsd"] = .1
-    with pytest.raises(memory_run.DaemonError, match="pricing mismatch"):
-        asyncio.run(collector.flush())
+    row = list(jsonl.read(tmp_path / "ledger.jsonl"))[0]
+    assert row["received_at"] == record["receivedAt"]
+    assert "source_estimated_usd" not in row and "source_pricing_peak_utc" not in row

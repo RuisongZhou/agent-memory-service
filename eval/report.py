@@ -13,11 +13,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from common.env import RESULTS_DIR  # noqa: E402
-from common.llm import CNY_PER_USD  # noqa: E402
 from common.locomo import CATEGORY_NAMES, EVAL_CATEGORIES  # noqa: E402
-from common.projections import project  # noqa: E402
 
-import costs  # noqa: E402
+import usage_stats  # noqa: E402
 
 
 def fmt(x, nd=3, pct=False):
@@ -42,14 +40,12 @@ def main() -> None:
 
     cat_keys = [f"{c}-{CATEGORY_NAMES[c]}" for c in EVAL_CATEGORIES]
     head = (["system", "setting", "prompt", "answered/expected", "scope", "complete", "J", *[f"J {CATEGORY_NAMES[c]}" for c in EVAL_CATEGORIES],
-             "F1", "BLEU-1", "ctx tok", "lat mean ms", "lat p95 ms", "ingest CNY est.", "answer+judge CNY est."])
+             "F1", "BLEU-1", "ctx tok", "lat mean ms", "lat p95 ms"])
     lines = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     table = []
     for s in summaries:
-        o, bc, c = s["overall"], s["by_category"], s["cost"]
+        o, bc = s["overall"], s["by_category"]
         scope = s.get("scope") or {}
-        ledger_available = c.get("ledger_available", False)
-        aj = (c["answer"]["usd"] + c["judge"]["usd"]) * CNY_PER_USD if ledger_available else None
         row = {
             "system": s["system"], "setting": s["setting"], "answer_prompt": s["answer_prompt"],
             "n_expected": scope.get("n_expected_questions"), "n_contexts": s.get("n_contexts"),
@@ -58,8 +54,7 @@ def main() -> None:
             "n_by_category": {k: bc.get(k, {}).get("n") for k in cat_keys},
             "F1": o["F1"], "BLEU1": o["BLEU1"], "context_tokens_mean": o["context_tokens_mean"],
             "search_ms_mean": o["search_ms_mean"], "search_ms_p95": o["search_ms_p95"],
-            "ingest_cny": c["ingest"]["usd"] * CNY_PER_USD if ledger_available else None,
-            "answer_judge_cny": aj, "source": s["_path"],
+            "source": s["_path"],
         }
         table.append(row)
         lines.append("| " + " | ".join([
@@ -67,10 +62,9 @@ def main() -> None:
             scope.get("kind", "scope-unverified"), "yes" if row["complete"] else "no", fmt(row["J"], pct=True),
             *[fmt(row["J_by_category"][k], pct=True) for k in cat_keys],
             fmt(row["F1"], pct=True), fmt(row["BLEU1"], pct=True), fmt(row["context_tokens_mean"], 0),
-            fmt(row["search_ms_mean"], 0), fmt(row["search_ms_p95"], 0), fmt(row["ingest_cny"], 2),
-            fmt(row["answer_judge_cny"], 2)]) + " |")
-    ledger_rows = costs.merge_rows([r for path in root.rglob("*ledger*.jsonl") for r in costs.load_rows(path)])
-    total = costs.summarize(ledger_rows)["total"]
+            fmt(row["search_ms_mean"], 0), fmt(row["search_ms_p95"], 0)]) + " |")
+    ledger_rows = usage_stats.merge_rows([r for path in root.rglob("*ledger*.jsonl") for r in usage_stats.load_rows(path)])
+    total = usage_stats.summarize(ledger_rows)["total"]
     warnings = []
     if any(not row["complete"] for row in table):
         warnings.append("Incomplete or unverified rows are observed partial results; they do not establish a full benchmark result.")
@@ -81,33 +75,17 @@ def main() -> None:
         missing = set(a.expected_systems.split(",")) - {s["system"] for s in summaries}
         if missing:
             warnings.append("Missing system results: " + ", ".join(sorted(missing)))
-    warnings.append("Run tags label outputs and cost components; they do not isolate daemon tenants/stores. Reusing a store can make recorded formation cost incremental; inspect the protocol and data-dir before interpreting it as a standalone full run.")
-    projections = []
-    for s in summaries:
-        protocol_path = root / s["system"] / "protocol.json"
-        protocol = json.loads(protocol_path.read_text()) if protocol_path.exists() else {}
-        projections.append(project(s, ledger_rows, protocol))
-    scenario_lines = ["| system | setting | target | questions | ingest USD scenario | answer+judge USD scenario | total CNY estimate |",
-                      "|---|---|---|---|---|---|---|"]
-    for projection in projections:
-        for scenario in projection["scenarios"]:
-            scenario_lines.append("| " + " | ".join([projection["system"], projection["setting"], scenario["target"],
-                str(scenario["questions"]), fmt(scenario["ingest_usd"], 5), fmt(scenario["answer_judge_usd"], 5),
-                fmt(scenario["total_cny_estimate"], 4)]) + " |")
+    warnings.append("Run tags label outputs and usage components; they do not isolate daemon tenants/stores. Inspect the protocol and data-dir before interpreting a reused store as a standalone full run.")
     md = ["# LoCoMo observed results (categories 1-4, J/F1/BLEU-1 in %)", "",
           *lines, "",
-          "J = LLM-judge accuracy (mem0 ACCURACY_PROMPT, deepseek-flash non-thinking); F1 / BLEU-1 = mem0 "
+          "J = LLM-judge accuracy (mem0 ACCURACY_PROMPT, model recorded in each run, non-thinking); F1 / BLEU-1 = mem0 "
           "metrics code; ctx tok = mean retrieved-context size (tiktoken cl100k); latency = client-side search "
-          "time per question (mem0: both speakers' searches summed). Ingest cost is per system (shared by its "
-          "settings).", "",
-          f"Recorded ledger total: {total['usd']:.8f} USD; approximately {total['usd'] * CNY_PER_USD:.6f} CNY at 7.2, over {total['calls']} calls. This includes failed and unfinished requests; exported example usage must additionally be reconciled by preliminary_summary.py.",
-          "", *warnings, "", "Conditional cost scenarios (unknown values shown as a dash):", "", *scenario_lines,
-          "", "These scenarios assume observed tokens/cache/retry behavior continues. Unknown stage/unit costs remain null in report.json; no accuracy is projected and no paid run is triggered. Ingest is shared across settings and must not be summed twice. USD × 7.2 is an estimate; API balance reconciliation is separate."]
+          "time per question (mem0: both speakers' searches summed).", "",
+          f"Recorded usage: {total['calls']} calls, {total['hit'] + total['miss']} input tokens, {total['out']} output tokens. Returned retries and unfinished requests remain included.",
+          "", *warnings]
     (root / "report.md").write_text("\n".join(md) + "\n")
-    (root / "report.json").write_text(json.dumps({"rows": table, "ledger_total": total, "comparison_warnings": warnings,
-                                                "conditional_cost_scenarios": projections,
-                                                "cny_per_usd_assumption": CNY_PER_USD,
-                                                "currency_note": "all derived CNY values are USD × 7.2 estimates; actual API balance reconciliation is separate"}, indent=2))
+    (root / "report.json").write_text(json.dumps({"rows": table, "usage_total": total,
+                                                "comparison_warnings": warnings}, indent=2))
     print("\n".join(md))
 
 

@@ -42,3 +42,6 @@
 *.log
 *.tar.gz
 *.zip
+
+# Local legacy materials and handoff archives
+/archive/
