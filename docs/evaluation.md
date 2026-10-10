@@ -10,7 +10,7 @@ The adapted English prompt treats both people as first-hand sources and preserve
 
 ## Pipeline
 
-Current conversation formation combines P1/P2 with `formation-values-v1`, whose fact rows use the same nine positions as explicit-write `fact-values-v1`; see [api.md](api.md). The daemon assembles object schemas and preserves raw model values in extraction logs. Experiences and the running summary are processed at each batch trigger, rather than only at session end. Historical runs retain their original results and prompt hashes; a protocol change requires a fresh result/store directory.
+Current conversation formation combines P1/P2 with strict `formation-object-v2` JSON Schema output; explicit writes retain positional `fact-values-v1`. See [api.md](api.md). The daemon validates the structural contract and persists every raw HTTP response in `llm_responses`, including failed attempts and retries. Experiences and the running summary are processed at each batch trigger, rather than only at session end. Historical runs retain their original results and prompt hashes; a protocol change requires a fresh result/store directory.
 
 1. Check rules, fake HTTP/MCP integration and actual model numerical correctness before paid calls.
 2. Ingest each session and wait for pending extraction/index tasks and failure counts to be zero.

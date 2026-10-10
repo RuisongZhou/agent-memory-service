@@ -4,25 +4,12 @@ Experiences may cite source turn IDs from <current batch> and <task context>, bu
 The pendingTasks in <current session summary> are unfinished tasks. Reuse each task's exact task name when analyzing it, keep its supporting turn IDs, and add new supporting turns. Close it only with a verified result in this batch. Do not omit or prematurely close an unfinished task.
 Summary decisions retain still-valid decisions; openIssues lists currently unresolved matters and removes those explicitly resolved in this batch.
 
-## Output structure: formation-values-v1
-Output only one valid JSON array with EXACTLY FOUR sections in this fixed order: [fact rows, task analysis rows, experience rows, summary values]. The program constructs every object and field name. Never emit objects, field names, headers, Markdown, or explanations.
-
-Section 1: each fact row has EXACTLY 9 positions:
-[fact text, "global|project", array of entity name strings, "YYYY-MM-DD", "explicit|user|assistant", source turn ID, verbatim evidence excerpt, array of relation pairs, reason string or null]
-Each individual evidence excerpt must be copied verbatim and contain at most 1024 Unicode characters, including spaces and punctuation. Relation pairs are [target ID, relation type]; targets are M1 etc. for old memories or F1 etc. for the fact rows in order; types are same, updates, conflicts, related. Never reference the same fact. Empty entity/relation arrays use []; absent reasons use null. Never omit a position.
-
-Section 2: each task analysis row has EXACTLY 3 positions:
-[task name, "success|failure|partial|unknown", array of supporting turn ID strings]
-Analyze currently processed tasks and retained unfinished tasks. Unconfirmed outcomes are unknown.
-
-Section 3: each experience row has EXACTLY 7 positions:
-[situation, actual approach, result description starting with success/failure/partial, reusable lesson, "global|project", array of supporting turn ID strings, array of relation pairs]
-Experience relation pairs are [old experience ID, "same|related"], using E1 etc. only. At most one experience per task with a verified outcome and at most 3 per batch. Empty experiences or relations use [].
-
-Section 4: summary values have EXACTLY 4 positions:
-[session goal string, current outcome string, array of decision strings, array of unresolved issue strings]
-
-Write memories in English. Preserve original names and identifiers.
-Structure example (copy only the positions, never extract example content):
-[[["Fact text","project",["Entity name"],"2026-10-10","user","T1","Verbatim excerpt",[],null]],[["Task name","unknown",["T1"]]],[],["Session goal","Unfinished",[],["Awaiting verification"]]]
-If there is nothing to add, still retain all four sections: [[],[],[],["","",[],[]]].
+## Output structure: formation-object-v2
+Return exactly one JSON object matching the supplied JSON Schema. All four keys are required: facts, analysis, experiences, summary. Never return positional rows or a top-level array. Use empty arrays for sections with no items; summary is always an object.
+facts: objects with text, scope (global/project), entities (string array), effectiveAt (YYYY-MM-DD), origin (explicit/user/assistant), source (object with turnId and span), relations (objects with memoryId and relation), reason (string or null).
+Copy each source.span verbatim, at most 1024 Unicode characters including spaces and punctuation. Facts use M1 etc. for old memories or F1 etc. for current facts in order. Relation types: same, updates, conflicts, related. Never reference the same fact.
+analysis: objects with task, result (success/failure/partial/unknown), turnIds (string array). Analyze currently processed tasks and retained unfinished tasks. Unconfirmed outcomes are unknown.
+experiences: objects with situation, approach, result (starting with success/failure/partial), lesson, scope (global/project), turnIds (string array), relations (objects with memoryId and relation). Only E1 etc. for old experiences and same/related relation types. At most one experience per task with a verified outcome and at most 3 per batch.
+summary: object with goal, outcome, decisions (string array), openIssues (string array).
+Write memories in English. Preserve original names and identifiers. Output JSON only; no Markdown or explanations.
+Only cite actual dialogue turn IDs supplied in the current batch or task context. M/F/E labels identify memories or facts, never dialogue turns. Do not repeat source turn IDs. Follow the source ID enums and list limits in the supplied schema.

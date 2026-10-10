@@ -175,6 +175,7 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
     }
 
     let mut to_embed: Vec<(String, String, String)> = Vec::new(); // (table, id, text)
+    let mut to_chunk: Vec<(String, Vec<String>)> = Vec::new(); // (turn id, chunk texts)
     let mut ft_upserts: Vec<FtDoc> = Vec::new();
     let mut ft_deletes: Vec<String> = Vec::new();
     let mut clear_vec: Vec<(String, String)> = Vec::new();
@@ -205,8 +206,28 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
                 }
             }
             ("turns", Some(d)) => {
+                // Messages never change after ingest, so stored chunk vectors of the current model stay valid.
+                let stored_chunks = (d.get("chunkEmbeddingModel").and_then(Value::as_str)
+                    == Some(eng.models.embed_model_id.as_str()))
+                .then(|| {
+                    d.get("chunkEmbeddings")
+                        .and_then(Value::as_array)
+                        .map(Vec::len)
+                })
+                .flatten();
                 let tr: TurnRec = from_doc(d)?;
                 to_embed.push((table.clone(), id.clone(), tr.digest.clone()));
+                let cached = t.vecs.read().await.turn_chunks.contains_key(id);
+                if tr.chunks.is_empty() {
+                    if cached || stored_chunks.is_some() {
+                        to_chunk.push((id.clone(), Vec::new()));
+                    }
+                } else if !(cached && stored_chunks == Some(tr.chunks.len())) {
+                    let texts = (0..tr.chunks.len())
+                        .map(|i| tr.chunk_text(i).unwrap_or_default().to_string())
+                        .collect();
+                    to_chunk.push((id.clone(), texts));
+                }
                 ft_upserts.push(turn_ftdoc(id, &tr));
             }
             (_, _) => {
@@ -216,12 +237,17 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
         }
     }
 
-    // vectors: batch-embed with the local model, write back `embedding`
-    if !to_embed.is_empty() {
-        let texts: Vec<String> = to_embed.iter().map(|(_, _, s)| s.clone()).collect();
-        let vecs = eng.models.embed(&texts).await?;
+    // vectors: batch-embed with the local model, write back `embedding` and long turns' `chunkEmbeddings`
+    if !to_embed.is_empty() || !to_chunk.is_empty() {
+        let mut texts: Vec<String> = to_embed.iter().map(|(_, _, s)| s.clone()).collect();
+        texts.extend(
+            to_chunk
+                .iter()
+                .flat_map(|(_, chunks)| chunks.iter().cloned()),
+        );
+        let mut vecs = eng.models.embed(&texts).await?.into_iter();
         let model = eng.models.embed_model_id.clone();
-        for ((table, id, _), v) in to_embed.iter().zip(vecs.into_iter()) {
+        for ((table, id, _), v) in to_embed.iter().zip(vecs.by_ref()) {
             t.store.set_embedding(table, id, Some(&v), &model).await?;
             let mut c = t.vecs.write().await;
             if table == "memories" {
@@ -230,12 +256,31 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
                 c.turns.insert(id.clone(), v);
             }
         }
+        for (id, chunks) in &to_chunk {
+            let embs: Vec<Vec<f32>> = vecs
+                .by_ref()
+                .take(chunks.len())
+                .map(|v| v.to_vec())
+                .collect();
+            anyhow::ensure!(
+                embs.len() == chunks.len(),
+                "embedder returned too few vectors"
+            );
+            t.store.set_chunk_embeddings(id, &embs, &model).await?;
+            let mut c = t.vecs.write().await;
+            if embs.is_empty() {
+                c.turn_chunks.remove(id);
+            } else {
+                c.turn_chunks.insert(id.clone(), Arc::new(embs));
+            }
+        }
     }
     for (table, id) in &clear_vec {
         t.store.set_embedding(table, id, None, "").await?;
         let mut c = t.vecs.write().await;
         c.memories.remove(id);
         c.turns.remove(id);
+        c.turn_chunks.remove(id);
     }
 
     // full text: delete-then-write by id, then commit; tasks are removed only after the commit
@@ -277,6 +322,7 @@ pub async fn schedule_rebuild(t: &Tenant, vectors: bool, fulltext: bool) -> Resu
         let mut c = t.vecs.write().await;
         c.memories.clear();
         c.turns.clear();
+        c.turn_chunks.clear();
     }
     let mut tx = Tx::new();
     let mems = t.store.select("SELECT mid FROM memories", vec![]).await?;

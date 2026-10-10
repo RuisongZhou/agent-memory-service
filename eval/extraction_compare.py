@@ -69,8 +69,8 @@ def main():
         "model": MODEL, "base_url": QWEN_BASE_URL, "temperature": 0,
         "enable_thinking": False, "real_generation": True,
         "mem0_version": importlib.metadata.version("mem0ai"),
-        "service_prompt": "p1_zh + p2_zh (unified formation)", "mem0_prompt": "ADDITIVE_EXTRACTION_PROMPT + existing LoCoMo custom_instructions",
-        "service_output_format": "formation-values-v1", "service_source_span_limit_chars": 1024,
+        "service_prompt": "p1_zh facts + session-end p2_zh", "mem0_prompt": "ADDITIVE_EXTRACTION_PROMPT + existing LoCoMo custom_instructions",
+        "service_output_format": "facts-object-v1", "service_source_span_limit_chars": 1024,
         "same_input_batch": "three complete turns / six messages, one extraction per system per case",
         "initial_memory": "empty and isolated per case", "embedding": "real local BGE-M3 shared via daemon",
         "not_formal_benchmark": True,
@@ -95,8 +95,8 @@ def main():
                      LLM_MODEL=MODEL, MEMORY_LLM_MAX_CALLS="15")
     child_env.pop("MEMORY_MOCK_MODELS", None)
     command = [str(env.ROOT_DIR / "target/fast/agent-memoryd"), "serve",
-               "--data-dir", str(output / "service-store"), "--models-dir", str(env.ROOT_DIR / "models"),
-               "--port", str(port), "--model-device", "metal", "--no-reranker", "--llm-concurrency", "1"]
+               "--data-dir", str(output / "service-store"),
+               "--port", str(port), "--no-reranker", "--llm-concurrency", "1"]
     with (output / "daemon.log").open("w") as log_file:
         process = subprocess.Popen(command, env=child_env, stdout=log_file, stderr=log_file)
         try:

@@ -124,8 +124,24 @@ pub async fn call_logged(
     user: &str,
     max_tokens: u32,
 ) -> Result<Value> {
-    let values_only = matches!(stage, "P1" | "P1-b" | "P1+P2");
-    let reply = if values_only {
+    call_logged_contract(eng, t, stage, system, user, max_tokens, None).await
+}
+
+async fn call_logged_contract(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    stage: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    contract: Option<&super::llm::JsonContract>,
+) -> Result<Value> {
+    let values_only = contract.is_none() && matches!(stage, "P1" | "P1-b");
+    let reply = if let Some(contract) = contract {
+        eng.llm
+            .contract_call_logged(system, user, max_tokens, &t.store, stage, contract)
+            .await
+    } else if values_only {
         eng.llm
             .values_call_logged(system, user, max_tokens, &t.store, stage)
             .await
@@ -137,9 +153,7 @@ pub async fn call_logged(
     let now = util::now_str();
     match reply {
         Ok(r) => {
-            let output = if stage == "P1+P2" {
-                formation_from_values(&r.json)
-            } else if values_only {
+            let output = if values_only {
                 facts_from_values(&r.json)
             } else {
                 Ok(r.json.clone())
@@ -159,10 +173,13 @@ pub async fn call_logged(
             };
             let mut record = json!({"stage":stage,"createdAt":now,"variant":eng.prompts_for(t).variant,
                 "systemHash":blake3::hash(system.as_bytes()).to_hex().to_string(),"inputHash":blake3::hash(user.as_bytes()).to_hex().to_string(),
-                "outputHash":blake3::hash(output.to_string().as_bytes()).to_hex().to_string(),"output":output,"status":"model_completed"});
-            if values_only {
-                record["outputFormat"] = json!(if stage == "P1+P2" {
-                    "formation-values-v1"
+                "outputHash":blake3::hash(output.to_string().as_bytes()).to_hex().to_string(),"output":output,"status":"model_completed",
+                "responseLogId":r.response_log_id});
+            if values_only || contract.is_some() {
+                record["outputFormat"] = json!(if stage == "P2" {
+                    super::formation_schema::EXPERIENCE_FORMAT
+                } else if contract.is_some() {
+                    super::formation_schema::FACT_FORMAT
                 } else {
                     "fact-values-v1"
                 });
@@ -223,43 +240,6 @@ fn facts_from_values(output: &Value) -> Result<Value> {
 }
 
 /// Model values have four fixed sections; the program owns every object key in both extractors.
-fn formation_from_values(output: &Value) -> Result<Value> {
-    type AnalysisValues = (String, String, Vec<String>);
-    type ExperienceValues = (
-        String,
-        String,
-        String,
-        String,
-        String,
-        Vec<String>,
-        Vec<(String, String)>,
-    );
-    type SummaryValues = (String, String, Vec<String>, Vec<String>);
-    let parts = output
-        .as_array()
-        .filter(|a| a.len() == 4)
-        .ok_or_else(|| anyhow!("formation-values-v1 requires exactly four array sections"))?;
-    let mut assembled = facts_from_values(&parts[0])?;
-    let analysis: Vec<AnalysisValues> = serde_json::from_value(parts[1].clone())
-        .map_err(|e| anyhow!("invalid analysis values: {e}"))?;
-    let experiences: Vec<ExperienceValues> = serde_json::from_value(parts[2].clone())
-        .map_err(|e| anyhow!("invalid experience values: {e}"))?;
-    let (goal, outcome, decisions, open_issues): SummaryValues =
-        serde_json::from_value(parts[3].clone())
-            .map_err(|e| anyhow!("invalid summary values: {e}"))?;
-    assembled["analysis"] = json!(analysis
-        .into_iter()
-        .map(|(task, result, turn_ids)| json!({"task":task,"result":result,"turnIds":turn_ids}))
-        .collect::<Vec<_>>());
-    assembled["experiences"] = json!(experiences.into_iter().map(|(situation,approach,result,lesson,scope,turn_ids,relations)|
-        json!({"situation":situation,"approach":approach,"result":result,"lesson":lesson,"scope":scope,
-            "turnIds":turn_ids,"relations":relations.into_iter().map(|(memory_id,relation)|
-                json!({"memoryId":memory_id,"relation":relation})).collect::<Vec<_>>()})).collect::<Vec<_>>());
-    assembled["summary"] =
-        json!({"goal":goal,"outcome":outcome,"decisions":decisions,"openIssues":open_issues});
-    Ok(assembled)
-}
-
 #[derive(Debug, Deserialize)]
 struct RawFact {
     text: String,
@@ -706,45 +686,17 @@ pub fn conversation(turns: &[TurnRec], p: &prompts::PromptSet) -> String {
         .join("\n\n")
 }
 
-/// One model response forms facts, experiences and the running summary at the same watermark.
-/// Caller owns extract_lock; new arrivals stay beyond this immutable processed-turn snapshot.
+/// Frequent batches form only facts. Session-level P2 is a separate job after session end.
 pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> Result<Applied> {
+    let turns: Vec<TurnRec> = turns
+        .iter()
+        .map(|tr| tr.clipped(eng.cfg.max_message_bytes))
+        .collect();
     let first = turns
         .first()
         .ok_or_else(|| anyhow!("empty extraction batch"))?;
-    let watermark = turns.iter().map(|tr| tr.seq).max().unwrap();
-    let session = t
-        .store
-        .get_session(&first.platform, &first.session)
-        .await?
-        .ok_or_else(|| anyhow!("formation session missing"))?;
     let p = eng.prompts_for(t);
-    let all = t
-        .store
-        .session_turns(&first.platform, &first.session)
-        .await?;
-    let current_ids: HashSet<String> = turns.iter().map(|tr| tr.turn_id.clone()).collect();
-    let retained: HashSet<String> = session
-        .pending_tasks
-        .iter()
-        .flat_map(|task| task.turn_ids.iter().cloned())
-        .collect();
-    let context: Vec<TurnRec> = all
-        .iter()
-        .filter(|tr| {
-            tr.seq <= watermark
-                && (current_ids.contains(&tr.turn_id) || retained.contains(&tr.turn_id))
-                && tr.extract_state != "failed"
-        })
-        .cloned()
-        .collect();
-    // Legacy P1-completed/P2-unprocessed rows are read by P2 but never extracted as facts again.
-    let fact_turns: Vec<TurnRec> = turns
-        .iter()
-        .filter(|tr| tr.extract_state != "done")
-        .cloned()
-        .collect();
-    let query = context
+    let query = turns
         .iter()
         .map(TurnRec::full_text)
         .collect::<Vec<_>>()
@@ -759,32 +711,13 @@ pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> R
         eng.cfg.recall_for_extract,
     )
     .await?;
-    let old_experiences = recall(
-        eng,
-        t,
-        &query,
-        &first.project,
-        &first.platform,
-        Some(T_EXPERIENCE),
-        eng.cfg.recall_for_experience,
-    )
-    .await?;
-    let experience_rows = old_experiences
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            format!(
-                "E{} | {} | {}",
-                i + 1,
-                m.scope.kind,
-                m.detail.as_ref().unwrap_or(&Value::Null)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let all = t
+        .store
+        .session_turns(&first.platform, &first.session)
+        .await?;
     let previous = all
         .iter()
-        .filter(|tr| tr.seq < first.seq && !retained.contains(&tr.turn_id))
+        .filter(|tr| tr.seq < first.seq)
         .rev()
         .take(eng.cfg.prev_digest_turns)
         .collect::<Vec<_>>()
@@ -793,28 +726,9 @@ pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> R
         .map(|tr| format!("[{} | {}]\n{}", tr.turn_id, tr.user_ts, tr.digest))
         .collect::<Vec<_>>()
         .join("\n");
-    let task_context: Vec<TurnRec> = context
-        .iter()
-        .filter(|tr| !fact_turns.iter().any(|f| f.turn_id == tr.turn_id))
-        .cloned()
-        .collect();
-    let (context_tag, processed_tag) = if p.variant == "en" {
-        ("task context", "processed turns")
-    } else {
-        ("任务上下文", "本次处理轮")
-    };
     let user = format!(
-        "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+        "{}\n\n{}\n\n{}",
         headers(t, &old, &query, &first.project, &first.platform, p).await?,
-        prompts::block(
-            p.l.old_experiences,
-            if experience_rows.is_empty() {
-                p.l.none
-            } else {
-                &experience_rows
-            }
-        ),
-        prompts::block(p.l.summary, &serde_json::to_string(&session)?),
         prompts::block(
             p.l.previous,
             &format!(
@@ -827,79 +741,57 @@ pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> R
                 }
             )
         ),
-        prompts::block(context_tag, &conversation(&task_context, p)),
-        prompts::block(
-            processed_tag,
-            &turns
-                .iter()
-                .map(|tr| tr.turn_id.clone())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        prompts::block(p.l.batch, &conversation(&fact_turns, p))
+        prompts::block(p.l.batch, &conversation(&turns, p))
     );
-    let output = call_logged(eng, t, "P1+P2", &prompts::formation(p), &user, 8192).await?;
-    commit_batch(eng, t, turns, context, old, old_experiences, output).await
+    let ids = turns
+        .iter()
+        .map(|tr| tr.turn_id.clone())
+        .collect::<Vec<_>>();
+    let contract = super::llm::JsonContract {
+        name: "facts_object_v1",
+        schema: super::formation_schema::facts_for_turns(&ids),
+        validate: super::formation_schema::validate_schema,
+    };
+    let output = call_logged_contract(
+        eng,
+        t,
+        "P1",
+        &prompts::facts(p, false),
+        &user,
+        8192,
+        Some(&contract),
+    )
+    .await?;
+    commit_facts(eng, t, turns, old, output).await
 }
 
-/// Validate both outputs before one atomic commit; also used by deterministic integration checks.
-async fn commit_batch(
+async fn commit_facts(
     eng: &Arc<Engine>,
     t: &Arc<Tenant>,
     turns: Vec<TurnRec>,
-    context: Vec<TurnRec>,
     old: Vec<MemoryRec>,
-    old_experiences: Vec<MemoryRec>,
     output: Value,
 ) -> Result<Applied> {
-    let first = turns
-        .first()
-        .ok_or_else(|| anyhow!("empty formation commit"))?;
+    let first = turns.first().ok_or_else(|| anyhow!("empty fact commit"))?;
     let p = eng.prompts_for(t);
-    let watermark = turns.iter().map(|tr| tr.seq).max().unwrap();
-    let current_ids: HashSet<String> = turns.iter().map(|tr| tr.turn_id.clone()).collect();
-    let fact_turns: Vec<TurnRec> = turns
-        .iter()
-        .filter(|tr| tr.extract_state != "done")
-        .cloned()
-        .collect();
     let (facts, new_entities) = validate(
         t,
-        output.clone(),
+        output,
         &old,
-        &fact_turns,
+        &turns,
         None,
         &first.project,
         &first.platform,
         p.both_speakers_first_hand,
     )
     .await?;
-    // Ingest may add turns while generation runs. Merge summary fields under its lock, retaining the
-    // current session's counters, last activity, scope, and any newer arrival sequence.
-    let _ingest = t.ingest_lock.lock().await;
-    let session = t
-        .store
-        .get_session(&first.platform, &first.session)
-        .await?
-        .ok_or_else(|| anyhow!("formation session missing"))?;
-    let now = util::now_str();
-    let prepared = super::experience::prepare(
-        &session,
-        &context,
-        &current_ids,
-        &old_experiences,
-        output,
-        watermark,
-        p.variant,
-        &now,
-    )?;
-    relations::apply_with(
+    relations::apply(
         eng,
         t,
         facts,
         WriteCtx {
             platform: first.platform.clone(),
-            now,
+            now: util::now_str(),
             turns: turns
                 .into_iter()
                 .map(|tr| (super::store::turn_rid(&tr.platform, &tr.turn_id), tr))
@@ -908,9 +800,135 @@ async fn commit_batch(
             text_turn_id: None,
             new_entities,
         },
-        move |tx, out, texts| prepared.append(tx, out, texts),
     )
     .await
+}
+
+/// Read the retained session transcript once it ends; never re-extract its facts.
+pub async fn session_experience(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    session: &SessionRec,
+) -> Result<()> {
+    if session.ended_at.is_none() {
+        return Err(anyhow!("experience requires an ended session"));
+    }
+    let watermark = session.turn_count;
+    if session.last_experience_seq >= watermark {
+        return Ok(());
+    }
+    let turns: Vec<TurnRec> = t
+        .store
+        .session_turns(&session.platform, &session.session)
+        .await?
+        .into_iter()
+        .filter(|tr| tr.seq <= watermark)
+        .map(|tr| tr.clipped(eng.cfg.max_message_bytes))
+        .collect();
+    if turns.is_empty() {
+        return Err(anyhow!("session experience source turns missing"));
+    }
+    let new_ids: HashSet<String> = turns
+        .iter()
+        .filter(|tr| tr.seq > session.last_experience_seq)
+        .map(|tr| tr.turn_id.clone())
+        .collect();
+    let p = eng.prompts_for(t);
+    let query = turns
+        .iter()
+        .map(TurnRec::full_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let old = recall(
+        eng,
+        t,
+        &query,
+        &session.project,
+        &session.platform,
+        Some(T_EXPERIENCE),
+        eng.cfg.recall_for_experience,
+    )
+    .await?;
+    let rows = old
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            format!(
+                "E{} | {} | {}",
+                i + 1,
+                m.scope.kind,
+                m.detail.as_ref().unwrap_or(&Value::Null)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut ordered_new = new_ids.iter().cloned().collect::<Vec<_>>();
+    ordered_new.sort();
+    let new_tag = if p.variant == "en" {
+        "new turns"
+    } else {
+        "新增轮"
+    };
+    let user = format!(
+        "{}\n\n{}\n\n{}\n\n{}",
+        prompts::block(
+            p.l.old_experiences,
+            if rows.is_empty() { p.l.none } else { &rows }
+        ),
+        prompts::block(p.l.summary, &serde_json::to_string(session)?),
+        prompts::block(new_tag, &ordered_new.join(", ")),
+        prompts::block(p.l.conversation, &conversation(&turns, p))
+    );
+    let ids = turns
+        .iter()
+        .map(|tr| tr.turn_id.clone())
+        .collect::<Vec<_>>();
+    let contract = super::llm::JsonContract {
+        name: "session_experience_object_v1",
+        schema: super::formation_schema::experiences_for_turns(&ids),
+        validate: super::formation_schema::validate_schema,
+    };
+    let output = call_logged_contract(
+        eng,
+        t,
+        "P2",
+        &prompts::session_experience(p),
+        &user,
+        8192,
+        Some(&contract),
+    )
+    .await?;
+    commit_experience(eng, t, session, turns, new_ids, old, output, watermark).await
+}
+
+async fn commit_experience(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    snapshot: &SessionRec,
+    turns: Vec<TurnRec>,
+    new_ids: HashSet<String>,
+    old: Vec<MemoryRec>,
+    output: Value,
+    watermark: i64,
+) -> Result<()> {
+    // New arrivals may reopen the session during generation; preserve their sequence and end state.
+    let _ingest = t.ingest_lock.lock().await;
+    let session = t
+        .store
+        .get_session(&snapshot.platform, &snapshot.session)
+        .await?
+        .ok_or_else(|| anyhow!("experience session missing"))?;
+    let prepared = super::experience::prepare(
+        &session,
+        &turns,
+        &new_ids,
+        &old,
+        output,
+        watermark,
+        eng.prompts_for(t).variant,
+        &util::now_str(),
+    )?;
+    prepared.commit(t, &snapshot.platform).await
 }
 
 pub async fn explicit(
@@ -923,7 +941,16 @@ pub async fn explicit(
     now: &str,
 ) -> Result<Applied> {
     let p = eng.prompts_for(t);
-    let old = recall(eng, t, text, project, platform, None, 10).await?;
+    let old = recall(
+        eng,
+        t,
+        text,
+        project,
+        platform,
+        Some(T_FACT),
+        eng.cfg.recall_for_extract,
+    )
+    .await?;
     let user = format!(
         "{}\n\n<{} time=\"{}\">\n{}\n</{}>",
         headers(t, &old, text, project, platform, p).await?,
@@ -932,7 +959,21 @@ pub async fn explicit(
         text,
         p.l.remember
     );
-    let output = call_logged(eng, t, "P1-b", p.p1b, &user, 4096).await?;
+    let contract = super::llm::JsonContract {
+        name: "facts_object_v1",
+        schema: super::formation_schema::facts_for_turns(&["text".into()]),
+        validate: super::formation_schema::validate_schema,
+    };
+    let output = call_logged_contract(
+        eng,
+        t,
+        "P1-b",
+        &prompts::facts(p, true),
+        &user,
+        4096,
+        Some(&contract),
+    )
+    .await?;
     let (facts, new_entities) = validate(
         t,
         output,
@@ -1073,7 +1114,7 @@ pub async fn formation_selftest() {
             ..Default::default()
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
-        ModelHub::load(std::path::Path::new("mock"), None).unwrap(),
+        ModelHub::mock(),
     );
     let t = Arc::new(
         Tenant::open("formation-zh", &dir, eng.models.dim)
@@ -1423,15 +1464,15 @@ pub async fn formation_selftest() {
     assert_eq!(queued[0]["status"], "queued");
     assert_eq!(queued[0]["failures"], 1);
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
-    unified_selftest(&eng, &dir).await;
-    println!("formation_selftest OK: combined P1/P2/summary commit; four triggers; cross-batch/partial-task evidence retention; failed-component rollback; legacy backfill; provenance/date/reference checks; exact dedupe; atomic evidence/turn/receipt/update-chain; scope; post-purge idempotency; durable failure; zero LLM calls; data {}",dir.display());
+    session_split_selftest(&eng, &dir).await;
+    println!("formation_selftest OK: independent facts and session-end experiences; no P2 on open-session flush; fact receipts survive P2 failure; resumed-session watermark; source retention; provenance/date/reference checks; update-chain; durable failure; zero LLM calls; data {}",dir.display());
 }
 
 /// Verify shared commits, retained cross-batch provenance, retry safety and legacy P1 backfill.
-async fn unified_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
+async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     use super::{consolidate, indexer, ingest};
     let t = Arc::new(
-        Tenant::open("unified-selftest-en", dir, eng.models.dim)
+        Tenant::open("split-selftest-en", dir, eng.models.dim)
             .await
             .unwrap(),
     );
@@ -1440,7 +1481,7 @@ async fn unified_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
         platform: "test".into(),
     };
     let scope = ReqScope {
-        project: Some("unified".into()),
+        project: Some("split".into()),
         session: Some("S".into()),
         ..Default::default()
     };
@@ -1476,98 +1517,78 @@ async fn unified_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     }
     let all = t.store.session_turns("test", "S").await.unwrap();
     let first = all[..3].to_vec();
-    let date = util::date_of(&first[0].user_ts);
-    let raw = json!([
-        [[
-            "Deployment step 1",
-            "project",
-            ["service"],
-            date,
-            "user",
-            "U1",
-            "Deployment step 1",
-            [],
-            null
-        ]],
-        [["deployment", "unknown", ["U1", "U2", "U3"]]],
-        [[
-            "deployment",
-            "apply fix",
-            "success: claimed",
-            "verify it",
-            "project",
-            ["U1"],
-            []
-        ]],
-        ["deploy", "unverified", [], ["await test"]]
-    ]);
-    let output = formation_from_values(&raw).unwrap();
-    assert!(formation_from_values(&json!([[], [], []])).is_err());
-    assert!(formation_from_values(&json!([[], [], [], ["missing"]])).is_err());
-    let applied = commit_batch(
-        eng,
-        &t,
-        first.clone(),
-        first.clone(),
-        vec![],
-        vec![],
-        output,
-    )
-    .await
+    let output = facts_from_values(&json!([[
+        "Deployment step 1",
+        "project",
+        ["service"],
+        util::date_of(&first[0].user_ts),
+        "user",
+        "U1",
+        "Deployment step 1",
+        [],
+        null
+    ]]))
     .unwrap();
-    assert_eq!(applied.created.len(), 1); // Unverified experience was rejected.
+    let applied = commit_facts(eng, &t, first, vec![], output).await.unwrap();
+    assert_eq!(applied.created.len(), 1);
     let s = t.store.get_session("test", "S").await.unwrap().unwrap();
-    assert_eq!(s.last_experience_seq, 3);
-    assert_eq!(s.turn_count, 4); // The turn arriving after the generation snapshot survives.
-    assert_eq!(s.pending_tasks[0].turn_ids, vec!["U1", "U2", "U3"]);
+    assert_eq!(s.last_experience_seq, 0);
+    assert_eq!(s.turn_count, 4);
     assert_eq!(
         t.store
-            .get_turn("test", "U4")
+            .count("memories", Some("type = 'experience'"))
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        consolidate::purge(&t, &util::now_str(), 3.0).await.unwrap()["purgedTurns"],
+        0
+    );
+    let fourth = t.store.get_turn("test", "U4").await.unwrap().unwrap();
+    commit_facts(eng, &t, vec![fourth], vec![], json!({"facts":[]}))
+        .await
+        .unwrap();
+    // Force only facts while the session is open; no P2 or external request is made.
+    assert_eq!(ingest::wait_idle(eng, &t).await.unwrap()["status"], "idle");
+    assert_eq!(
+        t.store
+            .get_session("test", "S")
             .await
             .unwrap()
             .unwrap()
-            .extract_state,
-        "pending"
+            .last_experience_seq,
+        0
     );
-    let purge = consolidate::purge(&t, &util::now_str(), 3.0).await.unwrap();
-    assert_eq!(purge["purgedTurns"], 0); // Old unfinished-task evidence is held past its normal TTL.
-    let current = t.store.get_turn("test", "U4").await.unwrap().unwrap();
-    let context = t.store.session_turns("test", "S").await.unwrap();
-    let raw = json!([
-        [[
-            "Deployment verified",
-            "project",
-            ["service"],
-            util::date_of(&current.ended_at),
-            "user",
-            "U4",
-            "Tests passed.",
-            [],
-            null
-        ]],
-        [["deployment", "success", ["U1", "U2", "U3", "U4"]]],
-        [[
-            "deployment validation",
-            "apply fix and test",
-            "success: Tests passed.",
-            "verify after changing",
-            "project",
-            ["U1", "U2", "U3", "U4"],
-            []
-        ]],
-        ["deploy", "verified", ["test changes"], []]
-    ]);
-    let output = formation_from_values(&raw).unwrap();
+    assert!(session_experience(eng, &t, &s).await.is_err());
+    let end = AddMemoriesReq {
+        scope: scope.clone(),
+        session_ended: Some(true),
+        ..Default::default()
+    };
+    let receipt = ingest::add_memories(eng, &t, &c, end.clone())
+        .await
+        .unwrap();
+    let snapshot = t.store.get_session("test", "S").await.unwrap().unwrap();
+    let turns = t.store.session_turns("test", "S").await.unwrap();
+    let ids = turns
+        .iter()
+        .map(|tr| tr.turn_id.clone())
+        .collect::<HashSet<_>>();
+    let output = json!({"analysis":[{"task":"deployment","result":"success","turnIds":["U1","U2","U3","U4"]}],
+        "experiences":[{"situation":"deployment validation","approach":"apply fix and test","result":"success: Tests passed.","lesson":"verify after changing","scope":"project","turnIds":["U1","U2","U3","U4"],"relations":[]}],
+        "summary":{"goal":"deploy","outcome":"verified","decisions":["test changes"],"openIssues":[]}});
     let mut broken = output.clone();
     broken["summary"] = json!(false);
-    assert!(commit_batch(
+    assert!(commit_experience(
         eng,
         &t,
-        vec![current.clone()],
-        context.clone(),
+        &snapshot,
+        turns.clone(),
+        ids.clone(),
         vec![],
-        vec![],
-        broken
+        broken,
+        4
     )
     .await
     .is_err());
@@ -1579,217 +1600,145 @@ async fn unified_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
             .unwrap()
             .unwrap()
             .extract_state,
-        "pending"
+        "done"
     );
-    let applied = commit_batch(
-        eng,
-        &t,
-        vec![current.clone()],
-        context,
-        vec![],
-        vec![],
-        output,
-    )
-    .await
-    .unwrap();
-    assert_eq!(applied.created.len(), 2);
-    let s = t.store.get_session("test", "S").await.unwrap().unwrap();
-    assert_eq!(s.last_experience_seq, 4);
-    assert!(s.pending_tasks.is_empty());
-    let task = ingest::get_task(
+    commit_experience(eng, &t, &snapshot, turns, ids, vec![], output, 4)
+        .await
+        .unwrap();
+    assert_eq!(ingest::wait_idle(eng, &t).await.unwrap()["status"], "idle");
+    let end_status = ingest::get_task(
         eng,
         &t,
         GetTaskReq {
-            request_id: current.request_id.clone(),
+            request_id: receipt["requestId"].as_str().unwrap().into(),
         },
     )
     .await
     .unwrap();
-    assert_eq!(task["status"], "completed");
-    assert_eq!(task["memoryIds"].as_array().unwrap().len(), 2);
+    assert_eq!(end_status["status"], "completed");
+    // Completed end replays cannot create duplicate experiences.
+    ingest::add_memories(eng, &t, &c, end.clone())
+        .await
+        .unwrap();
+    assert_eq!(ingest::wait_idle(eng, &t).await.unwrap()["status"], "idle");
+    assert_eq!(
+        t.store
+            .count("memories", Some("type = 'experience'"))
+            .await
+            .unwrap(),
+        1
+    );
+    let fact_receipt = ingest::get_task(
+        eng,
+        &t,
+        GetTaskReq {
+            request_id: all[0].request_id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(fact_receipt["memoryIds"].as_array().unwrap().len(), 1);
     let exp = t
         .store
         .find_memories("type = 'experience'", vec![])
         .await
         .unwrap();
-    assert_eq!(exp.len(), 1);
     assert_eq!(exp[0].source.turn_ids.len(), 4);
+    let recalled_facts = recall(eng, &t, "deployment", "split", "test", Some(T_FACT), 10)
+        .await
+        .unwrap();
+    assert!(!recalled_facts.is_empty());
+    assert!(recalled_facts.iter().all(|m| m.mtype == T_FACT));
+
+    // A resumed session can add facts immediately; experiences wait for its next close.
+    let mut resumed = payloads[0].clone();
+    resumed.turn_id = Some("U5".into());
+    ingest::add_memories(eng, &t, &c, resumed.clone())
+        .await
+        .unwrap();
+    let turn = t.store.get_turn("test", "U5").await.unwrap().unwrap();
+    commit_facts(eng, &t, vec![turn.clone()], vec![], json!({"facts":[]}))
+        .await
+        .unwrap();
+    assert_eq!(ingest::wait_idle(eng, &t).await.unwrap()["status"], "idle");
+    let s = t.store.get_session("test", "S").await.unwrap().unwrap();
+    assert!(s.ended_at.is_none());
+    assert_eq!(s.last_experience_seq, 4);
+    let receipt = ingest::add_memories(eng, &t, &c, end.clone())
+        .await
+        .unwrap();
+    t.store
+        .merge_doc(
+            "sessions",
+            &super::store::session_rid("test", "S"),
+            json!({"experienceFailures":4,"experienceRetryAtTs":0}),
+        )
+        .await
+        .unwrap();
+    let idle = ingest::wait_idle(eng, &t).await.unwrap();
+    assert_eq!(idle["failedExperiences"], 1);
+    assert_eq!(idle["failedTurns"], 0);
+    assert_eq!(
+        ingest::get_task(
+            eng,
+            &t,
+            GetTaskReq {
+                request_id: turn.request_id.clone()
+            }
+        )
+        .await
+        .unwrap()["status"],
+        "completed"
+    );
+    assert_eq!(
+        ingest::get_task(
+            eng,
+            &t,
+            GetTaskReq {
+                request_id: receipt["requestId"].as_str().unwrap().into()
+            }
+        )
+        .await
+        .unwrap()["status"],
+        "failed"
+    );
+    // Failed P2 sources remain durable. A later reopened session can complete a new P2 job.
+    let mut resumed = resumed;
+    resumed.turn_id = Some("U6".into());
+    ingest::add_memories(eng, &t, &c, resumed).await.unwrap();
+    let turn = t.store.get_turn("test", "U6").await.unwrap().unwrap();
+    commit_facts(eng, &t, vec![turn], vec![], json!({"facts":[]}))
+        .await
+        .unwrap();
+    let receipt = ingest::add_memories(eng, &t, &c, end).await.unwrap();
+    let snapshot = t.store.get_session("test", "S").await.unwrap().unwrap();
+    let turns = t.store.session_turns("test", "S").await.unwrap();
+    let ids = HashSet::from(["U5".into(), "U6".into()]);
+    commit_experience(eng,&t,&snapshot,turns,ids,vec![],json!({"analysis":[],"experiences":[],"summary":{"goal":"deploy","outcome":"verified","decisions":[],"openIssues":[]}}),6).await.unwrap();
+    assert_eq!(ingest::wait_idle(eng, &t).await.unwrap()["status"], "idle");
+    assert_eq!(
+        ingest::get_task(
+            eng,
+            &t,
+            GetTaskReq {
+                request_id: receipt["requestId"].as_str().unwrap().into()
+            }
+        )
+        .await
+        .unwrap()["status"],
+        "completed"
+    );
     indexer::drain(eng, &t).await.unwrap();
     let evidence = t.store.count("evidence", None).await.unwrap();
     assert_eq!(
         consolidate::purge(&t, &util::now_str(), 3.0).await.unwrap()["purgedTurns"],
-        4
+        6
     );
     assert_eq!(t.store.count("evidence", None).await.unwrap(), evidence);
-    let duplicate = ingest::add_memories(eng, &t, &c, payloads[3].clone())
+    let duplicate = ingest::add_memories(eng, &t, &c, payloads[0].clone())
         .await
         .unwrap();
     assert_eq!(duplicate["duplicate"], true);
-    assert_eq!(t.store.count("memories", None).await.unwrap(), 3);
-
-    // Older stores can have facts committed before P2. Backfill the summary without recreating facts.
-    let mut payload = payloads[0].clone();
-    payload.turn_id = Some("U5".into());
-    ingest::add_memories(eng, &t, &c, payload).await.unwrap();
-    let legacy = t.store.get_turn("test", "U5").await.unwrap().unwrap();
-    let fact = facts_from_values(&json!([[
-        "Legacy fact",
-        "project",
-        [],
-        util::date_of(&legacy.user_ts),
-        "user",
-        "U5",
-        "Deployment step 1",
-        [],
-        null
-    ]]))
-    .unwrap();
-    let (facts, new_entities) = validate(
-        &t,
-        fact,
-        &[],
-        &[legacy.clone()],
-        None,
-        "unified",
-        "test",
-        true,
-    )
-    .await
-    .unwrap();
-    let written = relations::apply(
-        eng,
-        &t,
-        facts,
-        WriteCtx {
-            platform: "test".into(),
-            now: util::now_str(),
-            turns: vec![(super::store::turn_rid("test", "U5"), legacy)],
-            text_request: None,
-            text_turn_id: None,
-            new_entities,
-        },
-    )
-    .await
-    .unwrap();
-    let legacy = t.store.get_turn("test", "U5").await.unwrap().unwrap();
-    assert_eq!(legacy.extract_state, "done");
-    let output =
-        formation_from_values(&json!([[], [], [], ["deploy", "verified", [], []]])).unwrap();
-    commit_batch(
-        eng,
-        &t,
-        vec![legacy.clone()],
-        vec![legacy],
-        vec![],
-        vec![],
-        output,
-    )
-    .await
-    .unwrap();
-    assert_eq!(t.store.count("memories", None).await.unwrap(), 4);
-    assert_eq!(
-        t.store
-            .get_turn("test", "U5")
-            .await
-            .unwrap()
-            .unwrap()
-            .derived_memory_ids,
-        written.all_ids
-    );
-    assert_eq!(
-        t.store
-            .get_session("test", "S")
-            .await
-            .unwrap()
-            .unwrap()
-            .last_experience_seq,
-        5
-    );
-
-    // A failing legacy backfill keeps committed facts: the turn stays done, its receipt completed.
-    let mut payload = payloads[0].clone();
-    payload.turn_id = Some("U6".into());
-    ingest::add_memories(eng, &t, &c, payload.clone())
-        .await
-        .unwrap();
-    let legacy = t.store.get_turn("test", "U6").await.unwrap().unwrap();
-    relations::apply(
-        eng,
-        &t,
-        vec![],
-        WriteCtx {
-            platform: "test".into(),
-            now: util::now_str(),
-            turns: vec![(super::store::turn_rid("test", "U6"), legacy)],
-            text_request: None,
-            text_turn_id: None,
-            new_entities: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    payload.sync = Some(true);
-    let receipt = ingest::add_memories(eng, &t, &c, payload).await.unwrap();
-    assert_eq!(receipt["status"], "completed");
-    let legacy = t.store.get_turn("test", "U6").await.unwrap().unwrap();
-    assert_eq!(legacy.extract_state, "done");
-    assert_eq!(legacy.extract_failures, 1);
-    // Retries are exhausted; wait_idle must count the turn while retrying, then report the end failed.
-    let mut tx = super::store::Tx::new();
-    tx.merge(
-        "turns",
-        &super::store::turn_rid("test", "U6"),
-        json!({"extractFailures":5,"retryAtTs":0}),
-    )
-    .unwrap();
-    t.store.commit(tx).await.unwrap();
-    let end = AddMemoriesReq {
-        scope: scope.clone(),
-        session_ended: Some(true),
-        ..Default::default()
-    };
-    let ended = ingest::add_memories(eng, &t, &c, end.clone())
-        .await
-        .unwrap();
-    let idle = ingest::wait_idle(eng, &t).await.unwrap();
-    assert_eq!(idle["status"], "idle");
-    assert_eq!(idle["failedExperiences"], 1);
-    let status = |id: Value| {
-        let t = t.clone();
-        async move {
-            ingest::get_task(
-                eng,
-                &t,
-                GetTaskReq {
-                    request_id: id.as_str().unwrap().into(),
-                },
-            )
-            .await
-            .unwrap()["status"]
-                .clone()
-        }
-    };
-    assert_eq!(status(ended["requestId"].clone()).await, "failed");
-    // The resumed session forms its new turn; the already-reported failure does not fail this end.
-    let mut payload = payloads[0].clone();
-    payload.turn_id = Some("U7".into());
-    ingest::add_memories(eng, &t, &c, payload).await.unwrap();
-    let resumed = t.store.get_turn("test", "U7").await.unwrap().unwrap();
-    let output =
-        formation_from_values(&json!([[], [], [], ["deploy", "verified", [], []]])).unwrap();
-    commit_batch(
-        eng,
-        &t,
-        vec![resumed.clone()],
-        vec![resumed],
-        vec![],
-        vec![],
-        output,
-    )
-    .await
-    .unwrap();
-    let ended = ingest::add_memories(eng, &t, &c, end).await.unwrap();
-    assert_eq!(ingest::wait_idle(eng, &t).await.unwrap()["status"], "idle");
-    assert_eq!(status(ended["requestId"].clone()).await, "completed");
+    assert_eq!(t.store.count("memories", None).await.unwrap(), 2);
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
 }

@@ -984,22 +984,33 @@ pub async fn search_memories(
             &exclude,
         )
         .await?;
+        let digest_max = eng.cfg.digest_max_bytes;
         for (rank, h) in hits.into_iter().enumerate() {
-            let cost = util::est_tokens(&h.turn.digest);
+            // A long message contributes the window that matched instead of its head.
+            let window = h
+                .chunk
+                .and_then(|i| Some((h.turn.chunk_view(i, digest_max)?, &h.turn.chunks[i])));
+            let text = window.as_ref().map_or(&h.turn.digest, |(view, _)| view);
+            let cost = util::est_tokens(text);
             let fit = used + cost <= budget;
             turn_log.push(
                 json!({"turnId": h.turn.turn_id, "platform": h.turn.platform, "rank": rank + 1,
-                                 "score": round4(h.score), "placed": fit}),
+                                 "score": round4(h.score), "placed": fit, "chunk": h.chunk}),
             );
             if fit {
                 used += cost;
-                turns_out.push(json!({
+                let mut item = json!({
                     "turnId": h.turn.turn_id,
                     "platform": h.turn.platform,
                     "session": h.turn.session,
                     "timestamp": h.turn.started_at,
-                    "digest": h.turn.digest,
-                }));
+                    "digest": text,
+                    "complete": h.turn.digest_complete(digest_max),
+                });
+                if let Some((_, c)) = &window {
+                    item["excerpt"] = json!({"role": c.role, "start": c.start, "end": c.end});
+                }
+                turns_out.push(item);
             }
         }
     }
@@ -1156,6 +1167,8 @@ async fn hnsw_search(t: &Tenant, q: &[f32], k: usize) -> Result<Vec<(String, f32
 struct TurnHit {
     turn: TurnRec,
     score: f64,
+    /// Window of a long message that matched better than the digest.
+    chunk: Option<usize>,
 }
 
 /// Turns of the buffer inside the request scope. OPEN: a turn is in scope when its project equals the
@@ -1196,7 +1209,7 @@ async fn recent_turns(
 ) -> Result<Vec<TurnHit>> {
     let cfg = &eng.cfg;
     let (clause, mut binds, ft_vis) = turn_scope_clause(vis, c);
-    let mut sql = format!("SELECT * OMIT id, embedding FROM turns WHERE {clause}");
+    let mut sql = format!("SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE {clause}");
     if let Some(w) = window {
         // time words narrow the candidates by startedAt
         sql.push_str(" AND startedTs >= $ws AND startedTs < $we");
@@ -1226,15 +1239,34 @@ async fn recent_turns(
             .map(|(id, _)| id)
             .filter(|id| by_rid.contains_key(id))
             .collect();
-    // digest vectors (turns without a vector yet only go through BM25)
+    // digest vectors, plus window vectors of long messages: a turn scores its best-matching view
+    // (turns without a vector yet only go through BM25)
+    let mut best_chunk: HashMap<String, usize> = HashMap::new();
     let mut vs: Vec<(String, f32)> = {
         let g = t.vecs.read().await;
         by_rid
             .keys()
             .filter_map(|rid| {
-                g.turns
+                let mut best = g.turns.get(rid).map(|e| (util::cosine(qvec, e), None));
+                let n = by_rid[rid].chunks.len();
+                for (i, e) in g
+                    .turn_chunks
                     .get(rid)
-                    .map(|e| (rid.clone(), util::cosine(qvec, e)))
+                    .into_iter()
+                    .flat_map(|c| c.iter())
+                    .enumerate()
+                    .take(n)
+                {
+                    let s = util::cosine(qvec, e);
+                    if best.map(|(b, _)| s > b).unwrap_or(true) {
+                        best = Some((s, Some(i)));
+                    }
+                }
+                let (s, chunk) = best?;
+                if let Some(i) = chunk {
+                    best_chunk.insert(rid.clone(), i);
+                }
+                Some((rid.clone(), s))
             })
             .collect()
     };
@@ -1282,6 +1314,7 @@ async fn recent_turns(
         hits.push(TurnHit {
             turn: tr.clone(),
             score,
+            chunk: best_chunk.get(&rid).copied(),
         });
     }
     hits.sort_by(|a, b| {
@@ -1650,7 +1683,9 @@ pub async fn list_turns(
 
     // with turnIds: the full text of those turns
     if let Some(ids) = req.turn_ids.as_ref().filter(|v| !v.is_empty()) {
-        let mut sql = "SELECT * OMIT id, embedding FROM turns WHERE turnId IN $ids".to_string();
+        let mut sql =
+            "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE turnId IN $ids"
+                .to_string();
         let mut binds: Vec<(&str, Value)> = vec![("ids", json!(ids))];
         if let Some(p) = &project {
             sql.push_str(" AND project = $p");
@@ -1703,7 +1738,7 @@ pub async fn list_turns(
         binds.push(("since", json!(ts.timestamp())));
     }
     let sql = format!(
-        "SELECT * OMIT id, embedding FROM turns WHERE {} ORDER BY startedTs DESC",
+        "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE {} ORDER BY startedTs DESC",
         conds.join(" AND ")
     );
     let turns: Vec<TurnRec> = t.store.select_as(&sql, binds).await?;

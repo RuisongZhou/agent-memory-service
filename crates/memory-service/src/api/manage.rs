@@ -339,7 +339,7 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
     let turns: Vec<TurnRec> = t
         .store
         .select_as(
-            "SELECT * OMIT id, embedding FROM turns WHERE derivedMemoryIds CONTAINS $id",
+            "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE derivedMemoryIds CONTAINS $id",
             vec![("id", json!(id))],
         )
         .await?;
@@ -497,7 +497,7 @@ pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> A
 // admin: stats, export, seed
 // =====================================================================================================
 
-const TABLES: [&str; 12] = [
+const TABLES: [&str; 13] = [
     "turns",
     "sessions",
     "evidence",
@@ -509,6 +509,7 @@ const TABLES: [&str; 12] = [
     "retrieval_log",
     "extract_log",
     "llm_usage",
+    "llm_responses",
     "proposals",
 ];
 
@@ -556,9 +557,10 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
             }
         }
     }
-    let (vm, vt) = {
+    let (vm, vt, vc) = {
         let g = t.vecs.read().await;
-        (g.memories.len(), g.turns.len())
+        let chunks: usize = g.turn_chunks.values().map(|c| c.len()).sum();
+        (g.memories.len(), g.turns.len(), chunks)
     };
     let gap_rows = t
         .store
@@ -569,7 +571,7 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
         "counts": counts,
         "memories": by,
         "llm": {"process": eng.llm.usage_snapshot(), "persisted": usage_sum, "rows": usage_rows.len()},
-        "index": {"fulltextDocs": t.ft.num_docs(), "memoryVectors": vm, "turnVectors": vt,
+        "index": {"fulltextDocs": t.ft.num_docs(), "memoryVectors": vm, "turnVectors": vt, "turnChunkVectors": vc,
                   "pendingTasks": indexer::pending(t).await?},
         "retrieval": {"gapSearches": gap_rows.first().and_then(|r| r.get("n")).cloned().unwrap_or(json!(0))},
         "jobs": indexer::stats_json(t),
@@ -582,7 +584,7 @@ pub async fn export(_eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResu
     if let Some(table) = body.get("table").and_then(Value::as_str) {
         if !matches!(
             table,
-            "llm_usage" | "extract_log" | "retrieval_log" | "proposals"
+            "llm_usage" | "llm_responses" | "extract_log" | "retrieval_log" | "proposals"
         ) {
             return Err(ApiError::InvalidArgument("unsupported export table".into()));
         }

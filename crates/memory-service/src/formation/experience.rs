@@ -1,4 +1,4 @@
-//! P2 validation and write preparation for the combined P1/P2 formation transaction.
+//! Session-end P2 validation and a transaction independent of fact formation.
 use super::{
     store::{self, to_doc, Tx},
     types::*,
@@ -108,7 +108,7 @@ fn relation_target<'a>(r: &Relation, old: &'a [MemoryRec]) -> Option<&'a MemoryR
     old.get(n - 1)
 }
 
-/// Prepared P2 changes are appended to the fact transaction; no writes happen during preparation.
+/// P2 records and evidence are prepared without writes, then committed independently.
 pub struct Prepared {
     memories: Vec<MemoryRec>,
     evidence: Vec<EvidenceRec>,
@@ -120,6 +120,43 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    pub async fn commit(self, tenant: &super::tenant::Tenant, platform: &str) -> Result<()> {
+        let mut tx = Tx::new();
+        let mut out = super::relations::Applied::default();
+        let mut texts = HashMap::new();
+        self.append(&mut tx, &mut out, &mut texts)?;
+        for (turn_id, ids) in &out.per_turn {
+            // Merge only annotations; fact receipts and formation state remain independent.
+            let Some(turn) = tenant.store.get_turn(platform, turn_id).await? else {
+                continue;
+            };
+            let mut derived_ids = turn.derived_memory_ids;
+            let new_ids: Vec<_> = ids
+                .iter()
+                .filter(|id| !derived_ids.contains(id))
+                .cloned()
+                .collect();
+            push_unique(&mut derived_ids, ids.clone());
+            let mut derived_text = turn.derived_text;
+            for text in new_ids.iter().filter_map(|id| texts.get(id)) {
+                if !derived_text.is_empty() {
+                    derived_text.push('\n');
+                }
+                derived_text.push_str(text);
+            }
+            let rid = store::turn_rid(platform, turn_id);
+            tx.merge(
+                "turns",
+                &rid,
+                json!({"derivedMemoryIds":derived_ids,"derivedText":derived_text}),
+            )?;
+            tx.index_task("turns", &rid, "upsert")?;
+        }
+        tenant.store.commit(tx).await?;
+        tenant.index_notify.notify_one();
+        Ok(())
+    }
+
     pub fn append(
         self,
         tx: &mut Tx,
@@ -418,7 +455,8 @@ pub fn prepare(
     let summary = json!({"goal":goal,"outcome":outcome,"decisions":decisions,
         "openIssues":issues,"pendingTasks":pending,
         "lastExperienceSeq":watermark,"updatedAt":now,
-        "experienceFailures":0,"experienceState":"done","experienceError":Value::Null});
+        "experienceFailures":0,"experienceState":"done","experienceError":Value::Null,
+        "experienceRetryAtTs":0});
     let changed = memories
         .into_values()
         .filter(|m| {

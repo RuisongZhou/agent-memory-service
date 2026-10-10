@@ -3190,7 +3190,6 @@ dependencies = [
  "clap",
  "lru",
  "memory-fulltext",
- "memory-models",
  "memory-rules",
  "mimalloc",
  "regex",

@@ -65,3 +65,21 @@ def test_embedding_runtime_uses_same_daemon_health_and_detects_changes(monkeypat
     monkeypatch.setattr(model_metadata, "fetch_embedding_runtime", lambda _: {**expected, "embedModel": "another-model"})
     with pytest.raises(ValueError, match="embedding daemon"):
         model_metadata.check_embedding_runtime(urls[0], expected)
+
+
+def llama_health():
+    return {"modelBackend": "llama-server", "modelDevice": "http://127.0.0.1:8081", "modelDtype": "Q8_0",
+            "embedModel": "bge-m3-Q8_0", "rerankModel": "bge-reranker-Q8_0",
+            "promptVariant": "en", "tenantPromptVariants": {}}
+
+
+def test_llama_server_metadata_records_quantisation_and_url():
+    metadata = model_metadata.capture(llama_health())
+    assert metadata["verified"] is True and metadata["isMock"] is False
+    assert metadata["modelDtype"] == "Q8_0"
+    with pytest.raises(ValueError, match="GGUF file type"):
+        model_metadata.capture({**llama_health(), "modelDtype": "unknown"})
+    with pytest.raises(ValueError, match="server URL"):
+        model_metadata.capture({**llama_health(), "modelDevice": "metal:1"})
+    with pytest.raises(ValueError, match="runtime changed"):
+        model_metadata.assert_same(metadata, {**llama_health(), "modelDtype": "F16"})

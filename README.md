@@ -31,20 +31,21 @@ make test-rust test        # Small Rust crates and Python tests
 make selftest smoke        # Mock models and localhost LLM stub; no paid requests
 ```
 
-On Apple Silicon, build with `make build-metal`. Explicit Metal selection fails if unavailable. Runtime metadata reports the actual backend/device/dtype. Full model weights and synthetic test weights are **never included in this repository**, Git history, CI artifacts or releases. See [model validation](model_validation/README.md) for local download and verification.
+Embedding and reranking run in two separate `llama-server` processes (llama.cpp, Metal on Apple Silicon) serving BGE-M3 and BGE-reranker-v2-m3 as Q8_0 GGUF files; the daemon calls them over HTTP. Install llama.cpp (`brew install llama.cpp`), then `scripts/llama_models.sh` downloads the GGUF files into `models/gguf/` and `scripts/llama_servers.sh start|stop|status` runs the servers on ports 8081 and 8082. Runtime metadata reports the backend, server URL and GGUF file type. Full model weights and synthetic test weights are **never included in this repository**, Git history, CI artifacts or releases. See [model validation](model_validation/README.md) for local download and verification.
 
 ## Run
 
-The generation backend defaults to `qwen3.8-flash` at `https://maas.qianwenaiapi.com/compatible-mode/v1`, with thinking disabled (`enable_thinking=false`). Put `QWEN_API_KEY`, `QWEN_BASE_URL`, and `LLM_MODEL` in `.env` using `.env.example`; `scripts/serve.py` reads the key without executing shell content. Model files must be downloaded separately into `models/`.
+The generation backend defaults to `qwen3.8-flash` at `https://maas.qianwenaiapi.com/compatible-mode/v1`, with thinking disabled (`enable_thinking=false`). Put `QWEN_API_KEY`, `QWEN_BASE_URL`, and `LLM_MODEL` in `.env` using `.env.example`; `scripts/serve.py` reads the key without executing shell content. Start the llama-server processes first.
 
 ```sh
-.venv/bin/python scripts/serve.py --device metal --max-calls 60
+scripts/llama_servers.sh start
+.venv/bin/python scripts/serve.py --max-calls 60
 target/fast/agent-memoryd mcp --url http://127.0.0.1:8765 --platform my-agent
 ```
 
 The daemon binds only to loopback. Headers are `X-Memory-Tenant` and `X-Memory-Platform`; configuration environment variables use `MEMORY_`. The optional evaluation tenants isolate different prompts, but they are not an authentication boundary. Use an authenticated gateway for any remote access.
 
-Writing dialogue and running maintenance can invoke the configured LLM. Generation budgets are soft process-level guards and reset at process restart; persistent usage is stored separately. Retrieval uses local models and does not invoke a generative model.
+Writing dialogue and running maintenance can invoke the configured LLM. Generation budgets are soft process-level guards and reset at process restart; persistent usage is stored separately. Retrieval uses the local llama-server models and does not invoke a generative model.
 
 ## Interfaces
 

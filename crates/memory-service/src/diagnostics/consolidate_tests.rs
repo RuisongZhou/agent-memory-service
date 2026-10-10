@@ -46,7 +46,7 @@ pub async fn consolidation_selftest() {
             ..Default::default()
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
-        ModelHub::load(std::path::Path::new("mock"), None).unwrap(),
+        ModelHub::mock(),
     );
     let t = Arc::new(
         Tenant::open("consolidation-zh", &dir, eng.models.dim)

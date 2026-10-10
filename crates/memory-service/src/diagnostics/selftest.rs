@@ -105,7 +105,7 @@ pub async fn retrieval_roundtrip() {
         ..Default::default()
     };
     let llm = Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap();
-    let models = ModelHub::load(std::path::Path::new("unused-mock-models"), None).unwrap();
+    let models = ModelHub::mock();
     let eng = Engine::new(cfg, llm, models);
     let t = Arc::new(
         Tenant::open("retrieval-selftest", &dir, eng.models.dim)
@@ -664,4 +664,147 @@ pub async fn retrieval_roundtrip() {
     assert!(timeparse::history_intent("previously used to"));
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
     println!("retrieval_roundtrip OK: 30 memories; scope/history/conflict/budget/recent/context/correction/deletion/feedback; zero LLM calls; data {}", dir.display());
+}
+
+/// Long turns: the buffer stores complete messages, indexes their windows, and search returns the
+/// window that matched; short turns keep their exact digest.
+pub async fn long_turn_roundtrip() {
+    use super::{
+        config::ServiceConfig, engine::Engine, indexer, ingest, llm::Llm, models::ModelHub,
+        retrieve, tenant::Tenant, util,
+    };
+    use std::sync::Arc;
+    let dir = std::env::temp_dir().join(format!(
+        "memory-long-turn-selftest-{}-{}",
+        std::process::id(),
+        util::new_id("t")
+    ));
+    let cfg = ServiceConfig {
+        data_dir: dir.clone(),
+        ..Default::default()
+    };
+    let (digest_max, formation_max) = (cfg.digest_max_bytes, cfg.max_message_bytes);
+    let llm = Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap();
+    let models = ModelHub::mock();
+    let eng = Engine::new(cfg, llm, models);
+    let t = Arc::new(
+        Tenant::open("long-turn-selftest", &dir, eng.models.dim)
+            .await
+            .unwrap(),
+    );
+    let c = Caller {
+        tenant: t.name.clone(),
+        platform: "codex".into(),
+    };
+    let scope = ReqScope {
+        project: Some("p1".into()),
+        session: Some("s1".into()),
+        ..Default::default()
+    };
+    let now = util::now_str();
+    let add = |turn_id: &str, user: &str, assistant: &str| AddMemoriesReq {
+        scope: scope.clone(),
+        turn_id: Some(turn_id.into()),
+        messages: Some(vec![
+            InMessage {
+                role: "user".into(),
+                content: user.into(),
+                timestamp: now.clone(),
+            },
+            InMessage {
+                role: "assistant".into(),
+                content: assistant.into(),
+                timestamp: now.clone(),
+            },
+        ]),
+        ..Default::default()
+    };
+    // A build log far beyond the formation view, whose only failure sits in the middle.
+    let steps = |r: std::ops::Range<usize>| {
+        r.map(|i| format!("step {i} compiled module ok\n"))
+            .collect::<String>()
+    };
+    let needle = "error: linker failed for module zephyrquartz";
+    let log = format!("{}{needle}\n{}", steps(0..600), steps(600..1200));
+    ingest::add_memories(&eng, &t, &c, add("L1", "run the full build", &log))
+        .await
+        .unwrap();
+    ingest::add_memories(&eng, &t, &c, add("S1", "which tea do I like", "green tea"))
+        .await
+        .unwrap();
+
+    let long = t.store.get_turn("codex", "L1").await.unwrap().unwrap();
+    assert_eq!(
+        long.assistant_message, log,
+        "the buffer stores complete messages"
+    );
+    assert!(long.digest.len() <= digest_max && !long.digest_complete(digest_max));
+    assert!(long.chunks.iter().all(|ch| ch.role == "assistant"));
+    assert_eq!(long.chunks.first().map(|ch| ch.start), Some(0));
+    assert_eq!(long.chunks.last().map(|ch| ch.end), Some(log.len()));
+    assert!(
+        !long
+            .clipped(formation_max)
+            .assistant_message
+            .contains(needle),
+        "formation keeps its bounded head/tail view"
+    );
+    let short = t.store.get_turn("codex", "S1").await.unwrap().unwrap();
+    assert!(short.chunks.is_empty() && short.digest_complete(digest_max));
+    assert_eq!(short.digest, "which tea do I like\ngreen tea");
+
+    indexer::drain(&eng, &t).await.unwrap();
+    let rid = turn_rid("codex", "L1");
+    let stored = t.store.load_chunk_embeddings().await.unwrap();
+    assert_eq!(stored.len(), 1, "only the long turn has chunk vectors");
+    assert_eq!(stored[0].0, rid);
+    assert_eq!(stored[0].1.len(), long.chunks.len());
+    // A later re-index (e.g. after extraction updates derived text) keeps the window vectors.
+    let mut tx = Tx::new();
+    tx.index_task("turns", &rid, "upsert").unwrap();
+    t.store.commit(tx).await.unwrap();
+    indexer::drain(&eng, &t).await.unwrap();
+    assert_eq!(
+        t.vecs.read().await.turn_chunks[&rid].len(),
+        long.chunks.len()
+    );
+
+    let search = |query: &str| SearchReq {
+        query: query.into(),
+        scope: Some(scope.clone()),
+        touch: Some(false),
+        ..Default::default()
+    };
+    let turn = |r: &serde_json::Value, id: &str| {
+        r["recentTurns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["turnId"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id} not recalled: {r}"))
+    };
+    let r = retrieve::search_memories(&eng, &t, &c, search("zephyrquartz linker failed"))
+        .await
+        .unwrap();
+    let hit = turn(&r, "L1");
+    let view = hit["digest"].as_str().unwrap();
+    assert!(view.contains("zephyrquartz"), "window view: {view}");
+    assert!(view.starts_with("run the full build\n…"));
+    assert!(view.len() <= digest_max + 2 * "…".len());
+    assert_eq!(hit["complete"], false);
+    assert_eq!(hit["excerpt"]["role"], "assistant");
+    let r = retrieve::search_memories(&eng, &t, &c, search("which tea do I like"))
+        .await
+        .unwrap();
+    let hit = turn(&r, "S1");
+    assert_eq!(hit["digest"], "which tea do I like\ngreen tea");
+    assert_eq!(hit["complete"], true);
+    assert!(hit.get("excerpt").is_none());
+    println!(
+        "long_turn_roundtrip OK: {} bytes stored whole; {} windows indexed and recalled; short digest unchanged; zero LLM calls; data {}",
+        log.len(),
+        long.chunks.len(),
+        dir.display()
+    );
 }

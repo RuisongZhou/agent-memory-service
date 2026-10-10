@@ -1,6 +1,6 @@
 //! `agent-memoryd` — 共享记忆库 daemon.
 //!
-//!   agent-memoryd serve  --data-dir D --models-dir M [--port 8765] [--prompt-variant zh|en] [--no-reranker]
+//!   agent-memoryd serve  --data-dir D [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
 //!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 5 ★ tools)
 //!   agent-memoryd reindex --vector | --fulltext | --all [--url ...]
 use clap::{Parser, Subcommand};
@@ -24,23 +24,26 @@ enum Cmd {
     Serve {
         #[arg(long, env = "MEMORY_DATA_DIR", default_value = "./memory-data")]
         data_dir: PathBuf,
-        #[arg(long, env = "MEMORY_MODELS_DIR", default_value = "./models")]
-        models_dir: PathBuf,
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
         #[arg(long, default_value_t = 8765)]
         port: u16,
         #[arg(long, env = "MEMORY_PROMPT_VARIANT", default_value = "zh")]
         prompt_variant: String,
-        /// Embedding model directory name under models-dir
-        #[arg(long, default_value = "bge-m3")]
-        embed_model: String,
-        /// Reranker model directory name under models-dir
-        #[arg(long, default_value = "bge-reranker-v2-m3")]
-        rerank_model: String,
-        /// Local inference device; explicit metal fails if Metal is unavailable.
-        #[arg(long, env = "MEMORY_MODEL_DEVICE", default_value = "auto", value_parser = ["auto", "cpu", "metal"])]
-        model_device: String,
+        /// llama-server base URL serving the embedding model (`--embedding`)
+        #[arg(
+            long,
+            env = "MEMORY_EMBED_URL",
+            default_value = "http://127.0.0.1:8081"
+        )]
+        embed_url: String,
+        /// llama-server base URL serving the reranker (`--reranking`)
+        #[arg(
+            long,
+            env = "MEMORY_RERANK_URL",
+            default_value = "http://127.0.0.1:8082"
+        )]
+        rerank_url: String,
         #[arg(long)]
         no_reranker: bool,
         #[arg(long, env = "LLM_MODEL", default_value = "qwen3.8-flash")]
@@ -98,13 +101,11 @@ fn main() -> anyhow::Result<()> {
         match cli.cmd {
             Cmd::Serve {
                 data_dir,
-                models_dir,
                 host,
                 port,
                 prompt_variant,
-                embed_model,
-                rerank_model,
-                model_device,
+                embed_url,
+                rerank_url,
                 no_reranker,
                 llm_model,
                 llm_base_url,
@@ -131,7 +132,8 @@ fn main() -> anyhow::Result<()> {
                     cfg = serde_json::from_value(base)?;
                 }
                 cfg.data_dir = data_dir;
-                cfg.models_dir = models_dir.clone();
+                cfg.embed_url = embed_url;
+                cfg.rerank_url = rerank_url;
                 cfg.prompt_variant = prompt_variant;
                 anyhow::ensure!(
                     matches!(cfg.prompt_variant.as_str(), "zh" | "en"),
@@ -152,17 +154,11 @@ fn main() -> anyhow::Result<()> {
                     llm_concurrency,
                     cfg.llm_timeout_secs,
                 )?;
-                tracing::info!("loading local models from {}", models_dir.display());
-                let rerank_dir = models_dir.join(&rerank_model);
-                let models = ModelHub::load_with_device(
-                    &models_dir.join(&embed_model),
-                    if cfg.use_reranker {
-                        Some(rerank_dir.as_path())
-                    } else {
-                        None
-                    },
-                    model_device.parse()?,
-                )?;
+                let models = ModelHub::connect(
+                    &cfg.embed_url,
+                    cfg.use_reranker.then_some(cfg.rerank_url.as_str()),
+                )
+                .await?;
                 let eng = Engine::new(cfg, llm, models);
                 // open the default store eagerly so its workers resume unfinished tasks
                 eng.tenant("default").await?;
@@ -174,6 +170,7 @@ fn main() -> anyhow::Result<()> {
             Cmd::Selftest => {
                 memory_service::selftest::store_roundtrip().await;
                 memory_service::selftest::retrieval_roundtrip().await;
+                memory_service::selftest::long_turn_roundtrip().await;
                 memory_service::extract::formation_selftest().await;
                 memory_service::consolidate_tests::consolidation_selftest().await;
             }

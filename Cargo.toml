@@ -16,11 +16,14 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# Local/CI profile for the daemon, tests and selftest. `panic = "unwind"` lets `cargo build` and
+# `cargo test` share compiled dependencies (cargo test cannot reuse panic=abort dependency builds).
 [profile.fast]
 inherits = "release"
 lto = "off"
 codegen-units = 256
 incremental = true
+panic = "unwind"
 
 [profile.fast.package.memory-service]
 opt-level = 1

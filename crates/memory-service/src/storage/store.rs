@@ -33,6 +33,7 @@ DEFINE TABLE IF NOT EXISTS requests SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS retrieval_log SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS extract_log SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS llm_usage SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS llm_responses SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS proposals SCHEMALESS;
 "#;
 
@@ -47,6 +48,18 @@ pub fn safe_id(id: &str) -> Result<&str> {
         Ok(id)
     } else {
         Err(anyhow!("unsafe record id: {id:?}"))
+    }
+}
+
+/// A stored float array (empty when missing or not an array).
+fn floats(v: Option<&Value>) -> Vec<f32> {
+    match v {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_f64())
+            .map(|x| x as f32)
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -263,7 +276,7 @@ impl Store {
     pub async fn get_turn(&self, platform: &str, turn_id: &str) -> Result<Option<TurnRec>> {
         let v = self
             .select(
-                "SELECT * OMIT id, embedding FROM turns WHERE platform = $p AND turnId = $t LIMIT 1",
+                "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE platform = $p AND turnId = $t LIMIT 1",
                 vec![("p", json!(platform)), ("t", json!(turn_id))],
             )
             .await?;
@@ -272,7 +285,7 @@ impl Store {
 
     pub async fn session_turns(&self, platform: &str, session: &str) -> Result<Vec<TurnRec>> {
         self.select_as(
-            "SELECT * OMIT id, embedding FROM turns WHERE platform = $p AND session = $s ORDER BY seq ASC",
+            "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE platform = $p AND session = $s ORDER BY seq ASC",
             vec![("p", json!(platform)), ("s", json!(session))],
         )
         .await
@@ -302,19 +315,62 @@ impl Store {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let emb: Vec<f32> = match r.get("embedding") {
-                Some(Value::Array(a)) => a
-                    .iter()
-                    .filter_map(|x| x.as_f64())
-                    .map(|x| x as f32)
-                    .collect(),
-                _ => continue,
-            };
+            let emb = floats(r.get("embedding"));
             if !id.is_empty() && !emb.is_empty() {
                 out.push((id, emb));
             }
         }
         Ok(out)
+    }
+
+    /// Chunk vectors of long turns, aligned with each turn's `chunks`.
+    pub async fn load_chunk_embeddings(&self) -> Result<Vec<(String, Vec<Vec<f32>>)>> {
+        let rows = self
+            .select(
+                "SELECT mid, chunkEmbeddings FROM turns WHERE chunkEmbeddings != NONE",
+                vec![],
+            )
+            .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let id = r.get("mid").and_then(|v| v.as_str()).unwrap_or_default();
+            let Some(Value::Array(list)) = r.get("chunkEmbeddings") else {
+                continue;
+            };
+            let embs: Vec<Vec<f32>> = list.iter().map(|v| floats(Some(v))).collect();
+            if !id.is_empty() && !embs.is_empty() && embs.iter().all(|e| !e.is_empty()) {
+                out.push((id.to_string(), embs));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Store a turn's chunk vectors; an empty list clears them.
+    pub async fn set_chunk_embeddings(
+        &self,
+        id: &str,
+        embs: &[Vec<f32>],
+        model: &str,
+    ) -> Result<()> {
+        let r = rid("turns", id)?;
+        if embs.is_empty() {
+            self.query(
+                &format!(
+                    "UPDATE {r} SET chunkEmbeddings = NONE, chunkEmbeddingModel = NONE RETURN NONE"
+                ),
+                vec![],
+            )
+            .await?;
+        } else {
+            self.query(
+                &format!(
+                    "UPDATE {r} SET chunkEmbeddings = $e, chunkEmbeddingModel = $m RETURN NONE"
+                ),
+                vec![("e", json!(embs)), ("m", json!(model))],
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub async fn set_embedding(

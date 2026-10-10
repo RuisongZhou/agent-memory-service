@@ -138,6 +138,9 @@ impl Engine {
             for (id, e) in t.store.load_embeddings("turns").await? {
                 v.turns.insert(id, Arc::new(e));
             }
+            for (id, e) in t.store.load_chunk_embeddings().await? {
+                v.turn_chunks.insert(id, Arc::new(e));
+            }
         }
         Ok(())
     }

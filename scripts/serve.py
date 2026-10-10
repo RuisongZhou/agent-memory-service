@@ -12,9 +12,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bin', type=Path, default=ROOT/'target/fast/agent-memoryd')
     parser.add_argument('--data-dir', type=Path, default=ROOT/'daemon-data')
-    parser.add_argument('--models-dir', type=Path, default=ROOT/'models')
+    parser.add_argument('--embed-url', default='http://127.0.0.1:8081', help='llama-server embedding endpoint (scripts/llama_servers.sh)')
+    parser.add_argument('--rerank-url', default='http://127.0.0.1:8082', help='llama-server rerank endpoint')
     parser.add_argument('--port', type=int, default=8765)
-    parser.add_argument('--device', choices=['auto','cpu','metal'], default='auto')
     parser.add_argument('--mock', action='store_true')
     parser.add_argument('--max-calls', type=int, default=60, help='attempt guard, including retries; use 0 for unlimited after pilot approval')
     parser.add_argument('--llm-concurrency',type=int,default=1)
@@ -38,9 +38,9 @@ def main():
     else:
         env.pop('MEMORY_LLM_MAX_CALLS', None)
     if args.llm_concurrency<1: parser.error('llm-concurrency must be positive')
-    command = [str(args.bin.resolve()), 'serve', '--data-dir', str(args.data_dir), '--models-dir', str(args.models_dir),
-               '--port', str(args.port),'--llm-concurrency',str(args.llm_concurrency),
-               '--model-device',args.device]
+    command = [str(args.bin.resolve()), 'serve', '--data-dir', str(args.data_dir), '--embed-url', args.embed_url,
+               '--rerank-url', args.rerank_url,
+               '--port', str(args.port),'--llm-concurrency',str(args.llm_concurrency)]
     raise SystemExit(subprocess.call(command, env=env))
 
 if __name__ == '__main__':

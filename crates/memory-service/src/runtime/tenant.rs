@@ -14,6 +14,8 @@ use super::store::Store;
 pub struct VecCache {
     pub memories: HashMap<String, Arc<Vec<f32>>>,
     pub turns: HashMap<String, Arc<Vec<f32>>>,
+    /// Chunk vectors of long turns, aligned with `TurnRec::chunks`.
+    pub turn_chunks: HashMap<String, Arc<Vec<Vec<f32>>>>,
 }
 
 pub struct Tenant {

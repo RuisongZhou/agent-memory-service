@@ -19,6 +19,13 @@ pub struct LlmReply {
     pub raw: String,
     pub usage: Usage,
     pub latency_ms: u64,
+    pub response_log_id: Option<String>,
+}
+
+pub struct JsonContract {
+    pub name: &'static str,
+    pub schema: Value,
+    pub validate: fn(&Value, &Value) -> Result<()>,
 }
 
 pub struct Llm {
@@ -85,7 +92,7 @@ impl Llm {
 
     /// One JSON-mode chat call with retries. `system` and `user` are the two prompt sections.
     pub async fn json_call(&self, system: &str, user: &str, max_tokens: u32) -> Result<LlmReply> {
-        self.json_call_impl(system, user, max_tokens, None, false)
+        self.json_call_impl(system, user, max_tokens, None, false, None)
             .await
     }
 
@@ -98,7 +105,7 @@ impl Llm {
         store: &super::store::Store,
         stage: &str,
     ) -> Result<LlmReply> {
-        self.json_call_impl(system, user, max_tokens, Some((store, stage)), false)
+        self.json_call_impl(system, user, max_tokens, Some((store, stage)), false, None)
             .await
     }
 
@@ -111,8 +118,29 @@ impl Llm {
         store: &super::store::Store,
         stage: &str,
     ) -> Result<LlmReply> {
-        self.json_call_impl(system, user, max_tokens, Some((store, stage)), true)
+        self.json_call_impl(system, user, max_tokens, Some((store, stage)), true, None)
             .await
+    }
+
+    /// JSON-object generation with local structural validation and corrective retries.
+    pub async fn contract_call_logged(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        store: &super::store::Store,
+        stage: &str,
+        contract: &JsonContract,
+    ) -> Result<LlmReply> {
+        self.json_call_impl(
+            system,
+            user,
+            max_tokens,
+            Some((store, stage)),
+            false,
+            Some(contract),
+        )
+        .await
     }
 
     async fn json_call_impl(
@@ -122,6 +150,7 @@ impl Llm {
         max_tokens: u32,
         usage_log: Option<(&super::store::Store, &str)>,
         values_only: bool,
+        contract: Option<&JsonContract>,
     ) -> Result<LlmReply> {
         if !self.is_configured() {
             return Err(anyhow!("LLM API key not configured"));
@@ -172,6 +201,16 @@ impl Llm {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = anyhow!("request error: {e}");
+                    if let Some((store, stage)) = usage_log {
+                        store
+                            .log(
+                                "llm_responses",
+                                json!({"stage":stage,"model":self.model,
+                            "createdAt":super::util::fmt_ts(&request_time),"attempt":attempt+1,
+                            "request":body,"transportError":last_err.to_string()}),
+                            )
+                            .await?;
+                    }
                     continue;
                 }
             };
@@ -180,8 +219,22 @@ impl Llm {
                 Ok(t) => t,
                 Err(e) => {
                     last_err = anyhow!("read error: {e}");
+                    if let Some((store, stage)) = usage_log {
+                        store.log("llm_responses", json!({"stage":stage,"model":self.model,
+                            "createdAt":super::util::fmt_ts(&request_time),"attempt":attempt+1,
+                            "request":body,"httpStatus":status.as_u16(),"transportError":last_err.to_string()})).await?;
+                    }
                     continue;
                 }
+            };
+            // Persist the exact HTTP body before decoding, including non-2xx and malformed replies.
+            let response_log_id = if let Some((store, stage)) = usage_log {
+                Some(store.log("llm_responses", json!({"stage":stage,"model":self.model,
+                    "createdAt":super::util::fmt_ts(&request_time),"receivedAt":super::util::now_str(),
+                    "attempt":attempt+1,"httpStatus":status.as_u16(),"request":body,
+                    "rawBody":text,"latencyMs":started.elapsed().as_millis() as u64})).await?)
+            } else {
+                None
             };
             if status.as_u16() == 429 || status.is_server_error() {
                 last_err = anyhow!("HTTP {status}: {}", crate::util::truncate_bytes(&text, 300));
@@ -205,6 +258,31 @@ impl Llm {
                 .unwrap_or("")
                 .to_string();
             let finish = v["choices"][0]["finish_reason"].as_str().unwrap_or("");
+            let parsed = if finish == "length" {
+                Err(anyhow!("model output truncated at token limit"))
+            } else {
+                parse_json_loose(&content).and_then(|value| {
+                    if values_only && !value.is_array() {
+                        return Err(anyhow!("fact-values-v1 requires a top-level array"));
+                    }
+                    if let Some(contract) = contract {
+                        (contract.validate)(&contract.schema, &value)?;
+                    }
+                    Ok(value)
+                })
+            };
+            if let (Some((store, _)), Some(id)) = (usage_log, response_log_id.as_deref()) {
+                store
+                    .merge_doc(
+                        "llm_responses",
+                        id,
+                        json!({"rawContent":content,
+                    "providerResponseId":v["id"],"finishReason":finish,
+                    "validationError":parsed.as_ref().err().map(ToString::to_string),
+                    "validOutputShape":parsed.is_ok()}),
+                    )
+                    .await?;
+            }
             let usage = Usage {
                 prompt_tokens: v["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
                 completion_tokens: v["usage"]["completion_tokens"].as_u64().unwrap_or(0),
@@ -229,32 +307,25 @@ impl Llm {
                     "promptTokens":usage.prompt_tokens,"completionTokens":usage.completion_tokens,
                     "cacheHitTokens":usage.cache_hit_tokens,
                     "cacheMissTokens":usage.prompt_tokens.saturating_sub(usage.cache_hit_tokens),
-                    "latencyMs":started.elapsed().as_millis() as u64,"finishReason":finish,
+                    "latencyMs":started.elapsed().as_millis() as u64,"finishReason":finish,"responseLogId":response_log_id,
                     "validJson":finish!="length" && parse_json_loose(&content).is_ok(),
-                    "validOutputShape":finish!="length" && parse_json_loose(&content)
-                        .map(|v| !values_only || v.is_array()).unwrap_or(false)}),
+                    "validOutputShape":parsed.is_ok()}),
                     )
                     .await?;
             }
-            if finish == "length" {
-                last_err = anyhow!("model output truncated at token limit");
-                continue;
-            }
-            match parse_json_loose(&content) {
-                Ok(json) if values_only && !json.is_array() => {
-                    last_err = anyhow!("fact-values-v1 requires a top-level array");
-                    continue;
-                }
+            match parsed {
                 Ok(json) => {
                     return Ok(LlmReply {
                         json,
                         raw: content,
                         usage,
                         latency_ms: started.elapsed().as_millis() as u64,
+                        response_log_id,
                     })
                 }
                 Err(e) => {
-                    last_err = anyhow!("model output is not JSON (finish={finish}): {e}");
+                    last_err = anyhow!("model output failed validation (finish={finish}): {e}");
+                    corrective_messages(&mut body, system, user, &content, &e.to_string());
                     continue;
                 }
             }
@@ -273,6 +344,15 @@ impl Llm {
             "model": self.model,
         })
     }
+}
+
+fn corrective_messages(body: &mut Value, system: &str, user: &str, raw: &str, error: &str) {
+    // Replace the repair exchange, rather than growing the prompt on every retry.
+    body["messages"] = json!([
+        {"role":"system","content":system}, {"role":"user","content":user},
+        {"role":"assistant","content":raw.chars().take(32768).collect::<String>()},
+        {"role":"user","content":format!("Your previous response failed output validation: {error}. Return the complete corrected JSON matching the requested JSON structure, retaining every required section. Use only the original evidence; do not invent missing facts or verified outcomes. No Markdown or explanations.")}
+    ]);
 }
 
 /// Parse JSON, tolerating ```json fences and leading/trailing prose.

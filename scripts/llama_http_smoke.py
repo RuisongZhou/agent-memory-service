@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Exercise the complete daemon with two real BGE Metal models and a localhost-only P1/P2 stub.
+"""Exercise the complete daemon with the two real BGE llama-server models and a localhost-only P1/P2 stub.
 
 No .env is loaded, no provider key is inherited, and no external generative service is
-contacted. Model weights must already exist locally. Temporary storage never replaces
-production stores. This verifies Metal integration and HTTP/storage/index plumbing;
+contacted. Both llama-server processes must already run (scripts/llama_servers.sh start).
+Temporary storage never replaces production stores. This verifies llama-server integration
+and HTTP/storage/index plumbing;
 it does not measure real generative extraction quality or LoCoMo effectiveness.
 """
 from __future__ import annotations
@@ -33,7 +34,7 @@ FACT_TEXTS = [
     "The demo uses BAAI bge-reranker-v2-m3 for relevance reranking.",
 ]
 FACT_ENTITIES = [["demo API service"], ["BAAI", "bge-m3"], ["BAAI", "bge-reranker-v2-m3"]]
-EXPECTED_DEVICE = {"modelBackend": "candle-metal", "modelDtype": "f32"}
+EXPECTED_DEVICE = {"modelBackend": "llama-server"}
 
 
 def validate_vectors(response, expected_rows):
@@ -82,20 +83,22 @@ def sanitized_environment():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin", type=Path, required=True)
-    parser.add_argument("--models-dir", type=Path, default=ROOT / "models")
-    parser.add_argument("--output", type=Path, default=ROOT / "results/local-pilot/metal-http-smoke.json")
+    parser.add_argument("--embed-url", default="http://127.0.0.1:8081")
+    parser.add_argument("--rerank-url", default="http://127.0.0.1:8082")
+    parser.add_argument("--output", type=Path, default=ROOT / "results/local-pilot/llama-http-smoke.json")
     parser.add_argument("--startup-timeout", type=float, default=300)
     parser.add_argument("--request-timeout", type=float, default=240)
     parser.add_argument("--skip-concurrency", action="store_true", help="Skip the default parallel embedding/search check")
     args = parser.parse_args()
-    binary, models_dir = args.bin.resolve(), args.models_dir.resolve()
+    binary = args.bin.resolve()
+    embed_url, rerank_url = args.embed_url.rstrip("/"), args.rerank_url.rstrip("/")
     if not binary.is_file():
         parser.error("--bin must be a compiled daemon executable")
-    for name in ["bge-m3", "bge-reranker-v2-m3"]:
-        if not (models_dir / name / "config.json").is_file() or not (models_dir / name / "tokenizer.json").is_file():
-            parser.error(f"required real local model files are missing: {name}")
-        if not any((models_dir / name / filename).is_file() for filename in ["model.safetensors", "pytorch_model.bin"]):
-            parser.error(f"required real local model weights are missing: {name}")
+    for url in [embed_url, rerank_url]:
+        try:
+            build_opener(ProxyHandler({})).open(url + "/health", timeout=5).read()
+        except OSError:
+            parser.error(f"llama-server is not ready at {url}; run scripts/llama_servers.sh start")
     stub_calls, stub_errors = [], []
     stub_lock = threading.Lock()
 
@@ -116,11 +119,11 @@ def main():
                     raise AssertionError("daemon must request non-streaming output")
                 if self.headers.get("Authorization") != "Bearer localhost-stub-placeholder":
                     raise AssertionError("daemon did not use the explicit local placeholder credential")
-                system, user = [message["content"] for message in body["messages"]]
+                system, user = [message["content"] for message in body["messages"][:2]]
                 if "<current batch>" in user:
-                    stage = "P1+P2"
-                    if "response_format" in body or "formation-values-v1" not in system:
-                        raise AssertionError("P1 must request positional values, not object mode")
+                    stage = "P1"
+                    if body.get("response_format") != {"type":"json_object"} or "facts-object-v1" not in system:
+                        raise AssertionError("P1 must request JSON object output")
                     batch = re.search(r"<current batch>\n(.*?)\n</current batch>", user, re.S).group(1)
                     chunks = re.findall(r"\[([^|\]\n]+)\s*\|\s*([^\]\n]+)\]\n(.*?)(?=\n\n\[|\Z)", batch, re.S)
                     if len(chunks) != 3:
@@ -132,7 +135,7 @@ def main():
                             raise AssertionError("stub source text differs from the actual batch")
                         facts.append([span, "project", FACT_ENTITIES[index], timestamp.strip()[:10],
                                       "user", turn_id.strip(), span, [], None])
-                    output = [facts, [], [], ["Remember configuration", "facts recorded", [], []]]
+                    output = {"facts":[{"text":r[0],"scope":r[1],"entities":r[2],"effectiveAt":r[3],"origin":r[4],"source":{"turnId":r[5],"span":r[6]},"relations":[]} for r in facts]}
                 elif "experience extractor" in system:
                     stage = "P2"
                     if body.get("response_format") != {"type": "json_object"}:
@@ -142,7 +145,7 @@ def main():
                         "outcome": "The three configuration facts were recorded",
                         "decisions": [], "openIssues": []}}
                 else:
-                    raise AssertionError("unexpected extra model stage in the Metal smoke check")
+                    raise AssertionError("unexpected extra model stage in the smoke check")
                 with stub_lock:
                     stub_calls.append(stage)
                 payload = json.dumps({"choices": [{"message": {"content": json.dumps(output)}, "finish_reason": "stop"}],
@@ -159,18 +162,18 @@ def main():
 
     report = {"status": "started", "realGenerativeCalls": 0, "generationBackend": "localhost-deterministic-stub",
               "realEmbeddingModel": "BAAI/bge-m3", "realRerankerModel": "BAAI/bge-reranker-v2-m3",
-              "requestedDevice": "metal", "expectedDevice": EXPECTED_DEVICE, "dtype": "f32",
+              "expectedDevice": EXPECTED_DEVICE,
               "notLoCoMoEffectiveness": True, "numericalReferenceComparisonNotIncluded": True,
-              "expectedDevicePrefix": "metal:", "providerKeyInherited": False, "dotenvRead": False,
+              "providerKeyInherited": False, "dotenvRead": False,
               "startedAt": datetime.now(timezone.utc).isoformat(), "binary": str(binary),
-              "modelsDir": str(models_dir), "latencyMs": {}}
+              "embedUrl": embed_url, "rerankUrl": rerank_url, "latencyMs": {}}
     stub = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
     threading.Thread(target=stub.serve_forever, daemon=True).start()
     process, daemon_log_text = None, ""
     # Every HTTP opener ignores inherited proxies. The two possible destinations are hardcoded
     # loopback addresses, and the daemon receives only an explicit loopback LLM base URL.
     def request(base, path, body=None):
-        headers = {"Content-Type": "application/json", "X-Memory-Tenant": "metal-smoke-en", "X-Memory-Platform": "metal-test"}
+        headers = {"Content-Type": "application/json", "X-Memory-Tenant": "llama-smoke-en", "X-Memory-Platform": "llama-test"}
         req = Request(base + path, headers=headers, data=None if body is None else json.dumps(body).encode())
         return json.load(build_opener(ProxyHandler({})).open(req, timeout=args.request_timeout))
 
@@ -181,7 +184,7 @@ def main():
         return value
 
     try:
-        with tempfile.TemporaryDirectory(prefix="memory-metal-http-smoke-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="memory-llama-http-smoke-") as temporary:
             temp = Path(temporary)
             with socket.socket() as port_socket:
                 port_socket.bind(("127.0.0.1", 0))
@@ -192,34 +195,34 @@ def main():
                 try:
                     start = time.perf_counter()
                     process = subprocess.Popen([str(binary), "serve", "--data-dir", str(temp / "data"),
-                        "--models-dir", str(models_dir), "--model-device", "metal", "--port", str(port),
+                        "--embed-url", embed_url, "--rerank-url", rerank_url, "--port", str(port),
                         "--prompt-variant", "en",
                         "--llm-base-url", f"http://127.0.0.1:{stub.server_port}", "--llm-concurrency", "1", "--log-level", "warn"],
                         env=sanitized_environment(), stdout=logfile, stderr=logfile)
                     while time.perf_counter() - start < args.startup_timeout:
                         if process.poll() is not None:
-                            raise RuntimeError("Metal daemon exited before readiness")
+                            raise RuntimeError("daemon exited before readiness")
                         try:
                             health = request(base, "/health")
                             break
                         except OSError:
                             time.sleep(0.2)
                     else:
-                        raise RuntimeError("Metal daemon model-load timeout")
+                        raise RuntimeError("daemon startup timeout")
                     report["latencyMs"]["startupIncludingBothModels"] = round((time.perf_counter() - start) * 1000, 2)
                     report["healthBefore"] = health
                     for key, expected in EXPECTED_DEVICE.items():
                         if health.get(key) != expected:
                             raise AssertionError(f"health {key} is {health.get(key)!r}, expected {expected!r}")
-                    if not str(health.get("modelDevice", "")).startswith("metal:"):
-                        raise AssertionError("health must identify a concrete Metal registry device")
+                    if health.get("modelDevice") != embed_url or not health.get("modelDtype"):
+                        raise AssertionError("health must report the embedding server URL and GGUF file type")
                     if "mock" in str(health.get("embedModel", "")).lower() or not health.get("rerankModel"):
                         raise AssertionError("the daemon must load both real BGE models")
                     if "bge-m3" not in str(health.get("embedModel", "")).lower() or "bge-reranker-v2-m3" not in str(health.get("rerankModel", "")).lower():
                         raise AssertionError("the required BGE model identities were not reported")
-                    report["device"] = {**{key: health[key] for key in EXPECTED_DEVICE}, "modelDevice": health["modelDevice"]}
-                    report["checks"] = {"realBgeMetalModels": True}
-                    scope = {"project": "metal-smoke", "session": "metal-session"}
+                    report["device"] = {key: health[key] for key in ["modelBackend", "modelDevice", "modelDtype"]}
+                    report["checks"] = {"realBgeLlamaServerModels": True}
+                    scope = {"project": "llama-smoke", "session": "llama-session"}
                     now = datetime.now(timezone.utc) - timedelta(minutes=1)
                     receipts = []
                     for index, text in enumerate(FACT_TEXTS):
@@ -259,10 +262,10 @@ def main():
                     report["checks"].update({"finite1024UnitVectors": True, "rerankedPortFactFirst": True})
                     if not args.skip_concurrency:
                         # Different texts and a new query bypass the embedding cache; search also invokes
-                        # the real reranker. Both HTTP requests run concurrently inside one daemon/device.
+                        # the real reranker. Both HTTP requests run concurrently against the shared model servers.
                         started = time.perf_counter()
                         with ThreadPoolExecutor(max_workers=2) as executor:
-                            embed_future = executor.submit(request, base, "/v1/embeddings", {"input": ["Concurrent fresh vector for native Metal scheduling and semantic retrieval."]})
+                            embed_future = executor.submit(request, base, "/v1/embeddings", {"input": ["Concurrent fresh vector for shared model-server scheduling and semantic retrieval."]})
                             search_future = executor.submit(request, base, "/v1/search_memories", {
                                 **search_body, "query": "What is the configured network port of the demo API service?"})
                             concurrent_embedding, concurrent_search = embed_future.result(), search_future.result()
@@ -272,16 +275,16 @@ def main():
                     report["healthAfter"] = request(base, "/health")
                     with stub_lock:
                         calls = list(stub_calls)
-                    if Counter(calls) != {"P1+P2": 1} or stub_errors:
-                        raise AssertionError("expected exactly one combined P1/P2 localhost stub response")
-                    if report["healthAfter"]["llm"]["calls"] != 1 or report["healthAfter"]["llm"]["attempts"] != 1:
+                    if Counter(calls) != {"P1": 1, "P2": 1} or stub_errors:
+                        raise AssertionError("expected a fact call and a separate session-end experience call")
+                    if report["healthAfter"]["llm"]["calls"] != 2 or report["healthAfter"]["llm"]["attempts"] != 2:
                         raise AssertionError("unexpected generative stage retry or extra daemon model request")
                     for key, expected in EXPECTED_DEVICE.items():
                         if report["healthAfter"].get(key) != expected:
                             raise AssertionError("device metadata changed during concurrent model calls")
-                    if report["healthAfter"].get("modelDevice") != health["modelDevice"]:
-                        raise AssertionError("the selected Metal registry device changed during the run")
-                    report["checks"]["oneCombinedFormationCallNoRealGenerativeCalls"] = True
+                    if any(report["healthAfter"].get(key) != health[key] for key in ["modelDevice", "modelDtype"]):
+                        raise AssertionError("the model server or quantisation changed during the run")
+                    report["checks"]["separateFactAndSessionEndCallsNoRealGenerativeCalls"] = True
                     report["status"] = "passed"
                 finally:
                     if process is not None:

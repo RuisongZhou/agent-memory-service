@@ -29,7 +29,8 @@ python3 model_validation/model_reference.py run --bench target/fast/memory-model
 python3 model_validation/model_reference.py run --bench target/fast/memory-models-bench --rerank-dir models/bge-reranker-v2-m3 --device metal --output results/models/metal-rerank
 python3 model_validation/benchmark_local.py embed models/bge-m3 --bench target/fast/memory-models-bench --device metal --threads 8 --rounds 3 --output results/models/embed-benchmark
 python3 model_validation/benchmark_local.py rerank models/bge-reranker-v2-m3 --bench target/fast/memory-models-bench --device metal --threads 8 --rounds 3 --output results/models/rerank-benchmark
-python3 scripts/metal_http_smoke.py --bin target/fast/agent-memoryd --models-dir models --output results/metal-http-smoke.json
+scripts/llama_servers.sh start
+python3 scripts/llama_http_smoke.py --bin target/fast/agent-memoryd --output results/llama-http-smoke.json
 ```
 
 Performance uses one warm-up and three rounds, 32 embedding inputs and 30 rerank pairs. Actual backend/device/dtype must match the requested device. A Metal registry ID is not necessarily zero; do not hardcode an ordinal. Explicit Metal has no silent CPU fallback.

@@ -112,6 +112,48 @@ pub fn clip_message(s: &str, max_bytes: usize) -> String {
     format!("{}\n…\n{}", truncate_bytes(s, half), tail_bytes(s, half))
 }
 
+/// Byte ranges of at most `max_bytes` covering all of `s`, on char boundaries. A window ends after
+/// the last whitespace or CJK sentence mark in its second half when there is one; consecutive windows
+/// overlap by an eighth of `max_bytes` so a phrase cut at one edge is whole in the neighbour.
+pub fn text_chunks(s: &str, max_bytes: usize) -> Vec<(usize, usize)> {
+    let max_bytes = max_bytes.max(8); // any char fits
+    let overlap = max_bytes / 8;
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < s.len() {
+        let mut end = start + truncate_bytes(&s[start..], max_bytes).len();
+        if end < s.len() {
+            let window = &s[start..end];
+            let cut = window
+                .char_indices()
+                .rev()
+                .find(|(_, c)| c.is_whitespace() || matches!(c, '。' | '！' | '？' | '；'))
+                .map(|(i, c)| start + i + c.len_utf8());
+            if let Some(cut) = cut.filter(|cut| cut - start >= max_bytes / 2) {
+                end = cut;
+            }
+        }
+        out.push((start, end));
+        if end >= s.len() {
+            break;
+        }
+        let mut next = (end - overlap).max(start + 1);
+        while !s.is_char_boundary(next) {
+            next += 1;
+        }
+        start = next;
+    }
+    out
+}
+
+/// `s[start..end]`, with "…" marking omitted text on either side; `None` for an invalid range.
+pub fn excerpt(s: &str, start: usize, end: usize) -> Option<String> {
+    let part = s.get(start..end)?;
+    let before = if start > 0 { "…" } else { "" };
+    let after = if end < s.len() { "…" } else { "" };
+    Some(format!("{before}{part}{after}"))
+}
+
 /// Truncate to at most `n` chars (for evidence snippets).
 pub fn truncate_chars(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
@@ -158,5 +200,45 @@ mod tests {
         assert_eq!(date_of("2026-10-08T23:30:00+08:00"), "2026-10-08");
         assert!(is_valid_date("2026-02-28"));
         assert!(!is_valid_date("2026-02-30"));
+    }
+    fn assert_covering(s: &str, max: usize) -> Vec<(usize, usize)> {
+        let chunks = text_chunks(s, max);
+        assert_eq!(chunks.first().map(|c| c.0), Some(0));
+        assert_eq!(chunks.last().map(|c| c.1), Some(s.len()));
+        for (i, &(a, b)) in chunks.iter().enumerate() {
+            assert!(a < b && b - a <= max, "chunk {i} = {a}..{b}");
+            assert!(s.is_char_boundary(a) && s.is_char_boundary(b));
+            if i > 0 {
+                let (pa, pb) = chunks[i - 1];
+                assert!(
+                    pa < a && a <= pb,
+                    "chunk {i} must advance and overlap or touch"
+                );
+            }
+        }
+        chunks
+    }
+    #[test]
+    fn chunks_cover_text() {
+        assert!(text_chunks("", 64).is_empty());
+        assert_eq!(text_chunks("short", 64), vec![(0, 5)]);
+        let words = "alpha beta gamma delta ".repeat(40);
+        let chunks = assert_covering(&words, 64);
+        for &(_, b) in &chunks[..chunks.len() - 1] {
+            assert_eq!(&words[b - 1..b], " ", "ASCII windows end after a space");
+        }
+        assert_covering(&"记忆库保存原文。".repeat(50), 100);
+        assert_covering(&"x".repeat(1000), 64);
+        assert_covering(&"日志".repeat(500), 9);
+    }
+    #[test]
+    fn excerpts_mark_omissions() {
+        let s = "head middle tail";
+        assert_eq!(excerpt(s, 0, 4).unwrap(), "head…");
+        assert_eq!(excerpt(s, 5, 11).unwrap(), "…middle…");
+        assert_eq!(excerpt(s, 12, 16).unwrap(), "…tail");
+        assert_eq!(excerpt(s, 0, 16).unwrap(), s);
+        assert!(excerpt("记忆", 1, 3).is_none());
+        assert!(excerpt(s, 4, 99).is_none());
     }
 }

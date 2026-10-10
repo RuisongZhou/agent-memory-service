@@ -11,6 +11,8 @@ pub mod engine;
 pub mod experience;
 #[path = "formation/extract.rs"]
 pub mod extract;
+#[path = "formation/schema.rs"]
+pub mod formation_schema;
 #[path = "api/http.rs"]
 pub mod http;
 #[path = "runtime/indexer.rs"]

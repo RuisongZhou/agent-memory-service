@@ -118,7 +118,7 @@ def main():
             raw = self.rfile.read(int(self.headers["Content-Length"]))
             body = json.loads(raw)
             system = body["messages"][0]["content"]
-            stage = "P1+P2" if "formation-values-v1" in system else "P1" if "事实抽取器" in system else "P2" if "经验抽取器" in system else "unexpected"
+            stage = "P1+P2" if "formation-object-v2" in system else "P1" if "事实抽取器" in system else "P2" if "经验抽取器" in system else "unexpected"
             with trace_lock:
                 if len(traces) >= args.max_calls:
                     self.send_error(429, "example request cap reached"); return
@@ -159,7 +159,7 @@ def main():
         with socket.socket() as check_socket:check_socket.bind(("127.0.0.1",args.port))
         child_env = dict(os.environ,MEMORY_MOCK_MODELS="1",
             MEMORY_LLM_MAX_CALLS=str(args.max_calls))
-        process = subprocess.Popen([str(binary),"serve","--data-dir",str(args.data_dir),"--models-dir",str(ROOT/"models"),
+        process = subprocess.Popen([str(binary),"serve","--data-dir",str(args.data_dir),
             "--port",str(args.port),"--prompt-variant","zh","--no-reranker","--llm-model",model,
             "--llm-base-url",f"http://127.0.0.1:{relay.server_port}","--llm-concurrency","1","--log-level","warn"],
             env=child_env,stdout=log,stderr=log)

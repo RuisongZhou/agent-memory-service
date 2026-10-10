@@ -58,7 +58,7 @@ async fn health(State(eng): State<Arc<Engine>>) -> Json<Value> {
         "rerankModel": eng.models.rerank_model_id,
         "modelBackend": eng.models.backend,
         "modelDevice": eng.models.device,
-        "modelDtype": "f32",
+        "modelDtype": eng.models.dtype,
         "llm": eng.llm.usage_snapshot(),
         "tenants": eng.tenant_names().await,
         "tenantPromptVariants": eng.tenant_prompt_variants().await,

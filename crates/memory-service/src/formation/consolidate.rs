@@ -702,7 +702,7 @@ pub async fn purge(t: &Arc<Tenant>, as_of: &str, days: f64) -> Result<Value> {
     let turns: Vec<TurnRec> = t
         .store
         .select_as(
-            "SELECT * OMIT id, embedding FROM turns WHERE extractState = 'done'",
+            "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE extractState = 'done'",
             vec![],
         )
         .await?;
@@ -738,6 +738,7 @@ pub async fn purge(t: &Arc<Tenant>, as_of: &str, days: f64) -> Result<Value> {
         let mut c = t.vecs.write().await;
         for id in &removed {
             c.turns.remove(id);
+            c.turn_chunks.remove(id);
         }
     }
     let sessions: Vec<SessionRec> = t

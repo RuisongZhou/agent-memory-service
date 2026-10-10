@@ -6,7 +6,9 @@ use std::path::PathBuf;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceConfig {
     pub data_dir: PathBuf,
-    pub models_dir: PathBuf,
+    /// llama-server base URLs for the embedding (`--embedding`) and rerank (`--reranking`) models.
+    pub embed_url: String,
+    pub rerank_url: String,
     /// Prompt set: "zh" (verbatim design prompts) or "en" (LoCoMo-adapted, English memories).
     pub prompt_variant: String,
 
@@ -17,8 +19,11 @@ pub struct ServiceConfig {
     pub llm_timeout_secs: u64,
 
     // ---- short-term buffer (ch.3) ----
-    pub max_message_bytes: usize,   // 8 KB → keep head/tail 4 KB
-    pub digest_max_bytes: usize,    // 2 KB
+    /// Formation's view of one message (prompt, source spans, P2 evidence): over 8 KB, head/tail 4 KB.
+    /// The buffer itself stores complete messages.
+    pub max_message_bytes: usize,
+    /// Turn digest (user + assistant heads), 2 KB; a longer message is also indexed in windows of half.
+    pub digest_max_bytes: usize,
     pub buffer_retention_days: f64, // 3 days after extraction
     pub session_idle_minutes: i64,  // 60
     pub recent_bm25_k: usize,       // 20
@@ -58,7 +63,8 @@ impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             data_dir: PathBuf::from("./memory-data"),
-            models_dir: PathBuf::from("./models"),
+            embed_url: "http://127.0.0.1:8081".into(),
+            rerank_url: "http://127.0.0.1:8082".into(),
             prompt_variant: "zh".into(),
             llm_base_url: "https://maas.qianwenaiapi.com/compatible-mode/v1".into(),
             llm_model: "qwen3.8-flash".into(),

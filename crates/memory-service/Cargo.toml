@@ -7,13 +7,7 @@ repository.workspace = true
 description = "Local shared memory service with evidence, revisions, HTTP and MCP"
 publish = false
 
-[features]
-default = []
-metal = ["memory-models/metal"]
-accelerate = ["memory-models/accelerate"]
-
 [dependencies]
-memory-models = { path = "../memory-models" }
 memory-fulltext = { path = "../memory-fulltext" }
 memory-rules = { path = "../memory-rules" }
 anyhow = "1"

@@ -48,7 +48,7 @@ def main():
                 "reference_answer": question.answer, "evidence": question.evidence,
                 "model": MODEL, "temperature": 0, "enable_thinking": False, "real_generation": True,
                 "service_prompt": "p1_en + p2_en (unified formation, LoCoMo human-human adaptation)",
-                "service_output_format": "formation-values-v1", "service_source_span_limit_chars": 1024,
+                "service_output_format": "facts-object-v1", "service_source_span_limit_chars": 1024,
                 "service_prompt_sha256": hashlib.sha256(b"".join((env.ROOT_DIR / "crates/memory-service/src/formation/prompts" / n).read_bytes() for n in ("p1_en.txt", "p2_en.txt", "p12_structure_en.txt"))).hexdigest(),
                 "mem0_prompt": "default additive + existing LoCoMo custom instructions",
                 "mem0_version": importlib.metadata.version("mem0ai"),
@@ -81,7 +81,7 @@ def main():
                       LLM_MODEL=MODEL, MEMORY_LLM_MAX_CALLS="10")
     daemon_env.pop("MEMORY_MOCK_MODELS", None)
     command = [str(env.ROOT_DIR / "target/fast/agent-memoryd"), "serve", "--data-dir", str(output / "service-store"),
-               "--models-dir", str(env.ROOT_DIR / "models"), "--port", str(port), "--model-device", "metal",
+               "--port", str(port),
                "--prompt-variant", "en", "--llm-concurrency", "1"]
     memories = []
     with (output / "daemon.log").open("w") as logfile:
