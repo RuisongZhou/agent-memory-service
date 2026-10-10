@@ -1,4 +1,4 @@
-//! Prompt sets. `zh` = the system prompts of 《共享记忆库 第四章 抽取 Prompt》 verbatim (plus the §0
+//! Prompt sets. `zh` = the system prompts of 《共享记忆库 第四章 抽取 Prompt》 with fixed positional fact values (plus the §0
 //! language convention); `en` = the LoCoMo-adapted set (same structure, schema and relation rules; extraction
 //! scope rewritten for person-to-person conversation; English memories). User templates follow the documented
 //! XML-tag layout.
@@ -118,6 +118,29 @@ pub fn get(variant: &str) -> &'static PromptSet {
     } else {
         &ZH
     }
+}
+
+/// One generation shares current dialogue between fact and experience extraction.
+pub fn formation(p: &PromptSet) -> String {
+    let (fact_end, experience_end, structure) = if p.variant == "en" {
+        (
+            "## Output structure:",
+            "Output JSON only",
+            include_str!("prompts/p12_structure_en.txt"),
+        )
+    } else {
+        (
+            "## 输出结构：",
+            "只输出 JSON",
+            include_str!("prompts/p12_structure_zh.txt"),
+        )
+    };
+    format!(
+        "{}\n\n{}\n\n{}",
+        p.p1.split(fact_end).next().unwrap(),
+        p.p2.split(experience_end).next().unwrap(),
+        structure
+    )
 }
 
 /// `<tag>\nbody\n</tag>` block.

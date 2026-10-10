@@ -248,9 +248,25 @@ pub struct SessionRec {
     pub last_turn_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,
-    /// turns with seq > this have not been through P2 yet
+    /// Last turn committed by the combined P1/P2 formation job.
     #[serde(default)]
     pub last_experience_seq: i64,
+    /// Unfinished tasks retain their original turns across formation batches and buffer purge.
+    #[serde(default)]
+    pub pending_tasks: Vec<PendingTask>,
+    /// Highest turn already reported by a session-end receipt; older failures are not reported again.
+    #[serde(default)]
+    pub end_checked_seq: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingTask {
+    pub task: String,
+    pub turn_ids: Vec<String>,
+    /// Watermark of the batch that last extended this task; stale tasks expire.
+    #[serde(default)]
+    pub updated_seq: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the documented Chinese P1 example through the actual daemon with real DeepSeek P1/P2.
+"""Run the documented Chinese P1 example through the actual daemon with real Qwen P1/P2.
 
 Only embeddings are mocked; SurrealDB, Tantivy, entity recall, prompt construction, rule
 validation and relation commits are real. A transparent localhost relay records the
@@ -60,11 +60,10 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "results/local-pilot/zh-example.json")
     parser.add_argument("--port", type=int, default=8771)
     parser.add_argument("--max-calls", type=int, default=12)
-    parser.add_argument("--max-usd", type=float, default=0.012)
-    parser.add_argument("--allow-local-stub", action="store_true", help="Test-only loopback upstream; report is explicitly simulated, never effectiveness/cost evidence")
+    parser.add_argument("--allow-local-stub", action="store_true", help="Test-only loopback upstream; report is explicitly simulated, never effectiveness evidence")
     args = parser.parse_args()
-    if args.max_calls > 12 or args.max_usd > 0.012 or args.max_calls < 1 or args.max_usd <= 0:
-        parser.error("this example is authorized for at most 12 attempts and USD 0.012")
+    if args.max_calls > 12 or args.max_calls < 1:
+        parser.error("this example is authorized for at most 12 attempts")
     binary = args.bin.resolve()
     sources = [ROOT / "crates/memory-service/src" / name for name in ("formation/extract.rs", "formation/experience.rs", "runtime/llm.rs")]
     if not binary.exists() or any(binary.stat().st_mtime < path.stat().st_mtime for path in sources):
@@ -72,25 +71,25 @@ def main():
     if b"systemHash" not in binary.read_bytes():
         raise SystemExit("binary does not contain systemHash audit metadata")
     if args.data_dir.exists() and any(args.data_dir.iterdir()):
-        raise SystemExit("data-dir already contains a store; refusing to replay or reset its billing guard")
-    key = os.environ.get("DEEPSEEK_API_KEY", "")
+        raise SystemExit("data-dir already contains a store; refusing to replay or reset its attempt guard")
+    key = os.environ.get("QWEN_API_KEY", "")
     if not key:
-        raise SystemExit("DEEPSEEK_API_KEY is not configured; eval.common.env loaded no key")
-    model = os.environ.get("EVAL_MODEL", "deepseek-flash")
-    upstream = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+        raise SystemExit("QWEN_API_KEY is not configured; eval.common.env loaded no key")
+    model = os.environ.get("EVAL_MODEL", os.environ.get("LLM_MODEL", "qwen3.8-flash"))
+    upstream = os.environ.get("QWEN_BASE_URL", "https://maas.qianwenaiapi.com/compatible-mode/v1").rstrip("/")
     host=urlparse(upstream).hostname
     if args.allow_local_stub:
         if host not in {"127.0.0.1","localhost","::1"}:
             raise SystemExit("local-stub mode refuses any external model destination")
-    elif host!="api.deepseek.com":
-        raise SystemExit("real example is scoped to the official api.deepseek.com destination")
+    elif host!="maas.qianwenaiapi.com":
+        raise SystemExit("real example is scoped to the official maas.qianwenaiapi.com destination")
     ca = os.environ.get("MEMORY_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE")
     tls = ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
     result = {"status": "started", "protocol": {"language": "zh", "model": model,
         "tenant": "documented-example-zh", "platform": "codex", "project": "共享记忆库",
         "turns": 3, "oldFacts": 4, "realGenerativeModel": not args.allow_local_stub, "mockEmbeddings": True,
-        "destinationHostname":host,"costIsSimulation":args.allow_local_stub,
-        "maxAttempts": args.max_calls, "maxEstimatedUsd": args.max_usd, "offPeakOnly": False,
+        "destinationHostname":host,
+        "maxAttempts": args.max_calls,
         "source": "documented synthetic extraction example; P2 sees T1-T3 only, without its later T4-T6 verification",
         "notLoCoMoEffectiveness": True, "transparentRelay": True}, "binary": {"path":str(binary),
         "mtime":binary.stat().st_mtime,"systemHashCompiled":True}, "startedAt":datetime.now(timezone.utc).isoformat()}
@@ -102,7 +101,7 @@ def main():
         model_ids = [row.get("id") for row in available.get("data", [])]
         result["connectivity"] = {"modelsListingSucceeded": True,"selectedModelPresent":model in model_ids}
         if model not in model_ids:
-            raise RuntimeError("selected DeepSeek model absent from authenticated /models listing")
+            raise RuntimeError("selected Qwen model absent from authenticated /models listing")
     except Exception as exc:
         result.update(status="network_or_configuration_blocked", errorType=type(exc).__name__)
         if isinstance(exc, HTTPError): result["httpStatus"] = exc.code
@@ -119,7 +118,7 @@ def main():
             raw = self.rfile.read(int(self.headers["Content-Length"]))
             body = json.loads(raw)
             system = body["messages"][0]["content"]
-            stage = "P1" if "事实抽取器" in system else "P2" if "经验抽取器" in system else "unexpected"
+            stage = "P1+P2" if "formation-values-v1" in system else "P1" if "事实抽取器" in system else "P2" if "经验抽取器" in system else "unexpected"
             with trace_lock:
                 if len(traces) >= args.max_calls:
                     self.send_error(429, "example request cap reached"); return
@@ -158,8 +157,8 @@ def main():
     log = logfile.open("w",encoding="utf-8")
     try:
         with socket.socket() as check_socket:check_socket.bind(("127.0.0.1",args.port))
-        child_env = dict(os.environ,MEMORY_MOCK_MODELS="1",MEMORY_OFF_PEAK_ONLY="0",
-            MEMORY_LLM_MAX_CALLS=str(args.max_calls),MEMORY_LLM_MAX_USD=str(args.max_usd))
+        child_env = dict(os.environ,MEMORY_MOCK_MODELS="1",
+            MEMORY_LLM_MAX_CALLS=str(args.max_calls))
         process = subprocess.Popen([str(binary),"serve","--data-dir",str(args.data_dir),"--models-dir",str(ROOT/"models"),
             "--port",str(args.port),"--prompt-variant","zh","--no-reranker","--llm-model",model,
             "--llm-base-url",f"http://127.0.0.1:{relay.server_port}","--llm-concurrency","1","--log-level","warn"],
@@ -194,7 +193,7 @@ def main():
         result["memories"]=exported["memories"]
         by_id={m["id"]:m for m in result["memories"]}
         result["oldRecords"]={mid:api("/v1/get_memory",{"id":mid,"includeHistory":True,"includeEvidence":True}) for mid,*_ in OLD}
-        p1_trace=next((t for t in traces if t["stage"]=="P1"),None)
+        p1_trace=next((t for t in traces if t["stage"] in ("P1", "P1+P2")),None)
         recalled=[]
         if p1_trace:
             prompt=p1_trace["request"]["messages"][1]["content"]
@@ -222,7 +221,6 @@ def main():
             "idleWithoutFailures":idle.get("status")=="idle" and all(idle.get(k,0)==0 for k in ("failedTurns","failedRequests","failedExperiences")),
             "duplicateIdempotent":result["duplicateReceipt"].get("duplicate") is True and result["duplicateReceipt"].get("requestId")==receipts[0]["requestId"],
             "boundedAttempts":result["healthAfter"]["llm"]["attempts"]<=args.max_calls,
-            "estimatedCostWithinBudget":result["healthAfter"]["llm"]["estimatedUsd"]<=args.max_usd,
         }
         result["deviations"]=[name for name,passed in result["checks"].items() if not passed]
         result["status"]="completed" if not result["deviations"] else "completed_with_deviations"

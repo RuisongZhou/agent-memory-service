@@ -14,7 +14,7 @@ Stages (default --stage all runs them in this order; each skips work already rec
 Searches run one at a time (--search-concurrency 1) after all ingestion so latencies are not
 contaminated by background extraction.
 
-The daemon's tenant-persistent llm_usage table is exported and appended to the cost ledger
+The daemon's tenant-persistent llm_usage table is exported and appended to the usage ledger
 as '<tag>.daemon/<source stage>', deduplicated by tenant and record id across restarts.
 
   .venv/bin/python memory_run.py --base-url http://127.0.0.1:8765 --tag memory-en --prompt-variant en
@@ -38,7 +38,7 @@ from common import env  # noqa: E402,F401
 from common import jsonl, locomo  # noqa: E402
 from common.env import RESULTS_DIR  # noqa: E402
 from common.llm import default_ledger, set_ledger_path  # noqa: E402
-from common.billing import BillingRecordError, usage_entries  # noqa: E402
+from common.usage_records import UsageRecordError, usage_entries  # noqa: E402
 from common.metrics import TOKEN_COUNTER, count_tokens  # noqa: E402
 from common.protocol import guard  # noqa: E402
 from common import model_metadata  # noqa: E402
@@ -93,7 +93,7 @@ class Daemon:
 
 
 class UsagePoller:
-    """Collect billed responses from each tenant's persistent llm_usage records."""
+    """Collect returned responses from each tenant's persistent llm_usage records."""
 
     def __init__(self, daemon: Daemon, tag: str, interval: float, checkpoint: Optional[Path] = None):
         self.d, self.tag, self.interval = daemon, tag, interval
@@ -111,7 +111,7 @@ class UsagePoller:
                 exported = await self.d.post("/admin/export", tenant, {"table": "llm_usage"}, retries=1)
                 try:
                     entries.extend(usage_entries(exported.get("records"), tenant, self.tag))
-                except BillingRecordError as e:
+                except UsageRecordError as e:
                     raise DaemonError(str(e)) from e
             default_ledger().record_many(entries)
 
@@ -125,7 +125,7 @@ class UsagePoller:
             await self.flush()
 
     async def start(self):
-        await self.flush()  # recover billed calls missed by an earlier process
+        await self.flush()  # recover returned calls missed by an earlier process
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self):
@@ -502,7 +502,7 @@ def main() -> None:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     if Path(args.results_dir).resolve() != RESULTS_DIR.resolve():
-        set_ledger_path(Path(args.results_dir) / "cost_ledger.jsonl")
+        set_ledger_path(Path(args.results_dir) / "usage_ledger.jsonl")
     asyncio.run(amain(args))
 
 

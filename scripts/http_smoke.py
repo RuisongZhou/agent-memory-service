@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the real daemon against a localhost-only deterministic LLM stub. No paid calls.
 
-Exercises HTTP formation, persisted retry billing, profiles, purge, restart and idempotency.
+Exercises HTTP formation, persisted retry usage, profiles, purge, restart and idempotency.
 Mock output validates transport/storage only and must never enter the LoCoMo effectiveness report.
 """
 import argparse
@@ -24,34 +24,33 @@ from urllib.error import HTTPError
 class Stub(BaseHTTPRequestHandler):
     calls = []
     malformed_once = True
+    wrong_shape_once = True
 
     def log_message(self, *_):
         pass
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        assert body['thinking'] == {'type': 'disabled'}
+        assert body['model'] == 'qwen3.8-flash'
+        assert body['enable_thinking'] is False and 'thinking' not in body
         assert body['temperature'] == 0
-        assert body['response_format'] == {'type': 'json_object'}
         system, user = [m['content'] for m in body['messages']]
         if '<current batch>' in user:
-            stage = 'P1'
+            stage = 'P1+P2'
             facts = []
             batch = user.split('<current batch>')[1].split('</current batch>')[0]
             for turn_id, date, messages in re.findall(r'\[([^|]+) \| ([^\]]+)\]\n([^\[]+)', batch):
                 for line in messages.strip().splitlines():
                     if not line.strip():
                         continue
-                    facts.append({'text': line, 'scope': 'global', 'entities': [line.split(':')[0]],
-                                  'effectiveAt': date[:10], 'origin': 'user',
-                                  'source': {'turnId': turn_id.strip(), 'span': line}, 'relations': []})
-            out = {'facts': facts}
+                    facts.append([line, 'global', [line.split(':')[0]], date[:10], 'user',
+                                  turn_id.strip(), line, [], None])
+            out = [facts, [], [], ['offline integration', 'facts recorded', [], []]]
         elif '<content to remember' in user:
             stage = 'P1-b'
             text = re.search(r'<content to remember[^>]*>\s*(.*?)\s*</content to remember>', user, re.S).group(1)
-            out = {'facts': [{'text': text, 'scope': 'project', 'entities': ['team'],
-                             'effectiveAt': datetime.now(timezone.utc).date().isoformat(), 'origin': 'explicit',
-                             'source': {'turnId': 'text', 'span': text}, 'relations': []}]}
+            out = [[text, 'project', ['team'], datetime.now(timezone.utc).date().isoformat(),
+                    'explicit', 'text', text, [], None]]
         elif 'experience extractor' in system:
             stage = 'P2'
             out = {'analysis': [], 'experiences': [], 'summary': {
@@ -74,11 +73,19 @@ class Stub(BaseHTTPRequestHandler):
                 'extends':None},'reason':'Two verified successful approaches share these steps.'}
         else:
             raise AssertionError('unexpected stub stage')
+        if stage in ('P1+P2', 'P1-b'):
+            assert 'response_format' not in body
+            assert ('formation-values-v1' if stage == 'P1+P2' else 'fact-values-v1') in system
+        else:
+            assert body['response_format'] == {'type': 'json_object'}
         Stub.calls.append(stage)
-        # One billed, malformed completion must be retained before the client's retry.
-        if stage == 'P1' and Stub.malformed_once:
+        # One returned, malformed completion must be retained before the client's retry.
+        if stage == 'P1+P2' and Stub.malformed_once:
             Stub.malformed_once = False
             content = 'malformed'
+        elif stage == 'P1+P2' and Stub.wrong_shape_once:
+            Stub.wrong_shape_once = False
+            content = '{"facts": []}'  # Valid JSON, but the old object protocol must be rejected.
         else:
             content = json.dumps(out)
         response = {'choices': [{'message': {'content': content}, 'finish_reason': 'stop'}],
@@ -106,7 +113,7 @@ def main():
             port_socket.bind(('127.0.0.1', 0))
             port = port_socket.getsockname()[1]
         base = f'http://127.0.0.1:{port}'
-        env = dict(os.environ, MEMORY_MOCK_MODELS='1', DEEPSEEK_API_KEY='offline-placeholder',
+        env = dict(os.environ, MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline-placeholder',
                    MEMORY_LLM_MAX_CALLS='60')
         logfile = open(temp / 'daemon.log', 'w')
 
@@ -117,10 +124,20 @@ def main():
             with urlopen(req, timeout=150) as response:
                 return json.load(response)
 
+        def wait_tasks(receipts, tenant='http-smoke-en'):
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                tasks = [request('/v1/get_task', {'requestId': r['requestId']}, tenant) for r in receipts]
+                if all(t['status'] == 'completed' for t in tasks):
+                    return tasks
+                assert not any(t['status'] == 'failed' for t in tasks), tasks
+                time.sleep(0.1)
+            raise AssertionError(f'formation did not complete: {tasks}')
+
         def start():
             p = subprocess.Popen([str(binary), 'serve', '--data-dir', str(temp/'data'), '--models-dir', str(temp),
                                   '--port', str(port), '--llm-base-url', f'http://127.0.0.1:{stub.server_port}',
-                                  '--llm-model', 'offline-stub', '--log-level', 'warn'],
+                                  '--log-level', 'warn'],
                                  env=env, stdout=logfile, stderr=logfile)
             for _ in range(100):
                 if p.poll() is not None:
@@ -173,15 +190,31 @@ def main():
                     {'role': 'assistant', 'content': a, 'timestamp': ts(2*i+1)}]}
                 payloads.append(payload)
                 receipts.append(request('/v1/add_memories', payload))
+            # A full batch forms P1 and P2 while the session is still open.
+            wait_tasks(receipts)
+            calls_before_end = len(Stub.calls)
             request('/v1/add_memories', {'scope': scope, 'sessionEnded': True})
             idle = request('/admin/wait_idle', {})
             assert idle['status'] == 'idle' and idle['failedTurns'] == 0 and idle['failedExperiences'] == 0, idle
+            assert len(Stub.calls) == calls_before_end  # No redundant session-end P2 call.
             tasks = [request('/v1/get_task', {'requestId': r['requestId']}) for r in receipts]
             assert all(t['status'] == 'completed' for t in tasks), tasks
             explicit = request('/v1/add_memories', {'scope': scope, 'text': 'The team service port is 8100.'})
             assert explicit['status'] == 'completed', explicit
             stats = request('/admin/stats', {})
             assert stats['counts']['turns'] == 3 and stats['counts']['memories'] == 7, stats
+            extraction_records = request('/admin/export', {'table': 'extract_log'})
+            fact_stages = [r for r in extraction_records['records'] if r.get('stage') in ('P1+P2', 'P1-b')]
+            assert {r['stage'] for r in fact_stages} == {'P1+P2', 'P1-b'}, fact_stages
+            assert not any(r.get('stage') == 'P2' for r in extraction_records['records'])
+            for record in fact_stages:
+                assert record['outputFormat'] == ('formation-values-v1' if record['stage'] == 'P1+P2' else 'fact-values-v1')
+                assert isinstance(record['modelOutput'], list)
+                rows = record['modelOutput'][0] if record['stage'] == 'P1+P2' else record['modelOutput']
+                for values, fact in zip(rows, record['output']['facts']):
+                    assert len(values) == 9
+                    assert fact['source'] == {'turnId': values[5], 'span': values[6]}
+                    assert fact['text'] == values[0]
             request('/admin/run_jobs', {'jobs': ['profile','project_notes']})
             fixtures=[]
             for i,result in enumerate(['success: verified','partial：partly verified','failure: unverified']):
@@ -205,14 +238,55 @@ def main():
             health = request('/health')
             assert health['tenantPromptVariants']['http-smoke-en'] == 'en', health
             assert health['llm']['calls'] == len(Stub.calls)
-            bills = request('/admin/export', {'table': 'llm_usage'})
-            assert bills['count'] == len(Stub.calls), bills
-            assert sum(r['validJson'] is False for r in bills['records']) == 1, bills
+            assert not {'estimatedUsd', 'maxEstimatedUsd', 'offPeakOnly'} & health['llm'].keys()
+            usage_records = request('/admin/export', {'table': 'llm_usage'})
+            assert usage_records['count'] == len(Stub.calls), usage_records
+            assert all(not {'estimatedUsd', 'pricingPeakUtc'} & row.keys() for row in usage_records['records'])
+            traced_search = request('/v1/search_memories', {'query': 'Caroline support group', 'scope': scope,
+                                    'types': ['fact'], 'includeRecent': False, 'touch': True})
+            retrieval_records = request('/admin/export', {'table': 'retrieval_log'})
+            logged_search = next(row for row in retrieval_records['records'] if row['mid'] == traced_search['retrievalId'])
+            assert logged_search['candidates'] and logged_search['returned']['memories']
+            assert {row['id'] for row in logged_search['returned']['memories']} <= {row['id'] for row in logged_search['candidates']}
+            assert sum(r['validJson'] is False for r in usage_records['records']) == 1, usage_records
+            assert sum(r['validOutputShape'] is False for r in usage_records['records']) == 2, usage_records
             assert request('/admin/export',{'table':'proposals'})['count'] == 1
             evidence_before=request('/admin/stats',{})['counts']['evidence']
             purge = request('/admin/run_jobs', {'jobs': ['purge'], 'retentionDays': 0})
             assert purge['jobs']['purge']['remainingTurns'] == 0, purge
             assert request('/admin/stats',{})['counts']['evidence']==evidence_before
+            # Exercise each partial-batch trigger without shortening the configured five minutes.
+            edge_tenant = 'formation-edge-en'
+            for trigger in ('manual', 'end', 'timeout'):
+                edge_scope = {'project': 'edge', 'session': trigger}
+                stamp = datetime.now(timezone.utc).isoformat()
+                tid = f'{trigger}-1'
+                u, a = 'Caroline: I use the service.', 'Melanie: I verify deployments.'
+                payload = {'scope': edge_scope, 'turnId': tid, 'messages': [
+                    {'role': 'user', 'content': u, 'timestamp': stamp},
+                    {'role': 'assistant', 'content': a, 'timestamp': stamp}]}
+                if trigger == 'end':
+                    payload['sessionEnded'] = True
+                before = len(Stub.calls)
+                receipt = request('/v1/add_memories', payload, edge_tenant)
+                if trigger == 'manual':
+                    assert request('/v1/get_task', {'requestId': receipt['requestId']}, edge_tenant)['status'] == 'queued'
+                    assert request('/admin/wait_idle', {}, edge_tenant)['status'] == 'idle'
+                elif trigger == 'timeout':
+                    # Seed only the queued record's age; source timestamps and default 300 s rule stay intact.
+                    old = (datetime.now(timezone.utc) - timedelta(seconds=301)).isoformat()
+                    turn = {'key': f'locomo::{tid}', 'turnId': tid, 'platform': 'locomo',
+                            'project': 'edge', 'session': trigger, 'userMessage': u, 'assistantMessage': a,
+                            'userTs': stamp, 'assistantTs': stamp, 'startedAt': stamp, 'endedAt': stamp,
+                            'recordedAt': old, 'digest': u+'\n'+a, 'seq': 1,
+                            'requestId': receipt['requestId'], 'extractState': 'pending'}
+                    request('/admin/seed', {'turns': [turn]}, edge_tenant)
+                wait_tasks([receipt], edge_tenant)
+                assert len(Stub.calls) == before + 1, (trigger, Stub.calls)
+                edge_logs = request('/admin/export', {'table': 'extract_log'}, edge_tenant)['records']
+                assert len([r for r in edge_logs if r.get('stage') == 'P2_validation']) >= 1
+            edge_usage = request('/admin/export', {'table': 'llm_usage'}, edge_tenant)['count']
+            assert edge_usage == 3
             duplicate = request('/v1/add_memories', payloads[0])
             assert duplicate['duplicate'] and duplicate['requestId'] == receipts[0]['requestId'], duplicate
             proc.terminate(); proc.wait(timeout=15)
@@ -253,10 +327,12 @@ def main():
                     bridge.terminate();bridge.wait(timeout=10)
             assert request('/health')['llm']['calls'] == 0  # Restart retrieval needs no generation.
             report = {'ok': True, 'mockModels': True, 'realLlmCalls': 0, 'stubCalls': len(Stub.calls),
-                      'stages': Stub.calls, 'persistedBillingRows': bills['count'], 'restartMemoryVectors': 11,
-                      'checks': ['HTTP P1 retry', 'P1-b', 'P2 summary', 'P3 profiles', 'P4 proposal', 'P5 candidate/idempotency', 'span validation',
+                      'stages': Stub.calls, 'persistedUsageRows': usage_records['count'] + edge_usage, 'restartMemoryVectors': 11,
+                      'checks': ['combined P1/P2 retry and wrong-root rejection', 'combined/P1-b value-only assembly',
+                                 'three-turn/manual/session-end/300-second triggers', 'no redundant session-end P2 call',
+                                 'P2 summary', 'P3 profiles', 'P4 proposal', 'P5 candidate/idempotency', 'span validation',
                                  'receipt idempotency', 'purge keeps evidence', 'tenant prompt',
-                                 'retry billing', 'restart vectors', 'MCP initialize/list/call/tenant', 'zero-generation retrieval',
+                                 'retry usage', 'restart vectors', 'MCP initialize/list/call/tenant', 'zero-generation retrieval',
                                  'loopback and config guards', 'strict embedding input', 'reindex failure exit status']}
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, indent=2) + '\n')

@@ -1,0 +1,28 @@
+## Combined formation job
+Process facts, experiences and the session summary in one response. Extract facts only from <current batch>. <task context> supports cross-batch task understanding; do not re-extract its facts.
+Experiences may cite source turn IDs from <current batch> and <task context>, but must cite at least one <processed turns> ID. Unknown/unverified outcomes produce analysis with unknown and no experience.
+The pendingTasks in <current session summary> are unfinished tasks. Reuse each task's exact task name when analyzing it, keep its supporting turn IDs, and add new supporting turns. Close it only with a verified result in this batch. Do not omit or prematurely close an unfinished task.
+Summary decisions retain still-valid decisions; openIssues lists currently unresolved matters and removes those explicitly resolved in this batch.
+
+## Output structure: formation-values-v1
+Output only one valid JSON array with EXACTLY FOUR sections in this fixed order: [fact rows, task analysis rows, experience rows, summary values]. The program constructs every object and field name. Never emit objects, field names, headers, Markdown, or explanations.
+
+Section 1: each fact row has EXACTLY 9 positions:
+[fact text, "global|project", array of entity name strings, "YYYY-MM-DD", "explicit|user|assistant", source turn ID, verbatim evidence excerpt, array of relation pairs, reason string or null]
+Each individual evidence excerpt must be copied verbatim and contain at most 1024 Unicode characters, including spaces and punctuation. Relation pairs are [target ID, relation type]; targets are M1 etc. for old memories or F1 etc. for the fact rows in order; types are same, updates, conflicts, related. Never reference the same fact. Empty entity/relation arrays use []; absent reasons use null. Never omit a position.
+
+Section 2: each task analysis row has EXACTLY 3 positions:
+[task name, "success|failure|partial|unknown", array of supporting turn ID strings]
+Analyze currently processed tasks and retained unfinished tasks. Unconfirmed outcomes are unknown.
+
+Section 3: each experience row has EXACTLY 7 positions:
+[situation, actual approach, result description starting with success/failure/partial, reusable lesson, "global|project", array of supporting turn ID strings, array of relation pairs]
+Experience relation pairs are [old experience ID, "same|related"], using E1 etc. only. At most one experience per task with a verified outcome and at most 3 per batch. Empty experiences or relations use [].
+
+Section 4: summary values have EXACTLY 4 positions:
+[session goal string, current outcome string, array of decision strings, array of unresolved issue strings]
+
+Write memories in English. Preserve original names and identifiers.
+Structure example (copy only the positions, never extract example content):
+[[["Fact text","project",["Entity name"],"2026-10-10","user","T1","Verbatim excerpt",[],null]],[["Task name","unknown",["T1"]]],[],["Session goal","Unfinished",[],["Awaiting verification"]]]
+If there is nothing to add, still retain all four sections: [[],[],[],["","",[],[]]].

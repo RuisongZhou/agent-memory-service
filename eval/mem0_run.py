@@ -10,9 +10,9 @@
            speakers (top_k 30 = mem0's Makefile run-mem0-search); context = both lists concatenated,
            each line "[<speaker>] <timestamp>: <memory>".
 
-LLM: provider "openai" pointed at DeepSeek (deepseek-flash, temperature 0); thinking is disabled by a
-3-line OpenAILLM subclass that passes extra_body={"thinking":{"type":"disabled"}} through mem0's own
-generate_response(**kwargs) path. Usage is logged to the cost ledger via mem0's response_callback hook.
+LLM: provider "openai" pointed at Qwen (qwen3.8-flash, temperature 0); thinking is disabled by a
+3-line OpenAILLM subclass that passes extra_body={"enable_thinking": False} through mem0's own
+generate_response(**kwargs) path. Usage is logged to the usage ledger via mem0's response_callback hook.
 Embedder: provider "openai" pointed at the Memory daemon's /v1/embeddings (bge-m3, 1024-d).
 Vector store: local on-disk Qdrant, one store per (conversation, perspective).
 
@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import env  # noqa: E402,F401  (must precede mem0 import: MEM0_TELEMETRY=False, caches)
 from common import jsonl, locomo  # noqa: E402
 from common.env import EVAL_DIR, RESULTS_DIR, STORES_DIR  # noqa: E402
-from common.llm import (DEEPSEEK_BASE_URL, MODEL, NO_THINKING, BudgetExceeded, api_key,  # noqa: E402
+from common.llm import (QWEN_BASE_URL, MODEL, NO_THINKING, api_key,  # noqa: E402
                         LLMOutputError, default_ledger, extract_json, set_ledger_path, usage_tokens)
 from common.metrics import TOKEN_COUNTER, count_tokens  # noqa: E402
 from common.protocol import guard  # noqa: E402
@@ -90,22 +90,19 @@ def _install_mem0_patches(observation_date: bool):
         mm.generate_additive_extraction_prompt = patched
         mm._eval_obs_patch = True
 
-    class DeepSeekNoThinkLLM(OpenAILLM):
-        """mem0 OpenAILLM that disables DeepSeek thinking on every request."""
+    class QwenNoThinkLLM(OpenAILLM):
+        """mem0 OpenAILLM that disables Qwen thinking on every request."""
 
         def __init__(self, config):
             from openai import OpenAI
             super().__init__(config)
             self.client.close()
             # The parent silently prefers OPENROUTER_API_KEY if present. Pin the
-            # intended backend, and let the harness own retries and cost records.
+            # intended backend, and let the harness own retries and usage records.
             self.client = OpenAI(api_key=self.config.api_key,
                                  base_url=self.config.openai_base_url, max_retries=0)
 
         def generate_response(self, messages, response_format=None, tools=None, tool_choice="auto", **kwargs):
-            budget = getattr(self, "budget_usd", None)
-            if budget is not None and default_ledger().spent_usd >= budget:
-                raise BudgetExceeded(f"mem0 budget {budget:.4f} USD reached")
             _tls.llm_started_at = datetime.now(timezone.utc)
             _tls.llm_started_perf = time.perf_counter()
             kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), **NO_THINKING}
@@ -122,7 +119,7 @@ def _install_mem0_patches(observation_date: bool):
                     raise LLMOutputError("mem0 extraction requires a memory list")
             return output
 
-    return mm.Memory, DeepSeekNoThinkLLM
+    return mm.Memory, QwenNoThinkLLM
 
 
 def _ledger_callback(component: str):
@@ -151,9 +148,9 @@ def _ledger_callback(component: str):
                       reasoning_tokens=reasoning or None,
                       reasoning_chars=len(reasoning_content) if reasoning_content else None,
                       finish=finish if finish != "stop" else None, parse_error=parse_error,
-                      **getattr(_tls, "billing_meta", {}))
-        if hasattr(_tls, "add_cost_rows"):
-            _tls.add_cost_rows.append(row)
+                      **getattr(_tls, "usage_meta", {}))
+        if hasattr(_tls, "add_usage_rows"):
+            _tls.add_usage_rows.append(row)
     return cb
 
 
@@ -197,7 +194,7 @@ class Mem0Stores:
                     "collection_name": "mem0", "path": str(d / "qdrant"), "embedding_model_dims": 1024,
                     "on_disk": True}},
                 "llm": {"provider": "openai", "config": {
-                    "model": MODEL, "openai_base_url": DEEPSEEK_BASE_URL, "api_key": api_key(),
+                    "model": MODEL, "openai_base_url": QWEN_BASE_URL, "api_key": api_key(),
                     "temperature": 0.0, "response_callback": _ledger_callback(f"{self.args.tag}.add")}},
                 "embedder": {"provider": "openai", "config": {
                     "model": "bge-m3", "openai_base_url": self.args.embed_url, "api_key": "unused",
@@ -209,7 +206,6 @@ class Mem0Stores:
             m = self.Memory.from_config(cfg)
             m.llm.client.close()
             m.llm = self.LLMClass(m.llm.config)  # same config, thinking disabled
-            m.llm.budget_usd = getattr(self.args, "max_usd", None)
             self._mems[p.user_id] = m
             return m
 
@@ -262,17 +258,14 @@ def ingest_perspective(stores: Mem0Stores, conv: dict, p: Perspective, progress:
             model_metadata.check_embedding_runtime(a.embed_url, a.embedding_runtime)
         if stop.is_set():
             raise Stop()
-        if a.max_usd is not None and ledger.spent_usd >= a.max_usd:
-            stop.set()
-            raise BudgetExceeded(f"--max-usd {a.max_usd} reached")
         _tls.observation_date = obs if a.observation_date == "session" else None
         t0 = time.perf_counter()
         err = None
         res = None
-        _tls.add_cost_rows = []
+        _tls.add_usage_rows = []
         add_id = f"{p.user_id}/{s.key}/{bi}"
         for attempt in range(1, a.retries + 1):
-            _tls.billing_meta = {"conv": p.conv, "user_id": p.user_id, "session": s.key, "batch": bi,
+            _tls.usage_meta = {"conv": p.conv, "user_id": p.user_id, "session": s.key, "batch": bi,
                                  "add_id": add_id, "attempt": attempt}
             try:
                 res = m.add(msgs, user_id=p.user_id, metadata={"timestamp": ts_str})
@@ -284,21 +277,20 @@ def ingest_perspective(stores: Mem0Stores, conv: dict, p: Perspective, progress:
                 if attempt < a.retries:
                     time.sleep(min(60, 2 ** attempt))
         ms = (time.perf_counter() - t0) * 1000
-        batch_cost = {"add_id": add_id, "llm_calls": len(_tls.add_cost_rows),
-                      "usd": round(sum(r["usd"] for r in _tls.add_cost_rows), 12),
-                      "hit": sum(r["hit"] for r in _tls.add_cost_rows),
-                      "miss": sum(r["miss"] for r in _tls.add_cost_rows),
-                      "out": sum(r["out"] for r in _tls.add_cost_rows)}
+        batch_usage = {"add_id": add_id, "llm_calls": len(_tls.add_usage_rows),
+                      "hit": sum(r["hit"] for r in _tls.add_usage_rows),
+                      "miss": sum(r["miss"] for r in _tls.add_usage_rows),
+                      "out": sum(r["out"] for r in _tls.add_usage_rows)}
         if err:
             n_fail += 1
             jsonl.append(progress, {"conv": p.conv, "user_id": p.user_id, "session": s.key, "batch": bi,
-                                    "ok": False, "error": err, "cost": batch_cost})
+                                    "ok": False, "error": err, "usage": batch_usage})
             break  # preserve chronological extraction; resume this batch before later sessions
         added = len((res or {}).get("results", []))
         n_add += 1
         n_mem += added
         jsonl.append(progress, {"conv": p.conv, "user_id": p.user_id, "session": s.key, "batch": bi, "ok": True,
-                                "n_messages": len(msgs), "n_added": added, "ms": round(ms, 1), "cost": batch_cost})
+                                "n_messages": len(msgs), "n_added": added, "ms": round(ms, 1), "usage": batch_usage})
     return {"user_id": p.user_id, "added_batches": n_add, "skipped": n_skip, "failed": n_fail, "memories": n_mem}
 
 
@@ -319,14 +311,14 @@ def run_ingest(args, data: list[dict], stores: Mem0Stores) -> None:
                 log.info("ingest done %s: %s", p.user_id, result)
                 if result["failed"]:
                     failures.append(p.user_id)
-            except (Stop, BudgetExceeded) as e:
+            except Stop as e:
                 log.warning("ingest stopped %s: %s", p.user_id, e)
                 failures.append(p.user_id)
             except Exception:
                 log.exception("ingest crashed %s", p.user_id)
                 stop.set()
                 failures.append(p.user_id)
-    log.info("ledger spend this process: %.5f USD", default_ledger().spent_usd)
+    log.info("model calls this process: %d", default_ledger().calls)
     if failures:
         raise RuntimeError(f"incomplete ingestion for {failures}; rerun ingest to resume before retrieval")
 
@@ -417,14 +409,13 @@ def main() -> None:
     ap.add_argument("--convs", type=lambda s: s.split(","), default=None)
     ap.add_argument("--sessions", type=int, default=None, help="only the first N sessions of each conversation (testing)")
     ap.add_argument("--perspectives", choices=["both", "a"], default="both",
-                    help="'a' = only speaker_a's user_id (halves ingestion cost; not mem0's protocol)")
+                    help="'a' = only speaker_a's user_id (halves ingestion calls; not mem0's protocol)")
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--top-k", type=int, default=30)
     ap.add_argument("--limit", type=int, default=None, help="questions per conversation (testing)")
     ap.add_argument("--qids", type=lambda s: s.split(","), default=None)
     ap.add_argument("--workers", type=int, default=20, help="parallel perspectives during ingestion")
     ap.add_argument("--retries", type=int, default=3)
-    ap.add_argument("--max-usd", type=float, default=None, help="stop ingestion when this process spent this much")
     ap.add_argument("--observation-date", choices=["session", "system"], default="session")
     ap.add_argument("--no-custom-instructions", action="store_true")
     ap.add_argument("--results-dir", default=str(RESULTS_DIR))
@@ -432,7 +423,7 @@ def main() -> None:
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     if Path(args.results_dir).resolve() != RESULTS_DIR.resolve():
-        set_ledger_path(Path(args.results_dir) / "cost_ledger.jsonl")
+        set_ledger_path(Path(args.results_dir) / "usage_ledger.jsonl")
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")

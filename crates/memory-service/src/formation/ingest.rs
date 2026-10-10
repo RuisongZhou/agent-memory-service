@@ -1,7 +1,7 @@
 //! Completed-turn buffer, durable receipts and serialised formation jobs (chapters 2–4).
 use super::{
     engine::Engine,
-    experience, extract, indexer,
+    extract, indexer,
     store::{self, from_doc, to_doc, Tx},
     tenant::Tenant,
     types::*,
@@ -331,15 +331,11 @@ async fn wait_request(
     }
 }
 
-/// An explicit administrative drain flushes partial batches, then P2, then all index tasks.
+/// An explicit administrative drain flushes partial P1/P2 batches, then all index tasks.
 pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     let started = Instant::now();
     loop {
         process_available(eng, t, true, None).await?;
-        let pending = t
-            .store
-            .count("turns", Some("extractState = 'pending'"))
-            .await?;
         let requests = t
             .store
             .count(
@@ -351,23 +347,32 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
             .store
             .select_as("SELECT * OMIT id FROM sessions", vec![])
             .await?;
+        let mut pending = t
+            .store
+            .count("turns", Some("extractState = 'pending'"))
+            .await?;
         let mut experiences = 0usize;
         let mut failed_experiences = 0usize;
         for s in sessions
             .iter()
-            .filter(|s| s.ended_at.is_some() && s.last_experience_seq < s.turn_count)
+            .filter(|s| s.last_experience_seq < s.turn_count)
         {
-            let doc = t
-                .store
-                .get_doc("sessions", &store::session_rid(&s.platform, &s.session))
-                .await?
-                .unwrap_or(Value::Null);
-            if doc["experienceFailures"].as_i64().unwrap_or(0) >= 5
-                || doc["experienceState"] == "failed"
-            {
-                failed_experiences += 1;
-            } else {
-                experiences += 1;
+            let turns = t.store.session_turns(&s.platform, &s.session).await?;
+            let waiting: Vec<&TurnRec> = turns
+                .iter()
+                .filter(|tr| awaiting_formation(tr, s.last_experience_seq))
+                .collect();
+            // Legacy backfill turns are `done` yet still awaiting the combined formation job.
+            pending += waiting
+                .iter()
+                .filter(|tr| tr.extract_state == "done")
+                .count() as i64;
+            if s.ended_at.is_some() {
+                if !waiting.is_empty() {
+                    experiences += 1;
+                } else {
+                    failed_experiences += 1;
+                }
             }
         }
         if pending == 0
@@ -406,6 +411,73 @@ impl Drop for ActiveJob<'_> {
 
 fn retry_delay(failures: i64) -> i64 {
     (2i64.pow(failures.clamp(1, 8) as u32)).min(300)
+}
+
+const MAX_FORMATION_FAILURES: i64 = 5;
+
+/// Pending turns, and legacy fact-complete turns not yet behind the combined-formation watermark.
+/// A legacy turn stops retrying after the failure limit so later batches can advance the watermark.
+fn awaiting_formation(tr: &TurnRec, watermark: i64) -> bool {
+    tr.extract_state == "pending"
+        || (tr.extract_state == "done"
+            && tr.seq > watermark
+            && tr.extract_failures < MAX_FORMATION_FAILURES)
+}
+
+/// Permanently failed extraction, or a legacy backfill that exhausted its retries.
+fn formation_failed(tr: &TurnRec) -> bool {
+    tr.extract_state == "failed"
+        || (tr.extract_state == "done" && tr.extract_failures >= MAX_FORMATION_FAILURES)
+}
+
+fn batch_ready(
+    count: usize,
+    oldest: Option<&str>,
+    force: bool,
+    ended: bool,
+    cfg: &super::config::ServiceConfig,
+    now: i64,
+) -> bool {
+    count > 0
+        && (force
+            || ended
+            || count >= cfg.batch_turns
+            || oldest
+                .map(|stamp| now - util::ts_secs(stamp) >= cfg.batch_wait_secs)
+                .unwrap_or(false))
+}
+
+pub fn trigger_selftest() {
+    let cfg = super::config::ServiceConfig::default();
+    let stamp = "2026-10-10T00:00:00Z";
+    let start = util::ts_secs(stamp);
+    assert!(!batch_ready(
+        2,
+        Some(stamp),
+        false,
+        false,
+        &cfg,
+        start + 299
+    ));
+    assert!(batch_ready(3, Some(stamp), false, false, &cfg, start));
+    assert!(batch_ready(1, Some(stamp), false, false, &cfg, start + 300));
+    assert!(batch_ready(1, Some(stamp), true, false, &cfg, start));
+    assert!(batch_ready(1, Some(stamp), false, true, &cfg, start));
+    assert!(!batch_ready(0, None, true, true, &cfg, start));
+    let turn = |state: &str, seq: i64, failures: i64| TurnRec {
+        extract_state: state.into(),
+        seq,
+        extract_failures: failures,
+        ..Default::default()
+    };
+    assert!(awaiting_formation(&turn("pending", 1, 0), 5));
+    assert!(awaiting_formation(&turn("done", 6, 4), 5));
+    assert!(!awaiting_formation(&turn("done", 5, 0), 5));
+    assert!(!awaiting_formation(&turn("done", 6, 5), 5));
+    assert!(!awaiting_formation(&turn("failed", 6, 5), 5));
+    assert!(formation_failed(&turn("failed", 1, 5)));
+    assert!(formation_failed(&turn("done", 6, 5)));
+    assert!(!formation_failed(&turn("done", 6, 4)));
 }
 
 /// All formation entry points share one lock so later batches see all earlier committed changes.
@@ -460,30 +532,30 @@ async fn process_available(
             .await?;
         let pending: Vec<TurnRec> = turns
             .iter()
-            .filter(|tr| tr.extract_state == "pending")
+            .filter(|tr| awaiting_formation(tr, session.last_experience_seq))
             .cloned()
             .collect();
         let forced = force
             && force_request
                 .map(|id| pending.iter().any(|tr| tr.request_id == id))
                 .unwrap_or(true);
-        let should = forced
-            || session.ended_at.is_some()
-            || pending.len() >= 3
-            || pending
-                .first()
-                .map(|tr| now.timestamp() - util::ts_secs(&tr.recorded_at) >= 300)
-                .unwrap_or(false);
-        if should {
-            for chunk in pending.chunks(3) {
-                if chunk.len() < 3
-                    && !forced
-                    && session.ended_at.is_none()
-                    && chunk
-                        .first()
-                        .map(|tr| now.timestamp() - util::ts_secs(&tr.recorded_at) < 300)
-                        .unwrap_or(true)
-                {
+        if batch_ready(
+            pending.len(),
+            pending.first().map(|tr| tr.recorded_at.as_str()),
+            forced,
+            session.ended_at.is_some(),
+            &eng.cfg,
+            now.timestamp(),
+        ) {
+            for chunk in pending.chunks(eng.cfg.batch_turns) {
+                if !batch_ready(
+                    chunk.len(),
+                    chunk.first().map(|tr| tr.recorded_at.as_str()),
+                    forced,
+                    session.ended_at.is_some(),
+                    &eng.cfg,
+                    now.timestamp(),
+                ) {
                     break;
                 }
                 let mut due = true;
@@ -503,7 +575,8 @@ async fn process_available(
                 if !due {
                     break;
                 }
-                for tr in chunk {
+                // A legacy fact-complete turn already has a completed receipt; backfill never reopens it.
+                for tr in chunk.iter().filter(|tr| tr.extract_state != "done") {
                     t.store
                         .merge_doc(
                             "requests",
@@ -516,10 +589,29 @@ async fn process_available(
                     let mut tx = Tx::new();
                     for tr in chunk {
                         let n = tr.extract_failures + 1;
+                        let exhausted = n >= MAX_FORMATION_FAILURES;
+                        // Committed facts stay valid: a legacy turn keeps `done` and its completed receipt.
+                        let state = if tr.extract_state == "done" {
+                            "done"
+                        } else if exhausted {
+                            "failed"
+                        } else {
+                            "pending"
+                        };
                         tx.merge("turns",&store::turn_rid(&tr.platform,&tr.turn_id),json!({"extractFailures":n,
-                            "extractState":if n>=5{"failed"}else{"pending"},"retryAtTs":util::now().timestamp()+retry_delay(n)}))?;
-                        tx.merge("requests",&tr.request_id,json!({"status":if n>=5{"failed"}else{"queued"},"error":e.to_string(),"updatedAt":util::now_str()}))?;
+                            "extractState":state,"retryAtTs":util::now().timestamp()+retry_delay(n)}))?;
+                        if tr.extract_state != "done" {
+                            tx.merge("requests",&tr.request_id,json!({"status":if exhausted{"failed"}else{"queued"},"error":e.to_string(),"updatedAt":util::now_str()}))?;
+                        }
                     }
+                    let failures = chunk
+                        .iter()
+                        .map(|tr| tr.extract_failures + 1)
+                        .max()
+                        .unwrap_or(1);
+                    tx.merge("sessions", &store::session_rid(&session.platform,&session.session),
+                        json!({"experienceFailures":failures,"experienceState":if failures>=MAX_FORMATION_FAILURES{"failed"}else{"queued"},
+                            "experienceError":e.to_string()}))?;
                     t.store.commit(tx).await?;
                     break;
                 }
@@ -530,69 +622,34 @@ async fn process_available(
             .get_session(&session.platform, &session.session)
             .await?
             .unwrap_or(session);
-        if session.ended_at.is_some() && session.last_experience_seq < session.turn_count {
-            let refreshed = t
+        if session.ended_at.is_some() {
+            let turns = t
                 .store
                 .session_turns(&session.platform, &session.session)
                 .await?;
-            if refreshed
+            // Answer end receipts only once every turn has either formed or permanently failed.
+            if turns
                 .iter()
-                .any(|tr| tr.seq > session.last_experience_seq && tr.extract_state == "failed")
+                .any(|tr| awaiting_formation(tr, session.last_experience_seq))
             {
-                t.store.merge_doc("sessions",&store::session_rid(&session.platform,&session.session),
-                    json!({"experienceState":"failed","experienceError":"supporting turn extraction failed"})).await?;
-                finish_end_requests(
-                    t,
-                    &session,
-                    Some("supporting turn extraction failed".into()),
-                )
-                .await?;
                 continue;
             }
-            if refreshed
+            // Failed turns are kept; only those not yet reported by an earlier end receipt count.
+            let failed = turns
                 .iter()
-                .any(|tr| tr.seq > session.last_experience_seq && tr.extract_state != "done")
-            {
-                continue;
-            }
-            let sid = store::session_rid(&session.platform, &session.session);
-            let doc = t
-                .store
-                .get_doc("sessions", &sid)
-                .await?
-                .unwrap_or(Value::Null);
-            if doc["experienceFailures"].as_i64().unwrap_or(0) >= 5
-                || doc["experienceRetryAtTs"].as_i64().unwrap_or(0) > now.timestamp()
-            {
-                continue;
-            }
-            if let Err(e) = experience::process(eng, t, &session).await {
-                let n = doc["experienceFailures"].as_i64().unwrap_or(0) + 1;
-                t.store
-                    .merge_doc(
-                        "sessions",
-                        &sid,
-                        json!({"experienceFailures":n,"experienceError":e.to_string(),
-                    "experienceRetryAtTs":util::now().timestamp()+retry_delay(n)}),
-                    )
-                    .await?;
-                if n >= 5 {
-                    finish_end_requests(t, &session, Some(e.to_string())).await?;
-                }
-                continue;
-            }
-        }
-        if session.ended_at.is_some() {
-            let updated = t
-                .store
-                .get_session(&session.platform, &session.session)
-                .await?;
-            if updated
-                .map(|s| s.last_experience_seq >= s.turn_count)
-                .unwrap_or(false)
-            {
-                finish_end_requests(t, &session, None).await?;
-            }
+                .any(|tr| tr.seq > session.end_checked_seq && formation_failed(tr));
+            let checked = turns
+                .last()
+                .map(|tr| tr.seq)
+                .unwrap_or(session.turn_count)
+                .max(session.end_checked_seq);
+            finish_end_requests(
+                t,
+                &session,
+                checked,
+                failed.then(|| "combined P1/P2 formation failed".into()),
+            )
+            .await?;
         }
     }
     Ok(())
@@ -601,11 +658,22 @@ async fn process_available(
 async fn finish_end_requests(
     t: &Arc<Tenant>,
     session: &SessionRec,
+    checked_seq: i64,
     error: Option<String>,
 ) -> Result<()> {
     let requests=t.store.select("SELECT requestId FROM requests WHERE kind = 'session_end' AND platform = $p AND session = $s AND status = 'queued'",
         vec![("p",json!(session.platform)),("s",json!(session.session))]).await?;
+    if requests.is_empty() {
+        return Ok(());
+    }
+    // Ingest rewrites whole session records; hold its lock so the reported watermark is not lost.
+    let _ingest = t.ingest_lock.lock().await;
     let mut tx = Tx::new();
+    tx.merge(
+        "sessions",
+        &store::session_rid(&session.platform, &session.session),
+        json!({"endCheckedSeq": checked_seq}),
+    )?;
     for r in requests {
         if let Some(id) = r["requestId"].as_str() {
             tx.merge("requests",id,json!({"status":if error.is_some(){"failed"}else{"completed"},"error":error,"updatedAt":util::now_str()}))?;

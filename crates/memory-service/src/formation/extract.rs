@@ -124,22 +124,52 @@ pub async fn call_logged(
     user: &str,
     max_tokens: u32,
 ) -> Result<Value> {
-    let reply = eng
-        .llm
-        .json_call_logged(system, user, max_tokens, &t.store, stage)
-        .await;
+    let values_only = matches!(stage, "P1" | "P1-b" | "P1+P2");
+    let reply = if values_only {
+        eng.llm
+            .values_call_logged(system, user, max_tokens, &t.store, stage)
+            .await
+    } else {
+        eng.llm
+            .json_call_logged(system, user, max_tokens, &t.store, stage)
+            .await
+    };
     let now = util::now_str();
     match reply {
         Ok(r) => {
-            t.store
-                .log(
-                    "extract_log",
-                    json!({"stage":stage,"createdAt":now,"variant":eng.prompts_for(t).variant,
+            let output = if stage == "P1+P2" {
+                formation_from_values(&r.json)
+            } else if values_only {
+                facts_from_values(&r.json)
+            } else {
+                Ok(r.json.clone())
+            };
+            let output = match output {
+                Ok(output) => output,
+                Err(error) => {
+                    t.store
+                        .log(
+                            "extract_log",
+                            json!({"stage":stage,"createdAt":now,
+                        "status":"failed","error":error.to_string(),"modelOutput":r.json}),
+                        )
+                        .await?;
+                    return Err(error);
+                }
+            };
+            let mut record = json!({"stage":stage,"createdAt":now,"variant":eng.prompts_for(t).variant,
                 "systemHash":blake3::hash(system.as_bytes()).to_hex().to_string(),"inputHash":blake3::hash(user.as_bytes()).to_hex().to_string(),
-                "outputHash":blake3::hash(r.json.to_string().as_bytes()).to_hex().to_string(),"output":r.json,"status":"model_completed"}),
-                )
-                .await?;
-            Ok(r.json)
+                "outputHash":blake3::hash(output.to_string().as_bytes()).to_hex().to_string(),"output":output,"status":"model_completed"});
+            if values_only {
+                record["outputFormat"] = json!(if stage == "P1+P2" {
+                    "formation-values-v1"
+                } else {
+                    "fact-values-v1"
+                });
+                record["modelOutput"] = r.json;
+            }
+            t.store.log("extract_log", record).await?;
+            Ok(output)
         }
         Err(e) => {
             t.store
@@ -151,6 +181,83 @@ pub async fn call_logged(
             Err(e)
         }
     }
+}
+
+const MAX_SOURCE_SPAN_CHARS: usize = 1024;
+
+/// The tuple fixes both arity and types. Missing optional values must retain their slots.
+type FactValues = (
+    String,
+    String,
+    Vec<String>,
+    String,
+    String,
+    String,
+    String,
+    Vec<(String, String)>,
+    Option<String>,
+);
+
+/// Construct the internal object schema ourselves; preserve rejected row positions for F references.
+fn facts_from_values(output: &Value) -> Result<Value> {
+    let rows = output
+        .as_array()
+        .ok_or_else(|| anyhow!("fact-values-v1 requires a top-level array"))?;
+    let mut errors = serde_json::Map::new();
+    let facts: Vec<Value> = rows.iter().enumerate().map(|(i, row)| {
+        match serde_json::from_value::<FactValues>(row.clone()) {
+            Ok((text, scope, entities, effective_at, origin, turn_id, span, relations, reason)) => {
+                let relations: Vec<Value> = relations.into_iter()
+                    .map(|(memory_id, relation)| json!({"memoryId":memory_id,"relation":relation})).collect();
+                json!({"text":text,"scope":scope,"entities":entities,"effectiveAt":effective_at,
+                    "origin":origin,"source":{"turnId":turn_id,"span":span},
+                    "relations":relations,"reason":reason})
+            }
+            Err(error) => {
+                errors.insert((i+1).to_string(), json!(util::truncate_bytes(&error.to_string(),300)));
+                Value::Null
+            }
+        }
+    }).collect();
+    Ok(json!({"facts":facts,"valueErrors":errors}))
+}
+
+/// Model values have four fixed sections; the program owns every object key in both extractors.
+fn formation_from_values(output: &Value) -> Result<Value> {
+    type AnalysisValues = (String, String, Vec<String>);
+    type ExperienceValues = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        Vec<String>,
+        Vec<(String, String)>,
+    );
+    type SummaryValues = (String, String, Vec<String>, Vec<String>);
+    let parts = output
+        .as_array()
+        .filter(|a| a.len() == 4)
+        .ok_or_else(|| anyhow!("formation-values-v1 requires exactly four array sections"))?;
+    let mut assembled = facts_from_values(&parts[0])?;
+    let analysis: Vec<AnalysisValues> = serde_json::from_value(parts[1].clone())
+        .map_err(|e| anyhow!("invalid analysis values: {e}"))?;
+    let experiences: Vec<ExperienceValues> = serde_json::from_value(parts[2].clone())
+        .map_err(|e| anyhow!("invalid experience values: {e}"))?;
+    let (goal, outcome, decisions, open_issues): SummaryValues =
+        serde_json::from_value(parts[3].clone())
+            .map_err(|e| anyhow!("invalid summary values: {e}"))?;
+    assembled["analysis"] = json!(analysis
+        .into_iter()
+        .map(|(task, result, turn_ids)| json!({"task":task,"result":result,"turnIds":turn_ids}))
+        .collect::<Vec<_>>());
+    assembled["experiences"] = json!(experiences.into_iter().map(|(situation,approach,result,lesson,scope,turn_ids,relations)|
+        json!({"situation":situation,"approach":approach,"result":result,"lesson":lesson,"scope":scope,
+            "turnIds":turn_ids,"relations":relations.into_iter().map(|(memory_id,relation)|
+                json!({"memoryId":memory_id,"relation":relation})).collect::<Vec<_>>()})).collect::<Vec<_>>());
+    assembled["summary"] =
+        json!({"goal":goal,"outcome":outcome,"decisions":decisions,"openIssues":open_issues});
+    Ok(assembled)
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,9 +282,8 @@ struct RawSource {
 }
 #[derive(Debug, Deserialize)]
 struct RawRelation {
-    // Both spellings identify the same reference. Real JSON-mode replies can use
-    // target/type because the verbatim prompt describes relations without a JSON shape.
-    // Serde rejects ambiguous objects containing both aliases; all semantic gates still apply.
+    // Preserve existing internal aliases; model values are assembled into canonical keys above.
+    // Ambiguous objects containing both aliases remain invalid.
     #[serde(rename = "memoryId", alias = "target")]
     memory_id: String,
     #[serde(alias = "type")]
@@ -293,9 +399,15 @@ async fn validate(
     for (i, value) in items.iter().enumerate() {
         let mut r = match serde_json::from_value::<RawFact>(value.clone()) {
             Ok(r) => r,
-            Err(_) => {
-                rejected
-                    .push(json!({"fact":i+1,"kind":"fact_discarded","reason":"schema_invalid"}));
+            Err(error) => {
+                let detail = output["valueErrors"][(i + 1).to_string()]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| error.to_string());
+                rejected.push(
+                    json!({"fact":i+1,"kind":"fact_discarded","reason":"schema_invalid",
+                    "detail":util::truncate_bytes(&detail, 300)}),
+                );
                 continue;
             }
         };
@@ -311,7 +423,7 @@ async fn validate(
             Some("empty_text")
         } else if !matches!(r.scope.as_str(), "global" | "project") {
             Some("scope_invalid")
-        } else if r.source.span.chars().count() > 80 {
+        } else if r.source.span.chars().count() > MAX_SOURCE_SPAN_CHARS {
             Some("span_too_long")
         } else if r.relations.iter().any(|rel| {
             !matches!(
@@ -594,72 +706,200 @@ pub fn conversation(turns: &[TurnRec], p: &prompts::PromptSet) -> String {
         .join("\n\n")
 }
 
-/// Caller owns extract_lock; commit includes turns and receipts even when there are no accepted facts.
+/// One model response forms facts, experiences and the running summary at the same watermark.
+/// Caller owns extract_lock; new arrivals stay beyond this immutable processed-turn snapshot.
 pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> Result<Applied> {
     let first = turns
         .first()
         .ok_or_else(|| anyhow!("empty extraction batch"))?;
+    let watermark = turns.iter().map(|tr| tr.seq).max().unwrap();
+    let session = t
+        .store
+        .get_session(&first.platform, &first.session)
+        .await?
+        .ok_or_else(|| anyhow!("formation session missing"))?;
     let p = eng.prompts_for(t);
-    let query = turns
+    let all = t
+        .store
+        .session_turns(&first.platform, &first.session)
+        .await?;
+    let current_ids: HashSet<String> = turns.iter().map(|tr| tr.turn_id.clone()).collect();
+    let retained: HashSet<String> = session
+        .pending_tasks
+        .iter()
+        .flat_map(|task| task.turn_ids.iter().cloned())
+        .collect();
+    let context: Vec<TurnRec> = all
+        .iter()
+        .filter(|tr| {
+            tr.seq <= watermark
+                && (current_ids.contains(&tr.turn_id) || retained.contains(&tr.turn_id))
+                && tr.extract_state != "failed"
+        })
+        .cloned()
+        .collect();
+    // Legacy P1-completed/P2-unprocessed rows are read by P2 but never extracted as facts again.
+    let fact_turns: Vec<TurnRec> = turns
+        .iter()
+        .filter(|tr| tr.extract_state != "done")
+        .cloned()
+        .collect();
+    let query = context
         .iter()
         .map(TurnRec::full_text)
         .collect::<Vec<_>>()
         .join("\n");
-    let old = recall(eng, t, &query, &first.project, &first.platform, None, 10).await?;
-    let previous = t
-        .store
-        .session_turns(&first.platform, &first.session)
-        .await?
-        .into_iter()
-        .filter(|tr| tr.seq < first.seq)
-        .collect::<Vec<_>>();
-    let prev = previous
+    let old = recall(
+        eng,
+        t,
+        &query,
+        &first.project,
+        &first.platform,
+        Some(T_FACT),
+        eng.cfg.recall_for_extract,
+    )
+    .await?;
+    let old_experiences = recall(
+        eng,
+        t,
+        &query,
+        &first.project,
+        &first.platform,
+        Some(T_EXPERIENCE),
+        eng.cfg.recall_for_experience,
+    )
+    .await?;
+    let experience_rows = old_experiences
         .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            format!(
+                "E{} | {} | {}",
+                i + 1,
+                m.scope.kind,
+                m.detail.as_ref().unwrap_or(&Value::Null)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let previous = all
+        .iter()
+        .filter(|tr| tr.seq < first.seq && !retained.contains(&tr.turn_id))
         .rev()
-        .take(2)
+        .take(eng.cfg.prev_digest_turns)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
         .map(|tr| format!("[{} | {}]\n{}", tr.turn_id, tr.user_ts, tr.digest))
         .collect::<Vec<_>>()
         .join("\n");
+    let task_context: Vec<TurnRec> = context
+        .iter()
+        .filter(|tr| !fact_turns.iter().any(|f| f.turn_id == tr.turn_id))
+        .cloned()
+        .collect();
+    let (context_tag, processed_tag) = if p.variant == "en" {
+        ("task context", "processed turns")
+    } else {
+        ("任务上下文", "本次处理轮")
+    };
     let user = format!(
-        "{}\n\n{}\n\n{}",
+        "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
         headers(t, &old, &query, &first.project, &first.platform, p).await?,
+        prompts::block(
+            p.l.old_experiences,
+            if experience_rows.is_empty() {
+                p.l.none
+            } else {
+                &experience_rows
+            }
+        ),
+        prompts::block(p.l.summary, &serde_json::to_string(&session)?),
         prompts::block(
             p.l.previous,
             &format!(
                 "{}\n{}",
                 p.l.previous_note,
-                if prev.is_empty() {
+                if previous.is_empty() {
                     p.l.previous_none
                 } else {
-                    &prev
+                    &previous
                 }
             )
         ),
-        prompts::block(p.l.batch, &conversation(&turns, p))
+        prompts::block(context_tag, &conversation(&task_context, p)),
+        prompts::block(
+            processed_tag,
+            &turns
+                .iter()
+                .map(|tr| tr.turn_id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        prompts::block(p.l.batch, &conversation(&fact_turns, p))
     );
-    let output = call_logged(eng, t, "P1", p.p1, &user, 4096).await?;
+    let output = call_logged(eng, t, "P1+P2", &prompts::formation(p), &user, 8192).await?;
+    commit_batch(eng, t, turns, context, old, old_experiences, output).await
+}
+
+/// Validate both outputs before one atomic commit; also used by deterministic integration checks.
+async fn commit_batch(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    turns: Vec<TurnRec>,
+    context: Vec<TurnRec>,
+    old: Vec<MemoryRec>,
+    old_experiences: Vec<MemoryRec>,
+    output: Value,
+) -> Result<Applied> {
+    let first = turns
+        .first()
+        .ok_or_else(|| anyhow!("empty formation commit"))?;
+    let p = eng.prompts_for(t);
+    let watermark = turns.iter().map(|tr| tr.seq).max().unwrap();
+    let current_ids: HashSet<String> = turns.iter().map(|tr| tr.turn_id.clone()).collect();
+    let fact_turns: Vec<TurnRec> = turns
+        .iter()
+        .filter(|tr| tr.extract_state != "done")
+        .cloned()
+        .collect();
     let (facts, new_entities) = validate(
         t,
-        output,
+        output.clone(),
         &old,
-        &turns,
+        &fact_turns,
         None,
         &first.project,
         &first.platform,
         p.both_speakers_first_hand,
     )
     .await?;
-    let platform = first.platform.clone();
-    relations::apply(
+    // Ingest may add turns while generation runs. Merge summary fields under its lock, retaining the
+    // current session's counters, last activity, scope, and any newer arrival sequence.
+    let _ingest = t.ingest_lock.lock().await;
+    let session = t
+        .store
+        .get_session(&first.platform, &first.session)
+        .await?
+        .ok_or_else(|| anyhow!("formation session missing"))?;
+    let now = util::now_str();
+    let prepared = super::experience::prepare(
+        &session,
+        &context,
+        &current_ids,
+        &old_experiences,
+        output,
+        watermark,
+        p.variant,
+        &now,
+    )?;
+    relations::apply_with(
         eng,
         t,
         facts,
         WriteCtx {
-            platform,
-            now: util::now_str(),
+            platform: first.platform.clone(),
+            now,
             turns: turns
                 .into_iter()
                 .map(|tr| (super::store::turn_rid(&tr.platform, &tr.turn_id), tr))
@@ -668,6 +908,7 @@ pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> R
             text_turn_id: None,
             new_entities,
         },
+        move |tx, out, texts| prepared.append(tx, out, texts),
     )
     .await
 }
@@ -773,6 +1014,33 @@ mod tests {
 /// Deterministic formation/storage integration test. Uses supplied JSON output and mock embeddings;
 /// the LLM client has no key and this test makes zero generative-model requests.
 pub async fn formation_selftest() {
+    // Value-only output cannot rename source/relation keys; those keys are constructed here.
+    let values = json!([
+        ["A fact","global",["Caroline"],"2023-05-08","user","T1","quoted",[["M1","related"]],null],
+        ["A shifted row","global",[],"2023-05-08","user","T1",[],null],
+        ["Wrong entities","global",[{"name":"Caroline"}],"2023-05-08","user","T1","quoted",[],null],
+        ["Wrong relation","global",[],"2023-05-08","user","T1","quoted",[{"memoryId":"M1","relation":"related"}],null],
+        ["Null excerpt","global",[],"2023-05-08","user","T1",null,[],null],
+        ["Last fact","global",[],"2023-05-08","user","T1","quoted",[["F1","related"]],"detail"]
+    ]);
+    let assembled = facts_from_values(&values).unwrap();
+    assert_eq!(assembled["facts"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        assembled["facts"][0]["source"],
+        json!({"turnId":"T1","span":"quoted"})
+    );
+    assert_eq!(
+        assembled["facts"][0]["relations"],
+        json!([{"memoryId":"M1","relation":"related"}])
+    );
+    for i in 1..5 {
+        assert!(assembled["facts"][i].is_null());
+        assert!(assembled["valueErrors"][(i + 1).to_string()].is_string());
+    }
+    assert_eq!(assembled["facts"][5]["relations"][0]["memoryId"], "F1");
+    assert_eq!(facts_from_values(&json!([])).unwrap()["facts"], json!([]));
+    assert!(facts_from_values(&json!({"facts":[]})).is_err());
+    assert!(facts_from_values(&json!(null)).is_err());
     let legacy: RawRelation =
         serde_json::from_value(json!({"target":"M1","type":"updates"})).unwrap();
     assert_eq!(legacy.memory_id, "M1");
@@ -782,6 +1050,12 @@ pub async fn formation_selftest() {
     )
     .is_err());
     assert!(serde_json::from_value::<RawRelation>(json!({"target":12,"type":"updates"})).is_err());
+    let canonical: RawRelation =
+        serde_json::from_value(json!({"memoryId":"F2","relation":"related"})).unwrap();
+    assert_eq!(canonical.memory_id, "F2");
+    assert!(
+        serde_json::from_value::<RawRelation>(json!({"F":"F2","M":null,"type":"related"})).is_err()
+    );
     use super::{
         config::ServiceConfig,
         indexer, ingest,
@@ -791,6 +1065,7 @@ pub async fn formation_selftest() {
     };
     assert_eq!(std::env::var("MEMORY_MOCK_MODELS").as_deref(), Ok("1"));
     super::experience::rule_selftest();
+    ingest::trigger_selftest();
     let dir = std::env::temp_dir().join(format!("memory-formation-selftest-{}", util::new_id("t")));
     let eng = Engine::new(
         ServiceConfig {
@@ -888,6 +1163,88 @@ pub async fn formation_selftest() {
         .unwrap();
     t.store.commit(tx).await.unwrap();
     let turns = t.store.session_turns("codex", "S1").await.unwrap();
+    // Verify the character boundary through the complete provenance/schema validator, for
+    // both conversation extraction and explicit writes. Unicode chars are not UTF-8 bytes.
+    for (length, accepted_count) in [(81, 1), (1024, 1), (1025, 0)] {
+        let span = "证".repeat(length);
+        let long_turn = TurnRec {
+            turn_id: "T-long".into(),
+            user_message: span.clone(),
+            user_ts: "2026-10-08T10:00:00+08:00".into(),
+            ..Default::default()
+        };
+        for explicit in [false, true] {
+            let output = facts_from_values(&json!([[
+                "A grounded long excerpt",
+                "global",
+                [],
+                "2026-10-08",
+                if explicit { "explicit" } else { "user" },
+                if explicit { "text" } else { "T-long" },
+                span,
+                [],
+                null
+            ]]))
+            .unwrap();
+            let (accepted, _) = validate(
+                &t,
+                output,
+                &[],
+                &[long_turn.clone()],
+                explicit.then_some((span.as_str(), "2026-10-08T10:00:00+08:00")),
+                "p1",
+                "codex",
+                false,
+            )
+            .await
+            .unwrap();
+            assert_eq!(accepted.len(), accepted_count);
+            if let Some(fact) = accepted.first() {
+                assert_eq!(fact.sources[0].span.chars().count(), length);
+            }
+        }
+    }
+    let broken_reference = facts_from_values(&json!([
+        ["missing slots"],
+        [
+            "SurrealDB端口改成8100了",
+            "project",
+            [],
+            "2026-10-08",
+            "user",
+            "T1",
+            "端口改成8100了",
+            [["F1", "updates"]],
+            "replaces"
+        ],
+        [
+            "配置已同步",
+            "project",
+            [],
+            "2026-10-08",
+            "user",
+            "T1",
+            "配置已同步",
+            [["F1", "related"]],
+            null
+        ]
+    ]))
+    .unwrap();
+    let (accepted, _) = validate(
+        &t,
+        broken_reference,
+        &[],
+        &turns,
+        None,
+        "p1",
+        "codex",
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0].fidx, 3);
+    assert!(accepted[0].relations.is_empty());
     let harmless = json!({"facts":[{"text":"配置已同步","scope":"project","entities":[],"effectiveAt":"2026-10-08",
         "origin":"user","source":{"turnId":"T1","span":"配置已同步"},
         "relations":[{"memoryId":"M99","relation":"related"}]}]});
@@ -1066,5 +1423,373 @@ pub async fn formation_selftest() {
     assert_eq!(queued[0]["status"], "queued");
     assert_eq!(queued[0]["failures"], 1);
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
-    println!("formation_selftest OK: provenance/date/reference checks; exact dedupe; atomic evidence/turn/receipt/update-chain; scope; post-purge idempotency; durable failure; zero LLM calls; data {}",dir.display());
+    unified_selftest(&eng, &dir).await;
+    println!("formation_selftest OK: combined P1/P2/summary commit; four triggers; cross-batch/partial-task evidence retention; failed-component rollback; legacy backfill; provenance/date/reference checks; exact dedupe; atomic evidence/turn/receipt/update-chain; scope; post-purge idempotency; durable failure; zero LLM calls; data {}",dir.display());
+}
+
+/// Verify shared commits, retained cross-batch provenance, retry safety and legacy P1 backfill.
+async fn unified_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
+    use super::{consolidate, indexer, ingest};
+    let t = Arc::new(
+        Tenant::open("unified-selftest-en", dir, eng.models.dim)
+            .await
+            .unwrap(),
+    );
+    let c = Caller {
+        tenant: t.name.clone(),
+        platform: "test".into(),
+    };
+    let scope = ReqScope {
+        project: Some("unified".into()),
+        session: Some("S".into()),
+        ..Default::default()
+    };
+    let base = util::now() - chrono::Duration::days(10);
+    let mut payloads = Vec::new();
+    for i in 1..=4 {
+        let payload = AddMemoriesReq {
+            scope: scope.clone(),
+            turn_id: Some(format!("U{i}")),
+            messages: Some(vec![
+                InMessage {
+                    role: "user".into(),
+                    content: format!("Deployment step {i}"),
+                    timestamp: util::fmt_ts(&(base + chrono::Duration::seconds(i * 2))),
+                },
+                InMessage {
+                    role: "assistant".into(),
+                    content: if i == 4 {
+                        "Tests passed."
+                    } else {
+                        "Not verified yet."
+                    }
+                    .into(),
+                    timestamp: util::fmt_ts(&(base + chrono::Duration::seconds(i * 2 + 1))),
+                },
+            ]),
+            ..Default::default()
+        };
+        ingest::add_memories(eng, &t, &c, payload.clone())
+            .await
+            .unwrap();
+        payloads.push(payload);
+    }
+    let all = t.store.session_turns("test", "S").await.unwrap();
+    let first = all[..3].to_vec();
+    let date = util::date_of(&first[0].user_ts);
+    let raw = json!([
+        [[
+            "Deployment step 1",
+            "project",
+            ["service"],
+            date,
+            "user",
+            "U1",
+            "Deployment step 1",
+            [],
+            null
+        ]],
+        [["deployment", "unknown", ["U1", "U2", "U3"]]],
+        [[
+            "deployment",
+            "apply fix",
+            "success: claimed",
+            "verify it",
+            "project",
+            ["U1"],
+            []
+        ]],
+        ["deploy", "unverified", [], ["await test"]]
+    ]);
+    let output = formation_from_values(&raw).unwrap();
+    assert!(formation_from_values(&json!([[], [], []])).is_err());
+    assert!(formation_from_values(&json!([[], [], [], ["missing"]])).is_err());
+    let applied = commit_batch(
+        eng,
+        &t,
+        first.clone(),
+        first.clone(),
+        vec![],
+        vec![],
+        output,
+    )
+    .await
+    .unwrap();
+    assert_eq!(applied.created.len(), 1); // Unverified experience was rejected.
+    let s = t.store.get_session("test", "S").await.unwrap().unwrap();
+    assert_eq!(s.last_experience_seq, 3);
+    assert_eq!(s.turn_count, 4); // The turn arriving after the generation snapshot survives.
+    assert_eq!(s.pending_tasks[0].turn_ids, vec!["U1", "U2", "U3"]);
+    assert_eq!(
+        t.store
+            .get_turn("test", "U4")
+            .await
+            .unwrap()
+            .unwrap()
+            .extract_state,
+        "pending"
+    );
+    let purge = consolidate::purge(&t, &util::now_str(), 3.0).await.unwrap();
+    assert_eq!(purge["purgedTurns"], 0); // Old unfinished-task evidence is held past its normal TTL.
+    let current = t.store.get_turn("test", "U4").await.unwrap().unwrap();
+    let context = t.store.session_turns("test", "S").await.unwrap();
+    let raw = json!([
+        [[
+            "Deployment verified",
+            "project",
+            ["service"],
+            util::date_of(&current.ended_at),
+            "user",
+            "U4",
+            "Tests passed.",
+            [],
+            null
+        ]],
+        [["deployment", "success", ["U1", "U2", "U3", "U4"]]],
+        [[
+            "deployment validation",
+            "apply fix and test",
+            "success: Tests passed.",
+            "verify after changing",
+            "project",
+            ["U1", "U2", "U3", "U4"],
+            []
+        ]],
+        ["deploy", "verified", ["test changes"], []]
+    ]);
+    let output = formation_from_values(&raw).unwrap();
+    let mut broken = output.clone();
+    broken["summary"] = json!(false);
+    assert!(commit_batch(
+        eng,
+        &t,
+        vec![current.clone()],
+        context.clone(),
+        vec![],
+        vec![],
+        broken
+    )
+    .await
+    .is_err());
+    assert_eq!(t.store.count("memories", None).await.unwrap(), 1);
+    assert_eq!(
+        t.store
+            .get_turn("test", "U4")
+            .await
+            .unwrap()
+            .unwrap()
+            .extract_state,
+        "pending"
+    );
+    let applied = commit_batch(
+        eng,
+        &t,
+        vec![current.clone()],
+        context,
+        vec![],
+        vec![],
+        output,
+    )
+    .await
+    .unwrap();
+    assert_eq!(applied.created.len(), 2);
+    let s = t.store.get_session("test", "S").await.unwrap().unwrap();
+    assert_eq!(s.last_experience_seq, 4);
+    assert!(s.pending_tasks.is_empty());
+    let task = ingest::get_task(
+        eng,
+        &t,
+        GetTaskReq {
+            request_id: current.request_id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(task["status"], "completed");
+    assert_eq!(task["memoryIds"].as_array().unwrap().len(), 2);
+    let exp = t
+        .store
+        .find_memories("type = 'experience'", vec![])
+        .await
+        .unwrap();
+    assert_eq!(exp.len(), 1);
+    assert_eq!(exp[0].source.turn_ids.len(), 4);
+    indexer::drain(eng, &t).await.unwrap();
+    let evidence = t.store.count("evidence", None).await.unwrap();
+    assert_eq!(
+        consolidate::purge(&t, &util::now_str(), 3.0).await.unwrap()["purgedTurns"],
+        4
+    );
+    assert_eq!(t.store.count("evidence", None).await.unwrap(), evidence);
+    let duplicate = ingest::add_memories(eng, &t, &c, payloads[3].clone())
+        .await
+        .unwrap();
+    assert_eq!(duplicate["duplicate"], true);
+    assert_eq!(t.store.count("memories", None).await.unwrap(), 3);
+
+    // Older stores can have facts committed before P2. Backfill the summary without recreating facts.
+    let mut payload = payloads[0].clone();
+    payload.turn_id = Some("U5".into());
+    ingest::add_memories(eng, &t, &c, payload).await.unwrap();
+    let legacy = t.store.get_turn("test", "U5").await.unwrap().unwrap();
+    let fact = facts_from_values(&json!([[
+        "Legacy fact",
+        "project",
+        [],
+        util::date_of(&legacy.user_ts),
+        "user",
+        "U5",
+        "Deployment step 1",
+        [],
+        null
+    ]]))
+    .unwrap();
+    let (facts, new_entities) = validate(
+        &t,
+        fact,
+        &[],
+        &[legacy.clone()],
+        None,
+        "unified",
+        "test",
+        true,
+    )
+    .await
+    .unwrap();
+    let written = relations::apply(
+        eng,
+        &t,
+        facts,
+        WriteCtx {
+            platform: "test".into(),
+            now: util::now_str(),
+            turns: vec![(super::store::turn_rid("test", "U5"), legacy)],
+            text_request: None,
+            text_turn_id: None,
+            new_entities,
+        },
+    )
+    .await
+    .unwrap();
+    let legacy = t.store.get_turn("test", "U5").await.unwrap().unwrap();
+    assert_eq!(legacy.extract_state, "done");
+    let output =
+        formation_from_values(&json!([[], [], [], ["deploy", "verified", [], []]])).unwrap();
+    commit_batch(
+        eng,
+        &t,
+        vec![legacy.clone()],
+        vec![legacy],
+        vec![],
+        vec![],
+        output,
+    )
+    .await
+    .unwrap();
+    assert_eq!(t.store.count("memories", None).await.unwrap(), 4);
+    assert_eq!(
+        t.store
+            .get_turn("test", "U5")
+            .await
+            .unwrap()
+            .unwrap()
+            .derived_memory_ids,
+        written.all_ids
+    );
+    assert_eq!(
+        t.store
+            .get_session("test", "S")
+            .await
+            .unwrap()
+            .unwrap()
+            .last_experience_seq,
+        5
+    );
+
+    // A failing legacy backfill keeps committed facts: the turn stays done, its receipt completed.
+    let mut payload = payloads[0].clone();
+    payload.turn_id = Some("U6".into());
+    ingest::add_memories(eng, &t, &c, payload.clone())
+        .await
+        .unwrap();
+    let legacy = t.store.get_turn("test", "U6").await.unwrap().unwrap();
+    relations::apply(
+        eng,
+        &t,
+        vec![],
+        WriteCtx {
+            platform: "test".into(),
+            now: util::now_str(),
+            turns: vec![(super::store::turn_rid("test", "U6"), legacy)],
+            text_request: None,
+            text_turn_id: None,
+            new_entities: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    payload.sync = Some(true);
+    let receipt = ingest::add_memories(eng, &t, &c, payload).await.unwrap();
+    assert_eq!(receipt["status"], "completed");
+    let legacy = t.store.get_turn("test", "U6").await.unwrap().unwrap();
+    assert_eq!(legacy.extract_state, "done");
+    assert_eq!(legacy.extract_failures, 1);
+    // Retries are exhausted; wait_idle must count the turn while retrying, then report the end failed.
+    let mut tx = super::store::Tx::new();
+    tx.merge(
+        "turns",
+        &super::store::turn_rid("test", "U6"),
+        json!({"extractFailures":5,"retryAtTs":0}),
+    )
+    .unwrap();
+    t.store.commit(tx).await.unwrap();
+    let end = AddMemoriesReq {
+        scope: scope.clone(),
+        session_ended: Some(true),
+        ..Default::default()
+    };
+    let ended = ingest::add_memories(eng, &t, &c, end.clone())
+        .await
+        .unwrap();
+    let idle = ingest::wait_idle(eng, &t).await.unwrap();
+    assert_eq!(idle["status"], "idle");
+    assert_eq!(idle["failedExperiences"], 1);
+    let status = |id: Value| {
+        let t = t.clone();
+        async move {
+            ingest::get_task(
+                eng,
+                &t,
+                GetTaskReq {
+                    request_id: id.as_str().unwrap().into(),
+                },
+            )
+            .await
+            .unwrap()["status"]
+                .clone()
+        }
+    };
+    assert_eq!(status(ended["requestId"].clone()).await, "failed");
+    // The resumed session forms its new turn; the already-reported failure does not fail this end.
+    let mut payload = payloads[0].clone();
+    payload.turn_id = Some("U7".into());
+    ingest::add_memories(eng, &t, &c, payload).await.unwrap();
+    let resumed = t.store.get_turn("test", "U7").await.unwrap().unwrap();
+    let output =
+        formation_from_values(&json!([[], [], [], ["deploy", "verified", [], []]])).unwrap();
+    commit_batch(
+        eng,
+        &t,
+        vec![resumed.clone()],
+        vec![resumed],
+        vec![],
+        vec![],
+        output,
+    )
+    .await
+    .unwrap();
+    let ended = ingest::add_memories(eng, &t, &c, end).await.unwrap();
+    assert_eq!(ingest::wait_idle(eng, &t).await.unwrap()["status"], "idle");
+    assert_eq!(status(ended["requestId"].clone()).await, "completed");
+    assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
 }

@@ -12,7 +12,7 @@ crates/
   memory-models/    BGE-M3 and BGE reranker; CPU and optional Candle Metal
   memory-fulltext/  Tantivy, Chinese tokenization and entity aliases
   memory-rules/     Pure date, identifier and revision-planning rules
-eval/              LoCoMo runner, mem0 baseline, answer/judge and billing
+eval/              LoCoMo runner, mem0 baseline, answer/judge and usage
 model_validation/  Torch comparisons, fixture generator and benchmarks
 scripts/           Setup, downloads, offline smoke tests and publication checks
 examples/          HTTP/MCP and configuration examples
@@ -35,10 +35,10 @@ On Apple Silicon, build with `make build-metal`. Explicit Metal selection fails 
 
 ## Run
 
-Put your own API key in `.env` using `.env.example`; `scripts/serve.py` reads the key without executing shell content. Model files must be downloaded separately into `models/`.
+The generation backend defaults to `qwen3.8-flash` at `https://maas.qianwenaiapi.com/compatible-mode/v1`, with thinking disabled (`enable_thinking=false`). Put `QWEN_API_KEY`, `QWEN_BASE_URL`, and `LLM_MODEL` in `.env` using `.env.example`; `scripts/serve.py` reads the key without executing shell content. Model files must be downloaded separately into `models/`.
 
 ```sh
-.venv/bin/python scripts/serve.py --device metal --max-calls 60 --max-usd 0.04
+.venv/bin/python scripts/serve.py --device metal --max-calls 60
 target/fast/agent-memoryd mcp --url http://127.0.0.1:8765 --platform my-agent
 ```
 
