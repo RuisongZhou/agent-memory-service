@@ -87,11 +87,6 @@ enum Cmd {
 }
 
 fn main() -> anyhow::Result<()> {
-    for var in ["RAYON_NUM_THREADS", "OMP_NUM_THREADS"] {
-        if std::env::var(var).is_err() {
-            unsafe { std::env::set_var(var, "2") };
-        }
-    }
     let cli = Cli::parse();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -76,7 +76,7 @@ def sanitized_environment():
     result = {key: value for key, value in os.environ.items() if key in allowed}
     result.update({"QWEN_API_KEY": "localhost-stub-placeholder",
                    "MEMORY_LLM_MAX_CALLS": "2",
-                   "RAYON_NUM_THREADS": "2", "OMP_NUM_THREADS": "2", "PYTHONDONTWRITEBYTECODE": "1"})
+                   "PYTHONDONTWRITEBYTECODE": "1"})
     return result
 
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/memory-service", "crates/memory-models", "crates/memory-fulltext", "crates/memory-rules"]
+members = ["crates/memory-service", "crates/memory-fulltext", "crates/memory-rules"]
 default-members = ["crates/memory-service"]
 
 [workspace.package]

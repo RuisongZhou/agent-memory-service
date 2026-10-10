@@ -9,11 +9,9 @@ This is an experimental implementation. A 152-question LoCoMo pilot is complete;
 ```text
 crates/
   memory-service/   API, formation, retrieval, runtime, storage and diagnostics
-  memory-models/    BGE-M3 and BGE reranker; CPU and optional Candle Metal
   memory-fulltext/  Tantivy, Chinese tokenization and entity aliases
   memory-rules/     Pure date, identifier and revision-planning rules
 eval/              LoCoMo runner, mem0 baseline, answer/judge and usage
-model_validation/  Torch comparisons, fixture generator and benchmarks
 scripts/           Setup, downloads, offline smoke tests and publication checks
 examples/          HTTP/MCP and configuration examples
 docs/              Architecture, development, review and pilot protocol
@@ -31,7 +29,7 @@ make test-rust test        # Small Rust crates and Python tests
 make selftest smoke        # Mock models and localhost LLM stub; no paid requests
 ```
 
-Embedding and reranking run in two separate `llama-server` processes (llama.cpp, Metal on Apple Silicon) serving BGE-M3 and BGE-reranker-v2-m3 as Q8_0 GGUF files; the daemon calls them over HTTP. Install llama.cpp (`brew install llama.cpp`), then `scripts/llama_models.sh` downloads the GGUF files into `models/gguf/` and `scripts/llama_servers.sh start|stop|status` runs the servers on ports 8081 and 8082. Runtime metadata reports the backend, server URL and GGUF file type. Full model weights and synthetic test weights are **never included in this repository**, Git history, CI artifacts or releases. See [model validation](model_validation/README.md) for local download and verification.
+Embedding and reranking run in two separate `llama-server` processes (llama.cpp, Metal on Apple Silicon) serving BGE-M3 and BGE-reranker-v2-m3 as Q8_0 GGUF files; the daemon calls them over HTTP. Install llama.cpp (`brew install llama.cpp`), then `scripts/llama_models.sh` downloads the GGUF files into `models/gguf/` and `scripts/llama_servers.sh start|stop|status` runs the servers on ports 8081 and 8082. Runtime metadata reports the backend, server URL and GGUF file type. Full model weights and synthetic test weights are **never included in this repository**, Git history, CI artifacts or releases.
 
 ## Run
 

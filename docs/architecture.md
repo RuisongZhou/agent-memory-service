@@ -1,6 +1,6 @@
 # Module architecture
 
-The Cargo workspace contains four crates. `memory-service` coordinates the shared store and API and calls embedding/rerank models served by external llama-server processes; `memory-models` keeps the former in-process candle inference as the FP32 numerical reference for validation; `memory-fulltext` owns lexical/entity indexing; `memory-rules` contains deterministic temporal and revision rules without storage dependencies.
+The Cargo workspace contains three crates. `memory-service` coordinates the shared store and API and calls embedding/rerank models served by external llama-server processes; `memory-fulltext` owns lexical/entity indexing; `memory-rules` contains deterministic temporal and revision rules without storage dependencies.
 
 Within `memory-service/src`, physical modules follow responsibilities:
 

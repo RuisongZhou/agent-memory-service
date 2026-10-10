@@ -142,6 +142,8 @@ def make_handler(state: State):
                                                 else state.default_prompt) for tenant in state.turns}
                     return self._send(200, {"ok": True, "promptVariant": state.default_prompt,
                                            "tenantPromptVariants": tenant_variants,
+                                           "modelBackend": "mock", "modelDevice": "mock", "modelDtype": "f32",
+                                           "embedModel": "mock-bow-1024", "rerankModel": None,
                                            "llm": dict(state.llm, model="qwen3.8-flash")})
             self._send(404, {})
 
