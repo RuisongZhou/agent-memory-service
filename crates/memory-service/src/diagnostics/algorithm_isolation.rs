@@ -1,7 +1,6 @@
 //! Offline checks that the shared entry points preserve each algorithm's lifecycle.
 use crate::algorithms;
 use crate::app::ingest;
-use crate::domain::types::*;
 use crate::retrieval;
 use crate::runtime::{
     config::{MemoryStrategy, ServiceConfig},
@@ -10,9 +9,10 @@ use crate::runtime::{
     models::ModelHub,
     tenant::Tenant,
 };
-use crate::storage::schema;
-use crate::storage::store;
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
+use memory_store::store;
 use serde_json::json;
 use std::sync::Arc;
 

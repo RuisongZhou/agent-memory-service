@@ -2543,6 +2543,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory-domain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "memory-rules",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "memory-fulltext"
 version = "0.1.0"
 dependencies = [
@@ -2577,8 +2588,10 @@ dependencies = [
  "chrono",
  "clap",
  "lru",
+ "memory-domain",
  "memory-fulltext",
  "memory-rules",
+ "memory-store",
  "mimalloc",
  "regex",
  "reqwest",
@@ -2590,6 +2603,20 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "memory-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "memory-domain",
+ "memory-rules",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "tokio",
 ]
 
 [[package]]

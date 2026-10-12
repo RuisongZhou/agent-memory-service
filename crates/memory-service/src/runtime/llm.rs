@@ -1,7 +1,7 @@
 //! LLM client — Qwen official API (OpenAI-compatible chat completions).
 //! Non-thinking mode, temperature 0, JSON output (prompt doc §0 通用约定).
-use crate::storage::schema;
 use anyhow::{anyhow, Context, Result};
+use memory_store::schema;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -104,7 +104,7 @@ impl Llm {
         system: &str,
         user: &str,
         max_tokens: u32,
-        store: &crate::storage::store::Store,
+        store: &memory_store::store::Store,
         stage: &str,
     ) -> Result<LlmReply> {
         self.json_call_impl(system, user, max_tokens, Some((store, stage)), false, None)
@@ -117,7 +117,7 @@ impl Llm {
         system: &str,
         user: &str,
         max_tokens: u32,
-        store: &crate::storage::store::Store,
+        store: &memory_store::store::Store,
         stage: &str,
     ) -> Result<LlmReply> {
         self.json_call_impl(system, user, max_tokens, Some((store, stage)), true, None)
@@ -130,7 +130,7 @@ impl Llm {
         system: &str,
         user: &str,
         max_tokens: u32,
-        store: &crate::storage::store::Store,
+        store: &memory_store::store::Store,
         stage: &str,
         contract: &JsonContract,
     ) -> Result<LlmReply> {
@@ -150,7 +150,7 @@ impl Llm {
         system: &str,
         user: &str,
         max_tokens: u32,
-        usage_log: Option<(&crate::storage::store::Store, &str)>,
+        usage_log: Option<(&memory_store::store::Store, &str)>,
         values_only: bool,
         contract: Option<&JsonContract>,
     ) -> Result<LlmReply> {

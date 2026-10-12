@@ -11,7 +11,6 @@ use std::time::Instant;
 
 use super::ms;
 use super::query::Analysis;
-use crate::domain::types::*;
 use crate::retrieval::{
     records::Loader,
     scoring::{round_robin, rrf_fuse, term_overlap_ok, time_segments},
@@ -21,6 +20,7 @@ use crate::retrieval::{
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::tenant::Tenant;
+use memory_domain::types::*;
 
 const ACTIVE: [&str; 3] = [S_CURRENT, S_CONFLICT, S_CANDIDATE];
 

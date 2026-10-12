@@ -5,14 +5,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::domain::types::*;
 use crate::runtime::algorithm::MemoryAlgorithm;
 use crate::runtime::config::{MemoryStrategy, ServiceConfig};
 use crate::runtime::indexer;
 use crate::runtime::llm::Llm;
 use crate::runtime::models::ModelHub;
 use crate::runtime::tenant::{valid_tenant, Tenant};
-use crate::storage::schema;
+use memory_domain::types::*;
+use memory_store::schema;
 
 pub struct Engine {
     pub cfg: ServiceConfig,

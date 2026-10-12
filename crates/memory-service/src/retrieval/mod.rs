@@ -6,8 +6,8 @@ pub mod scoring;
 pub(crate) mod vector;
 pub mod visibility;
 
-use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
+use memory_domain::types::*;
 use serde_json::Value;
 use std::sync::Arc;
 

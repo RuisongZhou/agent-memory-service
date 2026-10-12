@@ -1,11 +1,11 @@
 //! LLM I/O for extraction: logged calls, flat-object / values-array reshaping and the fact provenance contract.
 use super::super::{prompts, schema as formation_schema};
 use super::validate::{collapsed, supporting_source, RawFact};
-use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
-use crate::storage::schema;
 use anyhow::{anyhow, Result};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
 use serde_json::{json, Value};
 use std::sync::Arc;
 

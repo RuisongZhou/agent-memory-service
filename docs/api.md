@@ -48,7 +48,7 @@ curl -s http://127.0.0.1:8765/v1/search_memories \
   -d '{"query":"current project decisions","scope":{"project":"demo"},"touch":false}'
 ```
 
-The core schemas are in `crates/memory-service/src/domain/types.rs`; examples live in `examples/`.
+The core schemas are in `crates/memory-domain/src/types.rs`; examples live in `examples/`.
 
 ## Recent-turn buffer
 

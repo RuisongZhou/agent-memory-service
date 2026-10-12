@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use super::schema;
 use super::store::{from_doc, hashed_id, safe_id, to_doc, Store, Tx};
-use crate::domain::integrity as rules;
-use crate::domain::types::*;
+use memory_domain::integrity as rules;
+use memory_domain::types::*;
 use memory_rules::util;
 
 /// Extend `tx` with the invalidations and conflict repairs implied by its own writes.

@@ -3,11 +3,11 @@ use chrono::{DateTime, FixedOffset, Utc};
 use memory_rules::timeparse::{self, TimeWindow};
 use std::collections::HashSet;
 
-use crate::domain::types::*;
 use crate::retrieval::scoring::id_tokens;
 use crate::runtime::config::ServiceConfig;
 use crate::runtime::reference_time::ref_now;
 use crate::runtime::tenant::Tenant;
+use memory_domain::types::*;
 
 const RECALL_TYPES: [&str; 3] = [T_FACT, T_EXPERIENCE, T_SKILL];
 

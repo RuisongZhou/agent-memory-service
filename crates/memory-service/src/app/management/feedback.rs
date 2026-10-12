@@ -3,12 +3,12 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
-use crate::storage::store::{safe_id, Tx};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
+use memory_store::store::{safe_id, Tx};
 
 /// Helpful feedback count at which a candidate skill is enabled (4.5 / 5.5).
 const SKILL_ENABLE_HELPFUL: i64 = 3;

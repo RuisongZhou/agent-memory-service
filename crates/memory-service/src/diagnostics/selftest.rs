@@ -2,9 +2,9 @@
 //! need a second dependency build with dev-dependency features).
 use serde_json::json;
 
-use crate::domain::types::*;
-use crate::storage::schema;
-use crate::storage::store::*;
+use memory_domain::types::*;
+use memory_store::schema;
+use memory_store::store::*;
 
 fn tempdir() -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("memory-selftest-{}", std::process::id()));

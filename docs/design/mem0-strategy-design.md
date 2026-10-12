@@ -37,10 +37,10 @@ HTTP / MCP 层负责接收请求和确定调用方；形成层负责把输入变
 | 形成 | `algorithms/mem0/formation.rs` | 有序输入、提示词、输出校验、去重、提交事实 |
 | 检索 | `algorithms/mem0/retrieval.rs` | 可见范围、语义召回、可选重排、预算装载 |
 | 运行时 | `runtime/engine.rs`、`llm.rs`、`models.rs`、`indexer.rs` | 恢复、LLM 重试、向量服务、缓存和索引维护 |
-| 存储 | `storage/store.rs` | SurrealKV 事务、记录查询、持久索引任务 |
+| 存储 | `memory-store/src/store.rs` | SurrealKV 事务、记录查询、持久索引任务 |
 | 纯规则 | `memory-rules/src/mem0.rs` | 内容标识、相似度排序和稳定的同分次序 |
 
-`domain/types.rs` 定义共享请求和记录类型。代码从 `formation/ingest.rs::add_memories` 和 `retrieval/mod.rs::search_memories` 进入公共服务层，再由 `algorithms/mod.rs` 选择完整算法。`algorithms/mem0` 与 `algorithms/memos` 分别拥有形成、检索与后台生命周期；后者使用配置名 `memos`。两者共用存储、模型客户端、索引、指令和记录管理组件。
+`memory-domain/src/types.rs` 定义共享请求和记录类型。代码从 `formation/ingest.rs::add_memories` 和 `retrieval/mod.rs::search_memories` 进入公共服务层，再由 `algorithms/mod.rs` 选择完整算法。`algorithms/mem0` 与 `algorithms/memos` 分别拥有形成、检索与后台生命周期；后者使用配置名 `memos`。两者共用存储、模型客户端、索引、指令和记录管理组件。
 
 ### 消息 记忆和向量
 
@@ -361,7 +361,7 @@ J 指共用评判流程对答案正确性的通过率，F1 衡量与参考文本
 | 字段错误怎样校验 | `algorithms/mem0/formation.rs`，`validate_output`、`contract` |
 | 响应先记日志还是先解析 | `runtime/llm.rs`，`contract_call_logged`、`corrective_messages` |
 | 内容去重和排序规则 | `memory-rules/src/mem0.rs`，`content_key`、`rank` |
-| 事实与向量怎样提交 | `algorithms/mem0/formation.rs`，`form` 的事务二；`storage/store.rs::commit` |
+| 事实与向量怎样提交 | `algorithms/mem0/formation.rs`，`form` 的事务二；`memory-store/src/store.rs::commit` |
 | 查询如何调用嵌入、选择结果 | `algorithms/mem0/retrieval.rs`，`search`、`dense_with_vector` |
 | 模型与缓存在哪里 | `runtime/models.rs`，`ModelHub::embed`、`embed_uncached`、`rerank` |
 | 索引为什么不会重复嵌入 | `runtime/indexer.rs`，`upsert_preindexed` 处理分支 |
@@ -369,7 +369,7 @@ J 指共用评判流程对答案正确性的通过率，F1 衡量与参考文本
 | 为什么新方案没有自动 P2 | `algorithms/mod.rs`，按算法注册后台任务；P2 与维护只属于 memos |
 | 完整测试如何组织输入和评价 | `eval/locomo_full.py`、`eval/mem0_migration.py`、`eval/answer_and_judge.py` |
 
-上表路径除纯规则和评估文件外，均相对 `crates/memory-service/src/`。完整接口类型见 `domain/types.rs`，配置和调用约定见 `docs/api.md`。
+上表路径除纯规则、领域类型、存储和评估文件外，均相对 `crates/memory-service/src/`。完整接口类型见 `crates/memory-domain/src/types.rs`（存储见 `crates/memory-store/src/`），配置和调用约定见 `docs/api.md`。
 
 ### 从现象回到证据
 

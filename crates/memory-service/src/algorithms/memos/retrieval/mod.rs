@@ -17,10 +17,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::algorithms::memos::repo;
-use crate::domain::types::*;
 use crate::retrieval::visibility::Vis;
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
+use memory_domain::types::*;
 
 mod assemble;
 mod audit;

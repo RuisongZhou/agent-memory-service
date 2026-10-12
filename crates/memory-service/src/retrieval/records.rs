@@ -1,9 +1,9 @@
 //! Shared authoritative record, revision-chain and evidence reads.
 use super::visibility::Vis;
-use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
-use crate::storage::store::safe_id;
 use anyhow::Result;
+use memory_domain::types::*;
+use memory_store::store::safe_id;
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},

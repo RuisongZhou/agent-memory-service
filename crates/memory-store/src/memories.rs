@@ -3,7 +3,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use super::store::Store;
-use crate::domain::types::MemoryRec;
+use memory_domain::types::MemoryRec;
 
 impl Store {
     /// Memories holding a `related` edge to `id`.

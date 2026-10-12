@@ -9,7 +9,6 @@ use std::time::Instant;
 use super::candidates::Recall;
 use super::ms;
 use super::query::{Analysis, Params};
-use crate::domain::types::*;
 use crate::retrieval::{
     records::{evidence_for, Loader},
     scoring::{evidence_mult, id_match, mmr_order, recency_mult, term_overlap_ok},
@@ -17,6 +16,7 @@ use crate::retrieval::{
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::tenant::Tenant;
+use memory_domain::types::*;
 
 /// One result slot: the primary memory, conflict partners (adjacent, same slot) and older values.
 pub(super) struct Slot {

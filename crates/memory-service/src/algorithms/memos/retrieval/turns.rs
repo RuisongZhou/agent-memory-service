@@ -11,14 +11,14 @@ use std::sync::Arc;
 use super::query::{Analysis, Params};
 use super::round4;
 use crate::algorithms::memos::repo::{self, TurnScope};
-use crate::domain::types::*;
 use crate::retrieval::{
     scoring::{decay, rrf_fuse, term_overlap_ok},
     visibility::{Lvl, Vis},
 };
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
-use crate::storage::store::turn_rid;
+use memory_domain::types::*;
+use memory_store::store::turn_rid;
 
 struct TurnHit {
     turn: TurnRec,

@@ -4,12 +4,12 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use super::must_get;
-use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
-use crate::storage::store::{safe_id, turn_rid, Tx};
+use memory_domain::types::*;
+use memory_store::schema;
+use memory_store::store::{safe_id, turn_rid, Tx};
 
 /// Physical delete: the record, its index entries (full-text delete committed before returning), evidence
 /// rows that only reference it, edges pointing at it, and its id in derived-turn lists. An update chain is

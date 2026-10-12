@@ -1,8 +1,8 @@
 //! Durable receipt inspection shared by both memory algorithms.
-use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
-use crate::storage::schema::{self, request_kind};
-use crate::storage::store::{self, from_doc};
+use memory_domain::types::*;
+use memory_store::schema::{self, request_kind};
+use memory_store::store::{self, from_doc};
 use serde_json::{json, Value};
 use std::sync::Arc;
 

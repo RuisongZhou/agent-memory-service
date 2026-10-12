@@ -2,12 +2,12 @@
 use super::extract;
 use crate::algorithms::memos::repo;
 use crate::app::{admission::required_scope, tasks::get_task};
-use crate::domain::types::*;
 use crate::runtime::{engine::Engine, indexer, tenant::Tenant};
-use crate::storage::schema::{self, request_kind};
-use crate::storage::store::{self, from_doc, to_doc, Tx};
 use anyhow::{anyhow, Result};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema::{self, request_kind};
+use memory_store::store::{self, from_doc, to_doc, Tx};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

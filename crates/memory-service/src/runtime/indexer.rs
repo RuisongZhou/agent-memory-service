@@ -7,12 +7,12 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
-use crate::storage::store::{from_doc, Tx};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
+use memory_store::store::{from_doc, Tx};
 
 /// Text that goes into the vector index for a memory (5.1 table), or None when the type is not indexed.
 pub fn vector_text(m: &MemoryRec) -> Option<String> {

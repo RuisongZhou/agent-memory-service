@@ -4,11 +4,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::MAX_TEXT_BYTES;
-use crate::domain::types::*;
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
-use crate::storage::store::{patch, safe_id, Tx};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
+use memory_store::store::{patch, safe_id, Tx};
 
 /// Explicit user confirmation closes the competing assertion; original texts/evidence remain.
 pub async fn resolve_uncertainty(
@@ -31,7 +31,7 @@ pub async fn resolve_uncertainty(
             "uncertainty is already resolved".into(),
         ));
     }
-    let uncertainty: UncertaintyRec = crate::storage::store::from_doc(record)?;
+    let uncertainty: UncertaintyRec = memory_store::store::from_doc(record)?;
     if !uncertainty.memory_ids.contains(&req.keep_memory_id) {
         return Err(ApiError::InvalidArgument(
             "keepMemoryId is not a competing assertion".into(),

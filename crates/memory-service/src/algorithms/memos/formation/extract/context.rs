@@ -1,10 +1,10 @@
 //! Visible recall and prompt context for extraction: old memories, known entities and the conversation.
 use super::super::prompts;
 use crate::algorithms::memos::repo;
-use crate::domain::types::*;
 use crate::retrieval::visibility::visible;
 use crate::runtime::{engine::Engine, tenant::Tenant};
 use anyhow::Result;
+use memory_domain::types::*;
 use memory_fulltext::FtFilter;
 use memory_rules::util;
 use std::collections::HashMap;

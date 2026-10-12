@@ -1,5 +1,5 @@
 //! Scope validation shared by explicit writes and both memory algorithms.
-use crate::domain::types::*;
+use memory_domain::types::*;
 
 pub(crate) fn required_scope(req: &AddMemoriesReq) -> ApiResult<(&str, &str)> {
     let project = req

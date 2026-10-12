@@ -3,9 +3,9 @@
 //! `context` builds prompt context, `llm_io` owns model calls and output contracts, `validate` checks
 //! model facts deterministically; this module composes them into the fact, experience and explicit flows.
 use super::{prompts, relations};
-use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
 use anyhow::{anyhow, Result};
+use memory_domain::types::*;
 use memory_rules::util;
 use relations::{Applied, WriteCtx};
 use serde_json::{json, Value};
@@ -136,12 +136,7 @@ pub(super) async fn commit_facts(
             now: util::now_str(),
             turns: turns
                 .into_iter()
-                .map(|tr| {
-                    (
-                        crate::storage::store::turn_rid(&tr.platform, &tr.turn_id),
-                        tr,
-                    )
-                })
+                .map(|tr| (memory_store::store::turn_rid(&tr.platform, &tr.turn_id), tr))
                 .collect(),
             text_request: None,
             text_turn_id: None,

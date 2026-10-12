@@ -3,7 +3,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::store::Store;
-use crate::domain::types::EntityRec;
+use memory_domain::types::EntityRec;
 
 impl Store {
     /// Every document of `table` without its record id (admin export, usage totals).

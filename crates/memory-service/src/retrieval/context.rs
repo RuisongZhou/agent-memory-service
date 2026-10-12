@@ -4,10 +4,10 @@ use super::{
     scoring::pack_prefix,
     visibility::Vis,
 };
-use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
-use crate::storage::schema;
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc, time::Instant};
 

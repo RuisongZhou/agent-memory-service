@@ -5,12 +5,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{must_get, MAX_TEXT_BYTES};
-use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
-use crate::storage::store::{patch, to_doc, Tx};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
+use memory_store::store::{patch, to_doc, Tx};
 
 const MAX_CHAIN_HOPS: usize = 64;
 

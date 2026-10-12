@@ -5,9 +5,9 @@ use std::collections::HashSet;
 
 use super::query::{Analysis, Params};
 use super::rank::{Ranked, Slot};
-use crate::domain::types::*;
 use crate::retrieval::{records::MAX_CHAIN_HOPS, visibility::Vis};
 use crate::runtime::config::ServiceConfig;
+use memory_domain::types::*;
 
 /// Walk the ranked memories in MMR order, resolve each to its visible chain head and expand it.
 pub(super) async fn resolve_slots(

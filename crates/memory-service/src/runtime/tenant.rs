@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::futures::Notified;
 use tokio::sync::{Mutex, MutexGuard, Notify, RwLock};
 
-use crate::storage::store::Store;
+use memory_store::store::Store;
 
 /// In-memory vector cache for brute-force cosine search (5.3: ≤ 20,000 visible records).
 #[derive(Default)]

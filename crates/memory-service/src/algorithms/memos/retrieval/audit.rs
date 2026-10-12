@@ -11,10 +11,10 @@ use super::candidates::Cand;
 use super::query::{Analysis, Params};
 use super::round4;
 use crate::algorithms::memos::repo;
-use crate::domain::types::*;
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
-use crate::storage::store::Tx;
+use memory_domain::types::*;
+use memory_store::schema;
+use memory_store::store::Tx;
 
 /// What the retrieval log records about one finished search.
 pub(super) struct SearchRecord<'a> {

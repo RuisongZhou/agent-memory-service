@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
+use memory_store::schema;
 
 /// Raw-input filters for `list_inputs`; `None` leaves the dimension unconstrained.
 pub struct InputFilter<'a> {

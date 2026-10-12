@@ -1,13 +1,13 @@
 //! Persistent integrity and instruction tests. No generation or external model calls.
 use crate::app::ingest;
-use crate::domain::types::*;
 use crate::retrieval;
 use crate::runtime::{
     config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
 };
-use crate::storage::schema;
-use crate::storage::store::{to_doc, Tx};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
+use memory_store::store::{to_doc, Tx};
 use serde_json::json;
 use std::sync::Arc;
 

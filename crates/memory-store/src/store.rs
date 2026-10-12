@@ -12,8 +12,8 @@ use surrealdb::Surreal;
 use tokio::sync::{Mutex, RwLock};
 
 use super::{integrity, schema};
-use crate::domain::integrity::WriteSet;
-use crate::domain::types::*;
+use memory_domain::integrity::WriteSet;
+use memory_domain::types::*;
 use memory_rules::util;
 
 const SCHEMA: &str = r#"

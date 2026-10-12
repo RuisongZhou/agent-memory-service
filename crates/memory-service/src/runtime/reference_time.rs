@@ -1,6 +1,6 @@
 //! Reference time parsing shared by adapters and memory algorithms.
-use crate::domain::types::*;
 use chrono::{DateTime, FixedOffset};
+use memory_domain::types::*;
 use memory_rules::util;
 
 /// Reference "now": `asOf` (eval extension; RFC3339 or YYYY-MM-DD = UTC midnight) or the local clock.

@@ -12,10 +12,10 @@ use std::sync::Arc;
 
 use crate::app::ingest;
 use crate::app::management;
-use crate::domain::types::*;
 use crate::retrieval;
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
+use memory_domain::types::*;
 
 pub fn router(eng: Arc<Engine>) -> Router {
     Router::new()

@@ -3,12 +3,12 @@ use super::super::relations::{
     plan::{Rel, Target},
     FactSource, NewFact,
 };
-use crate::domain::types::*;
 use crate::retrieval::visibility::visible;
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
 use anyhow::{anyhow, Result};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};

@@ -1,6 +1,6 @@
 # Module architecture
 
-The Cargo workspace contains three crates. `memory-service` coordinates the shared store and API and calls embedding/rerank models served by external llama-server processes; `memory-fulltext` owns lexical/entity indexing; `memory-rules` contains deterministic temporal and revision rules without storage dependencies.
+The Cargo workspace contains five crates. `memory-service` coordinates the shared store and API and calls embedding/rerank models served by external llama-server processes; `memory-domain` holds the pure shared records, request types, errors and integrity planners; `memory-store` owns SurrealDB persistence on top of them; `memory-fulltext` owns lexical/entity indexing; `memory-rules` contains deterministic temporal and revision rules without storage dependencies. Dependencies point one way: `memory-rules` <- `memory-domain` <- `memory-store` <- `memory-service`.
 
 The demo chooses one complete algorithm at startup using `--memory-strategy` or the existing configuration.
 `Engine::new` fixes that selection for the process lifetime. Every tenant in that process uses the same
@@ -20,14 +20,14 @@ The Memos pipeline is a supported algorithm and benchmark control, not unused Me
 
 Shared components retain their layer boundaries:
 
-| Directory | Responsibility |
+| Crate / directory | Responsibility |
 |---|---|
 | `api/` | HTTP and MCP transport only |
 | `app/` | Use cases shared by every algorithm: admission checks, request inspection, explicit instruction writes, corrections, deletion, feedback and administration |
 | `retrieval/` | Entry points, scope primitives, scoring helpers, ANN access, authoritative records/evidence/history and context assembly |
 | `runtime/` | Configuration, engine, reference time, tenant registry, model clients and the shared index worker |
-| `storage/` | SurrealKV schema, transactions, integrity constraints and durable index tasks |
-| `domain/` | Shared records, request schemas and errors |
+| `memory-store` crate | SurrealKV schema, transactions, integrity constraints and durable index tasks (`crates/memory-store`); re-exported by `memory-service` as `storage` |
+| `memory-domain` crate | Shared records, request schemas, errors and pure integrity planners, with no I/O (`crates/memory-domain`); re-exported by `memory-service` as `domain` |
 | `diagnostics/` | Offline database, algorithm-isolation and end-to-end selftests |
 
 Root Rust module names for moved stages are retained as compatibility reexports. Algorithm implementations
@@ -59,7 +59,7 @@ The current design remains a text-memory service. The following changes adapt Su
 
 `profile` and `skill` are current views. Session experiences are historical observations: their lineage remains queryable when later facts change. Treating every historical experience as a current factual assertion would erase useful history. Legacy profiles/skills use `usedMemoryIds` as their dependencies; startup repairs missing or non-current inputs before warming indexes. Stale views are excluded immediately through primary-record eligibility, including while an asynchronous index still contains them. Rebuilding a view is explicit P3/P5 work; a read never triggers paid synthesis.
 
-Storage serialises integrity decisions and related writes per store. A source change, transitive invalidation, uncertainty closure and index tasks commit as one transaction. Failed transactions do not publish a new metadata snapshot. The invalidation and conflict-repair rules are pure planners in `domain/integrity.rs` with no database, network or model dependencies; `storage/integrity.rs` only loads their inputs and appends their plans to the transaction. This adds O(N) metadata inspection to a source-retirement transaction; it removes repeated scans from stable retrieval but does not claim to be a large-scale graph implementation.
+Storage serialises integrity decisions and related writes per store. A source change, transitive invalidation, uncertainty closure and index tasks commit as one transaction. Failed transactions do not publish a new metadata snapshot. The invalidation and conflict-repair rules are pure planners in `memory-domain/src/integrity.rs` with no database, network or model dependencies; `memory-store/src/integrity.rs` only loads their inputs and appends their plans to the transaction. This adds O(N) metadata inspection to a source-retirement transaction; it removes repeated scans from stable retrieval but does not claim to be a large-scale graph implementation.
 
 The tokenizer cache holds at most 2048 entries and only caches entries of up to 4096 tokens. Keys include the model server and exact input text. Models remain fixed for a connected runtime; reconnect/restart replaces the cache. Model IDs and quantisation continue to govern stored-vector rebuilds.
 

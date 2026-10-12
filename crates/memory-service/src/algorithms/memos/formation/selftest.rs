@@ -6,10 +6,10 @@ use super::extract::{
     RawRelation,
 };
 use super::relations::{self, WriteCtx};
-use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
-use crate::storage::schema;
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
 use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -103,7 +103,7 @@ pub async fn formation_selftest() {
     );
     use crate::app::ingest;
     use crate::runtime::{config::ServiceConfig, indexer, llm::Llm, models::ModelHub};
-    use crate::storage::store::{self, to_doc, Tx};
+    use memory_store::store::{self, to_doc, Tx};
     assert_eq!(std::env::var("MEMORY_MOCK_MODELS").as_deref(), Ok("1"));
     experience::rule_selftest();
     super::ingest::trigger_selftest();
@@ -686,7 +686,7 @@ async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     t.store
         .merge_doc(
             schema::SESSIONS,
-            &crate::storage::store::session_rid("test", "S"),
+            &memory_store::store::session_rid("test", "S"),
             json!({"experienceFailures":4,"experienceRetryAtTs":0}),
         )
         .await

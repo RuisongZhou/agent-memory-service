@@ -2,12 +2,12 @@
 use crate::algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
 use crate::app::ingest;
 use crate::app::management;
-use crate::domain::types::*;
 use crate::runtime::{
     config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
 };
-use crate::storage::schema;
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
 use serde_json::json;
 use std::sync::Arc;
 

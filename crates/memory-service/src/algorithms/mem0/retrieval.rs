@@ -1,11 +1,11 @@
 //! Semantic-only search. No generative calls, broad summaries or implicit cross-encoder.
 use super::config::Mem0Config;
 use super::repo::{self, InputFilter};
-use crate::domain::types::*;
 use crate::runtime::{config::MemoryStrategy, engine::Engine, tenant::Tenant};
-use crate::storage::schema;
 use anyhow::{anyhow, Result};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc, time::Instant};
 

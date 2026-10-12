@@ -1,5 +1,5 @@
 //! Scope primitives shared by memory algorithms. Each algorithm keeps its request defaults.
-use crate::domain::types::{MemScope, ReqScope};
+use memory_domain::types::{MemScope, ReqScope};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Lvl {

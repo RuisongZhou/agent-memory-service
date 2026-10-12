@@ -1,8 +1,8 @@
 //! 纠正、删除、反馈 (2.5, 5.5) and admin inspection (stats, export) plus the test-only `seed` admin action.
 //! One file per operation; `must_get` and the correction text limit are shared.
-use crate::domain::types::*;
 use crate::runtime::tenant::Tenant;
-use crate::storage::store::safe_id;
+use memory_domain::types::*;
+use memory_store::store::safe_id;
 
 mod admin;
 mod correction;

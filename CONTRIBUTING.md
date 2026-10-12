@@ -11,7 +11,7 @@ make build selftest smoke
 make check-public
 ```
 
-The service crate's storage dependency has a large test build. Use its `agent-memoryd selftest` entry point for integration checks rather than `cargo test --workspace`. Pure rules live in `memory-rules` so they can be tested independently.
+The service crate's storage dependency has a large test build. Use its `agent-memoryd selftest` entry point for integration checks rather than `cargo test --workspace`. Pure rules live in `memory-rules`, and the pure records and persistence layers live in `memory-domain` and `memory-store`, so they can be tested independently (`make test-service` runs all three).
 
 Do not use paid LLM requests as routine tests. HTTP smoke tests use a local deterministic stub. Numerical model tests are separate from QA accuracy; never report simulated output as model or benchmark performance.
 

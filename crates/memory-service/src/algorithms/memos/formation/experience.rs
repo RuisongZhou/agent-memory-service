@@ -1,9 +1,9 @@
 //! Session-end P2 validation and a transaction independent of fact formation.
-use crate::domain::types::*;
-use crate::storage::schema;
-use crate::storage::store::{self, to_doc, Tx};
 use anyhow::{anyhow, Result};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
+use memory_store::store::{self, to_doc, Tx};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};

@@ -3,7 +3,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::store::Store;
-use crate::domain::types::TurnRec;
+use memory_domain::types::TurnRec;
 
 impl Store {
     /// Turns whose extracted facts include memory `id`.

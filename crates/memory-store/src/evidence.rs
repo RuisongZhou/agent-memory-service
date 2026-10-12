@@ -3,7 +3,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::store::Store;
-use crate::domain::types::EvidenceRec;
+use memory_domain::types::EvidenceRec;
 
 impl Store {
     /// Evidence rows supporting memory `id`.

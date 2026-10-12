@@ -1,12 +1,12 @@
 //! Maintenance integration selftest. Supplied records and mock embeddings; never invokes a real LLM.
 use crate::algorithms::memos::formation::consolidate;
-use crate::domain::types::*;
 use crate::runtime::{
     config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
 };
-use crate::storage::schema;
-use crate::storage::store::{self, to_doc, Tx};
+use memory_domain::types::*;
 use memory_rules::util;
+use memory_store::schema;
+use memory_store::store::{self, to_doc, Tx};
 use serde_json::json;
 use std::sync::Arc;
 

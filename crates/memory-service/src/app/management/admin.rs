@@ -3,12 +3,12 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
-use crate::storage::store::{safe_id, session_rid, to_doc, turn_rid, Tx};
+use memory_domain::types::*;
+use memory_store::schema;
+use memory_store::store::{safe_id, session_rid, to_doc, turn_rid, Tx};
 
 pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     let mut counts = Map::new();

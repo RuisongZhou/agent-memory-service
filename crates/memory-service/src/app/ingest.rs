@@ -1,8 +1,8 @@
 //! Shared admission, explicit instructions and durable request inspection.
 use crate::app::admission::required_scope;
 pub use crate::app::tasks::get_task;
-use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
+use memory_domain::types::*;
 use serde_json::Value;
 use std::sync::Arc;
 

@@ -7,13 +7,13 @@ use std::collections::HashMap;
 use super::query::Params;
 use super::rank::Slot;
 use super::round4;
-use crate::domain::types::*;
 use crate::retrieval::{
     records::{evidence_for, evidence_json, latest_profile},
     scoring::pack,
 };
 use crate::runtime::config::ServiceConfig;
 use crate::runtime::tenant::Tenant;
+use memory_domain::types::*;
 
 pub(super) struct Assembled {
     pub results: Vec<Value>,

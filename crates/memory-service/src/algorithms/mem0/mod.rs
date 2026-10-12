@@ -2,11 +2,11 @@
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::domain::types::*;
 use crate::runtime::algorithm::{BoxFuture, MemoryAlgorithm};
 use crate::runtime::config::{MemoryStrategy, ServiceConfig};
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
+use memory_domain::types::*;
 
 pub mod config;
 pub mod formation;
