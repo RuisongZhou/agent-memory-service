@@ -6,6 +6,7 @@ use super::{
 };
 use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
+use crate::storage::schema;
 use memory_rules::util;
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc, time::Instant};
@@ -333,7 +334,7 @@ pub(crate) async fn assemble_context(
     let retrieval_id = t
         .store
         .log(
-            "retrieval_log",
+            schema::RETRIEVAL_LOG,
             json!({
                 "kind": "context",
                 "platform": c.platform,

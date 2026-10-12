@@ -1,6 +1,7 @@
 //! Explicit behavioural memory. Untrusted recalled text is never promoted into instructions.
 use crate::domain::types::*;
 use crate::runtime::tenant::Tenant;
+use crate::storage::schema::{self, request_kind};
 use crate::storage::store::{self, to_doc, Tx};
 use memory_rules::util;
 use serde_json::{json, Value};
@@ -57,7 +58,7 @@ pub async fn store(
         Some(key) => store::hashed_id("rq", &format!("instruction:{}:{key}", caller.platform)),
         None => util::new_id("rq"),
     };
-    if let Some(mut receipt) = t.store.get_doc("requests", &request).await? {
+    if let Some(mut receipt) = t.store.get_doc(schema::REQUESTS, &request).await? {
         receipt["duplicate"] = json!(true);
         return Ok(receipt);
     }
@@ -90,13 +91,13 @@ pub async fn store(
         stated_at: now.clone(),
         created_at: now.clone(),
     };
-    let receipt = json!({"requestId":request,"status":"completed","kind":"instruction",
+    let receipt = json!({"requestId":request,"status":"completed","kind":request_kind::INSTRUCTION,
         "memoryIds":[memory.id],"platform":caller.platform,"project":project,"session":session,
         "createdAt":now,"updatedAt":now});
     let mut tx = Tx::new();
-    tx.put("memories", &memory.id, to_doc(&memory)?)?;
-    tx.put("evidence", &evidence.id, to_doc(&evidence)?)?;
-    tx.put("requests", &request, receipt.clone())?;
+    tx.put(schema::MEMORIES, &memory.id, to_doc(&memory)?)?;
+    tx.put(schema::EVIDENCE, &evidence.id, to_doc(&evidence)?)?;
+    tx.put(schema::REQUESTS, &request, receipt.clone())?;
     t.store.commit(tx).await?;
     let mut out = receipt;
     out["duplicate"] = json!(false);

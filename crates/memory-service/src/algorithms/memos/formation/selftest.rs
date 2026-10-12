@@ -8,6 +8,7 @@ use super::extract::{
 use super::relations::{self, WriteCtx};
 use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
+use crate::storage::schema;
 use memory_rules::util;
 use serde_json::json;
 use std::collections::HashSet;
@@ -185,14 +186,15 @@ pub async fn formation_selftest() {
         ..Default::default()
     };
     let mut tx = Tx::new();
-    tx.put("memories", &old.id, to_doc(&old).unwrap()).unwrap();
+    tx.put(schema::MEMORIES, &old.id, to_doc(&old).unwrap())
+        .unwrap();
     let entity = EntityRec {
         id: "entsurreal".into(),
         name: "SurrealDB".into(),
         scope: MemScope::project("p1"),
         ..Default::default()
     };
-    tx.put("entities", &entity.id, to_doc(&entity).unwrap())
+    tx.put(schema::ENTITIES, &entity.id, to_doc(&entity).unwrap())
         .unwrap();
     let hidden = MemoryRec {
         id: "mhidden".into(),
@@ -200,7 +202,7 @@ pub async fn formation_selftest() {
         scope: MemScope::project("p2"),
         ..old.clone()
     };
-    tx.put("memories", &hidden.id, to_doc(&hidden).unwrap())
+    tx.put(schema::MEMORIES, &hidden.id, to_doc(&hidden).unwrap())
         .unwrap();
     t.store.commit(tx).await.unwrap();
     let turns = t.store.session_turns("codex", "S1").await.unwrap();
@@ -430,16 +432,17 @@ pub async fn formation_selftest() {
         .iter()
         .any(|m| m.id == "mhidden" || m.id == "moldport"));
     // The evidence copies and idempotency receipt remain available after the source turn is purged.
-    let evidence_count = t.store.count("evidence", None).await.unwrap();
+    let evidence_count = t.store.count(schema::EVIDENCE, None).await.unwrap();
     assert_eq!(evidence_count, 3);
     let mut tx = Tx::new();
-    tx.delete("turns", &store::turn_rid("codex", "T1")).unwrap();
+    tx.delete(schema::TURNS, &store::turn_rid("codex", "T1"))
+        .unwrap();
     t.store.commit(tx).await.unwrap();
     let after_purge = ingest::add_memories(&eng, &t, &c, req).await.unwrap();
     assert_eq!(after_purge["requestId"], id);
     assert_eq!(after_purge["duplicate"], true);
     assert_eq!(
-        t.store.count("evidence", None).await.unwrap(),
+        t.store.count(schema::EVIDENCE, None).await.unwrap(),
         evidence_count
     );
     // A synchronous model failure must persist a receipt and retry payload before returning 503.
@@ -538,7 +541,7 @@ async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     assert_eq!(s.turn_count, 4);
     assert_eq!(
         t.store
-            .count("memories", Some("type = 'experience'"))
+            .count(schema::MEMORIES, Some("type = 'experience'"))
             .await
             .unwrap(),
         0
@@ -594,7 +597,7 @@ async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     )
     .await
     .is_err());
-    assert_eq!(t.store.count("memories", None).await.unwrap(), 1);
+    assert_eq!(t.store.count(schema::MEMORIES, None).await.unwrap(), 1);
     assert_eq!(
         t.store
             .get_turn("test", "U4")
@@ -625,7 +628,7 @@ async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     assert_eq!(ingest::wait_idle(eng, &t).await.unwrap()["status"], "idle");
     assert_eq!(
         t.store
-            .count("memories", Some("type = 'experience'"))
+            .count(schema::MEMORIES, Some("type = 'experience'"))
             .await
             .unwrap(),
         1
@@ -671,7 +674,7 @@ async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
         .unwrap();
     t.store
         .merge_doc(
-            "sessions",
+            schema::SESSIONS,
             &crate::storage::store::session_rid("test", "S"),
             json!({"experienceFailures":4,"experienceRetryAtTs":0}),
         )
@@ -731,16 +734,19 @@ async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
         "completed"
     );
     indexer::drain(eng, &t).await.unwrap();
-    let evidence = t.store.count("evidence", None).await.unwrap();
+    let evidence = t.store.count(schema::EVIDENCE, None).await.unwrap();
     assert_eq!(
         consolidate::purge(&t, &util::now_str(), 3.0).await.unwrap()["purgedTurns"],
         6
     );
-    assert_eq!(t.store.count("evidence", None).await.unwrap(), evidence);
+    assert_eq!(
+        t.store.count(schema::EVIDENCE, None).await.unwrap(),
+        evidence
+    );
     let duplicate = ingest::add_memories(eng, &t, &c, payloads[0].clone())
         .await
         .unwrap();
     assert_eq!(duplicate["duplicate"], true);
-    assert_eq!(t.store.count("memories", None).await.unwrap(), 2);
+    assert_eq!(t.store.count(schema::MEMORIES, None).await.unwrap(), 2);
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
 }

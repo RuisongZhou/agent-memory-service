@@ -3,6 +3,7 @@
 use crate::domain::types::*;
 use crate::formation::tasks;
 use crate::runtime::{engine::Engine, llm::JsonContract, tenant::Tenant};
+use crate::storage::schema::{self, request_kind};
 use crate::storage::store::{self, Tx};
 use anyhow::{anyhow, ensure, Result};
 use memory_rules::util;
@@ -179,7 +180,7 @@ pub async fn enqueue(
             return Ok(out);
         }
     }
-    let counter = t.store.get_doc("index_meta", "mem0_sequence").await?;
+    let counter = t.store.get_doc(schema::INDEX_META, "mem0_sequence").await?;
     let seq = counter
         .as_ref()
         .and_then(|v| v["value"].as_u64())
@@ -188,8 +189,8 @@ pub async fn enqueue(
     let now = util::now_str();
     let id = util::new_id("rq");
     let mut tx = Tx::new();
-    tx.put("index_meta", "mem0_sequence", json!({"value":seq}))?;
-    tx.put("requests",&id,json!({"requestId":id,"kind":"mem0","strategy":"mem0",
+    tx.put(schema::INDEX_META, "mem0_sequence", json!({"value":seq}))?;
+    tx.put(schema::REQUESTS,&id,json!({"requestId":id,"kind":request_kind::MEM0,"strategy":"mem0",
         "status":"queued","memoryIds":[],"createdAt":now,"updatedAt":now,
         "platform":c.platform,"project":project,"session":session,"inputSeq":seq,
         "turnKeys":key.into_iter().collect::<Vec<_>>(),"turnId":req.turn_id,
@@ -230,14 +231,14 @@ async fn process_until(eng: &Arc<Engine>, t: &Arc<Tenant>, stop: Option<&str>) -
         }
         t.store
             .merge_doc(
-                "requests",
+                schema::REQUESTS,
                 id,
                 json!({"status":"running","updatedAt":util::now_str()}),
             )
             .await?;
         if let Err(error) = form(eng, t, &job).await {
             if t.store
-                .get_doc("requests", id)
+                .get_doc(schema::REQUESTS, id)
                 .await?
                 .is_some_and(|r| r["formed"] == true)
             {
@@ -246,7 +247,7 @@ async fn process_until(eng: &Arc<Engine>, t: &Arc<Tenant>, stop: Option<&str>) -
             let failures = job["failures"].as_u64().unwrap_or(0) + 1;
             t.store
                 .merge_doc(
-                    "requests",
+                    schema::REQUESTS,
                     id,
                     json!({"status":if failures>=5 {"failed"} else {"queued"},
                 "failures":failures,"error":format!("{error:#}"),"updatedAt":util::now_str(),
@@ -386,7 +387,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
         model_ms = tick.elapsed().as_secs_f64() * 1000.0;
         t.store
             .log(
-                "extract_log",
+                schema::EXTRACT_LOG,
                 json!({"stage":"Mem0-add","outputFormat":FORMAT,"requestId":id,
             "status":"model_completed","output":reply.json,"responseLogId":reply.response_log_id,
             "systemHash":blake3::hash(SYSTEM.as_bytes()).to_hex().to_string(),
@@ -405,7 +406,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
         if !seen.insert(key.clone()) {
             continue;
         }
-        if let Some(previous) = t.store.get_doc("mem0_hashes", &key).await? {
+        if let Some(previous) = t.store.get_doc(super::HASHES, &key).await? {
             if let Some(mid) = previous["memoryId"].as_str() {
                 if t.store
                     .get_memory(mid)
@@ -413,7 +414,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
                     .is_some_and(|m| m.status == S_CURRENT)
                 {
                     memory_ids.push(mid.to_string());
-                    let source = t.store.get_doc("mem0_sources", mid).await?.ok_or_else(|| {
+                    let source = t.store.get_doc(super::SOURCES, mid).await?.ok_or_else(|| {
                         anyhow!("deduplicated memory is missing batch provenance")
                     })?;
                     let mut inputs: Vec<String> =
@@ -439,7 +440,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
     let mut tx = Tx::new();
     let mut cache = Vec::new();
     for (mid, inputs) in repeated_sources {
-        tx.merge("mem0_sources", &mid, json!({"inputRequestIds":inputs}))?;
+        tx.merge(super::SOURCES, &mid, json!({"inputRequestIds":inputs}))?;
     }
     for ((hash, candidate), vector) in fresh.into_iter().zip(vectors) {
         let mid = util::new_id("m");
@@ -474,17 +475,17 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
         doc["formationVersion"] = json!(FORMAT);
         doc["contentHash"] = json!(hash);
         doc["ingestionMode"] = json!(if inferred { "inferred" } else { "raw" });
-        tx.put("memories", &mid, doc)?;
-        tx.put("mem0_hashes", &hash, json!({"memoryId":mid}))?;
+        tx.put(schema::MEMORIES, &mid, doc)?;
+        tx.put(super::HASHES, &hash, json!({"memoryId":mid}))?;
         tx.put(
-            "mem0_sources",
+            super::SOURCES,
             &mid,
             json!({"level":"batch","inputRequestIds":[id],
             "observedAt":observed,"attributedTo":attributed,"verifiedClaimSpan":false}),
         )?;
-        tx.index_task("memories", &mid, "upsert_preindexed")?;
+        tx.index_task(schema::MEMORIES, &mid, "upsert_preindexed")?;
         tx.put(
-            "mem0_history",
+            super::HISTORY,
             &util::new_id("h"),
             json!({"memoryId":mid,"event":"ADD",
             "text":record.text,"requestId":id,"createdAt":now}),
@@ -493,7 +494,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
         cache.push((mid, vector));
     }
     tx.merge(
-        "requests",
+        schema::REQUESTS,
         id,
         json!({"status":"indexing","memoryIds":memory_ids,"formed":true,
         "searchable":false,"error":null,"updatedAt":now,"latencyMs":{"recall":recall_ms,
@@ -507,7 +508,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
     }
     drop(vectors);
     t.index_notify.notify_one();
-    t.store.merge_doc("requests",id,json!({"status":"completed","searchable":true,"latencyMs":{"recall":recall_ms,"model":model_ms,
+    t.store.merge_doc(schema::REQUESTS,id,json!({"status":"completed","searchable":true,"latencyMs":{"recall":recall_ms,"model":model_ms,
         "embed":embed_ms,"persist":tick.elapsed().as_secs_f64()*1000.0,
         "total":started.elapsed().as_secs_f64()*1000.0}})).await?;
     Ok(())
@@ -532,7 +533,7 @@ async fn publish_committed(t: &Arc<Tenant>, job: &Value) -> Result<()> {
         ensure!(!vector.is_empty(), "committed vector missing");
         t.vecs.write().await.memories.insert(mid, Arc::new(vector));
     }
-    t.store.merge_doc("requests",id,json!({"status":"completed","searchable":true,"error":null,"updatedAt":util::now_str()})).await
+    t.store.merge_doc(schema::REQUESTS,id,json!({"status":"completed","searchable":true,"error":null,"updatedAt":util::now_str()})).await
 }
 
 async fn wait(eng: &Arc<Engine>, t: &Arc<Tenant>, id: &str) -> ApiResult<Value> {
@@ -582,14 +583,14 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
         let pending = t
             .store
             .count(
-                "requests",
+                schema::REQUESTS,
                 Some("kind = 'mem0' AND status IN ['queued','running','indexing']"),
             )
             .await?;
         if pending == 0 {
             crate::runtime::indexer::drain(eng, t).await?;
             return Ok(json!({"status":"idle","pendingRequests":0,"indexTasks":0,
-                "failedRequests":t.store.count("requests",Some("kind = 'mem0' AND status = 'failed'")).await?}));
+                "failedRequests":t.store.count(schema::REQUESTS,Some("kind = 'mem0' AND status = 'failed'")).await?}));
         }
         if start.elapsed() > Duration::from_secs(120) {
             return Ok(json!({"status":"timeout","pendingRequests":pending}));

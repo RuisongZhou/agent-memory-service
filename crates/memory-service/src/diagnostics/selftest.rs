@@ -3,6 +3,7 @@
 use serde_json::json;
 
 use crate::domain::types::*;
+use crate::storage::schema;
 use crate::storage::store::*;
 
 fn tempdir() -> std::path::PathBuf {
@@ -32,19 +33,25 @@ pub async fn store_roundtrip() {
         ..Default::default()
     };
     let mut tx = Tx::new();
-    tx.put("memories", &m.id, to_doc(&m).unwrap()).unwrap();
-    tx.index_task("memories", &m.id, "upsert").unwrap();
-    tx.merge("memories", &m.id, json!({"evidenceCount": 2}))
+    tx.put(schema::MEMORIES, &m.id, to_doc(&m).unwrap())
+        .unwrap();
+    tx.index_task(schema::MEMORIES, &m.id, "upsert").unwrap();
+    tx.merge(schema::MEMORIES, &m.id, json!({"evidenceCount": 2}))
         .unwrap();
     s.commit(tx).await.unwrap();
     let got = s.get_memory("mabc123").await.unwrap().unwrap();
     assert_eq!(got.text, m.text);
     assert_eq!(got.evidence_count, 2);
     assert_eq!(got.scope.project.as_deref(), Some("p1"));
-    s.set_embedding("memories", "mabc123", Some(&[0.1, 0.2, 0.3, 0.4]), "x")
-        .await
-        .unwrap();
-    let e = s.load_embeddings("memories").await.unwrap();
+    s.set_embedding(
+        schema::MEMORIES,
+        "mabc123",
+        Some(&[0.1, 0.2, 0.3, 0.4]),
+        "x",
+    )
+    .await
+    .unwrap();
+    let e = s.load_embeddings(schema::MEMORIES).await.unwrap();
     assert_eq!(e.len(), 1);
     assert_eq!(e[0].0, "mabc123");
     let found = s
@@ -60,7 +67,7 @@ pub async fn store_roundtrip() {
         .await
         .unwrap();
     assert_eq!(many.len(), 1);
-    assert_eq!(s.count("index_tasks", None).await.unwrap(), 1);
+    assert_eq!(s.count(schema::INDEX_TASKS, None).await.unwrap(), 1);
     let tasks = s
         .select(
             "SELECT * OMIT id FROM index_tasks ORDER BY createdTs ASC LIMIT 5",
@@ -71,7 +78,7 @@ pub async fn store_roundtrip() {
     assert_eq!(tasks[0]["targetId"], json!("mabc123"));
     // transaction failure rolls back
     let mut tx = Tx::new();
-    tx.merge("memories", "mabc123", json!({"status": "superseded"}))
+    tx.merge(schema::MEMORIES, "mabc123", json!({"status": "superseded"}))
         .unwrap();
     tx.raw("THROW 'boom'", vec![]);
     assert!(s.commit(tx).await.is_err());
@@ -358,7 +365,7 @@ pub async fn retrieval_roundtrip() {
         .await
         .unwrap();
     assert_eq!(buffer["recentTurns"][0]["turnId"], "T2");
-    let log_count = t.store.count("retrieval_log", None).await.unwrap();
+    let log_count = t.store.count(schema::RETRIEVAL_LOG, None).await.unwrap();
     let access = t
         .store
         .get_memory("m01")
@@ -378,7 +385,7 @@ pub async fn retrieval_roundtrip() {
     .await
     .unwrap();
     assert_eq!(
-        t.store.count("retrieval_log", None).await.unwrap(),
+        t.store.count(schema::RETRIEVAL_LOG, None).await.unwrap(),
         log_count
     );
     assert_eq!(
@@ -505,7 +512,7 @@ pub async fn retrieval_roundtrip() {
     let skill = t.store.get_memory("m11").await.unwrap().unwrap();
     assert_eq!(skill.status, S_CANDIDATE);
     assert_eq!(skill.helpful_count, 0);
-    let expired = t.store.log("retrieval_log", json!({"kind":"search", "createdAt":(util::now()-chrono::Duration::hours(25)).to_rfc3339(),
+    let expired = t.store.log(schema::RETRIEVAL_LOG, json!({"kind":"search", "createdAt":(util::now()-chrono::Duration::hours(25)).to_rfc3339(),
         "returned":{"memories":[{"id":"m04"}]}})).await.unwrap();
     assert_eq!(
         manage::feedback(
@@ -595,7 +602,7 @@ pub async fn retrieval_roundtrip() {
     assert!(t.store.get_memory("m16").await.unwrap().is_none());
     assert!(t
         .store
-        .get_doc("evidence", "eport")
+        .get_doc(schema::EVIDENCE, "eport")
         .await
         .unwrap()
         .is_none());
@@ -770,7 +777,7 @@ pub async fn long_turn_roundtrip() {
     assert_eq!(stored[0].1.len(), long.chunks.len());
     // A later re-index (e.g. after extraction updates derived text) keeps the window vectors.
     let mut tx = Tx::new();
-    tx.index_task("turns", &rid, "upsert").unwrap();
+    tx.index_task(schema::TURNS, &rid, "upsert").unwrap();
     t.store.commit(tx).await.unwrap();
     indexer::drain(&eng, &t).await.unwrap();
     assert_eq!(

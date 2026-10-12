@@ -4,6 +4,7 @@ use crate::domain::types::*;
 use crate::runtime::{
     config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
 };
+use crate::storage::schema;
 use crate::storage::store::{self, to_doc, Tx};
 use memory_rules::util;
 use serde_json::json;
@@ -86,8 +87,8 @@ pub async fn consolidation_selftest() {
     };
     let mut tx = Tx::new();
     for m in [&a, &b] {
-        tx.put("memories", &m.id, to_doc(m).unwrap()).unwrap();
-        tx.index_task("memories", &m.id, "upsert").unwrap();
+        tx.put(schema::MEMORIES, &m.id, to_doc(m).unwrap()).unwrap();
+        tx.index_task(schema::MEMORIES, &m.id, "upsert").unwrap();
     }
     for (id, mid, tid) in [("eexacta", "mexacta", "T1"), ("eexactb", "mexactb", "T2")] {
         let e = EvidenceRec {
@@ -101,7 +102,8 @@ pub async fn consolidation_selftest() {
             stated_at: as_of.into(),
             created_at: as_of.into(),
         };
-        tx.put("evidence", &e.id, to_doc(&e).unwrap()).unwrap();
+        tx.put(schema::EVIDENCE, &e.id, to_doc(&e).unwrap())
+            .unwrap();
     }
     t.store.commit(tx).await.unwrap();
     indexer::drain(&eng, &t).await.unwrap();
@@ -129,7 +131,12 @@ pub async fn consolidation_selftest() {
         b.text
     );
     for id in ["eexacta", "eexactb"] {
-        let e = t.store.get_doc("evidence", id).await.unwrap().unwrap();
+        let e = t
+            .store
+            .get_doc(schema::EVIDENCE, id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(e["memoryIds"]
             .as_array()
             .unwrap()
@@ -148,7 +155,7 @@ pub async fn consolidation_selftest() {
             .evidence_count,
         2
     );
-    assert_eq!(t.store.count("evidence", None).await.unwrap(), 2);
+    assert_eq!(t.store.count(schema::EVIDENCE, None).await.unwrap(), 2);
 
     // Experience text omits approach/result; equal text cannot erase a successful vs failed attempt.
     // Keep these records unindexed so this plumbing test never triggers P4's generative stage.
@@ -176,7 +183,7 @@ pub async fn consolidation_selftest() {
     };
     let mut tx = Tx::new();
     for m in [&success, &failure] {
-        tx.put("memories", &m.id, to_doc(m).unwrap()).unwrap();
+        tx.put(schema::MEMORIES, &m.id, to_doc(m).unwrap()).unwrap();
     }
     t.store.commit(tx).await.unwrap();
     let distinct = consolidate::run_jobs(&eng, &t, &c, json!({"jobs":["merge"],"asOf":as_of}))
@@ -253,10 +260,10 @@ pub async fn consolidation_selftest() {
             ..Default::default()
         };
         let rid = store::turn_rid("codex", tid);
-        tx.put("turns", &rid, to_doc(&tr).unwrap()).unwrap();
-        tx.index_task("turns", &rid, "upsert").unwrap();
+        tx.put(schema::TURNS, &rid, to_doc(&tr).unwrap()).unwrap();
+        tx.index_task(schema::TURNS, &rid, "upsert").unwrap();
         tx.put(
-            "sessions",
+            schema::SESSIONS,
             &store::session_rid("codex", sid),
             to_doc(&s).unwrap(),
         )
@@ -273,7 +280,7 @@ pub async fn consolidation_selftest() {
         stated_at: "2026-10-01T00:00:00Z".into(),
         created_at: as_of.into(),
     };
-    tx.put("evidence", &evidence.id, to_doc(&evidence).unwrap())
+    tx.put(schema::EVIDENCE, &evidence.id, to_doc(&evidence).unwrap())
         .unwrap();
     t.store.commit(tx).await.unwrap();
     indexer::drain(&eng, &t).await.unwrap();
@@ -299,7 +306,7 @@ pub async fn consolidation_selftest() {
     }
     assert!(t
         .store
-        .get_doc("evidence", "ebuffer")
+        .get_doc(schema::EVIDENCE, "ebuffer")
         .await
         .unwrap()
         .is_some());
@@ -331,7 +338,7 @@ pub async fn consolidation_selftest() {
     .await
     .unwrap();
     assert_eq!(again["jobs"]["purge"]["purgedTurns"], 0);
-    assert_eq!(t.store.count("evidence", None).await.unwrap(), 3);
+    assert_eq!(t.store.count(schema::EVIDENCE, None).await.unwrap(), 3);
     let force = consolidate::run_jobs(
         &eng,
         &t,
@@ -350,7 +357,7 @@ pub async fn consolidation_selftest() {
     for id in ["Twait", "Tpending", "Tmissingwatermark"] {
         assert!(t.store.get_turn("codex", id).await.unwrap().is_some());
     }
-    assert_eq!(t.store.count("evidence", None).await.unwrap(), 3);
+    assert_eq!(t.store.count(schema::EVIDENCE, None).await.unwrap(), 3);
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
     assert!(matches!(
         consolidate::run_jobs(&eng, &t, &c, json!({"jobs":["unknown"]})).await,

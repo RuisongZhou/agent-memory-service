@@ -5,6 +5,7 @@ use crate::retrieval;
 use crate::runtime::{
     config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
 };
+use crate::storage::schema;
 use crate::storage::store::{to_doc, Tx};
 use memory_rules::util;
 use serde_json::json;
@@ -55,7 +56,8 @@ pub async fn selftest() {
     };
     let mut tx = Tx::new();
     for rec in [&fact, &profile, &skill, &historical] {
-        tx.put("memories", &rec.id, to_doc(rec).unwrap()).unwrap();
+        tx.put(schema::MEMORIES, &rec.id, to_doc(rec).unwrap())
+            .unwrap();
     }
     tenant.store.commit(tx).await.unwrap();
     let first = tenant.store.active_memory_meta().await.unwrap();
@@ -65,7 +67,7 @@ pub async fn selftest() {
     ));
     let mut rollback = Tx::new();
     rollback
-        .merge("memories", &fact.id, json!({"status":S_SUPERSEDED}))
+        .merge(schema::MEMORIES, &fact.id, json!({"status":S_SUPERSEDED}))
         .unwrap();
     rollback.raw("THROW 'rollback'", vec![]);
     assert!(tenant.store.commit(rollback).await.is_err());
@@ -80,7 +82,7 @@ pub async fn selftest() {
         S_CURRENT
     );
     let mut tx = Tx::new();
-    tx.merge("memories", &fact.id, json!({"status":S_SUPERSEDED}))
+    tx.merge(schema::MEMORIES, &fact.id, json!({"status":S_SUPERSEDED}))
         .unwrap();
     tenant.store.commit(tx).await.unwrap();
     for id in [&profile.id, &skill.id] {
@@ -110,7 +112,7 @@ pub async fn selftest() {
     };
     tenant
         .store
-        .put_doc("memories", &missing.id, &missing)
+        .put_doc(schema::MEMORIES, &missing.id, &missing)
         .await
         .unwrap();
     tenant.store.repair_integrity().await.unwrap();
@@ -196,7 +198,7 @@ pub async fn selftest() {
     };
     tenant
         .store
-        .put_doc("memories", &port.id, &port)
+        .put_doc(schema::MEMORIES, &port.id, &port)
         .await
         .unwrap();
     let applied = crate::algorithms::memos::formation::relations::apply(
@@ -276,7 +278,7 @@ pub async fn selftest() {
     assert_eq!(
         tenant
             .store
-            .get_doc("uncertainties", &resolution.id)
+            .get_doc(schema::UNCERTAINTIES, &resolution.id)
             .await
             .unwrap()
             .unwrap()["status"],
@@ -291,7 +293,7 @@ pub async fn selftest() {
     assert_eq!(
         tenant
             .store
-            .count("uncertainties", Some("status = 'open'"))
+            .count(schema::UNCERTAINTIES, Some("status = 'open'"))
             .await
             .unwrap(),
         0
@@ -324,7 +326,7 @@ pub async fn selftest() {
     assert_eq!(
         reopened
             .store
-            .count("uncertainties", Some("status = 'open'"))
+            .count(schema::UNCERTAINTIES, Some("status = 'open'"))
             .await
             .unwrap(),
         0
@@ -369,7 +371,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
                 related,
                 ..template.clone()
             };
-            tx.put("memories", &record.id, to_doc(&record).unwrap())
+            tx.put(schema::MEMORIES, &record.id, to_doc(&record).unwrap())
                 .unwrap();
         }
         t.store.commit(tx).await.unwrap();
@@ -391,7 +393,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
         if name == "chain" {
             let mut rollback = Tx::new();
             rollback
-                .merge("memories", &ids("b"), json!({"status":S_SUPERSEDED}))
+                .merge(schema::MEMORIES, &ids("b"), json!({"status":S_SUPERSEDED}))
                 .unwrap();
             rollback.raw("THROW 'rollback shared conflict'", vec![]);
             assert!(t.store.commit(rollback).await.is_err());

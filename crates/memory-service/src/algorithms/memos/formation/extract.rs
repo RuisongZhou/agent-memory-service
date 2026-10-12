@@ -2,6 +2,7 @@
 use super::{prompts, relations};
 use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
+use crate::storage::schema;
 use anyhow::{anyhow, Result};
 use memory_fulltext::FtFilter;
 use memory_rules::util;
@@ -169,7 +170,7 @@ async fn call_logged_contract(
                 Err(error) => {
                     t.store
                         .log(
-                            "extract_log",
+                            schema::EXTRACT_LOG,
                             json!({"stage":stage,"createdAt":now,
                         "status":"failed","error":error.to_string(),"modelOutput":r.json}),
                         )
@@ -191,13 +192,13 @@ async fn call_logged_contract(
                 });
                 record["modelOutput"] = r.json;
             }
-            t.store.log("extract_log", record).await?;
+            t.store.log(schema::EXTRACT_LOG, record).await?;
             Ok(output)
         }
         Err(e) => {
             t.store
                 .log(
-                    "extract_log",
+                    schema::EXTRACT_LOG,
                     json!({"stage":stage,"createdAt":now,"status":"failed","error":e.to_string()}),
                 )
                 .await?;
@@ -624,7 +625,7 @@ pub(super) async fn validate(
     let groups=facts.iter().filter(|f|f.sources.len()>1).map(|f|json!({"retainedFact":f.fidx,
         "mergedFacts":canonical.iter().filter_map(|(idx,canon)|(*canon==f.fidx&&*idx!=f.fidx).then_some(*idx)).collect::<Vec<_>>(),
         "sourceCount":f.sources.len()})).collect::<Vec<_>>();
-    t.store.log("extract_log",json!({"stage":if text.is_some(){"P1-b_validation"}else{"P1_validation"},
+    t.store.log(schema::EXTRACT_LOG,json!({"stage":if text.is_some(){"P1-b_validation"}else{"P1_validation"},
         "createdAt":util::now_str(),"outputHash":blake3::hash(output.to_string().as_bytes()).to_hex().to_string(),
         "groupLabel":format!("{}::{}::{}",platform,project,turns.first().map(|tr|tr.session.as_str()).unwrap_or("text")),
         "promptVariant":if first_hand{"en"}else{"zh"},"sourceTurnIds":source_turn_ids,

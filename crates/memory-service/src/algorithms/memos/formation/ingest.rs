@@ -3,6 +3,7 @@ use super::extract;
 use crate::domain::types::*;
 use crate::formation::{admission::required_scope, tasks::get_task};
 use crate::runtime::{engine::Engine, indexer, tenant::Tenant};
+use crate::storage::schema::{self, request_kind};
 use crate::storage::store::{self, from_doc, to_doc, Tx};
 use anyhow::{anyhow, Result};
 use memory_rules::util;
@@ -168,29 +169,29 @@ pub async fn add_memories(
         };
         let rid = store::turn_rid(&c.platform, turn_id);
         receipt.turn_keys.push(rid.clone());
-        tx.put("turns", &rid, to_doc(&tr)?)?;
-        tx.index_task("turns", &rid, "upsert")?;
+        tx.put(schema::TURNS, &rid, to_doc(&tr)?)?;
+        tx.index_task(schema::TURNS, &rid, "upsert")?;
         tx.put(
-            "sessions",
+            schema::SESSIONS,
             &store::session_rid(&c.platform, session),
             to_doc(&s)?,
         )?;
         let mut doc = to_doc(&receipt)?;
-        doc["kind"] = json!("turn");
+        doc["kind"] = json!(request_kind::TURN);
         doc["platform"] = json!(c.platform);
         doc["project"] = json!(project);
         doc["session"] = json!(session);
         doc["turnId"] = json!(turn_id);
-        tx.put("requests", &request, doc)?;
+        tx.put(schema::REQUESTS, &request, doc)?;
     } else if let Some(text) = &req.text {
         let mut doc = to_doc(&receipt)?;
-        doc["kind"] = json!("text");
+        doc["kind"] = json!(request_kind::TEXT);
         doc["text"] = json!(text);
         doc["platform"] = json!(c.platform);
         doc["project"] = json!(project);
         doc["session"] = json!(session);
         doc["failures"] = json!(0);
-        tx.put("requests", &request, doc)?;
+        tx.put(schema::REQUESTS, &request, doc)?;
         if req.session_ended.unwrap_or(false) {
             end_session(t, &c.platform, session).await?;
         }
@@ -208,15 +209,15 @@ pub async fn add_memories(
         s.ended_at = Some(now.clone());
         s.updated_at = now.clone();
         tx.put(
-            "sessions",
+            schema::SESSIONS,
             &store::session_rid(&c.platform, session),
             to_doc(&s)?,
         )?;
         let mut doc = to_doc(&receipt)?;
-        doc["kind"] = json!("session_end");
+        doc["kind"] = json!(request_kind::SESSION_END);
         doc["platform"] = json!(c.platform);
         doc["session"] = json!(session);
-        tx.put("requests", &request, doc)?;
+        tx.put(schema::REQUESTS, &request, doc)?;
     }
     t.store.commit(tx).await?;
     drop(guard);
@@ -237,7 +238,7 @@ async fn end_session(t: &Arc<Tenant>, platform: &str, session: &str) -> Result<(
         s.ended_at = Some(util::now_str());
         s.updated_at = util::now_str();
         t.store
-            .put_doc("sessions", &store::session_rid(platform, session), &s)
+            .put_doc(schema::SESSIONS, &store::session_rid(platform, session), &s)
             .await?;
     }
     Ok(())
@@ -254,7 +255,7 @@ async fn wait_request(
         process_available(eng, t, force, Some(id)).await?;
         let doc = t
             .store
-            .get_doc("requests", id)
+            .get_doc(schema::REQUESTS, id)
             .await?
             .ok_or_else(|| ApiError::NotFound("request not found".into()))?;
         let r: RequestRec = from_doc(doc)?;
@@ -289,7 +290,7 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
         let requests = t
             .store
             .count(
-                "requests",
+                schema::REQUESTS,
                 Some("kind IN ['text','session_end'] AND status IN ['queued','running']"),
             )
             .await?;
@@ -299,7 +300,7 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
             .await?;
         let pending = t
             .store
-            .count("turns", Some("extractState = 'pending'"))
+            .count(schema::TURNS, Some("extractState = 'pending'"))
             .await?;
         let mut experiences = 0usize;
         let mut failed_experiences = 0usize;
@@ -310,7 +311,7 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
             let doc = t
                 .store
                 .get_doc(
-                    "sessions",
+                    schema::SESSIONS,
                     &store::session_rid(&session.platform, &session.session),
                 )
                 .await?
@@ -329,9 +330,9 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
             indexer::drain(eng, t).await?;
             return Ok(
                 json!({"status":"idle","pendingTurns":0,"pendingJobs":0,"indexTasks":0,
-                "failedTurns":t.store.count("turns",Some("extractState = 'failed'")).await?,
+                "failedTurns":t.store.count(schema::TURNS,Some("extractState = 'failed'")).await?,
                 "failedExperiences":failed_experiences,
-                "failedRequests":t.store.count("requests",Some("status = 'failed'")).await?}),
+                "failedRequests":t.store.count(schema::REQUESTS,Some("status = 'failed'")).await?}),
             );
         }
         if started.elapsed() > Duration::from_secs(120) {
@@ -451,14 +452,14 @@ pub(crate) async fn process_available(
         let stated = doc["createdAt"].as_str().unwrap_or("");
         t.store
             .merge_doc(
-                "requests",
+                schema::REQUESTS,
                 request,
                 json!({"status":"running","updatedAt":util::now_str()}),
             )
             .await?;
         if let Err(e) = extract::explicit(eng, t, platform, project, text, request, stated).await {
             let failures = doc["failures"].as_i64().unwrap_or(0) + 1;
-            t.store.merge_doc("requests",request,json!({"status":if failures>=5{"failed"}else{"queued"},
+            t.store.merge_doc(schema::REQUESTS,request,json!({"status":if failures>=5{"failed"}else{"queued"},
                 "error":e.to_string(),"failures":failures,"updatedAt":util::now_str(),"retryAtTs":util::now().timestamp()+retry_delay(failures)})).await?;
         }
     }
@@ -503,7 +504,7 @@ pub(crate) async fn process_available(
                 for tr in chunk {
                     let rid = store::turn_rid(&tr.platform, &tr.turn_id);
                     if t.store
-                        .get_doc("turns", &rid)
+                        .get_doc(schema::TURNS, &rid)
                         .await?
                         .and_then(|d| d["retryAtTs"].as_i64())
                         .unwrap_or(0)
@@ -520,7 +521,7 @@ pub(crate) async fn process_available(
                 for tr in chunk.iter().filter(|tr| tr.extract_state != "done") {
                     t.store
                         .merge_doc(
-                            "requests",
+                            schema::REQUESTS,
                             &tr.request_id,
                             json!({"status":"running","updatedAt":util::now_str()}),
                         )
@@ -532,10 +533,10 @@ pub(crate) async fn process_available(
                         let n = tr.extract_failures + 1;
                         let exhausted = n >= MAX_FORMATION_FAILURES;
                         let state = if exhausted { "failed" } else { "pending" };
-                        tx.merge("turns",&store::turn_rid(&tr.platform,&tr.turn_id),json!({"extractFailures":n,
+                        tx.merge(schema::TURNS,&store::turn_rid(&tr.platform,&tr.turn_id),json!({"extractFailures":n,
                             "extractState":state,"retryAtTs":util::now().timestamp()+retry_delay(n)}))?;
                         if tr.extract_state != "done" {
-                            tx.merge("requests",&tr.request_id,json!({"status":if exhausted{"failed"}else{"queued"},"error":e.to_string(),"updatedAt":util::now_str()}))?;
+                            tx.merge(schema::REQUESTS,&tr.request_id,json!({"status":if exhausted{"failed"}else{"queued"},"error":e.to_string(),"updatedAt":util::now_str()}))?;
                         }
                     }
                     t.store.commit(tx).await?;
@@ -561,7 +562,7 @@ pub(crate) async fn process_available(
             let session_doc = t
                 .store
                 .get_doc(
-                    "sessions",
+                    schema::SESSIONS,
                     &store::session_rid(&session.platform, &session.session),
                 )
                 .await?
@@ -574,7 +575,7 @@ pub(crate) async fn process_available(
                 }
                 t.store
                     .merge_doc(
-                        "sessions",
+                        schema::SESSIONS,
                         &store::session_rid(&session.platform, &session.session),
                         json!({"experienceState":"running"}),
                     )
@@ -582,7 +583,7 @@ pub(crate) async fn process_available(
                 if let Err(error) = extract::session_experience(eng, t, &session).await {
                     let failures = session_doc["experienceFailures"].as_i64().unwrap_or(0) + 1;
                     experience_failed = failures >= MAX_FORMATION_FAILURES;
-                    t.store.merge_doc("sessions",&store::session_rid(&session.platform,&session.session),
+                    t.store.merge_doc(schema::SESSIONS,&store::session_rid(&session.platform,&session.session),
                         json!({"experienceFailures":failures,"experienceState":if experience_failed {"failed"} else {"queued"},
                             "experienceError":error.to_string(),"experienceRetryAtTs":util::now().timestamp()+retry_delay(failures)})).await?;
                     if !experience_failed {
@@ -638,13 +639,13 @@ async fn finish_end_requests(
     }
     let mut tx = Tx::new();
     tx.merge(
-        "sessions",
+        schema::SESSIONS,
         &store::session_rid(&session.platform, &session.session),
         json!({"endCheckedSeq": checked_seq}),
     )?;
     for r in requests {
         if let Some(id) = r["requestId"].as_str() {
-            tx.merge("requests",id,json!({"status":if error.is_some(){"failed"}else{"completed"},"error":error,"updatedAt":util::now_str()}))?;
+            tx.merge(schema::REQUESTS,id,json!({"status":if error.is_some(){"failed"}else{"completed"},"error":error,"updatedAt":util::now_str()}))?;
         }
     }
     t.store.commit(tx).await

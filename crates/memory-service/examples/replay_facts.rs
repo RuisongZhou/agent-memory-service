@@ -1,6 +1,7 @@
 //! Explicit, local benchmark recovery: replay archived source batches without background jobs.
 //! Never run automatically. Arguments: isolated data dir, tenant, JSON array of turn batches.
 use anyhow::{ensure, Result};
+use memory_service::storage::schema;
 use memory_service::{
     config::ServiceConfig,
     extract, indexer,
@@ -90,7 +91,7 @@ async fn main() -> Result<()> {
                 *turn = old;
             } else {
                 tx.put(
-                    "turns",
+                    schema::TURNS,
                     &store::turn_rid(&turn.platform, &turn.turn_id),
                     store::to_doc(turn)?,
                 )?;

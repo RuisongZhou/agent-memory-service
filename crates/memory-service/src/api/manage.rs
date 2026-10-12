@@ -4,10 +4,12 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use crate::algorithms::{mem0, memos};
 use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::tenant::Tenant;
+use crate::storage::schema;
 use crate::storage::store::{patch, safe_id, session_rid, to_doc, turn_rid, Tx};
 use memory_rules::util;
 
@@ -42,7 +44,7 @@ pub async fn resolve_uncertainty(
     }
     let record = t
         .store
-        .get_doc("uncertainties", &req.id)
+        .get_doc(schema::UNCERTAINTIES, &req.id)
         .await?
         .ok_or_else(|| ApiError::NotFound("uncertainty not found".into()))?;
     if record["status"] != "open" {
@@ -93,13 +95,13 @@ pub async fn resolve_uncertainty(
                         || !discarded.iter().any(|id| id.as_str() == edge.id)
                 })
                 .collect();
-            tx.merge("memories", &memory.id, json!({"related":related}))?;
+            tx.merge(schema::MEMORIES, &memory.id, json!({"related":related}))?;
             if !has_other_conflict {
-                tx.merge("memories", &memory.id, json!({"status":S_CURRENT}))?;
+                tx.merge(schema::MEMORIES, &memory.id, json!({"status":S_CURRENT}))?;
             }
         } else {
             tx.merge(
-                "memories",
+                schema::MEMORIES,
                 &memory.id,
                 patch(json!({"status":S_SUPERSEDED,"validUntil":now})),
             )?;
@@ -111,9 +113,9 @@ pub async fn resolve_uncertainty(
                 vec![],
             );
         }
-        tx.index_task("memories", &memory.id, "upsert")?;
+        tx.index_task(schema::MEMORIES, &memory.id, "upsert")?;
     }
-    tx.merge("uncertainties", &req.id, json!({"status":"resolved","resolvedAt":now,
+    tx.merge(schema::UNCERTAINTIES, &req.id, json!({"status":"resolved","resolvedAt":now,
         "resolution":{"keepMemoryId":req.keep_memory_id,"platform":caller.platform,"reason":req.reason}}))?;
     t.store.commit(tx).await?;
     t.index_notify.notify_one();
@@ -240,9 +242,9 @@ pub async fn correct_memory(
                 profile_kind: old.profile_kind.clone(),
                 ..Default::default()
             };
-            tx.put("memories", &new.id, to_doc(&new)?)?;
+            tx.put(schema::MEMORIES, &new.id, to_doc(&new)?)?;
             tx.merge(
-                "memories",
+                schema::MEMORIES,
                 &old.id,
                 patch(json!({"status": S_SUPERSEDED, "supersededBy": new.id, "validUntil": eff})),
             )?;
@@ -261,14 +263,14 @@ pub async fn correct_memory(
                 stated_at: now.clone(),
                 created_at: now.clone(),
             };
-            tx.put("evidence", &ev.id, to_doc(&ev)?)?;
-            tx.index_task("memories", &old.id, "upsert")?;
-            tx.index_task("memories", &new.id, "upsert")?;
+            tx.put(schema::EVIDENCE, &ev.id, to_doc(&ev)?)?;
+            tx.index_task(schema::MEMORIES, &old.id, "upsert")?;
+            tx.index_task(schema::MEMORIES, &new.id, "upsert")?;
             json!({"memory": new.public(), "correctedId": old.id})
         }
         None => {
             tx.merge(
-                "memories",
+                schema::MEMORIES,
                 &old.id,
                 patch(json!({"status": S_SUPERSEDED, "validUntil": eff})),
             )?;
@@ -287,8 +289,8 @@ pub async fn correct_memory(
                 stated_at: now.clone(),
                 created_at: now.clone(),
             };
-            tx.put("evidence", &ev.id, to_doc(&ev)?)?;
-            tx.index_task("memories", &old.id, "upsert")?;
+            tx.put(schema::EVIDENCE, &ev.id, to_doc(&ev)?)?;
+            tx.index_task(schema::MEMORIES, &old.id, "upsert")?;
             let mut m = old.clone();
             m.status = S_SUPERSEDED.into();
             m.valid_until = Some(eff);
@@ -345,7 +347,7 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
     let m = must_get(t, memory_id).await?;
     let id = m.id.clone();
     let mut tx = Tx::new();
-    tx.delete("memories", &id)?;
+    tx.delete(schema::MEMORIES, &id)?;
 
     // chain relink
     let prev = match &m.supersedes {
@@ -360,11 +362,11 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
     match (&prev, &next) {
         (Some(p), Some(n)) => {
             tx.merge(
-                "memories",
+                schema::MEMORIES,
                 &p.id,
                 json!({"supersededBy": n.id, "validUntil": n.effective_at}),
             )?;
-            tx.merge("memories", &n.id, json!({"supersedes": p.id}))?;
+            tx.merge(schema::MEMORIES, &n.id, json!({"supersedes": p.id}))?;
             relinked = json!({"prev": p.id, "next": n.id});
         }
         (Some(p), None) => {
@@ -404,8 +406,8 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
         if o.status == S_CONFLICT && !rel.iter().any(|e| e.relation == "conflicts") {
             p["status"] = json!(S_CURRENT);
         }
-        tx.merge("memories", &o.id, p)?;
-        tx.index_task("memories", &o.id, "upsert")?;
+        tx.merge(schema::MEMORIES, &o.id, p)?;
+        tx.index_task(schema::MEMORIES, &o.id, "upsert")?;
     }
 
     // evidence: rows only referencing this memory are deleted, others lose the reference
@@ -420,10 +422,10 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
     for e in &ev {
         let rest: Vec<String> = e.memory_ids.iter().filter(|x| **x != id).cloned().collect();
         if rest.is_empty() {
-            tx.delete("evidence", &e.id)?;
+            tx.delete(schema::EVIDENCE, &e.id)?;
             ev_deleted += 1;
         } else {
-            tx.merge("evidence", &e.id, json!({"memoryIds": rest}))?;
+            tx.merge(schema::EVIDENCE, &e.id, json!({"memoryIds": rest}))?;
             ev_updated += 1;
         }
     }
@@ -454,13 +456,13 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
             .collect();
         let rid = turn_rid(&tr.platform, &tr.turn_id);
         tx.merge(
-            "turns",
+            schema::TURNS,
             &rid,
             json!({"derivedMemoryIds": ids, "derivedText": text.join("\n")}),
         )?;
-        tx.index_task("turns", &rid, "upsert")?;
+        tx.index_task(schema::TURNS, &rid, "upsert")?;
     }
-    tx.index_task("memories", &id, "delete")?;
+    tx.index_task(schema::MEMORIES, &id, "delete")?;
     t.store.commit(tx).await?;
     // 5.2: the full-text delete is done and committed before returning
     indexer::drain(eng, t).await?;
@@ -493,7 +495,11 @@ pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> A
             req.retrieval_id
         )));
     }
-    let Some(log) = t.store.get_doc("retrieval_log", &req.retrieval_id).await? else {
+    let Some(log) = t
+        .store
+        .get_doc(schema::RETRIEVAL_LOG, &req.retrieval_id)
+        .await?
+    else {
         return Err(ApiError::NotFound(format!(
             "retrieval {} not found",
             req.retrieval_id
@@ -556,8 +562,8 @@ pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> A
                     if m.mtype == T_SKILL {
                         p["helpfulCount"] = json!(0);
                     }
-                    tx.merge("memories", &m.id, p)?;
-                    tx.index_task("memories", &m.id, "upsert")?;
+                    tx.merge(schema::MEMORIES, &m.id, p)?;
+                    tx.index_task(schema::MEMORIES, &m.id, "upsert")?;
                     changed.push(json!({"id": m.id, "from": m.status, "to": S_CANDIDATE}));
                 }
                 // helpful → candidate skills count up; enabled at 3
@@ -566,9 +572,9 @@ pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> A
                     let mut p = json!({"helpfulCount": n});
                     if n >= SKILL_ENABLE_HELPFUL {
                         p["status"] = json!(S_CURRENT);
-                        tx.index_task("memories", &m.id, "upsert")?;
+                        tx.index_task(schema::MEMORIES, &m.id, "upsert")?;
                     }
-                    tx.merge("memories", &m.id, p)?;
+                    tx.merge(schema::MEMORIES, &m.id, p)?;
                     changed.push(json!({"id": m.id, "helpfulCount": n, "enabled": n >= SKILL_ENABLE_HELPFUL}));
                 }
                 _ => {}
@@ -577,7 +583,7 @@ pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> A
     }
     let now = util::now_str();
     tx.merge(
-        "retrieval_log",
+        schema::RETRIEVAL_LOG,
         &req.retrieval_id,
         json!({"feedback": {"used": req.used, "applied": applied, "outcome": outcome, "at": now}}),
     )?;
@@ -590,30 +596,11 @@ pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> A
 // admin: stats, export, seed
 // =====================================================================================================
 
-const TABLES: [&str; 17] = [
-    "uncertainties",
-    "turns",
-    "sessions",
-    "evidence",
-    "memories",
-    "entities",
-    "index_tasks",
-    "index_meta",
-    "requests",
-    "retrieval_log",
-    "extract_log",
-    "llm_usage",
-    "llm_responses",
-    "proposals",
-    "mem0_hashes",
-    "mem0_sources",
-    "mem0_history",
-];
-
 pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     let mut counts = Map::new();
-    for tb in TABLES {
-        counts.insert(tb.into(), json!(t.store.count(tb, None).await?));
+    let owned = mem0::OWNED_TABLES.iter().chain(memos::OWNED_TABLES);
+    for tb in schema::SHARED_TABLES.iter().chain(owned) {
+        counts.insert((*tb).into(), json!(t.store.count(tb, None).await?));
     }
     let rows = t
         .store
@@ -681,15 +668,15 @@ pub async fn export(_eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResu
     if let Some(table) = body.get("table").and_then(Value::as_str) {
         if !matches!(
             table,
-            "llm_usage"
-                | "llm_responses"
-                | "extract_log"
-                | "retrieval_log"
-                | "proposals"
-                | "uncertainties"
-                | "requests"
-                | "mem0_sources"
-                | "mem0_history"
+            schema::LLM_USAGE
+                | schema::LLM_RESPONSES
+                | schema::EXTRACT_LOG
+                | schema::RETRIEVAL_LOG
+                | schema::PROPOSALS
+                | schema::UNCERTAINTIES
+                | schema::REQUESTS
+                | mem0::SOURCES
+                | mem0::HISTORY
         ) {
             return Err(ApiError::InvalidArgument("unsupported export table".into()));
         }
@@ -758,27 +745,27 @@ pub async fn seed(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResult<
             m.last_accessed_at = m.recorded_at.clone();
         }
         safe_id(&m.id)?;
-        tx.put("memories", &m.id, to_doc(&m)?)?;
-        tx.index_task("memories", &m.id, "upsert")?;
+        tx.put(schema::MEMORIES, &m.id, to_doc(&m)?)?;
+        tx.index_task(schema::MEMORIES, &m.id, "upsert")?;
     }
     for tr in &turns {
         let rid = turn_rid(&tr.platform, &tr.turn_id);
         let mut d = to_doc(tr)?;
         d["mid"] = json!(rid);
-        tx.put("turns", &rid, d)?;
-        tx.index_task("turns", &rid, "upsert")?;
+        tx.put(schema::TURNS, &rid, d)?;
+        tx.index_task(schema::TURNS, &rid, "upsert")?;
     }
     for s in &sessions {
         let rid = session_rid(&s.platform, &s.session);
         let mut d = to_doc(s)?;
         d["mid"] = json!(rid);
-        tx.put("sessions", &rid, d)?;
+        tx.put(schema::SESSIONS, &rid, d)?;
     }
     for e in &evidence {
-        tx.put("evidence", &e.id, to_doc(e)?)?;
+        tx.put(schema::EVIDENCE, &e.id, to_doc(e)?)?;
     }
     for e in &entities {
-        tx.put("entities", &e.id, to_doc(e)?)?;
+        tx.put(schema::ENTITIES, &e.id, to_doc(e)?)?;
     }
     t.store.commit(tx).await?;
     {

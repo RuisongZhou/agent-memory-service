@@ -266,7 +266,11 @@ pub async fn get_memory(
         out["history"] = json!(chain);
     }
     if req.include_evidence.unwrap_or(false) {
-        if let Some(source) = t.store.get_doc("mem0_sources", &m.id).await? {
+        if let Some(source) = t
+            .store
+            .get_doc(crate::algorithms::mem0::SOURCES, &m.id)
+            .await?
+        {
             out["sourceBatch"] = source;
         }
         let ev = evidence_for(t, std::slice::from_ref(&m.id)).await?;

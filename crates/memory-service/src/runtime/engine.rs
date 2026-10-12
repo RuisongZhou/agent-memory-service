@@ -11,6 +11,7 @@ use crate::runtime::indexer;
 use crate::runtime::llm::Llm;
 use crate::runtime::models::ModelHub;
 use crate::runtime::tenant::{valid_tenant, Tenant};
+use crate::storage::schema;
 
 pub struct Engine {
     pub cfg: ServiceConfig,
@@ -101,11 +102,11 @@ impl Engine {
         let incompatible = match self.strategy {
             MemoryStrategy::Mem0 => {
                 t.store
-                    .count("turns", Some("extractState = 'pending'"))
+                    .count(schema::TURNS, Some("extractState = 'pending'"))
                     .await?
                     + t.store
                         .count(
-                            "requests",
+                            schema::REQUESTS,
                             Some(
                                 "kind IN ['text','session_end'] AND status IN ['queued','running']",
                             ),
@@ -115,7 +116,7 @@ impl Engine {
             MemoryStrategy::Memos => {
                 t.store
                     .count(
-                        "requests",
+                        schema::REQUESTS,
                         Some("kind = 'mem0' AND status IN ['queued','running','indexing']"),
                     )
                     .await?
@@ -144,7 +145,7 @@ impl Engine {
             "dim": self.models.dim,
             "analyzer": memory_fulltext::ANALYZER_VERSION,
         });
-        let have = t.store.get_doc("index_meta", "meta").await?;
+        let have = t.store.get_doc(schema::INDEX_META, "meta").await?;
         let mut rebuild_vec = false;
         let mut rebuild_ft = false;
         if let Some(h) = &have {
@@ -158,7 +159,7 @@ impl Engine {
             }
         }
         if have.is_none() || rebuild_vec || rebuild_ft {
-            t.store.put_doc("index_meta", "meta", &want).await?;
+            t.store.put_doc(schema::INDEX_META, "meta", &want).await?;
         }
         if rebuild_vec || rebuild_ft {
             tracing::warn!(tenant = %t.name, rebuild_vec, rebuild_ft, "index meta changed; scheduling rebuild");
@@ -167,10 +168,10 @@ impl Engine {
         // vector caches
         {
             let mut v = t.vecs.write().await;
-            for (id, e) in t.store.load_embeddings("memories").await? {
+            for (id, e) in t.store.load_embeddings(schema::MEMORIES).await? {
                 v.memories.insert(id, Arc::new(e));
             }
-            for (id, e) in t.store.load_embeddings("turns").await? {
+            for (id, e) in t.store.load_embeddings(schema::TURNS).await? {
                 v.turns.insert(id, Arc::new(e));
             }
             for (id, e) in t.store.load_chunk_embeddings().await? {

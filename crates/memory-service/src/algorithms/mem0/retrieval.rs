@@ -1,6 +1,7 @@
 //! Semantic-only search. No generative calls, broad summaries or implicit cross-encoder.
 use crate::domain::types::*;
 use crate::runtime::{config::MemoryStrategy, engine::Engine, tenant::Tenant};
+use crate::storage::schema;
 use anyhow::{anyhow, Result};
 use memory_rules::util;
 use serde_json::{json, Value};
@@ -186,12 +187,16 @@ pub async fn search(
         let mut item = json!({"memory":m.public(), "score":score, "slot":results.len()});
         if req.include_evidence.unwrap_or(false) {
             // A batch reference is explicitly distinguished from a verified verbatim claim span.
-            let provenance = t.store.get_doc("mem0_sources", &m.id).await?;
+            let provenance = t.store.get_doc(super::SOURCES, &m.id).await?;
             item["sourceBatch"] = provenance.unwrap_or(Value::Null);
         }
         if req.touch.unwrap_or(false) {
             t.store
-                .merge_doc("memories", &m.id, json!({"lastAccessedAt":util::now_str()}))
+                .merge_doc(
+                    schema::MEMORIES,
+                    &m.id,
+                    json!({"lastAccessedAt":util::now_str()}),
+                )
                 .await?;
         }
         results.push(item);
@@ -207,7 +212,7 @@ pub async fn search(
     let retrieval_id = t
         .store
         .log(
-            "retrieval_log",
+            schema::RETRIEVAL_LOG,
             json!({"query":query,"strategy":MemoryStrategy::Mem0,
         "createdAt":util::now_str(),"returned":{"memories":returned},"latency":lat}),
         )

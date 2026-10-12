@@ -2,6 +2,7 @@
 use super::{extract, prompts};
 use crate::domain::types::*;
 use crate::runtime::{engine::Engine, indexer, tenant::Tenant};
+use crate::storage::schema;
 use crate::storage::store::{self, to_doc, Tx};
 use anyhow::{anyhow, bail, Result};
 use memory_rules::util;
@@ -60,7 +61,7 @@ async fn profile(eng: &Arc<Engine>, t: &Arc<Tenant>, scope: MemScope, now: &str)
     if facts.is_empty() {
         let mut tx = Tx::new();
         for m in old {
-            tx.merge("memories", &m.id, json!({"status":S_SUPERSEDED}))?;
+            tx.merge(schema::MEMORIES, &m.id, json!({"status":S_SUPERSEDED}))?;
         }
         t.store.commit(tx).await?;
         return Ok(json!({"skipped":"no current facts"}));
@@ -124,7 +125,7 @@ async fn profile(eng: &Arc<Engine>, t: &Arc<Tenant>, scope: MemScope, now: &str)
         };
         t.store
             .log(
-                "extract_log",
+                schema::EXTRACT_LOG,
                 json!({"stage":"P3_length_validation","createdAt":util::now_str(),
             "promptVariant":p.variant,"repair":repair,"actual":actual,"limit":limit,"unit":unit}),
             )
@@ -185,13 +186,13 @@ async fn profile(eng: &Arc<Engine>, t: &Arc<Tenant>, scope: MemScope, now: &str)
     };
     let mut tx = Tx::new();
     tx.put(
-        "memories",
+        schema::MEMORIES,
         &id,
         super::relations::strip_nulls(to_doc(&rec)?),
     )?;
     for m in old {
         tx.merge(
-            "memories",
+            schema::MEMORIES,
             &m.id,
             store::patch(
                 json!({"status":S_SUPERSEDED,"supersededBy":id,"validUntil":rec.effective_at}),
@@ -200,7 +201,7 @@ async fn profile(eng: &Arc<Engine>, t: &Arc<Tenant>, scope: MemScope, now: &str)
     }
     let key = store::hashed_id("pc", &serde_json::to_string(&scope)?);
     tx.put(
-        "index_meta",
+        schema::INDEX_META,
         &key,
         json!({"mid":key,"kind":"profile_conflicts","pairs":pairs}),
     )?;
@@ -254,8 +255,8 @@ async fn persist_proposal(t: &Arc<Tenant>, a: &str, b: &str, proposal: &Value) -
     value["mid"] = json!(id);
     value["createdAt"] = json!(util::now_str());
     let mut tx = Tx::new();
-    tx.put("proposals", &id, value.clone())?;
-    tx.merge("memories", a, json!({"proposal":value}))?;
+    tx.put(schema::PROPOSALS, &id, value.clone())?;
+    tx.merge(schema::MEMORIES, a, json!({"proposal":value}))?;
     t.store.commit(tx).await
 }
 
@@ -274,9 +275,9 @@ async fn merge_exact(t: &Arc<Tenant>, a: &MemoryRec, b: &MemoryRec) -> Result<()
         }
     }
     let mut tx = Tx::new();
-    tx.merge("memories",&a.id,store::patch(json!({"source":source,"entityIds":entities,"evidenceCount":a.evidence_count+b.evidence_count})))?;
+    tx.merge(schema::MEMORIES,&a.id,store::patch(json!({"source":source,"entityIds":entities,"evidenceCount":a.evidence_count+b.evidence_count})))?;
     tx.merge(
-        "memories",
+        schema::MEMORIES,
         &b.id,
         json!({"status":S_SUPERSEDED,"supersededBy":a.id}),
     )?;
@@ -300,11 +301,11 @@ async fn merge_exact(t: &Arc<Tenant>, a: &MemoryRec, b: &MemoryRec) -> Result<()
             if !ids.contains(&json!(a.id)) {
                 ids.push(json!(a.id));
             }
-            tx.merge("evidence", id, json!({"memoryIds":ids}))?;
+            tx.merge(schema::EVIDENCE, id, json!({"memoryIds":ids}))?;
         }
     }
-    tx.index_task("memories", &a.id, "upsert")?;
-    tx.index_task("memories", &b.id, "upsert")?;
+    tx.index_task(schema::MEMORIES, &a.id, "upsert")?;
+    tx.index_task(schema::MEMORIES, &b.id, "upsert")?;
     t.store.commit(tx).await?;
     t.vecs.write().await.memories.remove(&b.id);
     t.index_notify.notify_one();
@@ -527,7 +528,7 @@ async fn skills(eng: &Arc<Engine>, t: &Arc<Tenant>, now: &str) -> Result<Value> 
     {
         let keys = group.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
         let key = store::hashed_id("sg", &keys.join(","));
-        if t.store.get_doc("index_meta", &key).await?.is_some() {
+        if t.store.get_doc(schema::INDEX_META, &key).await?.is_some() {
             continue;
         }
         let map: HashMap<_, _> = group
@@ -604,7 +605,7 @@ async fn skills(eng: &Arc<Engine>, t: &Arc<Tenant>, now: &str) -> Result<Value> 
         if out["skill"].is_null() {
             t.store
                 .put_doc(
-                    "index_meta",
+                    schema::INDEX_META,
                     &key,
                     &json!({"mid":key,"kind":"skill_group","reason":out["reason"]}),
                 )
@@ -693,13 +694,13 @@ async fn skills(eng: &Arc<Engine>, t: &Arc<Tenant>, now: &str) -> Result<Value> 
         };
         let mut tx = Tx::new();
         tx.put(
-            "memories",
+            schema::MEMORIES,
             &id,
             super::relations::strip_nulls(to_doc(&rec)?),
         )?;
-        tx.index_task("memories", &id, "upsert")?;
+        tx.index_task(schema::MEMORIES, &id, "upsert")?;
         tx.put(
-            "index_meta",
+            schema::INDEX_META,
             &key,
             json!({"mid":key,"kind":"skill_group","memoryId":id}),
         )?;
@@ -744,8 +745,8 @@ pub async fn purge(t: &Arc<Tenant>, as_of: &str, days: f64) -> Result<Value> {
             continue;
         }
         let id = store::turn_rid(&tr.platform, &tr.turn_id);
-        tx.delete("turns", &id)?;
-        tx.index_task("turns", &id, "delete")?;
+        tx.delete(schema::TURNS, &id)?;
+        tx.index_task(schema::TURNS, &id, "delete")?;
         removed.push(id);
     }
     t.store.commit(tx).await?;
@@ -770,14 +771,17 @@ pub async fn purge(t: &Arc<Tenant>, as_of: &str, days: f64) -> Result<Value> {
                 .await?
                 .is_empty()
         {
-            tx.delete("sessions", &store::session_rid(&s.platform, &s.session))?;
+            tx.delete(
+                schema::SESSIONS,
+                &store::session_rid(&s.platform, &s.session),
+            )?;
             dropped += 1;
         }
     }
     t.store.commit(tx).await?;
     t.index_notify.notify_one();
     Ok(
-        json!({"purgedTurns":removed.len(),"purgedSessions":dropped,"retentionDays":days,"remainingTurns":t.store.count("turns",None).await?}),
+        json!({"purgedTurns":removed.len(),"purgedSessions":dropped,"retentionDays":days,"remainingTurns":t.store.count(schema::TURNS,None).await?}),
     )
 }
 
@@ -900,7 +904,7 @@ async fn periodic_tick(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
                     >= eng.cfg.session_idle_minutes * 60
             {
                 tx.merge(
-                    "sessions",
+                    schema::SESSIONS,
                     &store::session_rid(&s.platform, &s.session),
                     store::patch(json!({"endedAt":timestamp,"updatedAt":timestamp})),
                 )?;
@@ -913,7 +917,10 @@ async fn periodic_tick(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
         }
     }
     // Evaluation controls its clock via run_jobs(asOf); fresh tenants defer automatic LLM jobs.
-    let hourly = t.store.get_doc("index_meta", "hourly_maintenance").await?;
+    let hourly = t
+        .store
+        .get_doc(schema::INDEX_META, "hourly_maintenance")
+        .await?;
     let hourly_last = hourly
         .as_ref()
         .and_then(|v| v["lastAt"].as_str())
@@ -934,17 +941,20 @@ async fn periodic_tick(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
         }
         t.store
             .put_doc(
-                "index_meta",
+                schema::INDEX_META,
                 "hourly_maintenance",
                 &json!({"mid":"hourly_maintenance","lastAt":timestamp}),
             )
             .await?;
     }
-    let previous = t.store.get_doc("index_meta", "daily_maintenance").await?;
+    let previous = t
+        .store
+        .get_doc(schema::INDEX_META, "daily_maintenance")
+        .await?;
     if previous.is_none() {
         t.store
             .put_doc(
-                "index_meta",
+                schema::INDEX_META,
                 "daily_maintenance",
                 &json!({"mid":"daily_maintenance","lastAt":timestamp}),
             )
@@ -969,7 +979,7 @@ async fn periodic_tick(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
         .await?;
         t.store
             .put_doc(
-                "index_meta",
+                schema::INDEX_META,
                 "daily_maintenance",
                 &json!({"mid":"daily_maintenance","lastAt":timestamp}),
             )

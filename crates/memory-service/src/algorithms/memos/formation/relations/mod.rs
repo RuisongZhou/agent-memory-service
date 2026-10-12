@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
+use crate::storage::schema;
 use crate::storage::store::{self, to_doc, Tx};
 use memory_rules::util;
 use plan::{Node, Rel, Target};
@@ -126,7 +127,7 @@ pub async fn backfill_source_context(t: &Arc<Tenant>, turns: &[TurnRec]) -> Resu
             continue;
         }
         if let Some(context) = source_context(turn, &evidence.role, true) {
-            tx.merge("evidence", &evidence.id, json!({"context":context}))?;
+            tx.merge(schema::EVIDENCE, &evidence.id, json!({"context":context}))?;
             count += 1;
         }
     }
@@ -262,7 +263,7 @@ pub fn old_patch(old: &MemoryRec, n: &Node) -> Value {
 /// Queue the record changes of an old memory into `tx` (status change → embedding cleared in the same
 /// transaction, 5.2; the index task drops it from the full-text index).
 pub fn write_old(tx: &mut Tx, old: &MemoryRec, n: &Node) -> Result<()> {
-    tx.merge("memories", &old.id, old_patch(old, n))?;
+    tx.merge(schema::MEMORIES, &old.id, old_patch(old, n))?;
     if n.status == S_SUPERSEDED && old.status != S_SUPERSEDED {
         tx.raw(
             &format!(
@@ -272,7 +273,7 @@ pub fn write_old(tx: &mut Tx, old: &MemoryRec, n: &Node) -> Result<()> {
             vec![],
         );
     }
-    tx.index_task("memories", &old.id, "upsert")?;
+    tx.index_task(schema::MEMORIES, &old.id, "upsert")?;
     Ok(())
 }
 
@@ -351,7 +352,7 @@ where
         }
     };
     for e in &ctx.new_entities {
-        tx.put("entities", &e.id, strip_nulls(to_doc(e)?))?;
+        tx.put(schema::ENTITIES, &e.id, strip_nulls(to_doc(e)?))?;
     }
     for fidx in &p.created {
         let f = by_fidx[fidx];
@@ -382,8 +383,8 @@ where
             valid_until: n.valid_until.clone(),
             ..Default::default()
         };
-        tx.put("memories", id, strip_nulls(to_doc(&rec)?))?;
-        tx.index_task("memories", id, "upsert")?;
+        tx.put(schema::MEMORIES, id, strip_nulls(to_doc(&rec)?))?;
+        tx.index_task(schema::MEMORIES, id, "upsert")?;
         texts.insert(id.clone(), f.text.clone());
         for s in &f.sources {
             evidence.push(EvidenceRec {
@@ -480,11 +481,11 @@ where
                 status: "open".into(),
                 created_at: now.clone(),
             };
-            tx.put("uncertainties", &uncertainty_id, to_doc(&rec)?)?;
+            tx.put(schema::UNCERTAINTIES, &uncertainty_id, to_doc(&rec)?)?;
         }
     }
     for ev in &evidence {
-        tx.put("evidence", &ev.id, strip_nulls(to_doc(ev)?))?;
+        tx.put(schema::EVIDENCE, &ev.id, strip_nulls(to_doc(ev)?))?;
     }
 
     // derived memories per turn / per request
@@ -526,7 +527,7 @@ where
             }
         }
         tx.merge(
-            "turns",
+            schema::TURNS,
             rid,
             store::patch(json!({
                 "extractedAt": now,
@@ -536,10 +537,10 @@ where
                 "derivedMemoryIds": ids,
             })),
         )?;
-        tx.index_task("turns", rid, "upsert")?;
+        tx.index_task(schema::TURNS, rid, "upsert")?;
         if !tr.request_id.is_empty() {
             tx.merge(
-                "requests",
+                schema::REQUESTS,
                 &tr.request_id,
                 store::patch(json!({"status": "completed", "memoryIds": ids, "updatedAt": now, "error": Value::Null})),
             )?;
@@ -555,7 +556,7 @@ where
             vec![],
         );
         tx.merge(
-            "requests",
+            schema::REQUESTS,
             rq,
             store::patch(json!({"status": "completed", "memoryIds": out.all_ids, "updatedAt": now, "error": Value::Null})),
         )?;
@@ -563,7 +564,7 @@ where
     // Decision provenance belongs to the same commit as the records it describes.
     let log_id = util::new_id("l");
     tx.put(
-        "extract_log",
+        schema::EXTRACT_LOG,
         &log_id,
         json!({"mid":log_id,"stage":"relations","createdAt":now,
         "actions":p.log.iter().map(|l|json!({"fact":format!("F{}",l.fidx),"action":l.action,

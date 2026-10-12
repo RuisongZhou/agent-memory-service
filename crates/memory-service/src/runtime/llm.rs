@@ -1,5 +1,6 @@
 //! LLM client — Qwen official API (OpenAI-compatible chat completions).
 //! Non-thinking mode, temperature 0, JSON output (prompt doc §0 通用约定).
+use crate::storage::schema;
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -205,7 +206,7 @@ impl Llm {
                     if let Some((store, stage)) = usage_log {
                         store
                             .log(
-                                "llm_responses",
+                                schema::LLM_RESPONSES,
                                 json!({"stage":stage,"model":self.model,
                             "createdAt":memory_rules::util::fmt_ts(&request_time),"attempt":attempt+1,
                             "request":body,"transportError":last_err.to_string()}),
@@ -221,7 +222,7 @@ impl Llm {
                 Err(e) => {
                     last_err = anyhow!("read error: {e}");
                     if let Some((store, stage)) = usage_log {
-                        store.log("llm_responses", json!({"stage":stage,"model":self.model,
+                        store.log(schema::LLM_RESPONSES, json!({"stage":stage,"model":self.model,
                             "createdAt":memory_rules::util::fmt_ts(&request_time),"attempt":attempt+1,
                             "request":body,"httpStatus":status.as_u16(),"transportError":last_err.to_string()})).await?;
                     }
@@ -230,7 +231,7 @@ impl Llm {
             };
             // Persist the exact HTTP body before decoding, including non-2xx and malformed replies.
             let response_log_id = if let Some((store, stage)) = usage_log {
-                Some(store.log("llm_responses", json!({"stage":stage,"model":self.model,
+                Some(store.log(schema::LLM_RESPONSES, json!({"stage":stage,"model":self.model,
                     "createdAt":memory_rules::util::fmt_ts(&request_time),"receivedAt":memory_rules::util::now_str(),
                     "attempt":attempt+1,"httpStatus":status.as_u16(),"request":body,
                     "rawBody":text,"latencyMs":started.elapsed().as_millis() as u64})).await?)
@@ -278,7 +279,7 @@ impl Llm {
             if let (Some((store, _)), Some(id)) = (usage_log, response_log_id.as_deref()) {
                 store
                     .merge_doc(
-                        "llm_responses",
+                        schema::LLM_RESPONSES,
                         id,
                         json!({"rawContent":content,
                     "providerResponseId":v["id"],"finishReason":finish,
@@ -305,7 +306,7 @@ impl Llm {
             if let Some((store, stage)) = usage_log {
                 store
                     .log(
-                        "llm_usage",
+                        schema::LLM_USAGE,
                         json!({"stage":stage,"model":self.model,
                     "createdAt":memory_rules::util::fmt_ts(&request_time),"receivedAt":memory_rules::util::now_str(),"attempt":attempt+1,
                     "promptTokens":usage.prompt_tokens,"completionTokens":usage.completion_tokens,

@@ -12,6 +12,7 @@ use surrealdb::engine::local::{Db, SurrealKv};
 use surrealdb::Surreal;
 use tokio::sync::{Mutex, RwLock};
 
+use super::schema;
 use crate::domain::types::*;
 use memory_rules::util;
 
@@ -115,12 +116,12 @@ impl Tx {
     /// Full replace of a document.
     pub fn put(&mut self, table: &str, id: &str, mut doc: Value) -> Result<&mut Self> {
         let r = rid(table, id)?;
-        if table == "memories" {
+        if table == schema::MEMORIES {
             self.changed_memories = true;
             self.track_status(id, &doc);
             self.memory_docs.insert(id.into(), doc.clone());
             self.memory_patches.remove(id);
-        } else if table == "uncertainties" {
+        } else if table == schema::UNCERTAINTIES {
             self.uncertainty_docs.insert(id.into(), doc.clone());
         }
         // Turns/sessions/requests carry key or requestId rather than id. Every table still needs
@@ -136,7 +137,7 @@ impl Tx {
     /// Merge fields into a document (creates it if missing).
     pub fn merge(&mut self, table: &str, id: &str, patch: Value) -> Result<&mut Self> {
         let r = rid(table, id)?;
-        if table == "memories" {
+        if table == schema::MEMORIES {
             self.changed_memories = true;
             self.track_status(id, &patch);
             if let Some(fields) = patch.as_object() {
@@ -158,7 +159,7 @@ impl Tx {
             {
                 self.unavailable.insert(id.into());
             }
-        } else if table == "uncertainties" {
+        } else if table == schema::UNCERTAINTIES {
             if let Some(doc) = self
                 .uncertainty_docs
                 .get_mut(id)
@@ -175,7 +176,7 @@ impl Tx {
     }
     pub fn delete(&mut self, table: &str, id: &str) -> Result<&mut Self> {
         let r = rid(table, id)?;
-        if table == "memories" {
+        if table == schema::MEMORIES {
             self.changed_memories = true;
             self.unavailable.insert(id.into());
             self.resolved_conflicts.insert(id.into());
@@ -216,7 +217,7 @@ impl Tx {
         let id = util::new_id("it");
         let now = util::now();
         self.put(
-            "index_tasks",
+            schema::INDEX_TASKS,
             &id,
             json!({"mid": id, "target": format!("{target_table}:{target_id}"), "table": target_table,
                    "targetId": target_id, "op": op, "createdAt": util::fmt_ts(&now),
@@ -298,7 +299,7 @@ impl Store {
         // Full replacement is rare outside formation. Existing semantic changes must invalidate
         // views even if a caller preserved the record ID and its current status.
         for (id, doc) in &tx.memory_docs {
-            if let Some(previous) = self.get_doc("memories", id).await? {
+            if let Some(previous) = self.get_doc(schema::MEMORIES, id).await? {
                 if [
                     "text",
                     "scope",
@@ -350,7 +351,7 @@ impl Store {
             let stale = memory_rules::dependencies::invalidated(&dependencies, &tx.unavailable);
             for id in stale {
                 tx.merge(
-                    "memories",
+                    schema::MEMORIES,
                     &id,
                     json!({"status":S_STALE,
                     "staleReason":"A current-view input was superseded, disputed or removed"}),
@@ -362,7 +363,7 @@ impl Store {
                     ),
                     vec![],
                 );
-                tx.index_task("memories", &id, "upsert")?;
+                tx.index_task(schema::MEMORIES, &id, "upsert")?;
             }
         }
         if !tx.resolved_conflicts.is_empty() {
@@ -479,8 +480,8 @@ impl Store {
             {
                 patch["status"] = json!(S_CURRENT);
             }
-            tx.merge("memories", &id, patch)?;
-            tx.index_task("memories", &id, "upsert")?;
+            tx.merge(schema::MEMORIES, &id, patch)?;
+            tx.index_task(schema::MEMORIES, &id, "upsert")?;
         }
         Ok(())
     }
@@ -538,7 +539,7 @@ impl Store {
                 let mut pair = vec![memory.id.clone(), other.id.clone()];
                 pair.sort();
                 let id = hashed_id("u", &serde_json::to_string(&pair)?);
-                if self.get_doc("uncertainties", &id).await?.is_none() {
+                if self.get_doc(schema::UNCERTAINTIES, &id).await?.is_none() {
                     let rec = UncertaintyRec {
                         id: id.clone(),
                         memory_ids: pair,
@@ -547,13 +548,13 @@ impl Store {
                         status: "open".into(),
                         created_at: util::now_str(),
                     };
-                    tx.put("uncertainties", &id, to_doc(&rec)?)?;
+                    tx.put(schema::UNCERTAINTIES, &id, to_doc(&rec)?)?;
                 }
             }
         }
         for id in memory_rules::dependencies::invalidated(&dependencies, &unavailable) {
-            tx.merge("memories", &id, json!({"status":S_STALE,"staleReason":"Stored current-view input is no longer current"}))?;
-            tx.index_task("memories", &id, "upsert")?;
+            tx.merge(schema::MEMORIES, &id, json!({"status":S_STALE,"staleReason":"Stored current-view input is no longer current"}))?;
+            tx.index_task(schema::MEMORIES, &id, "upsert")?;
         }
         self.commit(tx).await
     }
@@ -571,7 +572,7 @@ impl Store {
 
     /// Explicit vector access; ordinary document reads deliberately omit large embeddings.
     pub async fn memory_embedding(&self, id: &str) -> Result<Option<Vec<f32>>> {
-        let record = rid("memories", id)?;
+        let record = rid(schema::MEMORIES, id)?;
         let rows = self
             .select(&format!("SELECT embedding FROM {record}"), vec![])
             .await?;
@@ -596,7 +597,7 @@ impl Store {
     // ------------------------------------------------------------ memories
 
     pub async fn get_memory(&self, id: &str) -> Result<Option<MemoryRec>> {
-        match self.get_doc("memories", id).await? {
+        match self.get_doc(schema::MEMORIES, id).await? {
             Some(v) => Ok(Some(from_doc(v)?)),
             None => Ok(None),
         }
@@ -606,7 +607,10 @@ impl Store {
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let list: Vec<String> = ids.iter().filter_map(|i| rid("memories", i).ok()).collect();
+        let list: Vec<String> = ids
+            .iter()
+            .filter_map(|i| rid(schema::MEMORIES, i).ok())
+            .collect();
         let sql = format!("SELECT * OMIT id, embedding FROM {}", list.join(", "));
         self.select_as(&sql, vec![]).await
     }
@@ -648,7 +652,7 @@ impl Store {
 
     pub async fn get_session(&self, platform: &str, session: &str) -> Result<Option<SessionRec>> {
         let id = session_rid(platform, session);
-        match self.get_doc("sessions", &id).await? {
+        match self.get_doc(schema::SESSIONS, &id).await? {
             Some(v) => Ok(Some(from_doc(v)?)),
             None => Ok(None),
         }
@@ -707,7 +711,7 @@ impl Store {
         embs: &[Vec<f32>],
         model: &str,
     ) -> Result<()> {
-        let r = rid("turns", id)?;
+        let r = rid(schema::TURNS, id)?;
         if embs.is_empty() {
             self.query(
                 &format!(

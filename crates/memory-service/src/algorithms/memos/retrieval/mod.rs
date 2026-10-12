@@ -23,6 +23,7 @@ use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::tenant::Tenant;
+use crate::storage::schema;
 use crate::storage::store::{safe_id, turn_rid, Tx};
 use memory_rules::timeparse::{self, TimeWindow};
 use memory_rules::util;
@@ -780,7 +781,7 @@ pub async fn search_memories(
             "createdAt": ts,
             "createdTs": util::ts_secs(&ts),
         });
-        retrieval_id = t.store.log("retrieval_log", log).await?;
+        retrieval_id = t.store.log(schema::RETRIEVAL_LOG, log).await?;
     } else {
         // OPEN: an id of the same shape is returned so callers need no special case; feedback on it is 404.
         retrieval_id = util::new_id("l");

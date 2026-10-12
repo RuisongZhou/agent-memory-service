@@ -1,5 +1,6 @@
 //! Session-end P2 validation and a transaction independent of fact formation.
 use crate::domain::types::*;
+use crate::storage::schema;
 use crate::storage::store::{self, to_doc, Tx};
 use anyhow::{anyhow, Result};
 use memory_rules::util;
@@ -148,11 +149,11 @@ impl Prepared {
             }
             let rid = store::turn_rid(platform, turn_id);
             tx.merge(
-                "turns",
+                schema::TURNS,
                 &rid,
                 json!({"derivedMemoryIds":derived_ids,"derivedText":derived_text}),
             )?;
-            tx.index_task("turns", &rid, "upsert")?;
+            tx.index_task(schema::TURNS, &rid, "upsert")?;
         }
         tenant.store.commit(tx).await?;
         tenant.index_notify.notify_one();
@@ -168,18 +169,18 @@ impl Prepared {
         for m in self.memories {
             texts.insert(m.id.clone(), m.text.clone());
             tx.put(
-                "memories",
+                schema::MEMORIES,
                 &m.id,
                 super::relations::strip_nulls(to_doc(&m)?),
             )?;
-            tx.index_task("memories", &m.id, "upsert")?;
+            tx.index_task(schema::MEMORIES, &m.id, "upsert")?;
         }
         for ev in self.evidence {
-            tx.put("evidence", &ev.id, to_doc(&ev)?)?;
+            tx.put(schema::EVIDENCE, &ev.id, to_doc(&ev)?)?;
         }
-        tx.merge("sessions", &self.session, self.summary)?;
+        tx.merge(schema::SESSIONS, &self.session, self.summary)?;
         let log_id = util::new_id("l");
-        tx.put("extract_log", &log_id, self.log)?;
+        tx.put(schema::EXTRACT_LOG, &log_id, self.log)?;
         out.created.extend(self.created);
         for (turn, ids) in self.per_turn {
             let mapped = out.per_turn.entry(turn).or_default();

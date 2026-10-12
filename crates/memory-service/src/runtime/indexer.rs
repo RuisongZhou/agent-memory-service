@@ -11,6 +11,7 @@ use std::time::Duration;
 use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
+use crate::storage::schema;
 use crate::storage::store::{from_doc, Tx};
 use memory_rules::util;
 
@@ -125,7 +126,7 @@ pub async fn run_index_worker(eng: Arc<Engine>, t: Arc<Tenant>) {
 
 /// Number of index tasks still pending.
 pub async fn pending(t: &Tenant) -> Result<i64> {
-    t.store.count("index_tasks", None).await
+    t.store.count(schema::INDEX_TASKS, None).await
 }
 
 /// Process up to `limit` tasks in creation order. Returns the number processed.
@@ -189,7 +190,7 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
             t.store.get_doc(table, id).await?
         };
         match (table.as_str(), doc) {
-            ("memories", Some(d)) => {
+            (schema::MEMORIES, Some(d)) => {
                 let m: MemoryRec = from_doc(d.clone())?;
                 if is_active(&m.status) {
                     if let Some(vt) = vector_text(&m) {
@@ -211,7 +212,7 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
                     clear_vec.push((table.clone(), id.clone()));
                 }
             }
-            ("turns", Some(d)) => {
+            (schema::TURNS, Some(d)) => {
                 // Messages never change after ingest, so stored chunk vectors of the current model stay valid.
                 let stored_chunks = (d.get("chunkEmbeddingModel").and_then(Value::as_str)
                     == Some(eng.models.embed_model_id.as_str()))
@@ -256,7 +257,7 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
         for ((table, id, _), v) in to_embed.iter().zip(vecs.by_ref()) {
             t.store.set_embedding(table, id, Some(&v), &model).await?;
             let mut c = t.vecs.write().await;
-            if table == "memories" {
+            if table == schema::MEMORIES {
                 c.memories.insert(id.clone(), v);
             } else {
                 c.turns.insert(id.clone(), v);
@@ -301,7 +302,7 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
     let mut tx = Tx::new();
     for tid in &task_ids {
         if !tid.is_empty() {
-            tx.delete("index_tasks", tid)?;
+            tx.delete(schema::INDEX_TASKS, tid)?;
         }
     }
     t.store.commit(tx).await?;
@@ -334,13 +335,13 @@ pub async fn schedule_rebuild(t: &Tenant, vectors: bool, fulltext: bool) -> Resu
     let mems = t.store.select("SELECT mid FROM memories", vec![]).await?;
     for m in mems {
         if let Some(id) = m.get("mid").and_then(|v| v.as_str()) {
-            tx.index_task("memories", id, "upsert")?;
+            tx.index_task(schema::MEMORIES, id, "upsert")?;
         }
     }
     let turns = t.store.select("SELECT mid FROM turns", vec![]).await?;
     for m in turns {
         if let Some(id) = m.get("mid").and_then(|v| v.as_str()) {
-            tx.index_task("turns", id, "upsert")?;
+            tx.index_task(schema::TURNS, id, "upsert")?;
         }
     }
     t.store.commit(tx).await?;

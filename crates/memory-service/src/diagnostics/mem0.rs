@@ -6,6 +6,7 @@ use crate::formation::ingest;
 use crate::runtime::{
     config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
 };
+use crate::storage::schema;
 use memory_rules::util;
 use serde_json::json;
 use std::sync::Arc;
@@ -223,7 +224,7 @@ pub async fn selftest() {
     tenant
         .store
         .merge_doc(
-            "requests",
+            schema::REQUESTS,
             rid,
             json!({"status":"indexing","searchable":false}),
         )
@@ -296,7 +297,10 @@ pub async fn selftest() {
     assert_eq!(feedback["accepted"], true);
     let feedback_log = tenant
         .store
-        .get_doc("retrieval_log", result["retrievalId"].as_str().unwrap())
+        .get_doc(
+            schema::RETRIEVAL_LOG,
+            result["retrievalId"].as_str().unwrap(),
+        )
         .await
         .unwrap()
         .unwrap();

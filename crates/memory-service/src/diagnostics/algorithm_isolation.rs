@@ -10,6 +10,7 @@ use crate::runtime::{
     models::ModelHub,
     tenant::Tenant,
 };
+use crate::storage::schema;
 use crate::storage::store;
 use memory_rules::util;
 use serde_json::json;
@@ -46,7 +47,11 @@ pub async fn selftest() {
         };
         tenant
             .store
-            .put_doc("sessions", &store::session_rid("test", "old"), &old_session)
+            .put_doc(
+                schema::SESSIONS,
+                &store::session_rid("test", "old"),
+                &old_session,
+            )
             .await
             .unwrap();
         let scope = json!({"project":"project", "session":"old"});
@@ -68,16 +73,16 @@ pub async fn selftest() {
         .await
         .unwrap();
         assert_eq!(receipt["status"], "queued");
-        assert_eq!(tenant.store.count("memories", None).await.unwrap(), 0);
+        assert_eq!(tenant.store.count(schema::MEMORIES, None).await.unwrap(), 0);
 
         match strategy {
             MemoryStrategy::Mem0 => {
-                assert_eq!(tenant.store.count("turns", None).await.unwrap(), 0);
+                assert_eq!(tenant.store.count(schema::TURNS, None).await.unwrap(), 0);
                 assert_eq!(
                     ingest::wait_idle(&eng, &tenant).await.unwrap()["status"],
                     "idle"
                 );
-                assert_eq!(tenant.store.count("memories", None).await.unwrap(), 1);
+                assert_eq!(tenant.store.count(schema::MEMORIES, None).await.unwrap(), 1);
                 assert!(matches!(
                     algorithms::run_jobs(
                         &eng,
@@ -93,7 +98,7 @@ pub async fn selftest() {
                 assert_eq!(
                     tenant
                         .store
-                        .count("turns", Some("extractState = 'pending'"))
+                        .count(schema::TURNS, Some("extractState = 'pending'"))
                         .await
                         .unwrap(),
                     1
@@ -141,13 +146,23 @@ pub async fn selftest() {
         assert_eq!(
             tenant
                 .store
-                .count("memories", Some("type = 'instruction'"))
+                .count(schema::MEMORIES, Some("type = 'instruction'"))
                 .await
                 .unwrap(),
             1
         );
-        assert_eq!(tenant.store.count("llm_responses", None).await.unwrap(), 0);
-        assert_eq!(tenant.store.count("llm_usage", None).await.unwrap(), 0);
+        assert_eq!(
+            tenant
+                .store
+                .count(schema::LLM_RESPONSES, None)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            tenant.store.count(schema::LLM_USAGE, None).await.unwrap(),
+            0
+        );
         drop(tenant);
         std::fs::remove_dir_all(root).unwrap();
     }
