@@ -10,7 +10,7 @@ The adapted English prompt treats both people as first-hand sources and preserve
 
 ## Pipeline
 
-Memos conversation formation uses frequent P1 facts (`facts-object-v2`) and independent session-end P2 experiences/summary (`session-experience-object-v1`), with JSON object mode and strict local structural/provenance validation. Explicit fact writes use the same fact contract. See [api.md](api.md). The daemon persists every raw HTTP response in `llm_responses`, including failed attempts and retries. Historical combined P1/P2 runs retain their original results and prompt hashes; a protocol change requires a fresh result/store directory.
+Memos conversation formation uses frequent P1 facts (`facts-object-v2`) and independent session-end P2 experiences/summary (`session-experience-object-v1`), with JSON object mode and strict local structural/provenance validation. Explicit fact writes use the same fact contract. See [API reference](../../docs/api.md). The daemon persists every raw HTTP response in `llm_responses`, including failed attempts and retries. Historical combined P1/P2 runs retain their original results and prompt hashes; a protocol change requires a fresh result/store directory.
 
 The legacy service workflow requires `MEMORY_STRATEGY=memos`; `memory_run.py` and archived replays reject a connected daemon reporting `mem0`. Launching extraction comparisons, retained-store replays and the local llama-server smoke pins `memos`, including when the parent environment selects Mem0. Frozen older control binaries ignore this environment variable and retain their original pipeline. The normal service default remains `mem0`.
 
@@ -30,12 +30,12 @@ The daemon supplies BGE-M3 embeddings to both systems. Retrieval is measured seq
 After building and downloading models locally, start a fresh store:
 
 ```sh
-.venv/bin/python scripts/serve.py --memory-strategy memos --data-dir results/pilot/service-store --max-calls 512 --llm-concurrency 4
-.venv/bin/python eval/memory_run.py --base-url http://127.0.0.1:8765 --tag memory-en --prompt-variant en --convs conv-26 --results-dir results/pilot
-.venv/bin/python eval/memory_run.py --base-url http://127.0.0.1:8765 --tag memory-zh --prompt-variant zh --convs conv-26 --results-dir results/pilot
-.venv/bin/python eval/mem0_run.py --embed-url http://127.0.0.1:8765/v1 --tag mem0 --convs conv-26 --workers 2 --results-dir results/pilot --stores-dir results/pilot/mem0-stores
-.venv/bin/python eval/answer_and_judge.py --contexts results/pilot/memory-en/main/contexts.jsonl --results-dir results/pilot
-.venv/bin/python eval/report.py --results-dir results/pilot
+.venv/bin/python scripts/serve.py --memory-strategy memos --data-dir eval/results/pilot/service-store --max-calls 512 --llm-concurrency 4
+.venv/bin/python eval/memory_run.py --base-url http://127.0.0.1:8765 --tag memory-en --prompt-variant en --convs conv-26 --results-dir eval/results/pilot
+.venv/bin/python eval/memory_run.py --base-url http://127.0.0.1:8765 --tag memory-zh --prompt-variant zh --convs conv-26 --results-dir eval/results/pilot
+.venv/bin/python eval/mem0_run.py --embed-url http://127.0.0.1:8765/v1 --tag mem0 --convs conv-26 --workers 2 --results-dir eval/results/pilot --stores-dir eval/results/pilot/mem0-stores
+.venv/bin/python eval/answer_and_judge.py --contexts eval/results/pilot/memory-en/main/contexts.jsonl --results-dir eval/results/pilot
+.venv/bin/python eval/report.py --results-dir eval/results/pilot
 ```
 
 These are paid commands, not CI checks. Run `--stage` separately when inspecting extraction before retrieval. All settings need answering/judging before comparison. Use a fresh store and run tag for incompatible changes. `memory_run.py` routes en/zh tenants by suffix; a tag alone does not isolate the daemon store.
@@ -71,7 +71,7 @@ and per-request timing locally. Do not compare fresh formation with historical s
 
 The small-run report requires complete protocol QA and retrieval-pass coverage, stable contexts, matching answer fingerprints and labels, and nonempty before/after corpus audits verified against the saved snapshots. Missing or inconsistent evidence prevents report generation. Accuracy counts, wrong question IDs and corpus sizes are generated from that run's artifacts.
 
-For the 2026-10-11 experiment the ignored protocol/results live in `results/mem0-migration-20261011/`:
+For the 2026-10-11 experiment the ignored protocol/results live in `eval/results/mem0-migration-20261011/`:
 four conv-26 sessions (76 utterances) and all 35 supported category 1–4 questions. This is a small development
 cohort, not held-out evidence of generalization. No retrieval parameters are tuned from its scores.
 
@@ -82,12 +82,12 @@ call a paid provider or run the dataset.
 ## Explicit full LoCoMo comparison
 
 `eval/locomo_full.py` extends the frozen small-run settings to every conversation, session and
-question in `data/locomo10.json`. It compares the new strategy with local Mem0 OSS 2.2.1 from fresh
+question in `eval/data/locomo10.json`. It compares the new strategy with local Mem0 OSS 2.2.1 from fresh
 stores. It must only be run when the user explicitly requests the full paid benchmark:
 
 ```sh
-.venv/bin/python eval/locomo_full.py --root results/my-locomo-full-run --stage prepare
-.venv/bin/python eval/locomo_full.py --root results/my-locomo-full-run --stage run
+.venv/bin/python eval/locomo_full.py --root eval/results/my-locomo-full-run --stage prepare
+.venv/bin/python eval/locomo_full.py --root eval/results/my-locomo-full-run --stage run
 ```
 
 The frozen protocol contains 10 conversations, 272 sessions, 5,882 source utterances and 1,696

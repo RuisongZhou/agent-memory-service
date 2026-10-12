@@ -1,4 +1,4 @@
-//! LLM I/O for extraction: logged calls, flat-object / values-array reshaping and the fact provenance contract.
+//! LLM I/O for extraction: logged JSON-object calls, flat provenance and source validation.
 use super::super::{prompts, schema as formation_schema};
 use super::validate::{collapsed, supporting_source, RawFact};
 use anyhow::{anyhow, Result};
@@ -30,14 +30,9 @@ pub(super) async fn call_logged_contract(
     max_tokens: u32,
     contract: Option<&memory_engine::runtime::llm::JsonContract>,
 ) -> Result<Value> {
-    let values_only = contract.is_none() && matches!(stage, "P1" | "P1-b");
     let reply = if let Some(contract) = contract {
         eng.llm
             .contract_call_logged(system, user, max_tokens, &t.store, stage, contract)
-            .await
-    } else if values_only {
-        eng.llm
-            .values_call_logged(system, user, max_tokens, &t.store, stage)
             .await
     } else {
         eng.llm
@@ -47,9 +42,7 @@ pub(super) async fn call_logged_contract(
     let now = util::now_str();
     match reply {
         Ok(r) => {
-            let output = if values_only {
-                facts_from_values(&r.json)
-            } else if contract
+            let output = if contract
                 .map(|c| c.name == "facts_object_v2")
                 .unwrap_or(false)
             {
@@ -74,13 +67,11 @@ pub(super) async fn call_logged_contract(
                 "systemHash":blake3::hash(system.as_bytes()).to_hex().to_string(),"inputHash":blake3::hash(user.as_bytes()).to_hex().to_string(),
                 "outputHash":blake3::hash(output.to_string().as_bytes()).to_hex().to_string(),"output":output,"status":"model_completed",
                 "responseLogId":r.response_log_id});
-            if values_only || contract.is_some() {
+            if contract.is_some() {
                 record["outputFormat"] = json!(if stage == "P2" {
                     formation_schema::EXPERIENCE_FORMAT
-                } else if contract.is_some() {
-                    formation_schema::FACT_FORMAT
                 } else {
-                    "fact-values-v1"
+                    formation_schema::FACT_FORMAT
                 });
                 record["modelOutput"] = r.json;
             }
@@ -123,43 +114,6 @@ pub(in crate::formation) fn facts_from_flat_object(output: &Value) -> Result<Val
         })
         .collect::<Result<Vec<Value>>>()?;
     Ok(json!({"facts":facts}))
-}
-
-/// The tuple fixes both arity and types. Missing optional values must retain their slots.
-type FactValues = (
-    String,
-    String,
-    Vec<String>,
-    String,
-    String,
-    String,
-    String,
-    Vec<(String, String)>,
-    Option<String>,
-);
-
-/// Construct the internal object schema ourselves; preserve rejected row positions for F references.
-pub(in crate::formation) fn facts_from_values(output: &Value) -> Result<Value> {
-    let rows = output
-        .as_array()
-        .ok_or_else(|| anyhow!("fact-values-v1 requires a top-level array"))?;
-    let mut errors = serde_json::Map::new();
-    let facts: Vec<Value> = rows.iter().enumerate().map(|(i, row)| {
-        match serde_json::from_value::<FactValues>(row.clone()) {
-            Ok((text, scope, entities, effective_at, origin, turn_id, span, relations, reason)) => {
-                let relations: Vec<Value> = relations.into_iter()
-                    .map(|(memory_id, relation)| json!({"memoryId":memory_id,"relation":relation})).collect();
-                json!({"text":text,"scope":scope,"entities":entities,"effectiveAt":effective_at,
-                    "origin":origin,"source":{"turnId":turn_id,"span":span},
-                    "relations":relations,"reason":reason})
-            }
-            Err(error) => {
-                errors.insert((i+1).to_string(), json!(util::truncate_bytes(&error.to_string(),300)));
-                Value::Null
-            }
-        }
-    }).collect();
-    Ok(json!({"facts":facts,"valueErrors":errors}))
 }
 
 /// Provenance is part of the local model contract, so a bad quote receives the same bounded

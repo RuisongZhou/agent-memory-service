@@ -154,17 +154,6 @@ pub fn excerpt(s: &str, start: usize, end: usize) -> Option<String> {
     Some(format!("{before}{part}{after}"))
 }
 
-/// Truncate to at most `n` chars (for evidence snippets).
-pub fn truncate_chars(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(n).collect();
-        out.push('…');
-        out
-    }
-}
-
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     // embeddings are L2-normalised; still guard against unnormalised vectors
     let mut dot = 0f32;

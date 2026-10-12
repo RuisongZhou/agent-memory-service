@@ -86,7 +86,7 @@ def main():
     parser.add_argument("--bin", type=Path, required=True)
     parser.add_argument("--embed-url", default="http://127.0.0.1:8081")
     parser.add_argument("--rerank-url", default="http://127.0.0.1:8082")
-    parser.add_argument("--output", type=Path, default=ROOT / "results/local-pilot/llama-http-smoke.json")
+    parser.add_argument("--output", type=Path, default=ROOT / "results/service-smoke/llama-http-smoke.json")
     parser.add_argument("--startup-timeout", type=float, default=300)
     parser.add_argument("--request-timeout", type=float, default=240)
     parser.add_argument("--skip-concurrency", action="store_true", help="Skip the default parallel embedding/search check")

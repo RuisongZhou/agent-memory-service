@@ -15,7 +15,7 @@
 
 ## 文件和发布管理
 
-旧工程、原始评测证据与模型仍保留在本地。公开仓库以新历史发布独立源码，不继承临时提交、私有 handoff 包或机器配置。
+原始评测证据与模型仍保留在本地；过时的旧 Demo 文档、源码快照与 handoff 包已删除。旧快照中的评测结果已逐文件核对，与 `eval/results/legacy-demo/` 的副本一致；唯一的历史试跑计划另存于本地 `eval/results/legacy-demo/pilot-plan-conv26-20261009.json`。公开仓库以新历史发布独立源码，不继承临时提交、私有 handoff 包或机器配置。
 
 Rust 模块按 API、形成、检索、运行时、存储、领域类型和诊断划分。纯日期及更新规则提为 `memory-rules`，检索评分提为 `retrieval/scoring.rs`，避免重复代码和主服务测试依赖膨胀。旧代码索引服务与无关 transformer vendor fork 不纳入此项目。
 

@@ -26,7 +26,7 @@ Source-span validation discarded 147 of 610 English candidates and 167 of 290 Ch
 
 ## 2026-10-11: integrity changes and fixed 32-question replay
 
-Implemented explicit instructions, durable unresolved conflicts with explicit confirmation, application-built derivation and atomic transitive invalidation of current profiles/skills, and bounded metadata/tokenization caches. The [implementation plan](../architecture.md#integrity-and-retrieval-improvements) describes the responsibility boundaries, compatibility and validation. Historical experiences keep their event meaning; current views become stale when their inputs change. The fact/experience scheduling and strict evidence contract are retained.
+Implemented explicit instructions, durable unresolved conflicts with explicit confirmation, application-built derivation and atomic transitive invalidation of current profiles/skills, and bounded metadata/tokenization caches. The [implementation plan](../../../docs/architecture.md#integrity-and-retrieval-improvements) describes the responsibility boundaries, compatibility and validation. Historical experiences keep their event meaning; current views become stale when their inputs change. The fact/experience scheduling and strict evidence contract are retained.
 
 The subset was fixed before implementation: first eight original-index questions in each category 1–4 of conv-26, 32 unique questions. The preserved pre-change binary and final binary used copies of the same historical primary-store snapshot, the same live BGE-M3/BGE-reranker-v2-m3 Q8_0 llama-server processes, sequential queries, topK=10, tokenBudget=2000, unchanged ranking parameters and the original reference date. Each received one first pass and two warm passes. No timing outliers were removed. Fast-profile compilation and offline checks finished before the final timing run.
 
@@ -54,17 +54,17 @@ Historical Mem0 search P95 for these 32 questions was 50.0 ms. That is a histori
 
 This experiment reuses formed memories from a post-retention snapshot with 53 source turns remaining. It does not rerun formation, does not constitute a physically cleared-buffer main result, and does not establish end-to-end write/formation speed or full-LoCoMo quality. Instruction handling, conflict resolution, stale-view propagation, rollback, restart repair and historical lineage are checked separately with mock integration tests.
 
-Raw evidence is local and ignored under `results/memory-integrity-final-20261011/`: immutable selection/protocol and source/binary fingerprints, complete per-query responses, corpus audits, contexts, answers and `comparison.json`. Both primary-corpus hashes stayed equal and unchanged during measurement. Weights, keys, databases and raw traces are not publication artifacts.
+Raw evidence is local and ignored under `eval/results/memory-integrity-final-20261011/`: immutable selection/protocol and source/binary fingerprints, complete per-query responses, corpus audits, contexts, answers and `comparison.json`. Both primary-corpus hashes stayed equal and unchanged during measurement. Weights, keys, databases and raw traces are not publication artifacts.
 
 Validation: 56 pure Rust tests, 97 Python tests, `MEMORY_MOCK_MODELS=1 agent-memoryd selftest`, and HTTP/MCP smoke passed. Builds used `--profile fast` throughout; the final incremental builds took approximately 4–6 seconds. The existing LLM-client deprecation warning remains unrelated to this change.
 
 ## 2026-10-11: 32-question error audit and fair replay
 
-The new evidence audit and recovery experiment is documented in [conv26-error-analysis.md](conv26-error-analysis.md). Under a shared 2,000-token cap with no recent turns, the frozen development cohort scores 26/32 before, 27/32 with retrieval/context changes, 29/32 after failed-batch recovery, and 30/32 for refreshed Mem0 retrieval. This is a separate protocol from the earlier retained-buffer comparison. The final local raw report is `results/qa-fair-final-20261011/comparison.md`; all generated traces remain ignored.
+The new evidence audit and recovery experiment is documented in [conv26-error-analysis.md](conv26-error-analysis.md). Under a shared 2,000-token cap with no recent turns, the frozen development cohort scores 26/32 before, 27/32 with retrieval/context changes, 29/32 after failed-batch recovery, and 30/32 for refreshed Mem0 retrieval. This is a separate protocol from the earlier retained-buffer comparison. The final local raw report is `eval/results/qa-fair-final-20261011/comparison.md`; all generated traces remain ignored.
 
 ### Fresh Mem0 strategy comparison (2026-10-11)
 
-See the ignored local report `results/mem0-migration-20261011/comparison.md` and frozen source protocol.
+See the ignored local report `eval/results/mem0-migration-20261011/comparison.md` and frozen source protocol.
 The first four sessions provide 76 utterances and 35 supported questions. Every arm is freshly formed;
 current uses its native paired-turn pipeline and new/SDK both speaker perspectives. Shared 2,000-token
 cap, Qwen/model/output settings, answer/judge prompts and exact judge cache are preserved.

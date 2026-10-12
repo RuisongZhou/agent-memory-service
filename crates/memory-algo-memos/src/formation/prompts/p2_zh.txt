@@ -31,6 +31,3 @@ goal 按整个会话重新概括；其余三项在<当前会话摘要>的基础�
 
 ## 语言
 记忆一律用简体中文写，名称、代码标识、路径、版本号照原文。
-
-只输出 JSON，格式如下：
-{"analysis": [{"task": "...", "result": "success|failure|partial|unknown", "turnIds": ["..."]}], "experiences": [{"situation": "...", "approach": "...", "result": "...", "lesson": "...", "scope": "global|project", "turnIds": ["..."], "relations": [{"memoryId": "E1", "relation": "same|related"}]}], "summary": {"goal": "...", "outcome": "...", "decisions": ["..."], "openIssues": ["..."]}}

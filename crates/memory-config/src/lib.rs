@@ -32,7 +32,7 @@ pub struct ServiceConfig {
     /// llama-server base URLs for the embedding (`--embedding`) and rerank (`--reranking`) models.
     pub embed_url: String,
     pub rerank_url: String,
-    /// Prompt set: "zh" (verbatim design prompts) or "en" (LoCoMo-adapted, English memories).
+    /// Language: "zh" or "en". Memos uses user/agent or LoCoMo human-human prompt sets respectively.
     pub prompt_variant: String,
 
     // ---- LLM (Qwen, OpenAI-compatible) ----

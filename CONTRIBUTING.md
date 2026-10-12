@@ -21,4 +21,4 @@ Keep transport adapters thin; use formation and retrieval modules for behavior a
 
 Changes to HTTP headers, configuration, prompts, tokenization, thresholds or dataset mapping require documentation and protocol updates. Use new evaluation stores for incompatible configurations; run tags alone do not isolate data.
 
-Do not commit weights, keys, model caches, databases, raw local traces or downloaded datasets. Add third-party attribution when copying code. Only curated aggregate benchmark summaries belong in `docs/benchmarks/`.
+Do not commit weights, keys, model caches, databases, raw local traces or downloaded datasets. Add third-party attribution when copying code. Only curated aggregate benchmark summaries belong in `eval/docs/benchmarks/`.

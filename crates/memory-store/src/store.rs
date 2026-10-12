@@ -357,11 +357,6 @@ impl Store {
         self.select_as(&sql, binds).await
     }
 
-    pub async fn all_active_memories(&self) -> Result<Vec<MemoryRec>> {
-        self.find_memories("status IN ['current','conflict','candidate']", vec![])
-            .await
-    }
-
     // ------------------------------------------------------------ turns / sessions
 
     pub async fn get_turn(&self, platform: &str, turn_id: &str) -> Result<Option<TurnRec>> {

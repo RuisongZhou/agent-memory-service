@@ -1,5 +1,7 @@
-# Merge into the project's .codex/config.toml. Replace /absolute/path with your checkout.
+# Merge into user-level ~/.codex/config.toml. Replace /absolute/path with your checkout.
+# MCP tables can also go in a trusted project's .codex/config.toml; notify cannot.
 # Optional automatic dialogue capture: remove notify if you only want MCP tools.
+# This fixes the capture project; use a dispatcher if you work across projects.
 notify = ["python3", "/absolute/path/agent-memory-service/scripts/harness_memory.py", "--project", "agent-memory-service", "--platform", "codex", "codex-notify"]
 
 [mcp_servers.shared-memory]

@@ -292,7 +292,7 @@ HTTP / MCP 层负责接收请求和确定调用方；形成层负责把输入变
 ```sh
 make build
 .venv/bin/python scripts/serve.py --memory-strategy mem0 \
-  --data-dir results/demo-mem0-store --llm-concurrency 1
+  --data-dir results/service-demo-mem0-store --llm-concurrency 1
 ```
 
 `make build` 已固定为 `cargo build --locked -p memory-service --bin agent-memoryd --profile fast`，生成 `target/fast/agent-memoryd`。真实运行前按既有配置启动嵌入服务，并设置本地密钥；密钥不写入命令示例和报告。用于无付费验证时给包装器增加 `--mock`。
@@ -301,7 +301,7 @@ demo 在启动时选择一种算法：`--memory-strategy mem0` 或 `--memory-str
 
 ## 8 完整 LoCoMo 验证结果
 
-以下数据摘自本地已完成实验 `results/locomo-full-mem0-20261011-v3`，与设计分析分开陈述。实验覆盖 10 段对话、272 个会话、5882 条原始发言；每个系统按两个视角处理 11764 条输入消息、1696 个批次，使用全新存储。
+以下数据摘自本地已完成实验 `eval/results/locomo-full-mem0-20261011-v3`，与设计分析分开陈述。实验覆盖 10 段对话、272 个会话、5882 条原始发言；每个系统按两个视角处理 11764 条输入消息、1696 个批次，使用全新存储。
 
 双方共用 Qwen3.8-Flash、非思考模式、温度 0、8192-token 抽取输出上限、BGE-M3 Q8_0 嵌入，以及相同回答和评判提示词。检索完成 3 遍，保留首遍与热缓存两遍；最终上下文的精确预算和稳定性经过审计。
 
@@ -395,4 +395,4 @@ make fmt
 
 实现依据为当前工作区的形成、检索、运行时、存储和纯规则代码，以及 `docs/api.md`、`docs/architecture.md`、`.env.example`、`examples/service-config.json` 和 Makefile。第三方 additive 提示词及许可位于 `crates/memory-service/src/algorithms/mem0/prompts/`。
 
-实验依据为 `results/locomo-full-mem0-20261011-v3/comparison.md` 和完成审计；这些实验材料按仓库规则保留在本地，不进入公共版本库。图 1 和图 2 的可编辑源文件分别为 `docs/diagrams/mem0-write-flow.drawio`、`docs/diagrams/mem0-read-flow.drawio`，PNG 中亦嵌入 draw.io 源数据。
+实验依据为 `eval/results/locomo-full-mem0-20261011-v3/comparison.md` 和完成审计；这些实验材料按仓库规则保留在本地，不进入公共版本库。图 1 和图 2 的可编辑源文件分别为 `docs/diagrams/mem0-write-flow.drawio`、`docs/diagrams/mem0-read-flow.drawio`，PNG 中亦嵌入 draw.io 源数据。

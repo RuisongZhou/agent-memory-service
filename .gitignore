@@ -30,7 +30,7 @@
 *.tflite
 
 # Downloaded datasets and generated runtime state
-/data/*.json
+/eval/data/*.json
 /results/
 /eval/results/
 /eval/stores/
@@ -44,6 +44,3 @@
 *.log
 *.tar.gz
 *.zip
-
-# Local legacy materials and handoff archives
-/archive/

@@ -107,11 +107,6 @@ impl EntityDict {
         self.names.is_empty()
     }
 
-    /// Normalised names registered for an entity.
-    pub fn names_of(&self, entity_id: &str) -> Option<&[String]> {
-        self.names.get(entity_id).map(|v| v.as_slice())
-    }
-
     /// Exact lookup after normalisation. For an alias shared by several entities, the most recently
     /// upserted entity wins; see [`EntityDict::resolve_all`].
     pub fn resolve(&self, name: &str) -> Option<String> {

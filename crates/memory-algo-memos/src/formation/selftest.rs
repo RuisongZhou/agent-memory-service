@@ -1,9 +1,8 @@
 //! Formation self-tests run by `agent-memoryd selftest` (feature `selftest`).
 use super::experience;
 use super::extract::{
-    commit_experience, commit_facts, fact_source_contract, facts_from_flat_object,
-    facts_from_values, recall, session_experience, validate, validate_fact_source_contract,
-    RawRelation,
+    commit_experience, commit_facts, fact_source_contract, facts_from_flat_object, recall,
+    session_experience, validate, validate_fact_source_contract, RawRelation,
 };
 use super::relations::{self, WriteCtx};
 use memory_domain::types::*;
@@ -59,17 +58,16 @@ pub async fn formation_selftest() {
         .unwrap_err()
         .to_string()
         .contains("calendar date"));
-    // Value-only output cannot rename source/relation keys; those keys are constructed here.
-    let values = json!([
-        ["A fact","global",["Caroline"],"2023-05-08","user","T1","quoted",[["M1","related"]],null],
-        ["A shifted row","global",[],"2023-05-08","user","T1",[],null],
-        ["Wrong entities","global",[{"name":"Caroline"}],"2023-05-08","user","T1","quoted",[],null],
-        ["Wrong relation","global",[],"2023-05-08","user","T1","quoted",[{"memoryId":"M1","relation":"related"}],null],
-        ["Null excerpt","global",[],"2023-05-08","user","T1",null,[],null],
-        ["Last fact","global",[],"2023-05-08","user","T1","quoted",[["F1","related"]],"detail"]
-    ]);
-    let assembled = facts_from_values(&values).unwrap();
-    assert_eq!(assembled["facts"].as_array().unwrap().len(), 6);
+    // Flat model provenance is assembled into canonical internal source/relation keys.
+    let assembled = facts_from_flat_object(&json!({"facts":[
+        {"text":"A fact","scope":"global","entities":["Caroline"],"effectiveAt":"2023-05-08",
+         "origin":"user","sourceTurnId":"T1","sourceSpan":"quoted",
+         "relations":[{"memoryId":"M1","relation":"related"}]},
+        {"text":"Last fact","scope":"global","entities":[],"effectiveAt":"2023-05-08",
+         "origin":"user","sourceTurnId":"T1","sourceSpan":"quoted",
+         "relations":[{"memoryId":"F1","relation":"related"}]}
+    ]}))
+    .unwrap();
     assert_eq!(
         assembled["facts"][0]["source"],
         json!({"turnId":"T1","span":"quoted"})
@@ -78,14 +76,13 @@ pub async fn formation_selftest() {
         assembled["facts"][0]["relations"],
         json!([{"memoryId":"M1","relation":"related"}])
     );
-    for i in 1..5 {
-        assert!(assembled["facts"][i].is_null());
-        assert!(assembled["valueErrors"][(i + 1).to_string()].is_string());
-    }
-    assert_eq!(assembled["facts"][5]["relations"][0]["memoryId"], "F1");
-    assert_eq!(facts_from_values(&json!([])).unwrap()["facts"], json!([]));
-    assert!(facts_from_values(&json!({"facts":[]})).is_err());
-    assert!(facts_from_values(&json!(null)).is_err());
+    assert_eq!(assembled["facts"][1]["relations"][0]["memoryId"], "F1");
+    assert_eq!(
+        facts_from_flat_object(&json!({"facts":[]})).unwrap()["facts"],
+        json!([])
+    );
+    assert!(facts_from_flat_object(&json!([])).is_err());
+    assert!(facts_from_flat_object(&json!(null)).is_err());
     let legacy: RawRelation =
         serde_json::from_value(json!({"target":"M1","type":"updates"})).unwrap();
     assert_eq!(legacy.memory_id, "M1");
@@ -224,17 +221,11 @@ pub async fn formation_selftest() {
             ..Default::default()
         };
         for explicit in [false, true] {
-            let output = facts_from_values(&json!([[
-                "A grounded long excerpt",
-                "global",
-                [],
-                "2026-10-08",
-                if explicit { "explicit" } else { "user" },
-                if explicit { "text" } else { "T-long" },
-                span,
-                [],
-                null
-            ]]))
+            let output = facts_from_flat_object(&json!({"facts":[{
+                "text":"A grounded long excerpt","scope":"global","entities":[],
+                "effectiveAt":"2026-10-08","origin":if explicit { "explicit" } else { "user" },
+                "sourceTurnId":if explicit { "text" } else { "T-long" },"sourceSpan":span,"relations":[]
+            }]}))
             .unwrap();
             let (accepted, _) = validate(
                 &t,
@@ -254,32 +245,16 @@ pub async fn formation_selftest() {
             }
         }
     }
-    let broken_reference = facts_from_values(&json!([
-        ["missing slots"],
-        [
-            "SurrealDB端口改成8100了",
-            "project",
-            [],
-            "2026-10-08",
-            "user",
-            "T1",
-            "端口改成8100了",
-            [["F1", "updates"]],
-            "replaces"
-        ],
-        [
-            "配置已同步",
-            "project",
-            [],
-            "2026-10-08",
-            "user",
-            "T1",
-            "配置已同步",
-            [["F1", "related"]],
-            null
-        ]
-    ]))
-    .unwrap();
+    // A rejected row must retain its position so destructive references cannot retarget.
+    let broken_reference = json!({"facts":[
+        {"text":"missing fields"},
+        {"text":"SurrealDB端口改成8100了","scope":"project","entities":[],
+         "effectiveAt":"2026-10-08","origin":"user","source":{"turnId":"T1","span":"端口改成8100了"},
+         "relations":[{"memoryId":"F1","relation":"updates"}]},
+        {"text":"配置已同步","scope":"project","entities":[],"effectiveAt":"2026-10-08",
+         "origin":"user","source":{"turnId":"T1","span":"配置已同步"},
+         "relations":[{"memoryId":"F1","relation":"related"}]}
+    ]});
     let (accepted, _) = validate(
         &t,
         broken_reference,
@@ -534,17 +509,11 @@ async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     }
     let all = t.store.session_turns("test", "S").await.unwrap();
     let first = all[..3].to_vec();
-    let output = facts_from_values(&json!([[
-        "Deployment step 1",
-        "project",
-        ["service"],
-        util::date_of(&first[0].user_ts),
-        "user",
-        "U1",
-        "Deployment step 1",
-        [],
-        null
-    ]]))
+    let output = facts_from_flat_object(&json!({"facts":[{
+        "text":"Deployment step 1","scope":"project","entities":["service"],
+        "effectiveAt":util::date_of(&first[0].user_ts),"origin":"user",
+        "sourceTurnId":"U1","sourceSpan":"Deployment step 1","relations":[]
+    }]}))
     .unwrap();
     let applied = commit_facts(eng, &t, first, vec![], output).await.unwrap();
     assert_eq!(applied.created.len(), 1);

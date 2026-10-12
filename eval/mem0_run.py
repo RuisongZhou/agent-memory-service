@@ -227,7 +227,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", choices=["ingest", "search", "all"], default="all")
     ap.add_argument("--embed-url", required=True, help="OpenAI-compatible embeddings base, e.g. http://127.0.0.1:8765/v1")
-    ap.add_argument("--tag", default="mem0", help="system name: results/<tag>/, stores/<tag>/, ledger component <tag>.add")
+    ap.add_argument("--tag", default="mem0", help="system name: eval/results/<tag>/, eval/stores/<tag>/, ledger component <tag>.add")
     ap.add_argument("--setting", default=None, help="results subdir for contexts (default k<top_k>)")
     ap.add_argument("--convs", type=lambda s: s.split(","), default=None)
     ap.add_argument("--sessions", type=int, default=None, help="only the first N sessions of each conversation (testing)")

@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from common import jsonl, locomo
+from common.env import RESULTS_DIR
 
 
 def main():
@@ -25,8 +26,8 @@ def main():
     memories = {m["id"]: m for m in json.loads((root / "memories.json").read_text())["memories"]}
     evidence = {x["memory"]["id"]: x["evidence"] for x in json.loads((root / "memory-evidence.json").read_text())}
     traces = {x["query"]: x for x in json.loads((root / "retrieval_log.json").read_text())["records"]}
-    historical = Path("results/conv26-schema-full-20261010-b")
-    paths = {"原快照": Path("results/memory-integrity-final-20261011/current/retained-snapshot"),
+    historical = RESULTS_DIR / "conv26-schema-full-20261010-b"
+    paths = {"原快照": RESULTS_DIR / "memory-integrity-final-20261011/current/retained-snapshot",
         "历史 Mem0": historical / "mem0/k30", **{s: args.fair / s for s in ("baseline", "retrieval", "repaired", "mem0")}}
     answers = {name: {row["qid"]: row for row in jsonl.read(path / "answers-unified.jsonl")} for name, path in paths.items()}
     old_contexts = {row["qid"]: row for row in jsonl.read(paths["原快照"] / "contexts.jsonl")}

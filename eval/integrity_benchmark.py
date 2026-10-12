@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from common import jsonl, locomo
+from common.env import resolve_historical_result_path
 from common.metrics import TOKEN_COUNTER, count_tokens
 from common.protocol import guard
 from common.answers import fingerprint, summary_stats
@@ -124,7 +125,7 @@ def collect(args) -> None:
         if audit["memory_hash_before"] != audit["memory_hash_after"]:
             raise ValueError("background work changed the measured corpus")
 
-    historical = Path(manifest["historical_root"])
+    historical = resolve_historical_result_path(manifest["historical_root"])
     sources = [historical / "memory-en/buffer"]
     if args.system == "improved":
         sources.append(root / "current/retained-snapshot")
@@ -143,7 +144,7 @@ def report(args) -> None:
     root = Path(args.root)
     manifest = json.loads((root / "manifest.json").read_text())
     expected = set(manifest["qids"])
-    historical = Path(manifest["historical_root"])
+    historical = resolve_historical_result_path(manifest["historical_root"])
     sources = {"historical-service": historical / "memory-en/buffer", "historical-mem0": historical / "mem0/k30",
                "current": root / "current/retained-snapshot", "improved": root / "improved/retained-snapshot"}
     result = {"manifest": manifest, "systems": {}, "notes": [

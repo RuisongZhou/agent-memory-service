@@ -30,6 +30,3 @@ Re-state goal for the whole session; for the other three items, add to <current 
 - openIssues: unresolved items, things awaiting confirmation, things to continue next time
 
 Write in English.
-
-Output JSON only, in this format:
-{"analysis": [{"task": "...", "result": "success|failure|partial|unknown", "turnIds": ["..."]}], "experiences": [{"situation": "...", "approach": "...", "result": "...", "lesson": "...", "scope": "global|project", "turnIds": ["..."], "relations": [{"memoryId": "E1", "relation": "same|related"}]}], "summary": {"goal": "...", "outcome": "...", "decisions": ["..."], "openIssues": ["..."]}}
