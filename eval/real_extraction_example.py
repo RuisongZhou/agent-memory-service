@@ -29,8 +29,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "eval"))
 from common import env as eval_env  # Loads only the named key without printing it.
-sys.path.insert(0, str(ROOT / "scripts"))
-from extraction_audit import summarize
+from common.extraction_audit import summarize
 
 OLD = [
     ("moldport", "2026-09-20", "project", "user", "共享记忆库项目测试环境的 SurrealDB 端口是 8000", ["ememory", "esurreal", "etest"]),
@@ -56,8 +55,8 @@ def saved(path, value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin", type=Path, default=ROOT / "target/fast/agent-memoryd")
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "results/local-pilot/zh-example-store")
-    parser.add_argument("--output", type=Path, default=ROOT / "results/local-pilot/zh-example.json")
+    parser.add_argument("--data-dir", type=Path, default=eval_env.RESULTS_DIR / "local-pilot/zh-example-store")
+    parser.add_argument("--output", type=Path, default=eval_env.RESULTS_DIR / "local-pilot/zh-example.json")
     parser.add_argument("--port", type=int, default=8771)
     parser.add_argument("--max-calls", type=int, default=12)
     parser.add_argument("--allow-local-stub", action="store_true", help="Test-only loopback upstream; report is explicitly simulated, never effectiveness evidence")
@@ -118,7 +117,7 @@ def main():
             raw = self.rfile.read(int(self.headers["Content-Length"]))
             body = json.loads(raw)
             system = body["messages"][0]["content"]
-            stage = "P1+P2" if "formation-object-v2" in system else "P1" if "事实抽取器" in system else "P2" if "经验抽取器" in system else "unexpected"
+            stage = "P1" if "事实抽取器" in system else "P2" if "经验抽取器" in system else "unexpected"
             with trace_lock:
                 if len(traces) >= args.max_calls:
                     self.send_error(429, "example request cap reached"); return
@@ -193,7 +192,7 @@ def main():
         result["memories"]=exported["memories"]
         by_id={m["id"]:m for m in result["memories"]}
         result["oldRecords"]={mid:api("/v1/get_memory",{"id":mid,"includeHistory":True,"includeEvidence":True}) for mid,*_ in OLD}
-        p1_trace=next((t for t in traces if t["stage"] in ("P1", "P1+P2")),None)
+        p1_trace=next((t for t in traces if t["stage"] == "P1"),None)
         recalled=[]
         if p1_trace:
             prompt=p1_trace["request"]["messages"][1]["content"]

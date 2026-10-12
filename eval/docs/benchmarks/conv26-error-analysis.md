@@ -1,6 +1,6 @@
 # Conv-26 evidence-led repair
 
-See the local benchmark report at `results/qa-fair-final-20261011/comparison.md` and the 32-question source audit at `results/qa-diagnosis-20261011/analysis.md`. These generated files stay untracked.
+See the local benchmark report at `eval/results/qa-fair-final-20261011/comparison.md` and the 32-question source audit at `eval/results/qa-diagnosis-20261011/analysis.md`. These generated files stay untracked.
 
 This fixed development cohort shares a 2,000-token context cap, source corpus and HTTP embedding runtime, excludes recent turns and shares exact judge decisions. Baseline and retrieval-only replay the same primary records. The repair arm replays all 19 historically rejected batches using the final facts-object-v2 contract; it is a recovery experiment on historical formation, not fresh end-to-end ingestion.
 

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from common import usage as usage_ledger
+from common.env import RESULTS_DIR
 
 
 def build(root):
@@ -34,7 +35,7 @@ def build(root):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--results-dir', default='results/local-pilot')
+    ap.add_argument('--results-dir', default=str(RESULTS_DIR / 'local-pilot'))
     root = Path(ap.parse_args().results_dir)
     result = build(root)
     (root/'conv26-summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2)+'\n')

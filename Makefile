@@ -6,7 +6,7 @@ JFLAG = $(if $(JOBS),-j $(JOBS))
 
 .PHONY: setup build test test-rust test-service selftest smoke fmt check-public check-arch
 setup:
-	python3 scripts/setup_eval.py
+	python3 eval/setup_eval.py
 build:
 	$(CARGO) build --locked -p memory-service --bin agent-memoryd --profile fast $(JFLAG)
 test:

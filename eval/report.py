@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Collect results/<system>/<setting>/summary-<prompt>.json into one table (markdown + JSON).
+"""Collect eval/results/<system>/<setting>/summary-<prompt>.json into one table (markdown + JSON).
 
-  .venv/bin/python report.py                 # -> results/report.md, results/report.json
+  .venv/bin/python eval/report.py            # -> eval/results/report.md, eval/results/report.json
 """
 from __future__ import annotations
 

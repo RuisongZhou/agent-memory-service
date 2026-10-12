@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Summarise results/usage_ledger.jsonl by component (calls and tokens).
+"""Summarise eval/results/usage_ledger.jsonl by component (calls and tokens).
 
   .venv/bin/python usage_stats.py                       # all components
   .venv/bin/python usage_stats.py --prefix answer.      # only answer.* components

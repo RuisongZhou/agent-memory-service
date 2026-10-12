@@ -12,9 +12,9 @@ Writes next to the contexts file:
   summary-<prompt>.json    overall + per category (n, J, F1, BLEU-1, context tokens, search latency
                            mean/p95) and usage per stage from the ledger.
 
-  .venv/bin/python answer_and_judge.py --contexts results/mem0/k30/contexts.jsonl
-  .venv/bin/python answer_and_judge.py --contexts results/mem0/k30/contexts.jsonl --answer-prompt mem0-original
-  .venv/bin/python answer_and_judge.py --contexts results/memory-en/main/contexts.jsonl --summary-only
+  .venv/bin/python eval/answer_and_judge.py --contexts eval/results/mem0/k30/contexts.jsonl
+  .venv/bin/python eval/answer_and_judge.py --contexts eval/results/mem0/k30/contexts.jsonl --answer-prompt mem0-original
+  .venv/bin/python eval/answer_and_judge.py --contexts eval/results/memory-en/main/contexts.jsonl --summary-only
 """
 from __future__ import annotations
 

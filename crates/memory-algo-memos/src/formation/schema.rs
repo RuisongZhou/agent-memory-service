@@ -1,8 +1,7 @@
-//! The provider and the local boundary use the same small, explicit schema contract.
+//! Local contracts for fact formation and independent session-end experience formation.
 use anyhow::{anyhow, Result};
 use serde_json::{json, Map, Value};
 
-pub const FORMAT: &str = "formation-object-v2";
 pub const FACT_FORMAT: &str = "facts-object-v2";
 pub const EXPERIENCE_FORMAT: &str = "session-experience-object-v1";
 
@@ -23,38 +22,56 @@ fn string() -> Value {
 fn labels(values: &[&str]) -> Value {
     json!({"type":"string", "enum":values})
 }
+fn relations(values: &[&str]) -> Value {
+    array(object(&[
+        ("memoryId", string()),
+        ("relation", labels(values)),
+    ]))
+}
+fn turn_ids(ids: &[String]) -> Value {
+    let mut items = string();
+    if !ids.is_empty() {
+        items["enum"] = json!(ids);
+    }
+    json!({"type":"array", "items":items, "maxItems":ids.len()})
+}
 
-pub fn schema() -> Value {
-    let strings = array(string());
-    let relation = |values: &[&str]| {
-        array(object(&[
-            ("memoryId", string()),
-            ("relation", labels(values)),
-        ]))
-    };
+/// Frequent facts use flat provenance and never request experience/summary fields.
+pub fn facts_for_turns(ids: &[String]) -> Value {
+    let mut source = string();
+    if !ids.is_empty() {
+        source["enum"] = json!(ids);
+    }
     let fact = object(&[
         ("text", string()),
         ("scope", labels(&["global", "project"])),
-        ("entities", strings.clone()),
+        ("entities", array(string())),
         ("effectiveAt", string()),
         ("origin", labels(&["explicit", "user", "assistant"])),
         (
-            "source",
-            object(&[("turnId", string()), ("span", string())]),
-        ),
-        (
             "relations",
-            relation(&["same", "updates", "conflicts", "related"]),
+            relations(&["same", "updates", "conflicts", "related"]),
         ),
-        ("reason", json!({"type":["string","null"]})),
+        ("sourceTurnId", source),
+        ("sourceSpan", json!({"type":"string", "maxLength":1024})),
     ]);
+    let mut facts = array(fact);
+    if ids.is_empty() {
+        facts["maxItems"] = json!(0);
+    }
+    object(&[("facts", facts)])
+}
+
+/// Session-end output contains only analysis, experiences and summary.
+pub fn experiences_for_turns(ids: &[String]) -> Value {
+    let strings = array(string());
     let analysis = object(&[
         ("task", string()),
         (
             "result",
             labels(&["success", "failure", "partial", "unknown"]),
         ),
-        ("turnIds", strings.clone()),
+        ("turnIds", turn_ids(ids)),
     ]);
     let experience = object(&[
         ("situation", string()),
@@ -62,13 +79,14 @@ pub fn schema() -> Value {
         ("result", string()),
         ("lesson", string()),
         ("scope", labels(&["global", "project"])),
-        ("turnIds", strings.clone()),
-        ("relations", relation(&["same", "related"])),
+        ("turnIds", turn_ids(ids)),
+        ("relations", relations(&["same", "related"])),
     ]);
+    let mut experiences = array(experience);
+    experiences["maxItems"] = json!(3);
     object(&[
-        ("facts", array(fact)),
         ("analysis", array(analysis)),
-        ("experiences", array(experience)),
+        ("experiences", experiences),
         (
             "summary",
             object(&[
@@ -78,69 +96,6 @@ pub fn schema() -> Value {
                 ("openIssues", strings),
             ]),
         ),
-    ])
-}
-
-/// Validate precisely the type/enum/required/additionalProperties/items subset emitted above.
-/// Content, provenance and experience admission remain in the formation rules.
-pub fn validate(value: &Value) -> Result<()> {
-    validate_schema(&schema(), value)
-}
-
-/// Constrain source labels to actual supplied turns, rather than arbitrary M/F memory labels.
-/// The same constraints already apply at the provenance gate; this also prevents decode loops.
-pub fn for_turns(fact_turn_ids: &[String], context_turn_ids: &[String]) -> Value {
-    let mut schema = schema();
-    if fact_turn_ids.is_empty() {
-        schema["properties"]["facts"]["maxItems"] = json!(0);
-    } else {
-        schema["properties"]["facts"]["items"]["properties"]["source"]["properties"]["turnId"]
-            ["enum"] = json!(fact_turn_ids);
-    }
-    schema["properties"]["facts"]["items"]["properties"]["source"]["properties"]["span"]
-        ["maxLength"] = json!(1024);
-    for section in ["analysis", "experiences"] {
-        let ids = &mut schema["properties"][section]["items"]["properties"]["turnIds"];
-        ids["maxItems"] = json!(context_turn_ids.len());
-        if !context_turn_ids.is_empty() {
-            ids["items"]["enum"] = json!(context_turn_ids);
-        }
-    }
-    schema["properties"]["experiences"]["maxItems"] = json!(3);
-    schema
-}
-
-/// Contracts stay local; the provider receives json_object rather than json_schema.
-pub fn facts_for_turns(turn_ids: &[String]) -> Value {
-    let full = for_turns(turn_ids, turn_ids);
-    let mut facts = full["properties"]["facts"].clone();
-    facts["items"]["properties"]
-        .as_object_mut()
-        .unwrap()
-        .remove("reason");
-    facts["items"]["required"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|v| v != "reason");
-    let source = facts["items"]["properties"]
-        .as_object_mut()
-        .unwrap()
-        .remove("source")
-        .unwrap();
-    facts["items"]["properties"]["sourceTurnId"] = source["properties"]["turnId"].clone();
-    facts["items"]["properties"]["sourceSpan"] = source["properties"]["span"].clone();
-    let required = facts["items"]["required"].as_array_mut().unwrap();
-    required.retain(|v| v != "source");
-    required.extend([json!("sourceTurnId"), json!("sourceSpan")]);
-    object(&[("facts", facts)])
-}
-
-pub fn experiences_for_turns(turn_ids: &[String]) -> Value {
-    let full = for_turns(&[], turn_ids);
-    object(&[
-        ("analysis", full["properties"]["analysis"].clone()),
-        ("experiences", full["properties"]["experiences"].clone()),
-        ("summary", full["properties"]["summary"].clone()),
     ])
 }
 
@@ -218,59 +173,70 @@ fn validate_node(schema: &Value, value: &Value, path: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn empty_experience() -> Value {
+        json!({"analysis":[],"experiences":[],"summary":{"goal":"","outcome":"","decisions":[],"openIssues":[]}})
+    }
+    fn fact() -> Value {
+        json!({"facts":[{"text":"A fact","scope":"project","entities":[],
+            "effectiveAt":"2026-10-10","origin":"user","sourceTurnId":"T1","sourceSpan":"A fact","relations":[]}]})
+    }
+
     #[test]
     fn separate_contracts_reject_cross_stage_fields_and_invalid_sources() {
-        let fact_schema = facts_for_turns(&["T1".into()]);
-        let mut fact = json!({"facts":[{"text":"A fact","scope":"project","entities":[],
-            "effectiveAt":"2026-10-10","origin":"user","sourceTurnId":"T1","sourceSpan":"A fact","relations":[]}]});
-        assert!(validate_schema(&fact_schema, &fact).is_ok());
-        fact["summary"] = json!({});
-        assert!(validate_schema(&fact_schema, &fact).is_err());
-        fact.as_object_mut().unwrap().remove("summary");
-        fact["facts"][0]["sourceTurnId"] = json!("missing");
-        assert!(validate_schema(&fact_schema, &fact).is_err());
-        let exp_schema = experiences_for_turns(&["T1".into()]);
-        let mut exp = json!({"analysis":[],"experiences":[],"summary":{"goal":"","outcome":"","decisions":[],"openIssues":[]}});
-        assert!(validate_schema(&exp_schema, &exp).is_ok());
-        exp["facts"] = json!([]);
-        assert!(validate_schema(&exp_schema, &exp).is_err());
+        let schema = facts_for_turns(&["T1".into()]);
+        let mut value = fact();
+        validate_schema(&schema, &value).unwrap();
+        value["summary"] = json!({});
+        assert!(validate_schema(&schema, &value).is_err());
+        value.as_object_mut().unwrap().remove("summary");
+        value["facts"][0]["sourceTurnId"] = json!("missing");
+        assert!(validate_schema(&schema, &value).is_err());
+        let schema = experiences_for_turns(&["T1".into()]);
+        let mut value = empty_experience();
+        validate_schema(&schema, &value).unwrap();
+        value["facts"] = json!([]);
+        assert!(validate_schema(&schema, &value).is_err());
     }
-    fn empty() -> Value {
-        json!({"facts":[],"analysis":[],"experiences":[],"summary":{"goal":"","outcome":"","decisions":[],"openIssues":[]}})
-    }
+
     #[test]
-    fn rejects_old_flat_arrays_missing_sections_and_wrong_nested_types() {
-        validate(&empty()).unwrap();
-        assert!(validate(&json!([[], [], [], ["", "", [], []]])).is_err());
-        let mut v = empty();
-        v.as_object_mut().unwrap().remove("summary");
-        assert!(validate(&v).unwrap_err().to_string().contains("$.summary"));
-        let mut v = empty();
-        v["analysis"] = json!([{"task":"deploy","result":"unknown","turnIds":"T1"}]);
-        assert!(validate(&v)
+    fn rejects_arrays_missing_sections_and_wrong_nested_types() {
+        let schema = experiences_for_turns(&["T1".into()]);
+        assert!(validate_schema(&schema, &json!([[], [], [], ["", "", [], []]])).is_err());
+        let mut value = empty_experience();
+        value.as_object_mut().unwrap().remove("summary");
+        assert!(validate_schema(&schema, &value)
+            .unwrap_err()
+            .to_string()
+            .contains("$.summary"));
+        let mut value = empty_experience();
+        value["analysis"] = json!([{"task":"deploy","result":"unknown","turnIds":"T1"}]);
+        assert!(validate_schema(&schema, &value)
             .unwrap_err()
             .to_string()
             .contains("$.analysis[0].turnIds"));
-        v["analysis"][0]["turnIds"] = json!(["T1"]);
-        v["analysis"][0]["result"] = json!("guessed");
-        assert!(validate(&v).is_err());
-        let mut v = empty();
-        v["unexpected"] = json!([]);
-        assert!(validate(&v).is_err());
+        value["analysis"][0]["turnIds"] = json!(["T1"]);
+        value["analysis"][0]["result"] = json!("guessed");
+        assert!(validate_schema(&schema, &value).is_err());
     }
+
     #[test]
-    fn nullable_reason_and_canonical_fact_source_are_checked() {
-        let mut v = empty();
-        v["facts"] = json!([{"text":"A fact","scope":"project","entities":[],"effectiveAt":"2023-05-08",
-            "origin":"user","source":{"turnId":"T1","span":"A fact"},"relations":[],"reason":null}]);
-        validate(&v).unwrap();
-        v["facts"][0]["source"]["span"] = json!(["wrong"]);
-        assert!(validate(&v).is_err());
+    fn facts_require_flat_provenance_and_reject_removed_fields() {
+        let schema = facts_for_turns(&["T1".into()]);
+        let mut value = fact();
+        value["facts"][0]["source"] = json!({"turnId":"T1","span":"A fact"});
+        assert!(validate_schema(&schema, &value).is_err());
+        value["facts"][0].as_object_mut().unwrap().remove("source");
+        value["facts"][0]["reason"] = Value::Null;
+        assert!(validate_schema(&schema, &value).is_err());
+        value["facts"][0].as_object_mut().unwrap().remove("reason");
+        value["facts"][0]["sourceSpan"] = json!(["wrong"]);
+        assert!(validate_schema(&schema, &value).is_err());
     }
+
     #[test]
-    fn rejects_memory_labels_and_unbounded_repeated_turn_lists() {
-        let schema = for_turns(&["T2".into()], &["T1".into(), "T2".into()]);
-        let mut value = empty();
+    fn rejects_memory_labels_repeated_turn_lists_and_too_many_experiences() {
+        let schema = experiences_for_turns(&["T1".into(), "T2".into()]);
+        let mut value = empty_experience();
         value["analysis"] = json!([{"task":"deploy","result":"unknown","turnIds":["F1"]}]);
         assert!(validate_schema(&schema, &value).is_err());
         value["analysis"][0]["turnIds"] = json!(["T1", "T2"]);
@@ -280,6 +246,34 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("maxItems"));
-        validate_schema(&for_turns(&[], &[]), &empty()).unwrap();
+        value["analysis"] = json!([]);
+        let experience = json!({"situation":"deploy","approach":"check","result":"success",
+            "lesson":"verify","scope":"project","turnIds":["T1"],"relations":[]});
+        value["experiences"] = json!([experience.clone(), experience.clone(), experience.clone()]);
+        validate_schema(&schema, &value).unwrap();
+        value["experiences"]
+            .as_array_mut()
+            .unwrap()
+            .push(experience);
+        assert!(validate_schema(&schema, &value)
+            .unwrap_err()
+            .to_string()
+            .contains("maxItems"));
+        validate_schema(&experiences_for_turns(&[]), &empty_experience()).unwrap();
+    }
+
+    #[test]
+    fn empty_sources_and_unicode_evidence_limits_are_enforced() {
+        validate_schema(&facts_for_turns(&[]), &json!({"facts":[]})).unwrap();
+        assert!(validate_schema(&facts_for_turns(&[]), &fact()).is_err());
+        let schema = facts_for_turns(&["T1".into()]);
+        let mut value = fact();
+        value["facts"][0]["sourceSpan"] = json!("证".repeat(1024));
+        validate_schema(&schema, &value).unwrap();
+        value["facts"][0]["sourceSpan"] = json!("证".repeat(1025));
+        assert!(validate_schema(&schema, &value)
+            .unwrap_err()
+            .to_string()
+            .contains("maxLength"));
     }
 }

@@ -9,7 +9,7 @@ SHA256 = '79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4'
 URL = 'https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json'
 
 def main():
-    target = ROOT/'data/locomo10.json'
+    target = ROOT/'eval/data/locomo10.json'
     if target.exists():
         if hashlib.sha256(target.read_bytes()).hexdigest() != SHA256:
             raise SystemExit('Existing dataset checksum differs; preserve it and select another location.')
@@ -18,9 +18,9 @@ def main():
     data = urlopen(URL, timeout=90).read()
     if hashlib.sha256(data).hexdigest() != SHA256:
         raise SystemExit('Upstream dataset changed; no file written.')
-    target.parent.mkdir(exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
-    print('Saved local LoCoMo research data. See licenses/locomo-LICENSE.txt (CC BY-NC 4.0).')
+    print('Saved local LoCoMo research data. See eval/licenses/locomo-LICENSE.txt (CC BY-NC 4.0).')
 
 if __name__ == '__main__':
     main()

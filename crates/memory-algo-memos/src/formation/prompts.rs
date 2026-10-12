@@ -1,7 +1,6 @@
-//! Prompt sets. `zh` = the system prompts of 《共享记忆库 第四章 抽取 Prompt》 with fixed positional fact values (plus the §0
-//! language convention); `en` = the LoCoMo-adapted set (same structure, schema and relation rules; extraction
-//! scope rewritten for person-to-person conversation; English memories). User templates follow the documented
-//! XML-tag layout.
+//! Active Memos prompt sets: `zh` for user/agent conversations, `en` for the human-human
+//! LoCoMo adapter. Fact and session-end experience contracts are assembled separately.
+//! User templates follow the documented XML-tag layout.
 
 pub struct PromptSet {
     pub variant: &'static str,
@@ -120,49 +119,9 @@ pub fn get(variant: &str) -> &'static PromptSet {
     }
 }
 
-/// One generation shares current dialogue between fact and experience extraction.
-pub fn formation(p: &PromptSet) -> String {
-    let (fact_end, experience_end, structure) = if p.variant == "en" {
-        (
-            "## Output structure:",
-            "Output JSON only",
-            include_str!("prompts/p12_structure_en.txt"),
-        )
-    } else {
-        (
-            "## 输出结构：",
-            "只输出 JSON",
-            include_str!("prompts/p12_structure_zh.txt"),
-        )
-    };
-    format!(
-        "{}\n\n{}\n\n{}",
-        p.p1.split(fact_end).next().unwrap(),
-        p.p2.split(experience_end).next().unwrap(),
-        structure
-    )
-}
-
 /// Frequent formation returns facts only, without task analysis, experiences or summaries.
 pub fn facts(p: &PromptSet, explicit: bool) -> String {
-    let end = if p.variant == "en" {
-        "## Output structure:"
-    } else {
-        "## 输出结构："
-    };
-    let base = if explicit { p.p1b } else { p.p1 };
-    let instructions = base
-        .split(end)
-        .next()
-        .unwrap()
-        .lines()
-        .filter(|line| {
-            !line.starts_with("- reason：")
-                && !line.starts_with("- reason:")
-                && !line.starts_with("- source.")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let instructions = if explicit { p.p1b } else { p.p1 };
     let format = if p.variant == "en" {
         r#"## Output: facts-object-v2
 Return only one JSON object: {"facts": [...]}.
@@ -186,17 +145,12 @@ sourceTurnId 只引用本批输入的轮编号；sourceSpan 从该轮逐字复�
 }
 
 pub fn session_experience(p: &PromptSet) -> String {
-    let end = if p.variant == "en" {
-        "Output JSON only"
-    } else {
-        "只输出 JSON"
-    };
     let instruction = if p.variant == "en" {
         "Run only after the session ends. Read the whole supplied conversation. Output analysis, experiences and summary only, using the JSON object below; never output facts. Do not repeat an experience unless it cites a new turn listed in <new turns>. Unknown tasks produce no experience. Clear completed open issues; keep only issues still unresolved at session end."
     } else {
         "仅在 session 结束后执行，阅读所提供的完整会话。只输出下列 JSON 对象的 analysis、experiences、summary，不输出 facts。经验必须至少引用<新增轮>中的一轮，避免重复归纳。未验证结果的任务不生成经验。移除已解决事项，openIssues 只保留 session 结束时仍未解决的事项。"
     };
-    format!("{}\n\n{}\n{{\"analysis\":[{{\"task\":\"...\",\"result\":\"success|failure|partial|unknown\",\"turnIds\":[\"...\"]}}],\"experiences\":[{{\"situation\":\"...\",\"approach\":\"...\",\"result\":\"success/failure/partial: ...\",\"lesson\":\"...\",\"scope\":\"global|project\",\"turnIds\":[\"...\"],\"relations\":[{{\"memoryId\":\"E1\",\"relation\":\"same|related\"}}]}}],\"summary\":{{\"goal\":\"...\",\"outcome\":\"...\",\"decisions\":[],\"openIssues\":[]}}}}", p.p2.split(end).next().unwrap(), instruction)
+    format!("{}\n\n\n{}\n{{\"analysis\":[{{\"task\":\"...\",\"result\":\"success|failure|partial|unknown\",\"turnIds\":[\"...\"]}}],\"experiences\":[{{\"situation\":\"...\",\"approach\":\"...\",\"result\":\"success/failure/partial: ...\",\"lesson\":\"...\",\"scope\":\"global|project\",\"turnIds\":[\"...\"],\"relations\":[{{\"memoryId\":\"E1\",\"relation\":\"same|related\"}}]}}],\"summary\":{{\"goal\":\"...\",\"outcome\":\"...\",\"decisions\":[],\"openIssues\":[]}}}}", p.p2, instruction)
 }
 
 /// `<tag>\nbody\n</tag>` block.

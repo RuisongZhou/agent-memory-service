@@ -90,7 +90,7 @@ Memos 的项目范围列表用于跨平台接续工作，给出 project 时可�
 
 ## Codex 配置
 
-把 [examples/codex.toml](../examples/codex.toml) 合并到项目 `.codex/config.toml`（MCP 也可配置在 `~/.codex/config.toml`）。替换 `/absolute/path` 为实际路径。示例包含 MCP 和可选的 `notify`；只需要 MCP 时删除 `notify`。若已有通知程序，需让已有程序调用采集器，不能直接覆盖原通知配置。
+把 [examples/codex.toml](../examples/codex.toml) 合并到用户级 `~/.codex/config.toml`。MCP 部分也可单独放入受信任项目的 `.codex/config.toml`；按 [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)，项目级配置中的 `notify` 会被忽略，必须放在用户级配置的 TOML 表之前。替换 `/absolute/path` 为实际路径。示例包含 MCP 和可选的 `notify`；只需要 MCP 时删除 `notify`。若已有通知程序，需让已有程序调用采集器，不能直接覆盖原通知配置。该通知命令固定了 project，跨项目工作需用分发器明确映射项目，避免把无关会话写入同一项目。
 
 ```toml
 [mcp_servers.shared-memory]

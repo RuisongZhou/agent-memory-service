@@ -3,7 +3,7 @@
 Every request: model qwen3.8-flash, temperature 0, thinking disabled via
 extra_body={"enable_thinking": False} (qwen3.8-flash defaults to thinking mode).
 
-Ledger: results/usage_ledger.jsonl, one JSON line per response:
+Ledger: eval/results/usage_ledger.jsonl, one JSON line per response:
   {ts, component, model, hit, miss, out, latency_ms, ...}
 """
 from __future__ import annotations

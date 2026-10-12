@@ -2,6 +2,10 @@ from integrity_benchmark import select_questions, reuse_answers
 from common.answers import fingerprint
 from common.corpus import semantic_hash
 from common import jsonl
+from common import env
+from integrity_benchmark import report
+from argparse import Namespace
+import json
 import pytest
 
 
@@ -40,3 +44,39 @@ def test_answer_reuse_requires_exact_prompt_and_valid_judge(tmp_path):
     assert reuse_answers([{**new, "context": "Changed evidence"}], tmp_path) == []
     jsonl.append(tmp_path / "answers-unified.jsonl", {**row, "source_hash": fingerprint(row, "unified"), "judge_label": "UNKNOWN"})
     assert reuse_answers([new], tmp_path) == []
+
+
+@pytest.mark.parametrize("historical_path", [
+    "results/historical",
+    "/previous-checkout/agent-memory-service/results/historical",
+    "eval/results/historical",
+])
+def test_report_reads_relocated_evidence_without_rewriting_manifest(tmp_path, monkeypatch, historical_path):
+    results = tmp_path / "eval/results"
+    monkeypatch.setattr(env, "RESULTS_DIR", results)
+    root = results / "replay"
+    root.mkdir(parents=True)
+    manifest = {"qids": ["q1"], "historical_root": historical_path}
+    frozen = json.dumps(manifest).encode()
+    (root / "manifest.json").write_bytes(frozen)
+    paths = [results / "historical/memory-en/buffer", results / "historical/mem0/k30",
+             root / "current/retained-snapshot", root / "improved/retained-snapshot"]
+    for path in paths:
+        row = {"system": path.name, "setting": "fixture", "qid": "q1", "question": "Question?",
+               "answer": "Answer", "context": "Evidence", "category": 1, "search_ms": 1,
+               "context_tokens": 1, "J": 1, "f1": 1, "bleu1": 1}
+        jsonl.append(path / "contexts.jsonl", row)
+        jsonl.append(path / "answers-unified.jsonl",
+                     {**row, "source_hash": fingerprint(row, "unified"), "judge_label": "CORRECT"})
+        jsonl.append(path / "retrieval.jsonl", {"qid": "q1", "pass": 0, "search_ms": 1,
+                                               "response": {"results": [], "profiles": [], "recentTurns": []}})
+    report(Namespace(root=str(root)))
+    result = json.loads((root / "comparison.json").read_text())
+    assert all(entry["overall"]["n"] == 1 for entry in result["systems"].values())
+    assert len(result["systems"]) == 4
+    assert (root / "manifest.json").read_bytes() == frozen
+
+
+def test_historical_result_path_keeps_unrelated_absolute_results(tmp_path):
+    external = tmp_path / "other-project/results/historical"
+    assert env.resolve_historical_result_path(external) == external

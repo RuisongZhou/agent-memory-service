@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common import usage as usage_ledger
+from common.env import RESULTS_DIR
 from common.usage_records import usage_entries
 from common.llm import Ledger
 
@@ -43,7 +44,7 @@ def summarize(root, *, ledgers=None, usage_exports=None):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--results-dir", default="results/local-pilot")
+    ap.add_argument("--results-dir", default=str(RESULTS_DIR / "local-pilot"))
     ap.add_argument("--ledger", action="append", default=None)
     ap.add_argument("--usage-export", action="append", default=[], help="actual-tenant=exported-llm-usage.json (repeatable)")
     ap.add_argument("--output", default=None)

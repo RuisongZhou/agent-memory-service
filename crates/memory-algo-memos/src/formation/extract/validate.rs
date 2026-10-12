@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 const MAX_SOURCE_SPAN_CHARS: usize = 1024;
 
-/// Model values have four fixed sections; the program owns every object key in both extractors.
+/// Internal fact representation after the flat provenance fields have been assembled.
 #[derive(Debug, Deserialize)]
 pub(super) struct RawFact {
     pub(super) text: String,
@@ -157,13 +157,9 @@ pub(in crate::formation) async fn validate(
         let mut r = match serde_json::from_value::<RawFact>(value.clone()) {
             Ok(r) => r,
             Err(error) => {
-                let detail = output["valueErrors"][(i + 1).to_string()]
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| error.to_string());
                 rejected.push(
                     json!({"fact":i+1,"kind":"fact_discarded","reason":"schema_invalid",
-                    "detail":util::truncate_bytes(&detail, 300)}),
+                    "detail":util::truncate_bytes(&error.to_string(), 300)}),
                 );
                 continue;
             }

@@ -2,7 +2,7 @@
 """Explicit retrieval benchmark on archived LoCoMo memories, with a common context cap.
 
 No formation or answer calls. Rebuild Mem0 vectors outside timing, then call its real search.
-The service daemon must use an isolated copied store. Raw results stay under results/.
+The service daemon must use an isolated copied store. Raw results stay under eval/results/.
 """
 from __future__ import annotations
 

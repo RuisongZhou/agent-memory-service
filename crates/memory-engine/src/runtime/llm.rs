@@ -92,12 +92,6 @@ impl Llm {
         !self.api_key.is_empty()
     }
 
-    /// One JSON-mode chat call with retries. `system` and `user` are the two prompt sections.
-    pub async fn json_call(&self, system: &str, user: &str, max_tokens: u32) -> Result<LlmReply> {
-        self.json_call_impl(system, user, max_tokens, None, false, None)
-            .await
-    }
-
     /// Every returned usage is durable before parsing or retrying model output.
     pub async fn json_call_logged(
         &self,
@@ -107,20 +101,7 @@ impl Llm {
         store: &memory_store::store::Store,
         stage: &str,
     ) -> Result<LlmReply> {
-        self.json_call_impl(system, user, max_tokens, Some((store, stage)), false, None)
-            .await
-    }
-
-    /// Fact extraction returns positional values, not a model-authored object schema.
-    pub async fn values_call_logged(
-        &self,
-        system: &str,
-        user: &str,
-        max_tokens: u32,
-        store: &memory_store::store::Store,
-        stage: &str,
-    ) -> Result<LlmReply> {
-        self.json_call_impl(system, user, max_tokens, Some((store, stage)), true, None)
+        self.json_call_impl(system, user, max_tokens, Some((store, stage)), None)
             .await
     }
 
@@ -139,7 +120,6 @@ impl Llm {
             user,
             max_tokens,
             Some((store, stage)),
-            false,
             Some(contract),
         )
         .await
@@ -151,7 +131,6 @@ impl Llm {
         user: &str,
         max_tokens: u32,
         usage_log: Option<(&memory_store::store::Store, &str)>,
-        values_only: bool,
         contract: Option<&JsonContract>,
     ) -> Result<LlmReply> {
         if !self.is_configured() {
@@ -169,10 +148,7 @@ impl Llm {
             "enable_thinking": false,
             "stream": false
         });
-        // json_object mode forbids the top-level array used by fact-values-v1.
-        if !values_only {
-            body["response_format"] = json!({"type": "json_object"});
-        }
+        body["response_format"] = json!({"type": "json_object"});
         let url = format!("{}/chat/completions", self.base_url);
         let mut last_err = anyhow!("no attempt");
         for attempt in 0..6u32 {
@@ -267,9 +243,6 @@ impl Llm {
                 Err(anyhow!("model output truncated at token limit"))
             } else {
                 parse_json_loose(&content).and_then(|value| {
-                    if values_only && !value.is_array() {
-                        return Err(anyhow!("fact-values-v1 requires a top-level array"));
-                    }
                     if let Some(contract) = contract {
                         (contract.validate)(&contract.schema, &value)?;
                     }

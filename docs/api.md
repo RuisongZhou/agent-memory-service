@@ -60,6 +60,45 @@ Formation keeps its bounded view of each message: over `maxMessageBytes` (defaul
 
 ## Memory strategy
 
+### Prompt families
+
+The two algorithm prompt directories are active and selected by the daemon's startup strategy:
+
+| Location | Used by | Purpose |
+|---|---|---|
+| `crates/memory-algo-mem0/src/prompts/additive.txt` | `mem0` | Pinned Mem0 additive extraction prompt, with its license and NOTICE |
+| `crates/memory-algo-memos/src/formation/prompts/` | `memos` | P1/P1-b facts, session-end P2 experiences, P3 profiles/project notes, P4 consolidation and P5 skills |
+| `eval/third_party/mem0_evaluation/` | Evaluation tools | Copied SDK reference extraction/answer/judge assets; the daemon does not load these files |
+
+Memos keeps both `zh` and `en` prompt sets. `--prompt-variant zh` targets user/agent conversations;
+`en` is the LoCoMo human-human adapter and treats both speakers' statements as first-hand sources.
+This changes extraction semantics as well as output language. Mem0 uses its single additive prompt;
+`zh` appends a Simplified Chinese output instruction, while `en` uses the original prompt language.
+
+The Memos filenames identify processing stages, not successive versions of one prompt. Each of
+the seven stages has a `zh` and an `en` asset, for 14 active files in total:
+
+| Filename prefix | When used | Purpose |
+|---|---|---|
+| `p1` | Queued conversation batches | Extract facts from recent turns |
+| `p1b` | Explicit fact/text writes | Extract facts from the content the caller asks to remember |
+| `p2` | Session end | Extract verified experiences and summarize the session |
+| `p3` | Profile maintenance | Build a global profile from current global facts |
+| `p3p` | Profile maintenance | Build project notes from current project facts |
+| `p4` | Consolidation and profile conflict review | Produce merge/update/relationship suggestions for candidate pairs |
+| `p5` | Experience maintenance | Derive reusable skill memories from accumulated experiences |
+
+P1 and P1-b share the fact output contract but have different inputs and extraction instructions.
+P3 and P3p share the profile job but operate on different scopes. P5 stores skill memories in
+the service; it does not create or install a Codex or Claude Code skill. These prompts are called
+only by the `memos` strategy. The default `mem0` strategy uses its own additive prompt.
+
+Memos assembles the current `facts-object-v2` and `session-experience-object-v1` contracts in
+`formation/prompts.rs` and `formation/schema.rs`. Joint P1+P2 prompts and the positional-array
+extraction path, including the unused `proposals/prompts-v2/` drafts, have been removed.
+Explicit fact/text writes and session-end experience jobs
+retain separate contracts; unknown or malformed output still receives bounded repair with raw replies saved.
+
 `memoryStrategy:"mem0"` is the default. `--memory-strategy memos` (or `MEMORY_STRATEGY=memos`)
 selects the preserved fact/experience formation and hybrid retrieval implementation described below.
 Both use the existing Rust daemon, SurrealDB store, HTTP/MCP interfaces and explicit instruction/correction APIs.
