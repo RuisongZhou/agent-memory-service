@@ -24,13 +24,7 @@ SQL_EXEMPT = ('storage/', 'diagnostics/')
 # Module paths must follow the directory tree.
 PATH_ATTR = re.compile(r'#\[path\s*=')
 
-ALLOWED = {
-    ('raw-sql', 'algorithms/memos/formation/consolidate.rs'),
-    ('raw-sql', 'algorithms/memos/formation/extract.rs'),
-    ('raw-sql', 'algorithms/memos/formation/ingest.rs'),
-    ('raw-sql', 'algorithms/memos/formation/relations/mod.rs'),
-    ('raw-sql', 'algorithms/memos/retrieval/mod.rs'),
-}
+ALLOWED = set()
 
 
 def is_sql_exempt(rel):

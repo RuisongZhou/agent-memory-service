@@ -4,6 +4,7 @@
 pub use memory_rules::relations as plan;
 
 use super::prompts;
+use crate::algorithms::memos::repo;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -97,10 +98,7 @@ pub fn source_context(turn: &TurnRec, role: &str, first_hand: bool) -> Option<Ev
 /// Explicit archive recovery only: enrich existing verified reply evidence, without generating
 /// facts or using QA labels. Ordinary formation writes the same bounded question atomically.
 pub async fn backfill_source_context(t: &Arc<Tenant>, turns: &[TurnRec]) -> Result<usize> {
-    let rows: Vec<EvidenceRec> = t
-        .store
-        .select_as("SELECT * OMIT id FROM evidence", vec![])
-        .await?;
+    let rows: Vec<EvidenceRec> = repo::all_evidence(t).await?;
     let mut tx = Tx::new();
     let mut count = 0;
     for evidence in rows
@@ -265,13 +263,7 @@ pub fn old_patch(old: &MemoryRec, n: &Node) -> Value {
 pub fn write_old(tx: &mut Tx, old: &MemoryRec, n: &Node) -> Result<()> {
     tx.merge(schema::MEMORIES, &old.id, old_patch(old, n))?;
     if n.status == S_SUPERSEDED && old.status != S_SUPERSEDED {
-        tx.raw(
-            &format!(
-                "UPDATE memories:{} SET embedding = NONE RETURN NONE",
-                store::safe_id(&old.id)?
-            ),
-            vec![],
-        );
+        repo::clear_embedding(tx, &old.id)?;
     }
     tx.index_task(schema::MEMORIES, &old.id, "upsert")?;
     Ok(())
@@ -548,13 +540,7 @@ where
     }
     if let Some(rq) = &ctx.text_request {
         // The retry payload is transient; retain only copied evidence after successful formation.
-        tx.raw(
-            &format!(
-                "UPDATE requests:{} SET text = NONE RETURN NONE",
-                store::safe_id(rq)?
-            ),
-            vec![],
-        );
+        repo::clear_request_text(&mut tx, rq)?;
         tx.merge(
             schema::REQUESTS,
             rq,

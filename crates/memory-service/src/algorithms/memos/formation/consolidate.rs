@@ -1,5 +1,6 @@
 //! Daily maintenance (4.5), idle sessions (3.3), successful-buffer purge (3.2).
 use super::{extract, prompts};
+use crate::algorithms::memos::repo;
 use crate::domain::types::*;
 use crate::runtime::{engine::Engine, indexer, tenant::Tenant};
 use crate::storage::schema;
@@ -43,17 +44,13 @@ fn ids_from(v: &Value, map: &HashMap<String, String>) -> Result<Vec<String>> {
 }
 
 async fn profile(eng: &Arc<Engine>, t: &Arc<Tenant>, scope: MemScope, now: &str) -> Result<Value> {
-    let mut facts = t
-        .store
-        .find_memories("type = 'fact' AND status = 'current'", vec![])
+    let mut facts = repo::current_facts(t)
         .await?
         .into_iter()
         .filter(|m| m.scope == scope)
         .collect::<Vec<_>>();
     facts.sort_by(|a, b| b.effective_at.cmp(&a.effective_at).then(a.id.cmp(&b.id)));
-    let old = t
-        .store
-        .find_memories("type = 'profile' AND status = 'current'", vec![])
+    let old = repo::current_profiles(t)
         .await?
         .into_iter()
         .filter(|m| m.scope == scope)
@@ -281,20 +278,8 @@ async fn merge_exact(t: &Arc<Tenant>, a: &MemoryRec, b: &MemoryRec) -> Result<()
         &b.id,
         json!({"status":S_SUPERSEDED,"supersededBy":a.id}),
     )?;
-    tx.raw(
-        &format!(
-            "UPDATE memories:{} SET embedding = NONE RETURN NONE",
-            store::safe_id(&b.id)?
-        ),
-        vec![],
-    );
-    let evidence = t
-        .store
-        .select(
-            "SELECT * OMIT id FROM evidence WHERE memoryIds CONTAINS $id",
-            vec![("id", json!(b.id))],
-        )
-        .await?;
+    repo::clear_embedding(&mut tx, &b.id)?;
+    let evidence = repo::evidence_docs_for_memory(t, &b.id).await?;
     for e in evidence {
         if let (Some(id), Some(ids)) = (e["mid"].as_str(), e["memoryIds"].as_array()) {
             let mut ids = ids.clone();
@@ -313,13 +298,7 @@ async fn merge_exact(t: &Arc<Tenant>, a: &MemoryRec, b: &MemoryRec) -> Result<()
 }
 
 async fn merge(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<Value> {
-    let mut active = t
-        .store
-        .find_memories(
-            "status = 'current' AND type IN ['fact','experience']",
-            vec![],
-        )
-        .await?;
+    let mut active = repo::current_facts_and_experiences(t).await?;
     active.sort_by(|a, b| {
         origin_priority(&b.source.origin)
             .cmp(&origin_priority(&a.source.origin))
@@ -360,13 +339,7 @@ async fn merge(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<Value> {
         .map(|m| (m.id.clone(), m))
         .collect();
     let mut pairs = Vec::<(String, String, bool)>::new();
-    let conflicts = t
-        .store
-        .select(
-            "SELECT pairs FROM index_meta WHERE kind = 'profile_conflicts'",
-            vec![],
-        )
-        .await?;
+    let conflicts = repo::profile_conflict_groups(t).await?;
     for group in conflicts {
         if let Some(ps) = group["pairs"].as_array() {
             for p in ps {
@@ -479,18 +452,9 @@ async fn merge(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<Value> {
 }
 
 async fn skills(eng: &Arc<Engine>, t: &Arc<Tenant>, now: &str) -> Result<Value> {
-    let mut exp = t
-        .store
-        .find_memories("type = 'experience' AND status = 'current'", vec![])
-        .await?;
+    let mut exp = repo::current_experiences(t).await?;
     exp.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut existing = t
-        .store
-        .find_memories(
-            "type = 'skill' AND status IN ['current','candidate']",
-            vec![],
-        )
-        .await?;
+    let mut existing = repo::live_skills(t).await?;
     let cache = t.vecs.read().await;
     let mut groups: Vec<Vec<MemoryRec>> = Vec::new();
     for e in exp {
@@ -715,13 +679,7 @@ async fn skills(eng: &Arc<Engine>, t: &Arc<Tenant>, now: &str) -> Result<Value> 
 
 pub async fn purge(t: &Arc<Tenant>, as_of: &str, days: f64) -> Result<Value> {
     let cutoff = util::ts_secs(as_of) - (days * 86400.0) as i64;
-    let turns: Vec<TurnRec> = t
-        .store
-        .select_as(
-            "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE extractState = 'done'",
-            vec![],
-        )
-        .await?;
+    let turns: Vec<TurnRec> = repo::extracted_turns(t).await?;
     let mut tx = Tx::new();
     let mut removed = Vec::new();
     for tr in turns {
@@ -757,10 +715,7 @@ pub async fn purge(t: &Arc<Tenant>, as_of: &str, days: f64) -> Result<Value> {
             c.turn_chunks.remove(id);
         }
     }
-    let sessions: Vec<SessionRec> = t
-        .store
-        .select_as("SELECT * OMIT id FROM sessions", vec![])
-        .await?;
+    let sessions: Vec<SessionRec> = repo::all_sessions(t).await?;
     let mut tx = Tx::new();
     let mut dropped = 0;
     for s in sessions {
@@ -841,13 +796,7 @@ pub async fn run_jobs(
         let value = match job.as_str() {
             "profile" => profile(eng, t, MemScope::global(), &now).await?,
             "project_notes" => {
-                let facts = t
-                    .store
-                    .find_memories(
-                        "type = 'fact' AND status = 'current' AND scope.kind = 'project'",
-                        vec![],
-                    )
-                    .await?;
+                let facts = repo::current_project_facts(t).await?;
                 let cutoff = util::ts_secs(&now) - eng.cfg.project_notes_recent_days * 86400;
                 let mut projects = facts
                     .into_iter()
@@ -891,10 +840,7 @@ async fn periodic_tick(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
     let timestamp = util::fmt_ts(&now);
     {
         let _guard = t.lock_ingest().await;
-        let sessions: Vec<SessionRec> = t
-            .store
-            .select_as("SELECT * OMIT id FROM sessions", vec![])
-            .await?;
+        let sessions: Vec<SessionRec> = repo::all_sessions(t).await?;
         let mut tx = Tx::new();
         let mut ended = false;
         for s in sessions {

@@ -19,12 +19,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::algorithms::memos::repo::{self, TurnScope};
 use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::tenant::Tenant;
 use crate::storage::schema;
-use crate::storage::store::{safe_id, turn_rid, Tx};
+use crate::storage::store::{turn_rid, Tx};
 use memory_rules::timeparse::{self, TimeWindow};
 use memory_rules::util;
 
@@ -737,9 +738,7 @@ pub async fn search_memories(
     }
     lat.insert("recentTurns".into(), json!(ms(t6)));
     let gap = results.is_empty() && turns_out.is_empty();
-    let uncertainties: Vec<UncertaintyRec> = t.store.select_as(
-        "SELECT * OMIT id FROM uncertainties WHERE status = 'open' AND memoryIds CONTAINSANY $ids",
-        vec![("ids", json!(returned_ids))]).await?;
+    let uncertainties: Vec<UncertaintyRec> = repo::open_uncertainties_for(t, &returned_ids).await?;
     let uncertainties: Vec<_> = uncertainties
         .into_iter()
         .filter(|u| vis.sees(&u.scope) && u.memory_ids.iter().all(|id| metas.contains_key(id)))
@@ -753,14 +752,7 @@ pub async fn search_memories(
     if touch {
         let ts = util::now_str();
         let mut tx = Tx::new();
-        for memory_id in &returned_ids {
-            if let Ok(id) = safe_id(memory_id) {
-                tx.raw(
-                        &format!("UPDATE memories:{id} SET lastAccessedAt = $t, lastAccessedTs = $n RETURN NONE"),
-                        vec![("t", json!(ts)), ("n", json!(util::ts_secs(&ts)))],
-                    );
-            }
-        }
+        repo::touch_memories(&mut tx, &returned_ids, &ts);
         t.store.commit(tx).await?;
         let log = json!({
             "kind": "search",
@@ -885,21 +877,13 @@ struct TurnHit {
 
 /// Turns of the buffer inside the request scope. OPEN: a turn is in scope when its project equals the
 /// request project ("*" = all projects); without a project, the caller platform's turns are used.
-fn turn_scope_clause(
-    vis: &Vis,
-    c: &Caller,
-) -> (String, Vec<(&'static str, Value)>, Vec<(String, String)>) {
+fn turn_scope_clause<'a>(vis: &'a Vis, c: &'a Caller) -> (TurnScope<'a>, Vec<(String, String)>) {
     match &vis.project {
-        Lvl::Is(p) => (
-            "project = $p".into(),
-            vec![("p", json!(p))],
-            vec![("project".into(), p.clone())],
-        ),
-        Lvl::Any => ("true".into(), vec![], vec![]),
-        Lvl::No if vis.platform == Lvl::Any => ("true".into(), vec![], vec![]),
+        Lvl::Is(p) => (TurnScope::Project(p), vec![("project".into(), p.clone())]),
+        Lvl::Any => (TurnScope::All, vec![]),
+        Lvl::No if vis.platform == Lvl::Any => (TurnScope::All, vec![]),
         Lvl::No => (
-            "platform = $pl".into(),
-            vec![("pl", json!(c.platform))],
+            TurnScope::Platform(&c.platform),
             vec![("platform".into(), c.platform.clone())],
         ),
     }
@@ -920,15 +904,13 @@ async fn recent_turns(
     exclude: &HashSet<String>,
 ) -> Result<Vec<TurnHit>> {
     let cfg = &eng.cfg;
-    let (clause, mut binds, ft_vis) = turn_scope_clause(vis, c);
-    let mut sql = format!("SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE {clause}");
-    if let Some(w) = window {
-        // time words narrow the candidates by startedAt
-        sql.push_str(" AND startedTs >= $ws AND startedTs < $we");
-        binds.push(("ws", json!(w.start.timestamp())));
-        binds.push(("we", json!(w.end.timestamp())));
-    }
-    let turns: Vec<TurnRec> = t.store.select_as(&sql, binds).await?;
+    let (turn_scope, ft_vis) = turn_scope_clause(vis, c);
+    let turns: Vec<TurnRec> = repo::turns_in_scope(
+        t,
+        turn_scope,
+        window.map(|w| (w.start.timestamp(), w.end.timestamp())),
+    )
+    .await?;
     if turns.is_empty() {
         return Ok(vec![]);
     }
@@ -1065,25 +1047,16 @@ pub async fn list_turns(
 
     // with turnIds: the full text of those turns
     if let Some(ids) = req.turn_ids.as_ref().filter(|v| !v.is_empty()) {
-        let mut sql =
-            "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE turnId IN $ids"
-                .to_string();
-        let mut binds: Vec<(&str, Value)> = vec![("ids", json!(ids))];
-        if let Some(p) = &project {
-            sql.push_str(" AND project = $p");
-            binds.push(("p", json!(p)));
+        let scope = if let Some(p) = &project {
+            TurnScope::Project(p)
         } else if req.scope.project.as_deref() != Some("*")
             && req.scope.platform.as_deref() != Some("*")
         {
-            sql.push_str(" AND platform = $pl");
-            binds.push(("pl", json!(c.platform)));
-        }
-        if let Some(s) = &session {
-            sql.push_str(" AND session = $s");
-            binds.push(("s", json!(s)));
-        }
-        sql.push_str(" ORDER BY startedTs ASC");
-        let turns: Vec<TurnRec> = t.store.select_as(&sql, binds).await?;
+            TurnScope::Platform(&c.platform)
+        } else {
+            TurnScope::All
+        };
+        let turns = repo::turns_by_id(t, ids, scope, session.as_deref()).await?;
         return Ok(json!({
             "turns": turns.iter().map(|tr| json!({
                 "turnId": tr.turn_id, "platform": tr.platform, "project": tr.project, "session": tr.session,
@@ -1098,32 +1071,22 @@ pub async fn list_turns(
 
     // OPEN: the platform level is not used as a filter here — list_turns exists to continue work started
     // on another platform; scope = project (+ session when given), plus `since`.
-    let mut conds: Vec<String> = vec!["true".into()];
-    let mut binds: Vec<(&str, Value)> = vec![];
-    if let Some(p) = &project {
-        conds.push("project = $p".into());
-        binds.push(("p", json!(p)));
+    let scope = if let Some(p) = &project {
+        TurnScope::Project(p)
     } else if req.scope.project.as_deref() != Some("*")
         && req.scope.platform.as_deref() != Some("*")
     {
-        conds.push("platform = $pl".into());
-        binds.push(("pl", json!(c.platform)));
-    }
-    if let Some(s) = &session {
-        conds.push("session = $s".into());
-        binds.push(("s", json!(s)));
-    }
+        TurnScope::Platform(&c.platform)
+    } else {
+        TurnScope::All
+    };
+    let mut since_ts = None;
     if let Some(since) = req.since.as_deref().filter(|s| !s.trim().is_empty()) {
         let ts = util::parse_ts(since)
             .ok_or_else(|| ApiError::InvalidArgument(format!("since is not RFC3339: {since:?}")))?;
-        conds.push("startedTs >= $since".into());
-        binds.push(("since", json!(ts.timestamp())));
+        since_ts = Some(ts.timestamp());
     }
-    let sql = format!(
-        "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE {} ORDER BY startedTs DESC",
-        conds.join(" AND ")
-    );
-    let turns: Vec<TurnRec> = t.store.select_as(&sql, binds).await?;
+    let turns = repo::turns_newest_first(t, scope, session.as_deref(), since_ts).await?;
 
     // group by (platform, session), most recently active session first
     let mut order: Vec<(String, String)> = Vec::new();

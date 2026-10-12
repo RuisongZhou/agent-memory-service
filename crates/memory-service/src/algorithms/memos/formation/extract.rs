@@ -1,5 +1,6 @@
 //! P1/P1-b: visible recall, documented prompt layout, deterministic validation and atomic formation.
 use super::{prompts, relations};
+use crate::algorithms::memos::repo;
 use crate::domain::types::*;
 use crate::runtime::{engine::Engine, tenant::Tenant};
 use crate::storage::schema;
@@ -27,7 +28,7 @@ pub async fn recall(
     mtype: Option<&str>,
     limit: usize,
 ) -> Result<Vec<MemoryRec>> {
-    let all = t.store.find_memories("status = 'current'", vec![]).await?;
+    let all = repo::current_memories(t).await?;
     let candidates: HashMap<String, MemoryRec> = all
         .into_iter()
         .filter(|m| {
@@ -514,10 +515,7 @@ pub(super) async fn validate(
         canonical.insert(*idx, first);
     }
     let live: HashSet<usize> = parsed.iter().map(|x| x.0).collect();
-    let ents: Vec<EntityRec> = t
-        .store
-        .select_as("SELECT * OMIT id FROM entities", vec![])
-        .await?;
+    let ents: Vec<EntityRec> = t.store.entities().await?;
     let mut names: HashMap<String, String> = HashMap::new();
     for e in ents.iter().filter(|e| visible(&e.scope, project, platform)) {
         for name in std::iter::once(&e.name).chain(e.aliases.iter()) {
@@ -663,10 +661,7 @@ async fn headers(
             }
         }
     }
-    let ents: Vec<EntityRec> = t
-        .store
-        .select_as("SELECT * OMIT id FROM entities", vec![])
-        .await?;
+    let ents: Vec<EntityRec> = t.store.entities().await?;
     let known = ents
         .iter()
         .filter(|e| ids.contains(&e.id) && visible(&e.scope, project, platform))

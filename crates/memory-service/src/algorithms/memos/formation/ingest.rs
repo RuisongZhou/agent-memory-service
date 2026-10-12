@@ -1,5 +1,6 @@
 //! Completed-turn buffer, durable receipts and serialised formation jobs (chapters 2–4).
 use super::extract;
+use crate::algorithms::memos::repo;
 use crate::app::{admission::required_scope, tasks::get_task};
 use crate::domain::types::*;
 use crate::runtime::{engine::Engine, indexer, tenant::Tenant};
@@ -86,15 +87,9 @@ pub async fn add_memories(
                 return Ok(receipt);
             }
             // Receipts survive the three-day turn purge; the idempotency key therefore survives too.
-            let rows = t
-                .store
-                .select(
-                    "SELECT requestId FROM requests WHERE turnKeys CONTAINS $key LIMIT 1",
-                    vec![("key", json!(store::turn_rid(&c.platform, turn_id)))],
-                )
-                .await?;
-            if let Some(id) = rows.first().and_then(|r| r["requestId"].as_str()) {
-                let id = id.to_string();
+            let existing =
+                repo::request_id_for_turn_key(t, &store::turn_rid(&c.platform, turn_id)).await?;
+            if let Some(id) = existing {
                 drop(guard);
                 let mut value = if req.sync.unwrap_or(false) {
                     wait_request(eng, t, &id, true).await?
@@ -287,21 +282,9 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     let started = Instant::now();
     loop {
         process_available(eng, t, true, None).await?;
-        let requests = t
-            .store
-            .count(
-                schema::REQUESTS,
-                Some("kind IN ['text','session_end'] AND status IN ['queued','running']"),
-            )
-            .await?;
-        let sessions: Vec<SessionRec> = t
-            .store
-            .select_as("SELECT * OMIT id FROM sessions", vec![])
-            .await?;
-        let pending = t
-            .store
-            .count(schema::TURNS, Some("extractState = 'pending'"))
-            .await?;
+        let requests = repo::unfinished_request_count(t).await?;
+        let sessions: Vec<SessionRec> = repo::all_sessions(t).await?;
+        let pending = repo::pending_turn_count(t).await?;
         let mut experiences = 0usize;
         let mut failed_experiences = 0usize;
         for session in sessions
@@ -326,9 +309,9 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
             indexer::drain(eng, t).await?;
             return Ok(
                 json!({"status":"idle","pendingTurns":0,"pendingJobs":0,"indexTasks":0,
-                "failedTurns":t.store.count(schema::TURNS,Some("extractState = 'failed'")).await?,
+                "failedTurns":repo::failed_turn_count(t).await?,
                 "failedExperiences":failed_experiences,
-                "failedRequests":t.store.count(schema::REQUESTS,Some("status = 'failed'")).await?}),
+                "failedRequests":repo::failed_request_count(t).await?}),
             );
         }
         if started.elapsed() > Duration::from_secs(120) {
@@ -415,13 +398,7 @@ pub(crate) async fn process_available(
     let _lock = t.lock_formation().await;
     let _active = t.begin_job();
     let now = util::now();
-    let jobs = t
-        .store
-        .select(
-            "SELECT * OMIT id FROM requests WHERE kind = 'text' AND status IN ['queued','running']",
-            vec![],
-        )
-        .await?;
+    let jobs = repo::unfinished_text_requests(t).await?;
     for doc in jobs {
         if doc["retryAtTs"].as_i64().unwrap_or(0) > now.timestamp() {
             continue;
@@ -446,10 +423,7 @@ pub(crate) async fn process_available(
                 "error":e.to_string(),"failures":failures,"updatedAt":util::now_str(),"retryAtTs":util::now().timestamp()+retry_delay(failures)})).await?;
         }
     }
-    let sessions: Vec<SessionRec> = t
-        .store
-        .select_as("SELECT * OMIT id FROM sessions", vec![])
-        .await?;
+    let sessions: Vec<SessionRec> = repo::all_sessions(t).await?;
     for session in sessions {
         let turns = t
             .store
@@ -615,8 +589,8 @@ async fn finish_end_requests(
     if current.ended_at.is_none() || current.turn_count > checked_seq {
         return Ok(());
     }
-    let requests=t.store.select("SELECT requestId FROM requests WHERE kind = 'session_end' AND platform = $p AND session = $s AND status = 'queued'",
-        vec![("p",json!(session.platform)),("s",json!(session.session))]).await?;
+    let requests =
+        repo::queued_session_end_requests(t, &session.platform, &session.session).await?;
     if requests.is_empty() {
         return Ok(());
     }
@@ -643,13 +617,7 @@ pub async fn on_session_start(
 ) {
     let _guard = t.lock_ingest().await;
     let result: Result<()> = async {
-        let sessions: Vec<SessionRec> = t
-            .store
-            .select_as(
-                "SELECT * OMIT id FROM sessions WHERE platform = $p AND project = $r",
-                vec![("p", json!(platform)), ("r", json!(project))],
-            )
-            .await?;
+        let sessions: Vec<SessionRec> = repo::sessions_of_project(t, platform, project).await?;
         for s in sessions
             .into_iter()
             .filter(|s| s.session != session && s.ended_at.is_none())
