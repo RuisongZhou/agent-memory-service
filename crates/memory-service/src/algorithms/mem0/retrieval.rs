@@ -1,4 +1,5 @@
 //! Semantic-only search. No generative calls, broad summaries or implicit cross-encoder.
+use super::config::Mem0Config;
 use crate::domain::types::*;
 use crate::runtime::{config::MemoryStrategy, engine::Engine, tenant::Tenant};
 use crate::storage::schema;
@@ -109,7 +110,8 @@ pub async fn search(
     if query.is_empty() {
         return Err(ApiError::InvalidArgument("query is required".into()));
     }
-    let k = req.top_k.unwrap_or(eng.cfg.mem0_top_k);
+    let mem0 = Mem0Config::from(&eng.cfg);
+    let k = req.top_k.unwrap_or(mem0.top_k);
     let budget = req.token_budget.unwrap_or(eng.cfg.default_token_budget);
     if k == 0 || k > eng.cfg.max_top_k || budget == 0 {
         return Err(ApiError::InvalidArgument(
@@ -148,14 +150,14 @@ pub async fn search(
         project,
         platform,
         &types,
-        eng.cfg.mem0_threshold,
+        mem0.threshold,
         (k * 4).max(60),
         eng.cfg.brute_force_limit,
     )
     .await?;
     let recall_ms = tick.elapsed().as_secs_f64() * 1000.0;
     let tick = Instant::now();
-    let rerank = req.rerank.unwrap_or(eng.cfg.mem0_rerank);
+    let rerank = req.rerank.unwrap_or(mem0.rerank);
     if rerank && !candidates.is_empty() {
         if !eng.models.has_reranker() {
             return Err(ApiError::InvalidArgument(

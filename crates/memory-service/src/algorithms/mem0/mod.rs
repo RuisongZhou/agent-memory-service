@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use crate::domain::types::*;
 use crate::runtime::algorithm::{BoxFuture, MemoryAlgorithm};
-use crate::runtime::config::MemoryStrategy;
+use crate::runtime::config::{MemoryStrategy, ServiceConfig};
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
 use crate::storage::schema;
 
+pub mod config;
 pub mod formation;
 pub mod retrieval;
 pub mod runtime;
@@ -30,6 +31,19 @@ pub struct Mem0;
 impl MemoryAlgorithm for Mem0 {
     fn strategy(&self) -> MemoryStrategy {
         MemoryStrategy::Mem0
+    }
+
+    fn validate_config(&self, cfg: &ServiceConfig) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            cfg.mem0_threshold.is_finite() && (0.0..=1.0).contains(&cfg.mem0_threshold),
+            "mem0Threshold must be between 0 and 1"
+        );
+        anyhow::ensure!(cfg.mem0_max_tokens > 0, "mem0MaxTokens must be positive");
+        anyhow::ensure!(
+            cfg.mem0_top_k > 0 && cfg.mem0_top_k <= cfg.max_top_k,
+            "mem0TopK must be within maxTopK"
+        );
+        Ok(())
     }
 
     fn owned_tables(&self) -> &'static [&'static str] {

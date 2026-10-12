@@ -135,19 +135,9 @@ impl Default for ServiceConfig {
 }
 
 impl ServiceConfig {
-    /// Reject invalid tunables before opening stores or loading model weights.
+    /// Reject invalid shared tunables before opening stores or loading model weights. The selected
+    /// algorithm validates its own section with `MemoryAlgorithm::validate_config`.
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.mem0_threshold.is_finite() && (0.0..=1.0).contains(&self.mem0_threshold),
-            "mem0Threshold must be between 0 and 1"
-        );
-        anyhow::ensure!(self.mem0_max_tokens > 0, "mem0MaxTokens must be positive");
-        anyhow::ensure!(
-            self.mem0_top_k > 0
-                && (self.memory_strategy == MemoryStrategy::Memos
-                    || self.mem0_top_k <= self.max_top_k),
-            "mem0TopK must be within maxTopK"
-        );
         anyhow::ensure!(
             matches!(self.prompt_variant.as_str(), "en" | "zh"),
             "promptVariant must be en or zh"
@@ -173,10 +163,6 @@ impl ServiceConfig {
         anyhow::ensure!(
             self.session_idle_minutes > 0 && self.batch_wait_secs >= 0,
             "sessionIdleMinutes must be positive; batchWaitSecs must be nonnegative"
-        );
-        anyhow::ensure!(
-            self.memory_strategy == MemoryStrategy::Mem0 || self.default_top_k <= self.max_top_k,
-            "defaultTopK exceeds maxTopK"
         );
         anyhow::ensure!(
             self.rrf_k.is_finite() && self.rrf_k > 0.0,
@@ -227,21 +213,6 @@ mod tests {
         ServiceConfig::default().validate().unwrap();
     }
     #[test]
-    fn top_k_bounds_belong_to_the_selected_strategy() {
-        let mut cfg = ServiceConfig {
-            max_top_k: 5,
-            mem0_top_k: 5,
-            ..Default::default()
-        };
-        assert!(cfg.validate().is_ok());
-        cfg.memory_strategy = MemoryStrategy::Memos;
-        cfg.default_top_k = 5;
-        cfg.mem0_top_k = 20;
-        assert!(cfg.validate().is_ok());
-        cfg.memory_strategy = MemoryStrategy::Mem0;
-        assert!(cfg.validate().is_err());
-    }
-    #[test]
     fn invalid_loop_and_wait_bounds_are_rejected() {
         let mut c = ServiceConfig::default();
         c.batch_turns = 0;
@@ -266,9 +237,6 @@ mod tests {
         assert!(c.validate().is_err());
         c = ServiceConfig::default();
         c.recent_half_life_days = 0.0;
-        assert!(c.validate().is_err());
-        c = ServiceConfig::default();
-        c.max_top_k = 1;
         assert!(c.validate().is_err());
         c = ServiceConfig::default();
         c.buffer_retention_days = 0.0;

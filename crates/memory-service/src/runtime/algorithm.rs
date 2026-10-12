@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::domain::types::*;
-use crate::runtime::config::MemoryStrategy;
+use crate::runtime::config::{MemoryStrategy, ServiceConfig};
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
 
@@ -14,6 +14,10 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn strategy(&self) -> MemoryStrategy;
+
+    /// Checks this algorithm's own tunables (and the cross-field bounds it depends on) before any store is
+    /// opened or model loaded. `ServiceConfig::validate` covers only the settings every algorithm shares.
+    fn validate_config(&self, cfg: &ServiceConfig) -> anyhow::Result<()>;
 
     /// Algorithm-private tables (listed by stats, readable through export).
     fn owned_tables(&self) -> &'static [&'static str];

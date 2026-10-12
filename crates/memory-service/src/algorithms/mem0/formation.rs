@@ -1,5 +1,6 @@
 //! Durable Mem0 2.2.1 additive formation. Raw inputs precede generation; vectors and receipts
 //! commit together. Batch provenance is never presented as a verified per-claim quotation.
+use super::config::Mem0Config;
 use crate::app::tasks;
 use crate::domain::types::*;
 use crate::runtime::{engine::Engine, llm::JsonContract, tenant::Tenant};
@@ -360,10 +361,11 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
             format!("## Observation Date\n{}", &observed[..10]),
             format!("## Current Date\n{}", util::now().date_naive()),
         ];
-        if !eng.cfg.mem0_custom_instructions.is_empty() {
+        let mem0 = Mem0Config::from(&eng.cfg);
+        if !mem0.custom_instructions.is_empty() {
             sections.push(format!(
                 "## Custom Instructions\n{}",
-                eng.cfg.mem0_custom_instructions
+                mem0.custom_instructions
             ));
         }
         if eng.prompt_variant_for(t) == "zh" {
@@ -378,7 +380,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
             .contract_call_logged(
                 SYSTEM,
                 &input,
-                eng.cfg.mem0_max_tokens,
+                mem0.max_tokens,
                 &t.store,
                 "Mem0-add",
                 &contract(&old),

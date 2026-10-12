@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::domain::types::*;
 use crate::runtime::algorithm::{BoxFuture, MemoryAlgorithm};
-use crate::runtime::config::MemoryStrategy;
+use crate::runtime::config::{MemoryStrategy, ServiceConfig};
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
 use crate::storage::schema;
@@ -21,6 +21,14 @@ pub struct Memos;
 impl MemoryAlgorithm for Memos {
     fn strategy(&self) -> MemoryStrategy {
         MemoryStrategy::Memos
+    }
+
+    fn validate_config(&self, cfg: &ServiceConfig) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            cfg.default_top_k <= cfg.max_top_k,
+            "defaultTopK exceeds maxTopK"
+        );
+        Ok(())
     }
 
     fn owned_tables(&self) -> &'static [&'static str] {
