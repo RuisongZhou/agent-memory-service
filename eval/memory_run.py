@@ -170,6 +170,33 @@ def format_context(resp: dict, order: str = "time") -> tuple[str, dict]:
                 profile_ids.add(m.get("id"))
         else:
             mems.append(item)
+    if order == "evidence":
+        context, info = format_context(resp, "score")
+        blocks = ["Source dates indicate when a statement was made, not when an event occurred. Resolve relative time against the source date; event dates are in the facts."]
+        for result in results:
+            m = result.get("memory", {})
+            if m.get("type") == "profile":
+                continue
+            mark = " (conflicting)" if m.get("status") == "conflict" else ""
+            if m.get("status") == "candidate":
+                mark = " (unconfirmed)"
+            elif m.get("status") == "superseded" or m.get("validUntil"):
+                mark = f" (historical, valid until {fmt_time(m.get('validUntil'))})"
+            block = f"Fact{mark}: {m.get('text', '')}"
+            if not result.get("evidence"):
+                block += f" (effective from {fmt_time(m.get('effectiveAt'))})"
+            for e in result.get("evidence", []):
+                if e.get("context"):
+                    block += f"\nSource question at {fmt_time(e['context'].get('statedAt'))}: {e['context'].get('span', '')}"
+                block += f"\nSource at {fmt_time(e.get('statedAt'))}: {e.get('span', '')}"
+            for old in result.get("history", []):
+                block += f"\nHistorical value (valid until {fmt_time(old.get('validUntil'))}): {old.get('text', '')}"
+            blocks.append(block)
+        for t in resp.get("recentTurns", []):
+            blocks.append(f"Conversation at {fmt_time(t.get('timestamp'))}: {t.get('digest', '')}")
+        for p in profiles:
+            blocks.append(f"Summary (use the specific facts and source quotes above for details): {p.get('text', '')}")
+        return "\n\n".join(blocks), info
     lines = []
     for p in profiles:
         kind = (p.get("scope") or {}).get("kind") if isinstance(p.get("scope"), dict) else None
@@ -225,6 +252,8 @@ class Runner:
         return f"{sid}-{variant}" if variant else sid
 
     def validate_prompt_health(self, health: dict) -> None:
+        if health.get("memoryStrategy", "current") != "current":
+            raise DaemonError("legacy evaluation requires MEMORY_STRATEGY=current")
         if getattr(self.a, "actual_model_runtime", None) is not None:
             try:
                 model_metadata.assert_same(self.a.actual_model_runtime, health)

@@ -194,7 +194,7 @@ class Mem0Stores:
                     "collection_name": "mem0", "path": str(d / "qdrant"), "embedding_model_dims": 1024,
                     "on_disk": True}},
                 "llm": {"provider": "openai", "config": {
-                    "model": MODEL, "openai_base_url": QWEN_BASE_URL, "api_key": api_key(),
+                    "model": MODEL, "openai_base_url": getattr(self.args, 'llm_base_url', QWEN_BASE_URL), "api_key": api_key(),
                     "temperature": 0.0, "response_callback": _ledger_callback(f"{self.args.tag}.add")}},
                 "embedder": {"provider": "openai", "config": {
                     "model": "bge-m3", "openai_base_url": self.args.embed_url, "api_key": "unused",

@@ -7,3 +7,5 @@ pub mod util;
 #[cfg(test)]
 #[path = "../../memory-service/src/runtime/config.rs"]
 mod config_validation;
+pub mod dependencies;
+pub mod mem0;

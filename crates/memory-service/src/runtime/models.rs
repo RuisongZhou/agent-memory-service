@@ -32,6 +32,7 @@ struct Remote {
     client: reqwest::Client,
     embed: Server,
     rerank: Option<Server>,
+    tokens: Mutex<LruCache<[u8; 32], Arc<Vec<i64>>>>,
 }
 
 struct Server {
@@ -107,6 +108,7 @@ impl ModelHub {
                 client,
                 embed,
                 rerank,
+                tokens: Mutex::new(LruCache::new(NonZeroUsize::new(2048).unwrap())),
             }),
             cache: new_cache(),
             embed_model_id: model_id(&embed_model, &dtype),
@@ -308,14 +310,31 @@ impl Remote {
     /// Tokenize without special tokens, concurrently, preserving input order.
     async fn tokenize_many(&self, server: &Server, texts: Vec<String>) -> Result<Vec<Vec<i64>>> {
         let mut set = tokio::task::JoinSet::new();
+        let mut out = vec![Vec::new(); texts.len()];
         for (i, text) in texts.into_iter().enumerate() {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(server.base.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(text.as_bytes());
+            let key = *hasher.finalize().as_bytes();
+            if let Some(tokens) = self.tokens.lock().unwrap().get(&key).cloned() {
+                out[i] = (*tokens).clone();
+                continue;
+            }
             let (client, base) = (self.client.clone(), server.base.clone());
-            set.spawn(async move { (i, tokenize(&client, &base, &text, false).await) });
+            set.spawn(async move { (i, key, tokenize(&client, &base, &text, false).await) });
         }
-        let mut out = vec![Vec::new(); set.len()];
         while let Some(joined) = set.join_next().await {
-            let (i, tokens) = joined?;
-            out[i] = tokens?;
+            let (i, key, tokens) = joined?;
+            let tokens = tokens?;
+            // Bound large-entry memory as well as entry count. Errors never enter the cache.
+            if tokens.len() <= 4096 {
+                self.tokens
+                    .lock()
+                    .unwrap()
+                    .put(key, Arc::new(tokens.clone()));
+            }
+            out[i] = tokens;
         }
         Ok(out)
     }

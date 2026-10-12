@@ -1,0 +1,69 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<mxfile host="app.diagrams.net" version="26.0.0">
+  <diagram id="mem0-read-flow" name="步骤 1 至 6 位于记忆服务  灰色节点位于调用方  查询不调用生成式 LLM">
+    <mxGraphModel dx="960" dy="510" grid="1" gridSize="10" page="1" pageScale="1" pageWidth="960" pageHeight="510" background="#FFFFFF" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="a" value="1 查询请求&#10;问题 范围 topK 预算" style="rounded=0;whiteSpace=wrap;html=0;align=center;verticalAlign=middle;fontFamily=PingFang SC;fontSize=20;fontColor=#172433;fillColor=#FFFFFF;strokeColor=#5A6C7F;strokeWidth=1.3;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="240" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="b" value="2 查询向量&#10;嵌入服务或 LRU 缓存" style="rounded=0;whiteSpace=wrap;html=0;align=center;verticalAlign=middle;fontFamily=PingFang SC;fontSize=20;fontColor=#172433;fillColor=#FFFFFF;strokeColor=#5A6C7F;strokeWidth=1.3;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="340" y="40" width="240" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="c" value="3 语义召回&#10;可见集合 精确或 HNSW" style="rounded=0;whiteSpace=wrap;html=0;align=center;verticalAlign=middle;fontFamily=PingFang SC;fontSize=20;fontColor=#172433;fillColor=#E8EFF6;strokeColor=#5A6C7F;strokeWidth=1.3;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="640" y="40" width="240" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="d" value="4 排序&#10;相似度 可选本地重排" style="rounded=0;whiteSpace=wrap;html=0;align=center;verticalAlign=middle;fontFamily=PingFang SC;fontSize=20;fontColor=#172433;fillColor=#FFFFFF;strokeColor=#5A6C7F;strokeWidth=1.3;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="190" width="240" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="e" value="5 装载上下文&#10;先取 topK 再检查预算" style="rounded=0;whiteSpace=wrap;html=0;align=center;verticalAlign=middle;fontFamily=PingFang SC;fontSize=20;fontColor=#172433;fillColor=#FFFFFF;strokeColor=#5A6C7F;strokeWidth=1.3;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="340" y="190" width="240" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="f" value="6 返回记忆&#10;文本 分数 来源 耗时" style="rounded=0;whiteSpace=wrap;html=0;align=center;verticalAlign=middle;fontFamily=PingFang SC;fontSize=20;fontColor=#172433;fillColor=#EAF3EB;strokeColor=#5A6C7F;strokeWidth=1.3;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="640" y="190" width="240" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="g" value="调用方 Agent&#10;组合问题 指令与记忆" style="rounded=0;whiteSpace=wrap;html=0;align=center;verticalAlign=middle;fontFamily=PingFang SC;fontSize=20;fontColor=#172433;fillColor=#F3F5F7;strokeColor=#5A6C7F;strokeWidth=1.3;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="340" y="340" width="240" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="h" value="回答模型&#10;生成面向用户的答案" style="rounded=0;whiteSpace=wrap;html=0;align=center;verticalAlign=middle;fontFamily=PingFang SC;fontSize=20;fontColor=#172433;fillColor=#F3F5F7;strokeColor=#5A6C7F;strokeWidth=1.3;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="640" y="340" width="240" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="e0" source="a" target="b" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;endArrow=block;strokeColor=#4A5F73;strokeWidth=1.8;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" source="b" target="c" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;endArrow=block;strokeColor=#4A5F73;strokeWidth=1.8;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" source="c" target="d" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;endArrow=block;strokeColor=#4A5F73;strokeWidth=1.8;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="760" y="156" />
+              <mxPoint x="160" y="156" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3" source="d" target="e" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;endArrow=block;strokeColor=#4A5F73;strokeWidth=1.8;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" source="e" target="f" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;endArrow=block;strokeColor=#4A5F73;strokeWidth=1.8;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" source="f" target="g" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;endArrow=block;strokeColor=#4A5F73;strokeWidth=1.8;exitX=0.5;exitY=1;entryX=0.5;entryY=0;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="760" y="306" />
+              <mxPoint x="460" y="306" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" source="g" target="h" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=0;endArrow=block;strokeColor=#4A5F73;strokeWidth=1.8;exitX=1;exitY=0.5;entryX=0;entryY=0.5;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="caption" value="步骤 1 至 6 位于记忆服务  灰色节点位于调用方  查询不调用生成式 LLM" style="text;html=0;align=left;fontFamily=PingFang SC;fontSize=19;fontColor=#283E52;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="40" y="460" width="880" height="35" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

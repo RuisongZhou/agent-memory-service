@@ -155,6 +155,11 @@ async fn call_logged_contract(
         Ok(r) => {
             let output = if values_only {
                 facts_from_values(&r.json)
+            } else if contract
+                .map(|c| c.name == "facts_object_v2")
+                .unwrap_or(false)
+            {
+                facts_from_flat_object(&r.json)
             } else {
                 Ok(r.json.clone())
             };
@@ -201,6 +206,32 @@ async fn call_logged_contract(
 }
 
 const MAX_SOURCE_SPAN_CHARS: usize = 1024;
+
+/// One explicit external contract, no legacy-shape fallback. The model supplies values for flat
+/// provenance fields; code owns the internal nested source keys. Raw model replies stay logged.
+fn facts_from_flat_object(output: &Value) -> Result<Value> {
+    let items = output["facts"]
+        .as_array()
+        .ok_or_else(|| anyhow!("facts-object-v2 requires facts array"))?;
+    let facts = items
+        .iter()
+        .map(|item| {
+            let mut fields = item
+                .as_object()
+                .ok_or_else(|| anyhow!("fact must be an object"))?
+                .clone();
+            let turn = fields
+                .remove("sourceTurnId")
+                .ok_or_else(|| anyhow!("sourceTurnId missing"))?;
+            let span = fields
+                .remove("sourceSpan")
+                .ok_or_else(|| anyhow!("sourceSpan missing"))?;
+            fields.insert("source".into(), json!({"turnId":turn,"span":span}));
+            Ok(Value::Object(fields))
+        })
+        .collect::<Result<Vec<Value>>>()?;
+    Ok(json!({"facts":facts}))
+}
 
 /// The tuple fixes both arity and types. Missing optional values must retain their slots.
 type FactValues = (
@@ -748,9 +779,10 @@ pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> R
         .map(|tr| tr.turn_id.clone())
         .collect::<Vec<_>>();
     let contract = super::llm::JsonContract {
-        name: "facts_object_v1",
-        schema: super::formation_schema::facts_for_turns(&ids),
-        validate: super::formation_schema::validate_schema,
+        echo_invalid_response: true,
+        name: "facts_object_v2",
+        schema: fact_source_contract(&ids, &turns, p.both_speakers_first_hand),
+        validate: validate_fact_source_contract,
     };
     let output = call_logged_contract(
         eng,
@@ -763,6 +795,42 @@ pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> R
     )
     .await?;
     commit_facts(eng, t, turns, old, output).await
+}
+
+/// Provenance is part of the local model contract, so a bad quote receives the same bounded
+/// repair exchange as malformed JSON. Never approximate a quote or repair evidence ourselves.
+fn fact_source_contract(ids: &[String], turns: &[TurnRec], first_hand: bool) -> Value {
+    let mut schema = super::formation_schema::facts_for_turns(ids);
+    schema["x-source-turns"] = json!(turns);
+    schema["x-both-speakers-first-hand"] = json!(first_hand);
+    schema
+}
+
+fn validate_fact_source_contract(schema: &Value, output: &Value) -> Result<()> {
+    super::formation_schema::validate_schema(schema, output)?;
+    let output = facts_from_flat_object(output)?;
+    let turns: Vec<TurnRec> = serde_json::from_value(schema["x-source-turns"].clone())?;
+    let first_hand = schema["x-both-speakers-first-hand"]
+        .as_bool()
+        .unwrap_or(false);
+    for (index, value) in output["facts"].as_array().unwrap().iter().enumerate() {
+        let fact: RawFact = serde_json::from_value(value.clone())?;
+        if !util::is_valid_date(&fact.effective_at) {
+            return Err(anyhow!(
+                "$.facts[{index}].effectiveAt: invalid calendar date"
+            ));
+        }
+        if fact.text.trim().is_empty() || collapsed(&fact.source.span).is_empty() {
+            return Err(anyhow!(
+                "$.facts[{index}]: text and source.span must be nonempty"
+            ));
+        }
+        let text = schema["x-source-text"].as_str().map(|text| (text, ""));
+        if supporting_source(&fact, &turns, text, first_hand).is_none() {
+            return Err(anyhow!("$.facts[{index}].source.span: span_not_verbatim or origin_role_mismatch in turn {}; copy a contiguous excerpt from the permitted source message verbatim", fact.source.turn_id));
+        }
+    }
+    Ok(())
 }
 
 async fn commit_facts(
@@ -884,6 +952,7 @@ pub async fn session_experience(
         .map(|tr| tr.turn_id.clone())
         .collect::<Vec<_>>();
     let contract = super::llm::JsonContract {
+        echo_invalid_response: true,
         name: "session_experience_object_v1",
         schema: super::formation_schema::experiences_for_turns(&ids),
         validate: super::formation_schema::validate_schema,
@@ -959,10 +1028,13 @@ pub async fn explicit(
         text,
         p.l.remember
     );
+    let mut schema = fact_source_contract(&["text".into()], &[], false);
+    schema["x-source-text"] = json!(text);
     let contract = super::llm::JsonContract {
-        name: "facts_object_v1",
-        schema: super::formation_schema::facts_for_turns(&["text".into()]),
-        validate: super::formation_schema::validate_schema,
+        echo_invalid_response: true,
+        name: "facts_object_v2",
+        schema,
+        validate: validate_fact_source_contract,
     };
     let output = call_logged_contract(
         eng,
@@ -1055,6 +1127,48 @@ mod tests {
 /// Deterministic formation/storage integration test. Uses supplied JSON output and mock embeddings;
 /// the LLM client has no key and this test makes zero generative-model requests.
 pub async fn formation_selftest() {
+    let source_turn = TurnRec {
+        turn_id: "T-proof".into(),
+        user_message: "I chose the inclusive organisation.".into(),
+        assistant_message: "My daily walk helps me recharge.".into(),
+        user_ts: "2026-10-08T00:00:00Z".into(),
+        assistant_ts: "2026-10-08T00:00:01Z".into(),
+        ..Default::default()
+    };
+    let schema = fact_source_contract(&["T-proof".into()], &[source_turn.clone()], true);
+    let mut question_turn = source_turn.clone();
+    question_turn.user_message = "Which season is the planned activity for?".into();
+    let context = relations::source_context(&question_turn, "assistant", true).unwrap();
+    assert_eq!(context.span, question_turn.user_message);
+    assert_eq!(context.stated_at, question_turn.user_ts);
+    assert!(relations::source_context(&question_turn, "user", true).is_none());
+    assert!(relations::source_context(&question_turn, "assistant", false).is_none());
+    question_turn.user_message = format!("{}?", "x".repeat(1024));
+    assert!(relations::source_context(&question_turn, "assistant", true).is_none());
+    let mut output = json!({"facts":[{"text":"The daily walk helps recharge.","scope":"global",
+        "entities":[],"effectiveAt":"2026-10-08","origin":"user",
+        "sourceTurnId":"T-proof","sourceSpan":"My daily walk helps me recharge.","relations":[]}]});
+    validate_fact_source_contract(&schema, &output).unwrap();
+    let mut typed_entities = output.clone();
+    typed_entities["facts"][0]["entities"] = json!([{"type":"person","value":"Alex"}]);
+    assert!(validate_fact_source_contract(&schema, &typed_entities)
+        .unwrap_err()
+        .to_string()
+        .contains("entities"));
+    assert!(facts_from_flat_object(&json!({"facts":[{"source":{"turnId":"T-proof","span":"My daily walk helps me recharge."}}]})).is_err());
+    output["facts"][0]["sourceSpan"] = json!("The daily walk helps me recharge.");
+    assert!(validate_fact_source_contract(&schema, &output)
+        .unwrap_err()
+        .to_string()
+        .contains("span_not_verbatim"));
+    output["facts"][0]["sourceSpan"] = json!("My daily walk helps me recharge.");
+    let strict = fact_source_contract(&["T-proof".into()], &[source_turn], false);
+    assert!(validate_fact_source_contract(&strict, &output).is_err());
+    output["facts"][0]["effectiveAt"] = json!("2026-02-30");
+    assert!(validate_fact_source_contract(&schema, &output)
+        .unwrap_err()
+        .to_string()
+        .contains("calendar date"));
     // Value-only output cannot rename source/relation keys; those keys are constructed here.
     let values = json!([
         ["A fact","global",["Caroline"],"2023-05-08","user","T1","quoted",[["M1","related"]],null],
@@ -1110,6 +1224,7 @@ pub async fn formation_selftest() {
     let dir = std::env::temp_dir().join(format!("memory-formation-selftest-{}", util::new_id("t")));
     let eng = Engine::new(
         ServiceConfig {
+            memory_strategy: super::config::MemoryStrategy::Current,
             data_dir: dir.clone(),
             ..Default::default()
         },

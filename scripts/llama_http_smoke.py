@@ -75,6 +75,7 @@ def sanitized_environment():
     allowed = {"PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"}
     result = {key: value for key, value in os.environ.items() if key in allowed}
     result.update({"QWEN_API_KEY": "localhost-stub-placeholder",
+                   "MEMORY_STRATEGY": "current",
                    "MEMORY_LLM_MAX_CALLS": "2",
                    "PYTHONDONTWRITEBYTECODE": "1"})
     return result
@@ -122,7 +123,7 @@ def main():
                 system, user = [message["content"] for message in body["messages"][:2]]
                 if "<current batch>" in user:
                     stage = "P1"
-                    if body.get("response_format") != {"type":"json_object"} or "facts-object-v1" not in system:
+                    if body.get("response_format") != {"type":"json_object"} or "facts-object-v2" not in system:
                         raise AssertionError("P1 must request JSON object output")
                     batch = re.search(r"<current batch>\n(.*?)\n</current batch>", user, re.S).group(1)
                     chunks = re.findall(r"\[([^|\]\n]+)\s*\|\s*([^\]\n]+)\]\n(.*?)(?=\n\n\[|\Z)", batch, re.S)
@@ -135,7 +136,7 @@ def main():
                             raise AssertionError("stub source text differs from the actual batch")
                         facts.append([span, "project", FACT_ENTITIES[index], timestamp.strip()[:10],
                                       "user", turn_id.strip(), span, [], None])
-                    output = {"facts":[{"text":r[0],"scope":r[1],"entities":r[2],"effectiveAt":r[3],"origin":r[4],"source":{"turnId":r[5],"span":r[6]},"relations":[]} for r in facts]}
+                    output = {"facts":[{"text":r[0],"scope":r[1],"entities":r[2],"effectiveAt":r[3],"origin":r[4],"sourceTurnId":r[5],"sourceSpan":r[6],"relations":[]} for r in facts]}
                 elif "experience extractor" in system:
                     stage = "P2"
                     if body.get("response_format") != {"type": "json_object"}:

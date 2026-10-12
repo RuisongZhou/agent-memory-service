@@ -80,11 +80,25 @@ async def process(llm: LLM, rec: dict, args, comp_answer: str, comp_judge: str, 
         answer_usage = {"hit": a.hit, "miss": a.miss, "out": a.out, "finish": a.finish_reason}
         jsonl.append(pending, {"qid": rec["qid"], "response": response, "answer_usage": answer_usage,
                               "source_hash": source_hash})
-    j = await llm.chat([{"role": "user", "content": prompts.render_judge(rec["question"], rec["answer"], response)}],
-                       component=comp_judge, json_mode=True, max_tokens=args.judge_max_tokens, meta=meta)
-    label = j.json.get("label") if isinstance(j.json, dict) else None
+    judge_prompt = prompts.render_judge(rec["question"], rec["answer"], response)
+    judge_model = getattr(llm, "model", None)
+    judge_key = hashlib.sha256(json.dumps({"prompt": judge_prompt, "model": judge_model,
+        "max_tokens": args.judge_max_tokens}, sort_keys=True).encode()).hexdigest()
+    cache_path = getattr(args, "judge_cache", None)
+    cached = next((r for r in jsonl.read(Path(cache_path)) if r.get("key") == judge_key), None) if cache_path else None
+    if cached:
+        label = cached["label"]
+        judge_usage = {"hit": 0, "miss": 0, "out": 0}
+    else:
+        j = await llm.chat([{"role": "user", "content": judge_prompt}],
+                           component=comp_judge, json_mode=True, max_tokens=args.judge_max_tokens, meta=meta)
+        label = j.json.get("label") if isinstance(j.json, dict) else None
+        judge_usage = {"hit": j.hit, "miss": j.miss, "out": j.out}
     if label not in ("CORRECT", "WRONG"):
         raise LLMOutputError(f"invalid judge label {label!r} for {rec['qid']}")
+    if cache_path and not cached:
+        jsonl.append(Path(cache_path), {"key": judge_key, "label": label, "qid": rec["qid"],
+            "model": judge_model, "source": str(out), "usage": judge_usage})
     pred, gt = str(response), str(rec["answer"])
     jsonl.append(out, {
         "system": rec.get("system"), "setting": rec.get("setting"), "answer_prompt": args.answer_prompt,
@@ -97,8 +111,9 @@ async def process(llm: LLM, rec: dict, args, comp_answer: str, comp_judge: str, 
         "context_tokens": rec.get("context_tokens"), "search_ms": rec.get("search_ms"),
         "n_memories": rec.get("n_memories"), "n_turns": rec.get("n_turns"),
         "answer_usage": answer_usage,
-        "judge_usage": {"hit": j.hit, "miss": j.miss, "out": j.out},
-        "judge_raw": j.text if label not in ("CORRECT", "WRONG") else None,
+        "judge_usage": judge_usage,
+        "judge_raw": None,
+        "judge_cache_key": judge_key, "judge_reused_from": cached.get("source") if cached else None,
     })
 
 
@@ -218,6 +233,7 @@ def main() -> None:
     ap.add_argument("--qids", type=lambda s: s.split(","), default=None)
     ap.add_argument("--answer-max-tokens", type=int, default=512)
     ap.add_argument("--judge-max-tokens", type=int, default=256)
+    ap.add_argument("--judge-cache", type=Path, help="optional shared exact-prompt/model judge cache for fair comparisons")
     ap.add_argument("--summary-only", action="store_true")
     ap.add_argument("--results-dir", default=str(RESULTS_DIR), help="where usage_ledger.jsonl lives")
     ap.add_argument("-v", "--verbose", action="store_true")

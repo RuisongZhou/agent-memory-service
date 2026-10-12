@@ -76,7 +76,10 @@ class Stub(BaseHTTPRequestHandler):
             raise AssertionError('unexpected stub stage')
         assert body['response_format'] == {'type': 'json_object'}
         if stage in ('P1','P1-b'):
-            assert 'facts-object-v1' in system
+            assert 'facts-object-v2' in system
+            for fact in out['facts']:
+                source = fact.pop('source')
+                fact['sourceTurnId'], fact['sourceSpan'] = source['turnId'], source['span']
             assert body['max_tokens'] > 0
             assert 'analysis' not in out and 'summary' not in out
         if len(body['messages']) > 2:
@@ -139,7 +142,7 @@ def main():
             raise AssertionError(f'formation did not complete: {tasks}')
 
         def start():
-            p = subprocess.Popen([str(binary), 'serve', '--data-dir', str(temp/'data'),
+            p = subprocess.Popen([str(binary), 'serve', '--memory-strategy', 'current', '--data-dir', str(temp/'data'),
                                   '--port', str(port), '--llm-base-url', f'http://127.0.0.1:{stub.server_port}',
                                   '--log-level', 'warn'],
                                  env=env, stdout=logfile, stderr=logfile)
@@ -158,14 +161,14 @@ def main():
                 (['--host', '0.0.0.0'], 'loopback'),
                 (['--llm-concurrency', '0'], 'positive'),
             ]:
-                failed = subprocess.run([str(binary), 'serve', *extra], env=env,
+                failed = subprocess.run([str(binary), 'serve', '--memory-strategy', 'current', *extra], env=env,
                                         capture_output=True, text=True)
                 assert failed.returncode != 0 and expected in failed.stderr, failed.stderr
             for value, expected in [([], 'JSON object'), ({'batchTurns': 0}, 'batchTurns'),
                                     ({'batchTruns': 3}, 'unknown field')]:
                 config = temp/'invalid-config.json'
                 config.write_text(json.dumps(value))
-                failed = subprocess.run([str(binary), 'serve', '--config', str(config)],
+                failed = subprocess.run([str(binary), 'serve', '--memory-strategy', 'current', '--config', str(config)],
                                         env=env, capture_output=True, text=True)
                 assert failed.returncode != 0 and expected in failed.stderr, failed.stderr
             failed = subprocess.run([str(binary), 'reindex'], env=env, capture_output=True, text=True)
@@ -216,9 +219,12 @@ def main():
             assert {r['stage'] for r in fact_stages} == {'P1','P1-b'}, fact_stages
             assert len([r for r in extraction_records['records'] if r.get('stage') == 'P2']) == 1
             for record in fact_stages:
-                assert record['outputFormat'] == 'facts-object-v1'
+                assert record['outputFormat'] == 'facts-object-v2'
                 assert isinstance(record['modelOutput'], dict)
-                assert record['modelOutput'] == record['output']
+                assert len(record['modelOutput']['facts']) == len(record['output']['facts'])
+                for raw, formed in zip(record['modelOutput']['facts'], record['output']['facts']):
+                    assert formed['source'] == {'turnId': raw['sourceTurnId'], 'span': raw['sourceSpan']}
+                    assert 'source' not in raw and 'sourceSpan' not in formed
                 assert set(record['output']) == {'facts'}
             response_records = request('/admin/export', {'table':'llm_responses'})['records']
             formation_responses = [r for r in response_records if r['stage']=='P1']

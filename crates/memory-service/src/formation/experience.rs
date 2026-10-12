@@ -346,6 +346,19 @@ pub fn prepare(
             let m = memories.get_mut(&id).unwrap();
             m.evidence_count += 1;
             push_unique(&mut m.source.turn_ids, e.turn_ids.clone());
+            let input_memories = turns
+                .iter()
+                .filter(|tr| e.turn_ids.contains(&tr.turn_id))
+                .flat_map(|tr| tr.derived_memory_ids.iter().cloned())
+                .collect::<Vec<_>>();
+            let lineage = m.derivation.get_or_insert_with(|| Derivation {
+                stage: "session-experience".into(),
+                input_memory_ids: vec![],
+                input_turn_ids: m.source.turn_ids.clone(),
+                current_view: false,
+            });
+            push_unique(&mut lineage.input_turn_ids, e.turn_ids.clone());
+            push_unique(&mut lineage.input_memory_ids, input_memories);
             if util::ts_secs(&stated) > util::ts_secs(&m.stated_at) {
                 m.stated_at = stated.clone();
             }
@@ -370,6 +383,18 @@ pub fn prepare(
                 stated_at: stated.clone(),
                 last_accessed_at: now.clone(),
                 evidence_count: 1,
+                derivation: Some(Derivation {
+                    stage: "session-experience".into(),
+                    input_memory_ids: turns
+                        .iter()
+                        .filter(|tr| e.turn_ids.contains(&tr.turn_id))
+                        .flat_map(|tr| tr.derived_memory_ids.iter().cloned())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
+                    input_turn_ids: e.turn_ids.clone(),
+                    current_view: false,
+                }),
                 source: Source {
                     platform: session.platform.clone(),
                     turn_ids: e.turn_ids.clone(),
@@ -418,6 +443,7 @@ pub fn prepare(
                     continue;
                 }
                 let ev = EvidenceRec {
+                    context: None,
                     id: util::new_id("e"),
                     memory_ids: vec![id.clone()],
                     platform: session.platform.clone(),
@@ -582,6 +608,24 @@ pub fn rule_selftest() {
     );
     assert_eq!(partial.summary["pendingTasks"], json!([]));
     assert_eq!(partial.created.len(), 1);
+    let mut previous = partial.memories[0].clone();
+    previous.source.turn_ids = vec!["T0".into()];
+    previous.derivation = Some(Derivation {
+        stage: "session-experience".into(),
+        input_memory_ids: vec!["old_fact".into()],
+        input_turn_ids: vec!["T0".into()],
+        current_view: false,
+    });
+    let mut extended_turns = turns.clone();
+    extended_turns[1].derived_memory_ids = vec!["new_fact".into()];
+    let repeated = prepare(&session, &extended_turns, &HashSet::from(["T1".into()]), &[previous],
+        json!({"analysis":[{"task":"deployment","result":"partial","turnIds":["T0","T1"]}],
+            "experiences":[{"situation":"deploy","approach":"apply half","result":"partial: one host left","lesson":"stage hosts","scope":"project","turnIds":["T0","T1"],"relations":[{"memoryId":"E1","relation":"same"}]}],
+            "summary":{"goal":"","outcome":"","decisions":[],"openIssues":[]}}),
+        2, "en", "2026-10-10T00:00:00Z").unwrap();
+    let lineage = repeated.memories[0].derivation.as_ref().unwrap();
+    assert_eq!(lineage.input_turn_ids, vec!["T0", "T1"]);
+    assert_eq!(lineage.input_memory_ids, vec!["old_fact", "new_fact"]);
     // Tasks never resolved (for example renamed by the model) expire instead of holding turns forever.
     let stale = run(
         &session,

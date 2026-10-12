@@ -59,6 +59,23 @@ pub async fn add_memories(
 ) -> ApiResult<Value> {
     let (project, session) = required_scope(&req)?;
     if req
+        .memory_type
+        .as_deref()
+        .is_some_and(|kind| !matches!(kind, T_FACT | T_INSTRUCTION))
+    {
+        return Err(ApiError::InvalidArgument(
+            "memoryType must be fact or instruction".into(),
+        ));
+    }
+    if req.memory_type.as_deref() == Some(T_INSTRUCTION) {
+        return super::instructions::store(t, c, &req, project, session).await;
+    }
+    if req.memory_scope.is_some() {
+        return Err(ApiError::InvalidArgument(
+            "memoryScope is only supported for explicit instructions".into(),
+        ));
+    }
+    if req
         .scope
         .platform
         .as_deref()
@@ -77,6 +94,14 @@ pub async fn add_memories(
     if req.messages.is_none() && req.text.is_none() && !req.session_ended.unwrap_or(false) {
         return Err(ApiError::InvalidArgument(
             "messages, text or sessionEnded required".into(),
+        ));
+    }
+    if eng.cfg.memory_strategy == super::config::MemoryStrategy::Mem0 {
+        return super::mem0_formation::enqueue(eng, t, c, req).await;
+    }
+    if req.infer.is_some() {
+        return Err(ApiError::InvalidArgument(
+            "infer requires memoryStrategy=mem0".into(),
         ));
     }
     if let Some(text) = &req.text {
@@ -285,8 +310,15 @@ pub async fn get_task(_eng: &Arc<Engine>, t: &Arc<Tenant>, req: GetTaskReq) -> A
         .get_doc("requests", &req.request_id)
         .await?
         .ok_or_else(|| ApiError::NotFound("request not found".into()))?;
-    let r: RequestRec = from_doc(doc)?;
-    Ok(json!({"requestId":r.request_id,"status":r.status,"memoryIds":r.memory_ids,"error":r.error}))
+    let r: RequestRec = from_doc(doc.clone())?;
+    let mut out = json!({"requestId":r.request_id,"status":r.status,"memoryIds":r.memory_ids,"error":r.error});
+    if doc["kind"] == "mem0" {
+        out["inputSaved"] = json!(true);
+        out["formed"] = doc["formed"].clone();
+        out["searchable"] = doc["searchable"].clone();
+        out["latencyMs"] = doc["latencyMs"].clone();
+    }
+    Ok(out)
 }
 
 async fn wait_request(
@@ -329,6 +361,9 @@ async fn wait_request(
 
 /// Flush facts and indexes. P2 runs only for ended sessions, even during a forced drain.
 pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
+    if eng.cfg.memory_strategy == super::config::MemoryStrategy::Mem0 {
+        return super::mem0_formation::wait_idle(eng, t).await;
+    }
     let started = Instant::now();
     loop {
         process_available(eng, t, true, None).await?;
@@ -473,6 +508,9 @@ async fn process_available(
     force: bool,
     force_request: Option<&str>,
 ) -> Result<()> {
+    if eng.cfg.memory_strategy == super::config::MemoryStrategy::Mem0 {
+        return super::mem0_formation::process_jobs(eng, t).await;
+    }
     let _lock = t.extract_lock.lock().await;
     let _active = ActiveJob::new(t);
     let now = util::now();

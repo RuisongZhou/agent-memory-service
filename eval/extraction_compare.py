@@ -70,7 +70,7 @@ def main():
         "enable_thinking": False, "real_generation": True,
         "mem0_version": importlib.metadata.version("mem0ai"),
         "service_prompt": "p1_zh facts + session-end p2_zh", "mem0_prompt": "ADDITIVE_EXTRACTION_PROMPT + existing LoCoMo custom_instructions",
-        "service_output_format": "facts-object-v1", "service_source_span_limit_chars": 1024,
+        "service_output_format": "facts-object-v2", "service_source_span_limit_chars": 1024,
         "same_input_batch": "three complete turns / six messages, one extraction per system per case",
         "initial_memory": "empty and isolated per case", "embedding": "real local BGE-M3 shared via daemon",
         "not_formal_benchmark": True,
@@ -92,7 +92,7 @@ def main():
             return json.load(response)
 
     child_env = dict(os.environ, QWEN_API_KEY=api_key(), QWEN_BASE_URL=QWEN_BASE_URL,
-                     LLM_MODEL=MODEL, MEMORY_LLM_MAX_CALLS="15")
+                     LLM_MODEL=MODEL, MEMORY_LLM_MAX_CALLS="15", MEMORY_STRATEGY="current")
     child_env.pop("MEMORY_MOCK_MODELS", None)
     command = [str(env.ROOT_DIR / "target/fast/agent-memoryd"), "serve",
                "--data-dir", str(output / "service-store"),

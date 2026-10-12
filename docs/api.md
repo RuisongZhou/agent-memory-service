@@ -20,9 +20,11 @@ All service calls are JSON `POST /v1/<interface>` requests. `X-Memory-Platform` 
 
 ## Startup
 
-Use `agent-memoryd serve --help` for paths, model selection, host/port, LLM and concurrency settings. `--config examples/service-config.json` overrides algorithm tunables. CLI/environment settings override config-file paths, prompt variant and LLM connection settings. Unknown JSON fields and invalid score/concurrency/batch values are rejected before model servers are contacted or stores load. Startup waits up to 60 s for both llama-server endpoints and fails if either is unreachable (the reranker is skipped with `--no-reranker`). Inputs are truncated to 512 tokens and rerank logits are mapped to 0..1 with a sigmoid. Stored vectors are tagged with the embedding model id (`<alias>-<GGUF type>`); a different model or quantisation triggers re-embedding on the next start.
+Use `agent-memoryd serve --help` for paths, model selection, host/port, LLM and concurrency settings. `--config examples/service-config.json` overrides algorithm tunables. CLI/environment settings override config-file paths, prompt variant and LLM connection settings. Unknown JSON fields and invalid score/concurrency/batch values are rejected before model servers are contacted or stores load. Startup waits up to 60 s for the embedding endpoint and any enabled reranker and fails if either is unreachable (the reranker is skipped with `--no-reranker`). Inputs are truncated to 512 tokens and rerank logits are mapped to 0..1 with a sigmoid. Stored vectors are tagged with the embedding model id (`<alias>-<GGUF type>`); a different model or quantisation triggers re-embedding on the next start.
 
 Configuration environment variables include `MEMORY_DATA_DIR`, `MEMORY_EMBED_URL` (default `http://127.0.0.1:8081`), `MEMORY_RERANK_URL` (default `http://127.0.0.1:8082`), `MEMORY_PROMPT_VARIANT`, `MEMORY_TENANT` (MCP), and `MEMORY_LLM_MAX_CALLS`. `QWEN_API_KEY` is supplied separately; the Python launcher reads this key from `.env` and supplies command flags for other settings.
+
+Strategy selection follows explicit `--memory-strategy`, then `MEMORY_STRATEGY`, then the config file's `memoryStrategy`, then the default `mem0`. The Python launcher preserves this order; omitting a CLI strategy does not override the config file.
 
 `agent-memoryd reindex --all` or `--vector`/`--fulltext` selects work explicitly. HTTP errors produce a nonzero CLI exit status.
 
@@ -44,13 +46,72 @@ The core schemas are in `crates/memory-service/src/domain/types.rs`; examples li
 
 Formation keeps its bounded view of each message: over `maxMessageBytes` (default 8 KB), prompts, source-span checks and P2 evidence use the head and tail 4 KB.
 
-## Fact formation
+## Memory strategy
+
+`memoryStrategy:"mem0"` is the default. `--memory-strategy current` (or `MEMORY_STRATEGY=current`)
+selects the preserved fact/experience formation and hybrid retrieval implementation described below.
+Both use the existing Rust daemon, SurrealDB store, HTTP/MCP interfaces and explicit instruction/correction APIs.
+Do not switch a store with unfinished jobs: drain it using the original strategy first.
+
+In Mem0 mode each submitted request is a durable ordered job. `messages` accepts 1–128 user/assistant
+messages in timestamp order; `turnId` remains required. `text` has the existing 4 KB bound. `infer:false`
+stores nonempty messages verbatim without a model call. Input messages and idempotency keys survive
+failures. An extraction uses the Apache-licensed Mem0 2.2.1 additive prompt, ten preceding messages
+within the project/adapter and ten semantically relevant existing facts. New facts are appended; only
+explicit correction/deletion changes old assertions. Exact same-scope deduplication preserves the first
+record. Raw and inferred content use separate identities. Model output has one strict `memory` array;
+malformed responses receive bounded corrective retries and remain in `llm_responses`.
+
+Vectors are generated as a batch and committed with the primary facts and an `indexing` receipt.
+After cache publication the receipt becomes `completed`, `formed:true`, `searchable:true`.
+Interrupted publication resumes from durable vectors without another model call. `sync:true` waits
+for this visibility; an asynchronous `requestId` confirms input persistence only. `get_task` reports
+these phases. `list_turns` returns complete submitted message batches. `sessionEnded` closes an ordered
+input job; it does not run P2. Automatic profile/experience/merge/skill maintenance is disabled.
+
+For Mem0 `list_turns`, `since` is an inclusive RFC3339 cutoff against the batch's final message. It compares actual instants across UTC offsets, rejects invalid timestamps, and returns complete matching batches.
+
+New provenance is labelled `sourceBatch`, `level:"batch"`, `verifiedClaimSpan:false`; it references
+complete durable input requests, not a model-selected verified quote. Event dates are retained in
+memory text; an unknown `effectiveAt` is empty. Observation and ingestion times are distinct.
+Existing verified evidence and historical records remain intact.
+
+Search defaults to semantic similarity, `mem0TopK:20` (`topK` overrides per request), `mem0Threshold:0.1`, and the configured token budget.
+It returns whole memory records in score order, without profiles or recent messages. Retrieval makes
+no generative call. `mem0Rerank:false` avoids even loading the reranker. To configure it, use
+`mem0Rerank:true`; requests may override with `rerank:false/true`. Evidence reads are explicit.
+`mem0MaxTokens` defaults to the SDK's 2,000 output tokens; `mem0CustomInstructions` supplies domain-specific
+formation guidance. Projects remain explicit visibility namespaces; a search with project `"*"`
+selects all visible project records in the single-user store. Caller headers remain routing metadata,
+not authentication.
+
+The extraction prompt is vendored unchanged with its Apache 2.0 license and NOTICE in
+`crates/memory-service/src/formation/prompts/mem0/`. Strict parsing, scoped hash deduplication,
+atomic primary/vector storage and batch provenance are application adaptations, not SDK guarantees.
+
+## Current strategy: fact formation
+
+### Explicit instructions (both strategies)
+
+`add_memories` accepts `memoryType:"instruction"` with `text` and the usual project/session scope. This path copies text into a separate instruction record and evidence, completes its receipt synchronously and makes no generative-model call. It rejects `messages`, `sessionEnded`, empty text, more than 4 KB or more than 1024 Unicode characters. `memoryScope` optionally selects global, current project or caller platform; otherwise the instruction is project-scoped. An optional `turnId` provides a platform-specific idempotency key. A retry preserves the first payload and scope. `memoryType:"fact"` or omission retains existing fact extraction; `memoryScope` is rejected on that path.
+
+`get_context` returns `instructions` and renders only visible, current, explicitly written instructions in a separate section. The section shares the context token budget. Generic search does not mix instructions into its fact/experience/skill result slots. Update or retract an instruction using `correct_memory`; deletion uses the existing `delete_memory` lifecycle.
+
+### Uncertainty and derivation
+
+Same-scope competing assertions create an open `uncertainties` record. Search returns visible records in `uncertainties`; administrative inspection uses `POST /admin/export {"table":"uncertainties"}`. Explicit confirmation uses `POST /v1/resolve_uncertainty` with `{id, keepMemoryId, reason}`. The chosen record must belong to the question, and both competing records must still be conflicting in the same scope. Confirmation preserves original evidence, expires the rejected assertion and records the resolution. Other surviving questions keep the selected assertion conflicting until they are resolved too.
+
+Retiring an assertion also closes questions involving it and removes obsolete conflict edges in the same transaction. A surviving assertion returns to `current` when its final dispute closes; any remaining open question keeps it `conflict`.
+
+Derived records expose application-built `derivation: {stage,inputMemoryIds,inputTurnIds,currentView}`. Profiles and skills are current views; if a source is superseded, disputed, edited or deleted, they and their transitive dependents become `stale`. Their originals remain inspectable with `staleReason`; retrieval excludes them before index updates finish. Legacy current views are checked at startup. Historical experiences keep their lineage and remain observations of the original event. No read automatically regenerates a stale profile.
 
 Conversation P1 runs after 3 queued turns, when the oldest queued turn has waited 300 seconds, on manual fact flush (`sync:true` or `/admin/wait_idle`), or on session end. `batchTurns` and `batchWaitSecs` configure the default 3/300 values. While a session is open, a flush processes facts and indexes only; it does not generate task analysis, experiences or a running summary.
 
-P1 and explicit P1-b writes use `facts-object-v1`: `{"facts":[...]}`. Each fact contains `text`, `scope`, `entities`, `effectiveAt`, `origin`, `source` (`turnId`, `span`) and `relations` (`memoryId`, `relation`). `reason` is omitted. Explicit text fixes origin to `explicit` and turnId to `text`. Evidence spans are copied verbatim and limited to 1024 Unicode characters. Sources, dates, role attribution, relation targets and update chains retain their existing checks.
+P1 and explicit P1-b model replies use `facts-object-v2`: `{"facts":[...]}`. Each fact contains `text`, `scope`, `entities` (name strings), `effectiveAt`, `origin`, flat `sourceTurnId` / `sourceSpan`, and `relations` (`memoryId`, `relation`). Code constructs the internal nested `source`; external API records remain unchanged. There is no legacy-shape fallback. Explicit text fixes origin to `explicit` and sourceTurnId to `text`. Verbatim evidence, real dates and source roles are validated before admission; errors enter bounded model repair with the original reply and public schema, and every raw response is persisted before parsing. Evidence remains limited to 1024 Unicode characters. Relation and update-chain checks remain in formation.
 
-## Session-end experience formation
+For the English human-human adapter, an assistant-role reply may carry a separate `evidence.context: {span, statedAt}` containing its paired first-hand question (at most 1024 characters). The copied question supplies discourse qualifiers, not a new assertion. It commits with the verified reply; ordinary agent conversations do not enable this adapter.
+
+## Current strategy: session-end experience formation
 
 P2 runs only once the session is ended, after pending fact jobs have completed or permanently failed. A session ends through `sessionEnded:true`, a new-session lifecycle signal, or the existing idle timeout (default 60 minutes). P2 reads the retained session transcript and returns `session-experience-object-v1`: `analysis`, `experiences` and `summary`. Experiences use `situation`, `approach`, `result`, `lesson`, `scope`, `turnIds` and `relations`; the summary uses `goal`, `outcome`, `decisions` and `openIssues`. Only verified outcomes can form experiences; at most three are generated per ended-session job.
 

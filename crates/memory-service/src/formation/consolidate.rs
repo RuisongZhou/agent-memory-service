@@ -165,6 +165,12 @@ async fn profile(eng: &Arc<Engine>, t: &Arc<Tenant>, scope: MemScope, now: &str)
         stated_at: now.into(),
         last_accessed_at: now.into(),
         profile_kind: Some(if project { "project" } else { "user" }.into()),
+        derivation: Some(Derivation {
+            stage: "profile".into(),
+            input_memory_ids: used.clone(),
+            input_turn_ids: vec![],
+            current_view: true,
+        }),
         used_memory_ids: used,
         source: Source {
             platform: "maintenance".into(),
@@ -668,6 +674,12 @@ async fn skills(eng: &Arc<Engine>, t: &Arc<Tenant>, now: &str) -> Result<Value> 
             recorded_at: now.into(),
             stated_at: now.into(),
             last_accessed_at: now.into(),
+            derivation: Some(Derivation {
+                stage: "skill".into(),
+                input_memory_ids: used.clone(),
+                input_turn_ids: vec![],
+                current_view: true,
+            }),
             used_memory_ids: used,
             source: Source {
                 platform: "maintenance".into(),
@@ -868,6 +880,9 @@ pub async fn run_periodic(eng: Arc<Engine>, t: Arc<Tenant>) {
 }
 
 async fn periodic_tick(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
+    if eng.cfg.memory_strategy == super::config::MemoryStrategy::Mem0 {
+        return Ok(());
+    }
     let now = util::now();
     let timestamp = util::fmt_ts(&now);
     {

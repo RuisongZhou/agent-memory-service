@@ -190,10 +190,16 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
         };
         match (table.as_str(), doc) {
             ("memories", Some(d)) => {
-                let m: MemoryRec = from_doc(d)?;
+                let m: MemoryRec = from_doc(d.clone())?;
                 if is_active(&m.status) {
                     if let Some(vt) = vector_text(&m) {
-                        to_embed.push((table.clone(), id.clone(), vt));
+                        let stored = op == "upsert_preindexed"
+                            && m.embedding_model.as_deref()
+                                == Some(eng.models.embed_model_id.as_str())
+                            && t.vecs.read().await.memories.contains_key(id);
+                        if !stored {
+                            to_embed.push((table.clone(), id.clone(), vt));
+                        }
                     }
                     match fulltext_text(&m) {
                         Some(ft) => ft_upserts.push(memory_ftdoc(&m, ft)),

@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
-DOTENV_KEYS = ('QWEN_API_KEY', 'QWEN_BASE_URL', 'LLM_MODEL')
+DOTENV_KEYS = ('QWEN_API_KEY', 'QWEN_BASE_URL', 'LLM_MODEL', 'MEMORY_STRATEGY')
 
 def main():
     parser = argparse.ArgumentParser()
@@ -14,6 +14,8 @@ def main():
     parser.add_argument('--data-dir', type=Path, default=ROOT/'daemon-data')
     parser.add_argument('--embed-url', default='http://127.0.0.1:8081', help='llama-server embedding endpoint (scripts/llama_servers.sh)')
     parser.add_argument('--rerank-url', default='http://127.0.0.1:8082', help='llama-server rerank endpoint')
+    parser.add_argument('--memory-strategy', choices=['mem0','current'])
+    parser.add_argument('--config', type=Path)
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--mock', action='store_true')
     parser.add_argument('--max-calls', type=int, default=60, help='attempt guard, including retries; use 0 for unlimited after pilot approval')
@@ -41,6 +43,11 @@ def main():
     command = [str(args.bin.resolve()), 'serve', '--data-dir', str(args.data_dir), '--embed-url', args.embed_url,
                '--rerank-url', args.rerank_url,
                '--port', str(args.port),'--llm-concurrency',str(args.llm_concurrency)]
+    # Let the daemon apply environment/config/default precedence when no CLI override is given.
+    if args.memory_strategy:
+        command += ['--memory-strategy', args.memory_strategy]
+    if args.config:
+        command += ['--config', str(args.config)]
     raise SystemExit(subprocess.call(command, env=env))
 
 if __name__ == '__main__':

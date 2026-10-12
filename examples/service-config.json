@@ -4,5 +4,10 @@
   "mmrLambda": 0.7,
   "defaultTopK": 10,
   "defaultTokenBudget": 2000,
-  "bufferRetentionDays": 3.0
+  "bufferRetentionDays": 3.0,
+  "memoryStrategy": "mem0",
+  "mem0Threshold": 0.1,
+  "mem0Rerank": false,
+  "mem0MaxTokens": 2000,
+  "mem0TopK": 20
 }

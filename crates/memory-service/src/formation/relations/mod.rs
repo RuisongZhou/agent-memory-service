@@ -80,6 +80,61 @@ pub struct Applied {
     pub superseded: Vec<String>,
 }
 
+pub fn source_context(turn: &TurnRec, role: &str, first_hand: bool) -> Option<EvidenceContext> {
+    let question = turn.user_message.trim();
+    (first_hand
+        && role == "assistant"
+        && question.ends_with(['?', '？'])
+        && question.chars().count() <= 1024)
+        .then(|| EvidenceContext {
+            span: turn.user_message.clone(),
+            stated_at: turn.user_ts.clone(),
+        })
+}
+
+/// Explicit archive recovery only: enrich existing verified reply evidence, without generating
+/// facts or using QA labels. Ordinary formation writes the same bounded question atomically.
+pub async fn backfill_source_context(t: &Arc<Tenant>, turns: &[TurnRec]) -> Result<usize> {
+    let rows: Vec<EvidenceRec> = t
+        .store
+        .select_as("SELECT * OMIT id FROM evidence", vec![])
+        .await?;
+    let mut tx = Tx::new();
+    let mut count = 0;
+    for evidence in rows
+        .into_iter()
+        .filter(|e| e.context.is_none() && e.role == "assistant")
+    {
+        let Some(turn) = turns
+            .iter()
+            .find(|tr| tr.platform == evidence.platform && tr.turn_id == evidence.turn_id)
+        else {
+            continue;
+        };
+        let body = turn
+            .assistant_message
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let span = evidence
+            .span
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if span.is_empty() || !body.contains(&span) {
+            continue;
+        }
+        if let Some(context) = source_context(turn, &evidence.role, true) {
+            tx.merge("evidence", &evidence.id, json!({"context":context}))?;
+            count += 1;
+        }
+    }
+    if !tx.is_empty() {
+        t.store.commit(tx).await?;
+    }
+    Ok(count)
+}
+
 /// Load `id`, its successors up to the chain head and the head's predecessors (5.3 更新链).
 pub async fn load_chain(t: &Tenant, id: &str, out: &mut HashMap<String, MemoryRec>) -> Result<()> {
     let mut cur = id.to_string();
@@ -331,6 +386,13 @@ where
         texts.insert(id.clone(), f.text.clone());
         for s in &f.sources {
             evidence.push(EvidenceRec {
+                context: ctx
+                    .turns
+                    .iter()
+                    .find(|(_, tr)| tr.turn_id == s.turn_id)
+                    .and_then(|(_, tr)| {
+                        source_context(tr, &s.role, eng.prompts_for(t).both_speakers_first_hand)
+                    }),
                 id: util::new_id("e"),
                 memory_ids: vec![id.clone()],
                 platform: ctx.platform.clone(),
@@ -347,6 +409,13 @@ where
         let f = by_fidx[fidx];
         for s in &f.sources {
             evidence.push(EvidenceRec {
+                context: ctx
+                    .turns
+                    .iter()
+                    .find(|(_, tr)| tr.turn_id == s.turn_id)
+                    .and_then(|(_, tr)| {
+                        source_context(tr, &s.role, eng.prompts_for(t).both_speakers_first_hand)
+                    }),
                 id: util::new_id("e"),
                 memory_ids: vec![target.clone()],
                 platform: ctx.platform.clone(),
@@ -367,6 +436,42 @@ where
         write_old(&mut tx, old, n)?;
         if n.status == S_SUPERSEDED && old.status != S_SUPERSEDED {
             out.superseded.push(id.clone());
+        }
+    }
+    // Conflicts are durable questions with both assertions retained, not a generated winner.
+    let scopes: HashMap<String, MemScope> = recs
+        .values()
+        .map(|m| (m.id.clone(), m.scope.clone()))
+        .chain(
+            facts
+                .iter()
+                .map(|f| (p.resolved[&f.fidx].clone(), f.scope.clone())),
+        )
+        .collect();
+    for (id, node) in &p.nodes {
+        if node.status != S_CONFLICT || !node.dirty {
+            continue;
+        }
+        for edge in node
+            .related
+            .iter()
+            .filter(|edge| edge.relation == "conflicts")
+        {
+            if scopes.get(id) != scopes.get(&edge.id) {
+                continue;
+            }
+            let mut pair = vec![id.clone(), edge.id.clone()];
+            pair.sort();
+            let uncertainty_id = store::hashed_id("u", &serde_json::to_string(&pair)?);
+            let rec = UncertaintyRec {
+                id: uncertainty_id.clone(),
+                memory_ids: pair,
+                scope: scopes[id].clone(),
+                reason: "Conflicting assertions require confirmation".into(),
+                status: "open".into(),
+                created_at: now.clone(),
+            };
+            tx.put("uncertainties", &uncertainty_id, to_doc(&rec)?)?;
         }
     }
     for ev in &evidence {

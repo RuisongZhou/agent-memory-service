@@ -59,6 +59,9 @@ enum Cmd {
         /// Optional JSON file overriding ServiceConfig fields (camelCase)
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Select matched formation/retrieval: mem0 (default) or current (preserved baseline).
+        #[arg(long, env = "MEMORY_STRATEGY")]
+        memory_strategy: Option<String>,
         #[arg(long, env = "LOG_LEVEL", default_value = "info")]
         log_level: String,
     },
@@ -106,6 +109,7 @@ fn main() -> anyhow::Result<()> {
                 llm_base_url,
                 llm_concurrency,
                 config,
+                memory_strategy,
                 log_level,
             } => {
                 let bind_address: std::net::IpAddr = host.parse()?;
@@ -137,6 +141,9 @@ fn main() -> anyhow::Result<()> {
                 cfg.llm_model = llm_model.clone();
                 cfg.llm_base_url = llm_base_url.clone();
                 cfg.llm_max_concurrency = llm_concurrency;
+                if let Some(strategy) = memory_strategy {
+                    cfg.memory_strategy = serde_json::from_value(serde_json::json!(strategy))?;
+                }
                 if no_reranker {
                     cfg.use_reranker = false;
                 }
@@ -151,7 +158,8 @@ fn main() -> anyhow::Result<()> {
                 )?;
                 let models = ModelHub::connect(
                     &cfg.embed_url,
-                    cfg.use_reranker.then_some(cfg.rerank_url.as_str()),
+                    (cfg.use_reranker && (cfg.memory_strategy == memory_service::config::MemoryStrategy::Current
+                        || cfg.mem0_rerank)).then_some(cfg.rerank_url.as_str()),
                 )
                 .await?;
                 let eng = Engine::new(cfg, llm, models);
@@ -164,6 +172,8 @@ fn main() -> anyhow::Result<()> {
             }
             Cmd::Selftest => {
                 memory_service::selftest::store_roundtrip().await;
+                memory_service::integrity_tests::selftest().await;
+                memory_service::mem0_tests::selftest().await;
                 memory_service::selftest::retrieval_roundtrip().await;
                 memory_service::selftest::long_turn_roundtrip().await;
                 memory_service::extract::formation_selftest().await;

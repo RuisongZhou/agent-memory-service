@@ -101,6 +101,7 @@ pub async fn retrieval_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
+        memory_strategy: super::config::MemoryStrategy::Current,
         data_dir: dir.clone(),
         ..Default::default()
     };
@@ -252,6 +253,7 @@ pub async fn retrieval_roundtrip() {
     }];
     let evidence = vec![
         EvidenceRec {
+            context: None,
             id: "eport".into(),
             memory_ids: vec!["m01".into()],
             platform: "codex".into(),
@@ -262,6 +264,7 @@ pub async fn retrieval_roundtrip() {
             created_at: now.clone(),
         },
         EvidenceRec {
+            context: None,
             id: "eshared".into(),
             memory_ids: vec!["m02".into(), "m03".into()],
             platform: "codex".into(),
@@ -680,6 +683,7 @@ pub async fn long_turn_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
+        memory_strategy: super::config::MemoryStrategy::Current,
         data_dir: dir.clone(),
         ..Default::default()
     };

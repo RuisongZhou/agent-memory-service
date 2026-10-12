@@ -22,6 +22,8 @@ Do not extract:
 5. If the same information appears several times in the batch, output it once, citing the most complete occurrence.
 6. Do not infer attributes that were not stated, such as gender or age.
 7. Write every fact in English.
+8. Preserve the link between an activity and its purpose, reason or outcome. Splitting facts must not lose what the activity was for. Resolve a short reply using the surrounding conversation, but cite the reply verbatim.
+9. Distinguish historical events from mutable states: researching, applying and passing an interview are separate events, linked by related. A later event does not erase an earlier event or plan. Keep the time/season and activity together when resolving an answer to a preceding question.
 
 ## Fields
 - text: the fact itself.

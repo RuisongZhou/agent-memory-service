@@ -25,15 +25,18 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
                 "properties": {
                     "scope": scope,
                     "turnId": {"type": "string", "description": "轮编号，幂等键（随 messages）"},
-                    "messages": {"type": "array", "description": "本轮的用户消息与助手最终回复，各 1 条",
+                    "messages": {"type": "array", "description": "按时间排序的消息；current 策略要求用户与助手各 1 条",
                         "items": {"type": "object", "properties": {
                             "role": {"type": "string", "enum": ["user", "assistant"]},
                             "content": {"type": "string"},
                             "timestamp": {"type": "string", "description": "RFC3339"}},
                             "required": ["role", "content", "timestamp"]}},
                     "text": {"type": "string", "description": "要记住的内容，≤ 4 KB"},
+                    "memoryType": {"type":"string", "enum":["fact","instruction"], "description":"明确行为要求用 instruction；只接受 text，不调用生成模型"},
+                    "memoryScope": {"type":"object","properties":{"kind":{"type":"string","enum":["global","project","platform"]},"project":{"type":"string"},"platform":{"type":"string"}}},
                     "sessionEnded": {"type": "boolean"},
-                    "sync": {"type": "boolean"}
+                    "sync": {"type": "boolean"},
+                    "infer": {"type":"boolean", "description":"mem0 策略：false 按原文保存，不调用生成模型"}
                 },
                 "required": ["scope"]
             }),
@@ -51,6 +54,7 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
                     "includeRecent": {"type": "boolean"},
                     "includeHistory": {"type": "boolean"},
                     "includeEvidence": {"type": "boolean"},
+                    "rerank": {"type":"boolean", "description":"mem0 策略显式启用重排，需要启动时配置模型"},
                     "tokenBudget": {"type": "integer", "minimum": 1}
                 },
                 "required": ["query"]

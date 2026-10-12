@@ -62,6 +62,7 @@ async fn health(State(eng): State<Arc<Engine>>) -> Json<Value> {
         "llm": eng.llm.usage_snapshot(),
         "tenants": eng.tenant_names().await,
         "tenantPromptVariants": eng.tenant_prompt_variants().await,
+        "memoryStrategy": eng.cfg.memory_strategy,
     }))
 }
 
@@ -84,6 +85,7 @@ async fn api(
             "correct_memory" => manage::correct_memory(&eng, &t, &c, parse(body)?).await,
             "delete_memory" => manage::delete_memory(&eng, &t, parse(body)?).await,
             "feedback" => manage::feedback(&eng, &t, parse(body)?).await,
+            "resolve_uncertainty" => manage::resolve_uncertainty(&t, &c, parse(body)?).await,
             other => Err(ApiError::NotFound(format!("unknown interface {other}"))),
         }
     }

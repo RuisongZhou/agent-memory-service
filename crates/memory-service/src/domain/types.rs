@@ -83,11 +83,35 @@ pub const T_FACT: &str = "fact";
 pub const T_EXPERIENCE: &str = "experience";
 pub const T_PROFILE: &str = "profile";
 pub const T_SKILL: &str = "skill";
+pub const T_INSTRUCTION: &str = "instruction";
 
 pub const S_CURRENT: &str = "current";
 pub const S_SUPERSEDED: &str = "superseded";
 pub const S_CONFLICT: &str = "conflict";
 pub const S_CANDIDATE: &str = "candidate";
+pub const S_STALE: &str = "stale";
+
+/// The application builds lineage; the model never assigns provenance or dependency IDs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Derivation {
+    pub stage: String,
+    pub input_memory_ids: Vec<String>,
+    pub input_turn_ids: Vec<String>,
+    /// Current views invalidate when inputs change; historical observations retain their evidence.
+    pub current_view: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UncertaintyRec {
+    pub id: String,
+    pub memory_ids: Vec<String>,
+    pub scope: MemScope,
+    pub reason: String,
+    pub status: String,
+    pub created_at: String,
+}
 
 /// Statuses that are "active" (indexed, recallable): current, conflict, candidate (5.1).
 pub fn is_active(status: &str) -> bool {
@@ -145,6 +169,10 @@ pub struct MemoryRec {
     pub proposal: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<Derivation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
 }
 
 fn one() -> i64 {
@@ -168,6 +196,8 @@ impl MemoryRec {
             "related": self.related,
             "validUntil": self.valid_until,
             "detail": self.detail,
+            "derivation": self.derivation,
+            "staleReason": self.stale_reason,
         })
     }
 }
@@ -374,6 +404,16 @@ pub struct EvidenceRec {
     pub span: String,
     pub stated_at: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<EvidenceContext>,
+}
+
+/// A verbatim question paired with a first-hand reply, not an additional assertion.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceContext {
+    pub span: String,
+    pub stated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -416,6 +456,14 @@ pub struct InMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AddMemoriesReq {
+    /// Mem0 strategy only: false stores each supplied message verbatim without generation.
+    #[serde(default)]
+    pub infer: Option<bool>,
+    /// Explicit text may be stored as an instruction without a generative-model call.
+    #[serde(default)]
+    pub memory_type: Option<String>,
+    #[serde(default)]
+    pub memory_scope: Option<MemScope>,
     #[serde(default)]
     pub scope: ReqScope,
     #[serde(default)]
@@ -433,6 +481,9 @@ pub struct AddMemoriesReq {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchReq {
+    /// Mem0 strategy: explicit opt-in to the configured local cross-encoder.
+    #[serde(default)]
+    pub rerank: Option<bool>,
     pub query: String,
     #[serde(default)]
     pub scope: Option<ReqScope>,
@@ -504,6 +555,15 @@ pub struct CorrectMemoryReq {
 #[serde(rename_all = "camelCase")]
 pub struct IdReq {
     pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveUncertaintyReq {
+    pub id: String,
+    pub keep_memory_id: String,
+    #[serde(default)]
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

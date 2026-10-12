@@ -156,20 +156,30 @@ pub fn facts(p: &PromptSet, explicit: bool) -> String {
         .next()
         .unwrap()
         .lines()
-        .filter(|line| !line.starts_with("- reason：") && !line.starts_with("- reason:"))
+        .filter(|line| {
+            !line.starts_with("- reason：")
+                && !line.starts_with("- reason:")
+                && !line.starts_with("- source.")
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let format = if p.variant == "en" {
-        r#"## Output: facts-object-v1
+        r#"## Output: facts-object-v2
 Return only one JSON object: {"facts": [...]}.
-Each fact has exactly: text, scope (global/project), entities (string array), effectiveAt (YYYY-MM-DD), origin (explicit/user/assistant), source ({turnId, span}), relations ([{memoryId, relation}]).
-Copy source.span verbatim, at most 1024 Unicode characters. Cite only supplied turn IDs. Use M1 etc. for old memories and F1 etc. for facts in output order. No self-references. Relations: same/updates/conflicts/related. Do not output reason, analysis, experiences or summary. No facts: {"facts":[]}.
+Each fact has exactly these eight literal field names: text, scope, entities, effectiveAt, origin, sourceTurnId, sourceSpan, relations. Provenance fields are flat strings, never a nested source object.
+Complete structure (placeholders are not input facts):
+{"facts":[{"text":"Self-contained assertion","scope":"project","entities":["EXACT_ENTITY_NAME"],"effectiveAt":"2026-10-10","origin":"user","sourceTurnId":"SUPPLIED_TURN_ID","sourceSpan":"VERBATIM_SOURCE_EXCERPT","relations":[]}]}
+entities must be ordinary quoted name strings (e.g. ["Alice", "library"]), never typed objects such as {"type":"person","value":"Alice"}. Use [] when no entity is involved.
+sourceTurnId: cite only a supplied current-batch turn ID. sourceSpan: copy a contiguous excerpt verbatim from that turn, at most 1024 Unicode characters. Keep scope global/project, entities a string array, effectiveAt a valid YYYY-MM-DD date, origin explicit/user/assistant. Use M1 etc. for old memories and F1 etc. for facts in output order. Relations: [{"memoryId":"M1","relation":"same|updates|conflicts|related"}]. No self-references. Do not output source, reason, analysis, experiences or summary. No facts: {"facts":[]}.
 Write memories in English. Preserve names, dates and identifiers."#
     } else {
-        r#"## 输出：facts-object-v1
+        r#"## 输出：facts-object-v2
 只输出一个 JSON 对象：{"facts": [...]}。
-每条事实只含：text、scope（global/project）、entities（字符串数组）、effectiveAt（YYYY-MM-DD）、origin（explicit/user/assistant）、source（{turnId, span}）、relations（[{memoryId, relation}]）。
-source.span 逐字复制，最多 1024 个 Unicode 字符，只引用所提供的轮编号。旧记忆用 M1 等，本批事实按输出顺序用 F1 等，不能引用自身。关系为 same/updates/conflicts/related。不要输出 reason、analysis、experiences 或 summary。无事实时输出 {"facts":[]}。
+每条事实恰好含以下八个字面字段名：text、scope、entities、effectiveAt、origin、sourceTurnId、sourceSpan、relations。出处字段是扁平字符串，不输出嵌套 source 对象。
+完整格式如下（占位内容不是待抽取事实）：
+{"facts":[{"text":"独立可理解的事实","scope":"project","entities":["原文实体名称"],"effectiveAt":"2026-10-10","origin":"user","sourceTurnId":"输入中的轮编号","sourceSpan":"逐字引用的原文","relations":[]}]}
+entities 只能是普通名称字符串数组（例如 ["张三", "图书馆"]），禁止输出带 type/value 等字段的实体对象。没有实体时用 []。
+sourceTurnId 只引用本批输入的轮编号；sourceSpan 从该轮逐字复制连续原文，最多 1024 个 Unicode 字符。scope 为 global/project，entities 为字符串数组，effectiveAt 为有效 YYYY-MM-DD 日期，origin 为 explicit/user/assistant。旧记忆用 M1 等，本批事实按输出顺序用 F1 等，不能引用自身。relations 格式为 [{"memoryId":"M1","relation":"same|updates|conflicts|related"}]。不要输出 source、reason、analysis、experiences 或 summary。无事实时输出 {"facts":[]}。
 记忆用简体中文，专有名词和标识符保留原文。"#
     };
     format!("{instructions}\n\n{format}")

@@ -3,7 +3,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Map, Value};
 
 pub const FORMAT: &str = "formation-object-v2";
-pub const FACT_FORMAT: &str = "facts-object-v1";
+pub const FACT_FORMAT: &str = "facts-object-v2";
 pub const EXPERIENCE_FORMAT: &str = "session-experience-object-v1";
 
 fn object(fields: &[(&str, Value)]) -> Value {
@@ -122,6 +122,16 @@ pub fn facts_for_turns(turn_ids: &[String]) -> Value {
         .as_array_mut()
         .unwrap()
         .retain(|v| v != "reason");
+    let source = facts["items"]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("source")
+        .unwrap();
+    facts["items"]["properties"]["sourceTurnId"] = source["properties"]["turnId"].clone();
+    facts["items"]["properties"]["sourceSpan"] = source["properties"]["span"].clone();
+    let required = facts["items"]["required"].as_array_mut().unwrap();
+    required.retain(|v| v != "source");
+    required.extend([json!("sourceTurnId"), json!("sourceSpan")]);
     object(&[("facts", facts)])
 }
 
@@ -212,12 +222,12 @@ mod tests {
     fn separate_contracts_reject_cross_stage_fields_and_invalid_sources() {
         let fact_schema = facts_for_turns(&["T1".into()]);
         let mut fact = json!({"facts":[{"text":"A fact","scope":"project","entities":[],
-            "effectiveAt":"2026-10-10","origin":"user","source":{"turnId":"T1","span":"A fact"},"relations":[]}]});
+            "effectiveAt":"2026-10-10","origin":"user","sourceTurnId":"T1","sourceSpan":"A fact","relations":[]}]});
         assert!(validate_schema(&fact_schema, &fact).is_ok());
         fact["summary"] = json!({});
         assert!(validate_schema(&fact_schema, &fact).is_err());
         fact.as_object_mut().unwrap().remove("summary");
-        fact["facts"][0]["source"]["turnId"] = json!("missing");
+        fact["facts"][0]["sourceTurnId"] = json!("missing");
         assert!(validate_schema(&fact_schema, &fact).is_err());
         let exp_schema = experiences_for_turns(&["T1".into()]);
         let mut exp = json!({"analysis":[],"experiences":[],"summary":{"goal":"","outcome":"","decisions":[],"openIssues":[]}});

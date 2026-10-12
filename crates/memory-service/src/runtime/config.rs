@@ -2,9 +2,30 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// One strategy selects a matched formation and retrieval pipeline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryStrategy {
+    Current,
+    #[default]
+    Mem0,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceConfig {
+    #[serde(default)]
+    pub memory_strategy: MemoryStrategy,
+    #[serde(default = "default_mem0_threshold")]
+    pub mem0_threshold: f32,
+    #[serde(default)]
+    pub mem0_rerank: bool,
+    #[serde(default)]
+    pub mem0_custom_instructions: String,
+    #[serde(default = "default_mem0_max_tokens")]
+    pub mem0_max_tokens: u32,
+    #[serde(default = "default_mem0_top_k")]
+    pub mem0_top_k: usize,
     pub data_dir: PathBuf,
     /// llama-server base URLs for the embedding (`--embedding`) and rerank (`--reranking`) models.
     pub embed_url: String,
@@ -62,6 +83,12 @@ pub struct ServiceConfig {
 impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
+            memory_strategy: MemoryStrategy::Mem0,
+            mem0_threshold: default_mem0_threshold(),
+            mem0_rerank: false,
+            mem0_custom_instructions: String::new(),
+            mem0_max_tokens: default_mem0_max_tokens(),
+            mem0_top_k: default_mem0_top_k(),
             data_dir: PathBuf::from("./memory-data"),
             embed_url: "http://127.0.0.1:8081".into(),
             rerank_url: "http://127.0.0.1:8082".into(),
@@ -109,6 +136,17 @@ impl ServiceConfig {
     /// Reject invalid tunables before opening stores or loading model weights.
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
+            self.mem0_threshold.is_finite() && (0.0..=1.0).contains(&self.mem0_threshold),
+            "mem0Threshold must be between 0 and 1"
+        );
+        anyhow::ensure!(self.mem0_max_tokens > 0, "mem0MaxTokens must be positive");
+        anyhow::ensure!(
+            self.mem0_top_k > 0
+                && (self.memory_strategy == MemoryStrategy::Current
+                    || self.mem0_top_k <= self.max_top_k),
+            "mem0TopK must be within maxTopK"
+        );
+        anyhow::ensure!(
             matches!(self.prompt_variant.as_str(), "en" | "zh"),
             "promptVariant must be en or zh"
         );
@@ -135,7 +173,7 @@ impl ServiceConfig {
             "sessionIdleMinutes must be positive; batchWaitSecs must be nonnegative"
         );
         anyhow::ensure!(
-            self.default_top_k <= self.max_top_k,
+            self.memory_strategy == MemoryStrategy::Mem0 || self.default_top_k <= self.max_top_k,
             "defaultTopK exceeds maxTopK"
         );
         anyhow::ensure!(
@@ -167,12 +205,39 @@ impl ServiceConfig {
     }
 }
 
+fn default_mem0_threshold() -> f32 {
+    0.1
+}
+
+fn default_mem0_max_tokens() -> u32 {
+    2000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn defaults_are_valid() {
+        assert_eq!(
+            ServiceConfig::default().memory_strategy,
+            MemoryStrategy::Mem0
+        );
         ServiceConfig::default().validate().unwrap();
+    }
+    #[test]
+    fn top_k_bounds_belong_to_the_selected_strategy() {
+        let mut cfg = ServiceConfig {
+            max_top_k: 5,
+            mem0_top_k: 5,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+        cfg.memory_strategy = MemoryStrategy::Current;
+        cfg.default_top_k = 5;
+        cfg.mem0_top_k = 20;
+        assert!(cfg.validate().is_ok());
+        cfg.memory_strategy = MemoryStrategy::Mem0;
+        assert!(cfg.validate().is_err());
     }
     #[test]
     fn invalid_loop_and_wait_bounds_are_rejected() {
@@ -213,4 +278,8 @@ mod tests {
         v["batchTruns"] = serde_json::json!(3);
         assert!(serde_json::from_value::<ServiceConfig>(v).is_err());
     }
+}
+
+fn default_mem0_top_k() -> usize {
+    20
 }

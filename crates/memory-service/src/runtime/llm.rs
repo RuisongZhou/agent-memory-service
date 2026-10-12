@@ -26,6 +26,7 @@ pub struct JsonContract {
     pub name: &'static str,
     pub schema: Value,
     pub validate: fn(&Value, &Value) -> Result<()>,
+    pub echo_invalid_response: bool,
 }
 
 pub struct Llm {
@@ -325,7 +326,24 @@ impl Llm {
                 }
                 Err(e) => {
                     last_err = anyhow!("model output failed validation (finish={finish}): {e}");
-                    corrective_messages(&mut body, system, user, &content, &e.to_string());
+                    let mut error = e.to_string();
+                    if let Some(contract) = contract {
+                        // Only the public shape belongs in the repair instruction. Private local
+                        // provenance metadata can contain entire source turns and is never sent.
+                        let mut shape = contract.schema.clone();
+                        if let Some(fields) = shape.as_object_mut() {
+                            fields.retain(|key, _| !key.starts_with("x-"));
+                        }
+                        error.push_str(&format!(". Required {} schema: {shape}", contract.name));
+                    }
+                    corrective_messages(
+                        &mut body,
+                        system,
+                        user,
+                        &content,
+                        &error,
+                        contract.is_none_or(|c| c.echo_invalid_response),
+                    );
                     continue;
                 }
             }
@@ -346,13 +364,30 @@ impl Llm {
     }
 }
 
-fn corrective_messages(body: &mut Value, system: &str, user: &str, raw: &str, error: &str) {
+fn corrective_messages(
+    body: &mut Value,
+    system: &str,
+    user: &str,
+    raw: &str,
+    error: &str,
+    echo_invalid_response: bool,
+) {
     // Replace the repair exchange, rather than growing the prompt on every retry.
-    body["messages"] = json!([
+    let correction = format!("Your previous response failed output validation: {error}. Return the complete corrected JSON matching the requested JSON structure, retaining every required section. Use only the original evidence; do not invent missing facts or verified outcomes. No Markdown or explanations.");
+    body["messages"] = if echo_invalid_response {
+        json!([
         {"role":"system","content":system}, {"role":"user","content":user},
         {"role":"assistant","content":raw.chars().take(32768).collect::<String>()},
-        {"role":"user","content":format!("Your previous response failed output validation: {error}. Return the complete corrected JSON matching the requested JSON structure, retaining every required section. Use only the original evidence; do not invent missing facts or verified outcomes. No Markdown or explanations.")}
-    ]);
+        {"role":"user","content":correction}
+        ])
+    } else {
+        // Persisted raw replies remain available for diagnostics. Regenerating from
+        // evidence avoids anchoring additive extraction on a malformed prior JSON.
+        json!([
+            {"role":"system","content":system},
+            {"role":"user","content":format!("{user}\n\n{correction}")}
+        ])
+    };
 }
 
 /// Parse JSON, tolerating ```json fences and leading/trailing prose.

@@ -89,6 +89,26 @@ impl Engine {
 
     /// Load the entity dictionary and vector caches; check index_meta (5.2 一致性与重建).
     async fn warm(&self, t: &Arc<Tenant>) -> Result<()> {
+        let incompatible = if self.cfg.memory_strategy == super::config::MemoryStrategy::Mem0 {
+            t.store
+                .count("turns", Some("extractState = 'pending'"))
+                .await?
+                + t.store
+                    .count(
+                        "requests",
+                        Some("kind IN ['text','session_end'] AND status IN ['queued','running']"),
+                    )
+                    .await?
+        } else {
+            t.store
+                .count(
+                    "requests",
+                    Some("kind = 'mem0' AND status IN ['queued','running','indexing']"),
+                )
+                .await?
+        };
+        anyhow::ensure!(incompatible==0,"unfinished jobs belong to another memory strategy; drain with the original strategy before switching");
+        t.store.repair_integrity().await?;
         // entity alias dictionary (kept in memory, 5.2 实体索引)
         let ents: Vec<EntityRec> = t
             .store

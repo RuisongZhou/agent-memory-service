@@ -54,3 +54,8 @@ HTTP exposes `add_memories`, `get_task`, `search_memories`, `get_context`, `list
 See [CONTRIBUTING](CONTRIBUTING.md) and [architecture](docs/architecture.md). CI performs offline correctness checks and never runs paid evaluation. Open a pull request with the problem, resulting behavior and relevant checks.
 
 The initial memory-service code derives from [memory-mcp-1file](https://github.com/pomazanbohdan/memory-mcp-1file); its MIT copyright notice is retained. Copied evaluation assets have separate Apache-2.0 notices. LoCoMo is downloaded locally under CC BY-NC 4.0 and is not redistributed here. Details are in [THIRD_PARTY](THIRD_PARTY.md).
+
+The default daemon pipeline follows Mem0 OSS 2.2.1 additive formation and semantic retrieval. Select
+`--memory-strategy current` to retain the original pipeline as a control. See `docs/api.md` for visibility,
+provenance, configuration and migration semantics. The copied extraction prompt retains its Apache 2.0
+license and NOTICE; no SDK weights or local evaluation traces are distributed.

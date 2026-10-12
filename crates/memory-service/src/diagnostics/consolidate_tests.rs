@@ -42,6 +42,7 @@ pub async fn consolidation_selftest() {
     ));
     let eng = Engine::new(
         ServiceConfig {
+            memory_strategy: super::config::MemoryStrategy::Current,
             data_dir: dir.clone(),
             ..Default::default()
         },
@@ -95,6 +96,7 @@ pub async fn consolidation_selftest() {
     }
     for (id, mid, tid) in [("eexacta", "mexacta", "T1"), ("eexactb", "mexactb", "T2")] {
         let e = EvidenceRec {
+            context: None,
             id: id.into(),
             memory_ids: vec![mid.into()],
             platform: "codex".into(),
@@ -266,6 +268,7 @@ pub async fn consolidation_selftest() {
         .unwrap();
     }
     let evidence = EvidenceRec {
+        context: None,
         id: "ebuffer".into(),
         memory_ids: vec![canonical.id.clone()],
         platform: "codex".into(),
