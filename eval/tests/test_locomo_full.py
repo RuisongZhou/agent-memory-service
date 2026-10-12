@@ -2,7 +2,13 @@ from common import locomo
 from locomo_full import batches, batch_key, questions, protocol
 
 
-def test_full_dataset_coverage_and_frozen_workload():
+def test_full_dataset_coverage_and_frozen_workload(monkeypatch, tmp_path):
+    # The protocol fingerprints the daemon binary; the Python CI job does not build it.
+    import locomo_full
+    binary = tmp_path / 'target/fast/agent-memoryd'
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b'binary')
+    monkeypatch.setattr(locomo_full, 'REPO', tmp_path)
     data = locomo.load()
     spec = protocol(data, 10)
     rows = [q for c in data for q in questions(c)]
