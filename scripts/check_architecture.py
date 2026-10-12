@@ -25,8 +25,6 @@ SQL_EXEMPT = ('storage/', 'diagnostics/')
 PATH_ATTR = re.compile(r'#\[path\s*=')
 
 ALLOWED = {
-    ('raw-sql', 'algorithms/mem0/formation.rs'),
-    ('raw-sql', 'algorithms/mem0/retrieval.rs'),
     ('raw-sql', 'algorithms/memos/formation/consolidate.rs'),
     ('raw-sql', 'algorithms/memos/formation/extract.rs'),
     ('raw-sql', 'algorithms/memos/formation/ingest.rs'),

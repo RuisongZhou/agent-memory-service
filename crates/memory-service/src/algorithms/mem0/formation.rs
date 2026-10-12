@@ -1,6 +1,7 @@
 //! Durable Mem0 2.2.1 additive formation. Raw inputs precede generation; vectors and receipts
 //! commit together. Batch provenance is never presented as a verified per-claim quotation.
 use super::config::Mem0Config;
+use super::repo;
 use crate::app::tasks;
 use crate::domain::types::*;
 use crate::runtime::{engine::Engine, llm::JsonContract, tenant::Tenant};
@@ -162,15 +163,7 @@ pub async fn enqueue(
         .as_ref()
         .map(|id| store::turn_rid(&c.platform, id));
     if let Some(key) = &key {
-        let existing = t
-            .store
-            .select(
-                "SELECT requestId FROM requests WHERE turnKeys CONTAINS $key LIMIT 1",
-                vec![("key", json!(key))],
-            )
-            .await?;
-        if let Some(id) = existing.first().and_then(|v| v["requestId"].as_str()) {
-            let id = id.to_string();
+        if let Some(id) = repo::request_id_for_turn_key(t, key).await? {
             drop(guard);
             let mut out = if req.sync.unwrap_or(req.text.is_some()) {
                 wait(eng, t, &id).await?
@@ -215,7 +208,7 @@ pub async fn process_jobs(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
 
 async fn process_until(eng: &Arc<Engine>, t: &Arc<Tenant>, stop: Option<&str>) -> Result<()> {
     let _guard = t.lock_formation().await;
-    let jobs = t.store.select("SELECT * OMIT id FROM requests WHERE kind = 'mem0' AND status IN ['queued','running','indexing'] ORDER BY inputSeq ASC", vec![]).await?;
+    let jobs = repo::unfinished_jobs(t).await?;
     for job in jobs {
         if job["retryAtTs"].as_i64().unwrap_or(0) > util::now().timestamp() {
             break;
@@ -321,8 +314,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
             .enumerate()
             .map(|(i, (m, _))| json!({"id":i.to_string(),"text":m.text}))
             .collect::<Vec<_>>();
-        let previous=t.store.select("SELECT inputMessages, inputSeq FROM requests WHERE kind = 'mem0' AND platform = $p AND project = $r AND array::len(inputMessages) > 0 AND inputSeq < $seq ORDER BY inputSeq DESC LIMIT 10",
-            vec![("p",json!(platform)),("r",json!(project)),("seq",job["inputSeq"].clone())]).await?;
+        let previous = repo::previous_inputs(t, platform, project, job["inputSeq"].clone()).await?;
         let parsed = previous
             .into_iter()
             .rev()
@@ -582,17 +574,11 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     let start = Instant::now();
     loop {
         process_jobs(eng, t).await?;
-        let pending = t
-            .store
-            .count(
-                schema::REQUESTS,
-                Some("kind = 'mem0' AND status IN ['queued','running','indexing']"),
-            )
-            .await?;
+        let pending = repo::unfinished_job_count(t).await?;
         if pending == 0 {
             crate::runtime::indexer::drain(eng, t).await?;
             return Ok(json!({"status":"idle","pendingRequests":0,"indexTasks":0,
-                "failedRequests":t.store.count(schema::REQUESTS,Some("kind = 'mem0' AND status = 'failed'")).await?}));
+                "failedRequests":repo::failed_job_count(t).await?}));
         }
         if start.elapsed() > Duration::from_secs(120) {
             return Ok(json!({"status":"timeout","pendingRequests":pending}));

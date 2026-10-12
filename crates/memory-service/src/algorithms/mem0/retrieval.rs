@@ -1,5 +1,6 @@
 //! Semantic-only search. No generative calls, broad summaries or implicit cross-encoder.
 use super::config::Mem0Config;
+use super::repo::{self, InputFilter};
 use crate::domain::types::*;
 use crate::runtime::{config::MemoryStrategy, engine::Engine, tenant::Tenant};
 use crate::storage::schema;
@@ -254,13 +255,7 @@ pub async fn list_inputs(
             })
         })
         .transpose()?;
-    let mut sql = "SELECT * OMIT id FROM requests WHERE kind = 'mem0'".to_string();
-    let mut binds = Vec::new();
-    if let Some(project) = req.scope.project.as_deref().filter(|s| *s != "*") {
-        sql.push_str(" AND project = $project");
-        binds.push(("project", json!(project)));
-    }
-    if req.scope.platform.as_deref() != Some("*") {
+    let platform = if req.scope.platform.as_deref() != Some("*") {
         if req
             .scope
             .platform
@@ -271,19 +266,20 @@ pub async fn list_inputs(
                 "platform is supplied by the connection".into(),
             ));
         }
-        sql.push_str(" AND platform = $platform");
-        binds.push(("platform", json!(c.platform)));
-    }
-    if let Some(session) = req.scope.session.as_deref().filter(|s| *s != "*") {
-        sql.push_str(" AND session = $session_filter");
-        binds.push(("session_filter", json!(session)));
-    }
-    if let Some(ids) = req.turn_ids {
-        sql.push_str(" AND turnId IN $ids");
-        binds.push(("ids", json!(ids)));
-    }
-    sql.push_str(" ORDER BY inputSeq ASC");
-    let rows = t.store.select(&sql, binds).await?;
+        Some(c.platform.as_str())
+    } else {
+        None
+    };
+    let rows = repo::list_inputs(
+        t,
+        InputFilter {
+            project: req.scope.project.as_deref().filter(|s| *s != "*"),
+            platform,
+            session: req.scope.session.as_deref().filter(|s| *s != "*"),
+            turn_ids: req.turn_ids,
+        },
+    )
+    .await?;
     let mut turns = Vec::new();
     let mut used = 0;
     for row in rows {

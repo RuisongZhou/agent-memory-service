@@ -7,10 +7,10 @@ use crate::runtime::algorithm::{BoxFuture, MemoryAlgorithm};
 use crate::runtime::config::{MemoryStrategy, ServiceConfig};
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
-use crate::storage::schema;
 
 pub mod config;
 pub mod formation;
+pub mod repo;
 pub mod retrieval;
 pub mod runtime;
 
@@ -51,17 +51,7 @@ impl MemoryAlgorithm for Mem0 {
     }
 
     fn foreign_unfinished_jobs<'a>(&'a self, t: &'a Tenant) -> BoxFuture<'a, anyhow::Result<i64>> {
-        Box::pin(async move {
-            Ok(t.store
-                .count(schema::TURNS, Some("extractState = 'pending'"))
-                .await?
-                + t.store
-                    .count(
-                        schema::REQUESTS,
-                        Some("kind IN ['text','session_end'] AND status IN ['queued','running']"),
-                    )
-                    .await?)
-        })
+        Box::pin(repo::foreign_unfinished_job_count(t))
     }
 
     fn start_workers(&self, eng: Arc<Engine>, t: Arc<Tenant>) {
