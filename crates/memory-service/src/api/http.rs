@@ -10,7 +10,6 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::algorithms;
 use crate::app::ingest;
 use crate::app::management;
 use crate::domain::types::*;
@@ -82,9 +81,9 @@ async fn api(
         match name.as_str() {
             "add_memories" => ingest::add_memories(&eng, &t, &c, parse(body)?).await,
             "get_task" => ingest::get_task(&eng, &t, parse(body)?).await,
-            "search_memories" => retrieval::search_memories(&eng, &t, &c, parse(body)?).await,
+            "search_memories" => eng.search_memories(&t, &c, parse(body)?).await,
             "get_context" => retrieval::get_context(&eng, &t, &c, parse(body)?).await,
-            "list_turns" => retrieval::list_turns(&eng, &t, &c, parse(body)?).await,
+            "list_turns" => eng.list_turns(&t, &c, parse(body)?).await,
             "get_memory" => retrieval::get_memory(&eng, &t, parse(body)?).await,
             "correct_memory" => management::correct_memory(&eng, &t, &c, parse(body)?).await,
             "delete_memory" => management::delete_memory(&eng, &t, parse(body)?).await,
@@ -111,7 +110,7 @@ async fn admin(
     let res: ApiResult<Value> = async {
         let t = eng.tenant(&c.tenant).await?;
         match name.as_str() {
-            "run_jobs" => algorithms::run_jobs(&eng, &t, &c, body).await,
+            "run_jobs" => eng.run_jobs(&t, &c, body).await,
             "wait_idle" => ingest::wait_idle(&eng, &t).await,
             "stats" => management::stats(&eng, &t).await,
             "export" => management::export(&eng, &t, body).await,

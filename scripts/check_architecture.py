@@ -24,13 +24,6 @@ SQL_EXEMPT = ('storage/', 'diagnostics/')
 PATH_ATTR = re.compile(r'#\[path\s*=')
 
 ALLOWED = {
-    ('algorithm-ref', 'runtime/engine.rs'),
-    ('algorithm-ref', 'storage/store.rs'),
-    ('algorithm-ref', 'app/ingest.rs'),
-    ('algorithm-ref', 'app/management.rs'),
-    ('algorithm-ref', 'api/http.rs'),
-    ('algorithm-ref', 'retrieval/records.rs'),
-    ('algorithm-ref', 'retrieval/mod.rs'),
     ('raw-sql', 'algorithms/mem0/formation.rs'),
     ('raw-sql', 'algorithms/mem0/retrieval.rs'),
     ('raw-sql', 'algorithms/memos/formation/consolidate.rs'),

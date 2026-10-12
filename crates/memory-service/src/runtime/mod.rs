@@ -1,4 +1,5 @@
 //! Engine construction, configuration, model clients, background indexing and tenant state.
+pub mod algorithm;
 pub mod config;
 pub mod engine;
 pub mod indexer;

@@ -44,11 +44,17 @@ pub async fn consolidation_selftest() {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
+        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
     );
     let t = Arc::new(
-        Tenant::open("consolidation-zh", &dir, eng.models.dim)
-            .await
-            .unwrap(),
+        Tenant::open(
+            "consolidation-zh",
+            &dir,
+            eng.models.dim,
+            eng.algorithm().schema(),
+        )
+        .await
+        .unwrap(),
     );
     let c = Caller {
         tenant: t.name.clone(),

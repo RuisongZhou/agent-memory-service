@@ -40,10 +40,15 @@ pub struct Tenant {
 }
 
 impl Tenant {
-    pub async fn open(name: &str, root: &PathBuf, dim: usize) -> Result<Self> {
+    pub async fn open(
+        name: &str,
+        root: &PathBuf,
+        dim: usize,
+        algorithm_schema: &str,
+    ) -> Result<Self> {
         let dir = root.join("tenants").join(name);
         std::fs::create_dir_all(&dir)?;
-        let store = Store::open(&dir.join("db"), dim).await?;
+        let store = Store::open(&dir.join("db"), dim, algorithm_schema).await?;
         let ft = FullText::open(&dir.join("fulltext"))?;
         Ok(Self {
             name: name.to_string(),

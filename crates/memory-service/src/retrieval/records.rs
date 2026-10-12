@@ -237,11 +237,7 @@ pub(crate) async fn latest_profile(t: &Tenant, project: Option<&str>) -> Result<
     Ok(v.into_iter().next())
 }
 
-pub async fn get_memory(
-    _eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
-    req: GetMemoryReq,
-) -> ApiResult<Value> {
+pub async fn get_memory(eng: &Arc<Engine>, t: &Arc<Tenant>, req: GetMemoryReq) -> ApiResult<Value> {
     if safe_id(&req.id).is_err() {
         return Err(ApiError::NotFound(format!("memory {} not found", req.id)));
     }
@@ -266,11 +262,7 @@ pub async fn get_memory(
         out["history"] = json!(chain);
     }
     if req.include_evidence.unwrap_or(false) {
-        if let Some(source) = t
-            .store
-            .get_doc(crate::algorithms::mem0::SOURCES, &m.id)
-            .await?
-        {
+        if let Some(source) = eng.algorithm().source_batch(t, &m.id).await? {
             out["sourceBatch"] = source;
         }
         let ev = evidence_for(t, std::slice::from_ref(&m.id)).await?;

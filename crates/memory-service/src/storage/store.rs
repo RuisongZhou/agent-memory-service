@@ -34,9 +34,6 @@ DEFINE TABLE IF NOT EXISTS index_tasks SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS index_tasks_created ON index_tasks FIELDS createdTs;
 DEFINE TABLE IF NOT EXISTS index_meta SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS requests SCHEMALESS;
-DEFINE TABLE IF NOT EXISTS mem0_hashes SCHEMALESS;
-DEFINE TABLE IF NOT EXISTS mem0_sources SCHEMALESS;
-DEFINE TABLE IF NOT EXISTS mem0_history SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS retrieval_log SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS extract_log SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS llm_usage SCHEMALESS;
@@ -233,13 +230,14 @@ impl Tx {
 }
 
 impl Store {
-    pub async fn open(dir: &Path, dim: usize) -> Result<Self> {
+    /// `algorithm_schema` is the owning algorithm's private DDL, appended to the shared schema.
+    pub async fn open(dir: &Path, dim: usize, algorithm_schema: &str) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let db: Surreal<Db> = Surreal::new::<SurrealKv>(dir.to_path_buf())
             .await
             .context("open surrealkv")?;
         db.use_ns("memory").use_db("main").await?;
-        db.query(SCHEMA.replace("{dim}", &dim.to_string()))
+        db.query(format!("{SCHEMA}{algorithm_schema}").replace("{dim}", &dim.to_string()))
             .await?
             .check()
             .context("schema")?;

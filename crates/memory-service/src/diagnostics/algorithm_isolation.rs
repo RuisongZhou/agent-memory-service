@@ -24,6 +24,7 @@ fn engine(strategy: MemoryStrategy) -> Arc<Engine> {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
+        algorithms::select(strategy),
     )
 }
 
@@ -33,7 +34,11 @@ pub async fn selftest() {
         let root = std::env::temp_dir().join(util::new_id("algorithm-isolation-"));
         let eng = engine(strategy);
         // Workers are deliberately not started: each pending input can be inspected before formation.
-        let tenant = Arc::new(Tenant::open("test", &root, eng.models.dim).await.unwrap());
+        let tenant = Arc::new(
+            Tenant::open("test", &root, eng.models.dim, eng.algorithm().schema())
+                .await
+                .unwrap(),
+        );
         let caller = Caller {
             tenant: "test".into(),
             platform: "test".into(),
@@ -84,13 +89,8 @@ pub async fn selftest() {
                 );
                 assert_eq!(tenant.store.count(schema::MEMORIES, None).await.unwrap(), 1);
                 assert!(matches!(
-                    algorithms::run_jobs(
-                        &eng,
-                        &tenant,
-                        &caller,
-                        json!({"jobs":["profile","skills"]})
-                    )
-                    .await,
+                    eng.run_jobs(&tenant, &caller, json!({"jobs":["profile","skills"]}))
+                        .await,
                     Err(ApiError::InvalidArgument(_))
                 ));
             }

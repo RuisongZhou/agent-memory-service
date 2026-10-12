@@ -116,11 +116,17 @@ pub async fn formation_selftest() {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
+        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
     );
     let t = Arc::new(
-        Tenant::open("formation-zh", &dir, eng.models.dim)
-            .await
-            .unwrap(),
+        Tenant::open(
+            "formation-zh",
+            &dir,
+            eng.models.dim,
+            eng.algorithm().schema(),
+        )
+        .await
+        .unwrap(),
     );
     let c = Caller {
         tenant: t.name.clone(),
@@ -477,9 +483,14 @@ async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     use crate::app::ingest;
     use crate::runtime::indexer;
     let t = Arc::new(
-        Tenant::open("split-selftest-en", dir, eng.models.dim)
-            .await
-            .unwrap(),
+        Tenant::open(
+            "split-selftest-en",
+            dir,
+            eng.models.dim,
+            eng.algorithm().schema(),
+        )
+        .await
+        .unwrap(),
     );
     let c = Caller {
         tenant: t.name.clone(),

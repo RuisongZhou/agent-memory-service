@@ -43,8 +43,13 @@ pub async fn selftest() {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
+        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Mem0),
     );
-    let tenant = Arc::new(Tenant::open("test", &root, eng.models.dim).await.unwrap());
+    let tenant = Arc::new(
+        Tenant::open("test", &root, eng.models.dim, eng.algorithm().schema())
+            .await
+            .unwrap(),
+    );
     let caller = Caller {
         tenant: tenant.name.clone(),
         platform: "test".into(),
@@ -111,6 +116,7 @@ pub async fn selftest() {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
+        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Mem0),
     );
     let ann = mem0_retrieval::search(
         &ann_engine,
@@ -160,18 +166,18 @@ pub async fn selftest() {
         .await
         .unwrap();
     }
-    let filtered = crate::retrieval::list_turns(
-        &eng,
-        &tenant,
-        &caller,
-        ListTurnsReq {
-            scope: clock_scope.clone(),
-            since: Some("2026-10-12T01:00:00Z".into()),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+    let filtered = eng
+        .list_turns(
+            &tenant,
+            &caller,
+            ListTurnsReq {
+                scope: clock_scope.clone(),
+                since: Some("2026-10-12T01:00:00Z".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(
         filtered["turns"]
             .as_array()
@@ -181,18 +187,18 @@ pub async fn selftest() {
             .collect::<Vec<_>>(),
         vec!["equal", "after"]
     );
-    assert!(crate::retrieval::list_turns(
-        &eng,
-        &tenant,
-        &caller,
-        ListTurnsReq {
-            scope: clock_scope,
-            since: Some("invalid".into()),
-            ..Default::default()
-        }
-    )
-    .await
-    .is_err());
+    assert!(eng
+        .list_turns(
+            &tenant,
+            &caller,
+            ListTurnsReq {
+                scope: clock_scope,
+                since: Some("invalid".into()),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err());
     assert!(result["profiles"].as_array().unwrap().is_empty());
     let other = ReqScope {
         project: Some("b".into()),

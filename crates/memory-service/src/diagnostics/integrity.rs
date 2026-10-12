@@ -20,8 +20,13 @@ pub async fn selftest() {
         },
         Llm::new("http://127.0.0.1:1", "", "mock", 1, 1).unwrap(),
         ModelHub::mock(),
+        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
     );
-    let tenant = Arc::new(Tenant::open("integrity", &dir, 1024).await.unwrap());
+    let tenant = Arc::new(
+        Tenant::open("integrity", &dir, 1024, engine.algorithm().schema())
+            .await
+            .unwrap(),
+    );
     let fact = MemoryRec {
         id: "fact".into(),
         mtype: T_FACT.into(),
@@ -303,7 +308,7 @@ pub async fn selftest() {
     // The embedded connection releases its datastore asynchronously after its final drop.
     let reopened = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            match Tenant::open("integrity", &dir, 1024).await {
+            match Tenant::open("integrity", &dir, 1024, engine.algorithm().schema()).await {
                 Ok(tenant) => break tenant,
                 Err(error)
                     if format!("{error:#}").contains("is already locked by another process") =>

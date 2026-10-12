@@ -51,9 +51,9 @@ pub async fn add_memories(
             "messages, text or sessionEnded required".into(),
         ));
     }
-    crate::algorithms::add_memories(eng, t, c, req).await
+    eng.add_memories(t, c, req).await
 }
 
 pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
-    crate::algorithms::wait_idle(eng, t).await
+    eng.wait_idle(t).await
 }

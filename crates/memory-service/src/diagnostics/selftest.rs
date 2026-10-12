@@ -15,7 +15,7 @@ fn tempdir() -> std::path::PathBuf {
 
 pub async fn store_roundtrip() {
     let dir = tempdir();
-    let s = Store::open(&dir.as_path().join("db"), 4).await.unwrap();
+    let s = Store::open(&dir.as_path().join("db"), 4, "").await.unwrap();
     let m = MemoryRec {
         id: "mabc123".into(),
         mtype: T_FACT.into(),
@@ -117,11 +117,21 @@ pub async fn retrieval_roundtrip() {
     };
     let llm = Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap();
     let models = ModelHub::mock();
-    let eng = Engine::new(cfg, llm, models);
+    let eng = Engine::new(
+        cfg,
+        llm,
+        models,
+        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
+    );
     let t = Arc::new(
-        Tenant::open("retrieval-selftest", &dir, eng.models.dim)
-            .await
-            .unwrap(),
+        Tenant::open(
+            "retrieval-selftest",
+            &dir,
+            eng.models.dim,
+            eng.algorithm().schema(),
+        )
+        .await
+        .unwrap(),
     );
     let c = Caller {
         tenant: t.name.clone(),
@@ -305,18 +315,18 @@ pub async fn retrieval_roundtrip() {
             })
             .collect::<Vec<String>>()
     };
-    let port = retrieval::search_memories(
-        &eng,
-        &t,
-        &c,
-        SearchReq {
-            include_history: Some(true),
-            include_evidence: Some(true),
-            ..search_req("deployment service port 8100")
-        },
-    )
-    .await
-    .unwrap();
+    let port = eng
+        .search_memories(
+            &t,
+            &c,
+            SearchReq {
+                include_history: Some(true),
+                include_evidence: Some(true),
+                ..search_req("deployment service port 8100")
+            },
+        )
+        .await
+        .unwrap();
     assert!(ids(&port).contains(&"m01".into()));
     let p = port["results"]
         .as_array()
@@ -331,37 +341,40 @@ pub async fn retrieval_roundtrip() {
         .unwrap()
         .iter()
         .any(|v| v["turnId"] == "T1"));
-    let conflict = retrieval::search_memories(
-        &eng,
-        &t,
-        &c,
-        SearchReq {
-            top_k: Some(1),
-            ..search_req("deployment region")
-        },
-    )
-    .await
-    .unwrap();
+    let conflict = eng
+        .search_memories(
+            &t,
+            &c,
+            SearchReq {
+                top_k: Some(1),
+                ..search_req("deployment region")
+            },
+        )
+        .await
+        .unwrap();
     assert!(ids(&conflict).contains(&"m02".into()) && ids(&conflict).contains(&"m03".into()));
     assert_eq!(
         conflict["results"][0]["slot"],
         conflict["results"][1]["slot"]
     );
-    let candidate = retrieval::search_memories(&eng, &t, &c, search_req("candidatefact"))
+    let candidate = eng
+        .search_memories(&t, &c, search_req("candidatefact"))
         .await
         .unwrap();
     assert!(ids(&candidate).contains(&"m04".into()));
-    let private = retrieval::search_memories(&eng, &t, &c, search_req("secretproject"))
+    let private = eng
+        .search_memories(&t, &c, search_req("secretproject"))
         .await
         .unwrap();
     assert!(ids(&private).is_empty() && private["recentTurns"].as_array().unwrap().is_empty());
-    let cross =
-        retrieval::search_memories(&eng, &t, &c, search_req("crossscope public predecessor"))
-            .await
-            .unwrap();
+    let cross = eng
+        .search_memories(&t, &c, search_req("crossscope public predecessor"))
+        .await
+        .unwrap();
     assert!(ids(&cross).contains(&"m14".into()));
     assert!(!ids(&cross).contains(&"m13".into()));
-    let buffer = retrieval::search_memories(&eng, &t, &c, search_req("bufferonly"))
+    let buffer = eng
+        .search_memories(&t, &c, search_req("bufferonly"))
         .await
         .unwrap();
     assert_eq!(buffer["recentTurns"][0]["turnId"], "T2");
@@ -373,8 +386,7 @@ pub async fn retrieval_roundtrip() {
         .unwrap()
         .unwrap()
         .last_accessed_at;
-    retrieval::search_memories(
-        &eng,
+    eng.search_memories(
         &t,
         &c,
         SearchReq {
@@ -427,30 +439,30 @@ pub async fn retrieval_roundtrip() {
             .unwrap()
             .contains("secret full steps"));
     }
-    let listed = retrieval::list_turns(
-        &eng,
-        &t,
-        &c,
-        ListTurnsReq {
-            scope: scope.clone(),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+    let listed = eng
+        .list_turns(
+            &t,
+            &c,
+            ListTurnsReq {
+                scope: scope.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(listed["sessions"][0]["session"], "s1");
-    let raw = retrieval::list_turns(
-        &eng,
-        &t,
-        &c,
-        ListTurnsReq {
-            scope: scope.clone(),
-            turn_ids: Some(vec!["T2".into()]),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+    let raw = eng
+        .list_turns(
+            &t,
+            &c,
+            ListTurnsReq {
+                scope: scope.clone(),
+                turn_ids: Some(vec!["T2".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(raw["turns"].as_array().unwrap().len(), 1);
     assert_eq!(raw["turns"][0]["project"], "p1");
     let history = retrieval::get_memory(
@@ -467,7 +479,8 @@ pub async fn retrieval_roundtrip() {
     assert_eq!(history["history"].as_array().unwrap().len(), 2);
     assert_eq!(history["history"][0]["validUntil"], now);
     for n in 1..=3 {
-        let r = retrieval::search_memories(&eng, &t, &c, search_req("candidateskill"))
+        let r = eng
+            .search_memories(&t, &c, search_req("candidateskill"))
             .await
             .unwrap();
         assert!(ids(&r).contains(&"m11".into()));
@@ -495,7 +508,8 @@ pub async fn retrieval_roundtrip() {
         t.store.get_memory("m11").await.unwrap().unwrap().status,
         S_CURRENT
     );
-    let r = retrieval::search_memories(&eng, &t, &c, search_req("candidateskill"))
+    let r = eng
+        .search_memories(&t, &c, search_req("candidateskill"))
         .await
         .unwrap();
     management::feedback(
@@ -683,7 +697,6 @@ pub async fn retrieval_roundtrip() {
 /// window that matched; short turns keep their exact digest.
 pub async fn long_turn_roundtrip() {
     use crate::app::ingest;
-    use crate::retrieval;
     use crate::runtime::{
         config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
     };
@@ -702,11 +715,21 @@ pub async fn long_turn_roundtrip() {
     let (digest_max, formation_max) = (cfg.digest_max_bytes, cfg.max_message_bytes);
     let llm = Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap();
     let models = ModelHub::mock();
-    let eng = Engine::new(cfg, llm, models);
+    let eng = Engine::new(
+        cfg,
+        llm,
+        models,
+        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
+    );
     let t = Arc::new(
-        Tenant::open("long-turn-selftest", &dir, eng.models.dim)
-            .await
-            .unwrap(),
+        Tenant::open(
+            "long-turn-selftest",
+            &dir,
+            eng.models.dim,
+            eng.algorithm().schema(),
+        )
+        .await
+        .unwrap(),
     );
     let c = Caller {
         tenant: t.name.clone(),
@@ -800,7 +823,8 @@ pub async fn long_turn_roundtrip() {
             .cloned()
             .unwrap_or_else(|| panic!("{id} not recalled: {r}"))
     };
-    let r = retrieval::search_memories(&eng, &t, &c, search("zephyrquartz linker failed"))
+    let r = eng
+        .search_memories(&t, &c, search("zephyrquartz linker failed"))
         .await
         .unwrap();
     let hit = turn(&r, "L1");
@@ -810,7 +834,8 @@ pub async fn long_turn_roundtrip() {
     assert!(view.len() <= digest_max + 2 * "…".len());
     assert_eq!(hit["complete"], false);
     assert_eq!(hit["excerpt"]["role"], "assistant");
-    let r = retrieval::search_memories(&eng, &t, &c, search("which tea do I like"))
+    let r = eng
+        .search_memories(&t, &c, search("which tea do I like"))
         .await
         .unwrap();
     let hit = turn(&r, "S1");

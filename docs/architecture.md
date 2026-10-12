@@ -4,7 +4,9 @@ The Cargo workspace contains three crates. `memory-service` coordinates the shar
 
 The demo chooses one complete algorithm at startup using `--memory-strategy` or the existing configuration.
 `Engine::new` fixes that selection for the process lifetime. Every tenant in that process uses the same
-algorithm. `algorithms/mod.rs` contains simple entry-point dispatch to the selected implementation.
+algorithm. The engine holds an `Arc<dyn MemoryAlgorithm>` (`runtime/algorithm.rs`) and never names a concrete
+algorithm; `algorithms::select` is the composition-time factory. The trait covers formation, retrieval, worker
+startup, private tables and DDL, and optional session/maintenance/provenance hooks.
 The configuration value `memos` selects short-term buffering with asynchronous long-term formation; `mem0` remains the default.
 
 | Algorithm | Formation and lifecycle | Retrieval | Code ownership |
@@ -32,7 +34,7 @@ Root Rust module names for moved stages are retained as compatibility reexports.
 use their own stage modules and shared components directly. `memory-rules` owns deterministic planners
 and Mem0 identity/ranking rules; `memory-fulltext` owns lexical/entity indexing.
 
-Tenant startup launches the shared index worker and calls only the selected algorithm's `runtime::start`.
+Tenant startup launches the shared index worker and calls only the selected algorithm's `start_workers`.
 Mem0 starts one ordered formation worker. Memos starts its fact/session formation worker and periodic
 maintenance worker. Only Memos context bootstrap closes earlier open sessions. `/admin/run_jobs`
 is Memos maintenance and returns an argument error in Mem0 mode.

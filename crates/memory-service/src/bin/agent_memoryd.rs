@@ -163,7 +163,8 @@ fn main() -> anyhow::Result<()> {
                         || cfg.mem0_rerank)).then_some(cfg.rerank_url.as_str()),
                 )
                 .await?;
-                let eng = Engine::new(cfg, llm, models);
+                let algorithm = memory_service::algorithms::select(cfg.memory_strategy);
+                let eng = Engine::new(cfg, llm, models, algorithm);
                 // open the default store eagerly so its workers resume unfinished tasks
                 eng.tenant("default").await?;
                 let app = http::router(eng.clone());

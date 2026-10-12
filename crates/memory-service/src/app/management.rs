@@ -4,7 +4,6 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use crate::algorithms::{mem0, memos};
 use crate::domain::types::*;
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
@@ -598,7 +597,7 @@ pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> A
 
 pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     let mut counts = Map::new();
-    let owned = mem0::OWNED_TABLES.iter().chain(memos::OWNED_TABLES);
+    let owned = eng.algorithm().owned_tables();
     for tb in schema::SHARED_TABLES.iter().chain(owned) {
         counts.insert((*tb).into(), json!(t.store.count(tb, None).await?));
     }
@@ -663,10 +662,10 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
 }
 
 /// All memories (debug). Optional filters: `status`, `type`, `project` (strings or arrays of strings).
-pub async fn export(_eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResult<Value> {
+pub async fn export(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResult<Value> {
     // Read-only evaluation extensions for request-level billing and proposal/discard audits.
     if let Some(table) = body.get("table").and_then(Value::as_str) {
-        if !matches!(
+        if !(matches!(
             table,
             schema::LLM_USAGE
                 | schema::LLM_RESPONSES
@@ -675,9 +674,8 @@ pub async fn export(_eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResu
                 | schema::PROPOSALS
                 | schema::UNCERTAINTIES
                 | schema::REQUESTS
-                | mem0::SOURCES
-                | mem0::HISTORY
-        ) {
+        ) || eng.algorithm().owned_tables().contains(&table))
+        {
             return Err(ApiError::InvalidArgument("unsupported export table".into()));
         }
         let records = t

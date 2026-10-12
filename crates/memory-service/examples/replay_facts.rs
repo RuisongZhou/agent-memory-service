@@ -56,8 +56,17 @@ async fn main() -> Result<()> {
         cfg.llm_timeout_secs,
     )?;
     let models = ModelHub::connect(&cfg.embed_url, None).await?;
-    let eng = Engine::new(cfg, llm, models);
-    let t = Arc::new(Tenant::open(&args[2], &eng.cfg.data_dir, eng.models.dim).await?);
+    let algorithm = memory_service::algorithms::select(cfg.memory_strategy);
+    let eng = Engine::new(cfg, llm, models, algorithm);
+    let t = Arc::new(
+        Tenant::open(
+            &args[2],
+            &eng.cfg.data_dir,
+            eng.models.dim,
+            eng.algorithm().schema(),
+        )
+        .await?,
+    );
     let entities: Vec<EntityRec> = t
         .store
         .select_as("SELECT * OMIT id FROM entities", vec![])

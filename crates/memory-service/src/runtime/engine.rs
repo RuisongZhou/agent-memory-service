@@ -1,11 +1,12 @@
 //! Engine: shared config, LLM, models and the tenant registry; starts per-tenant background workers.
 use anyhow::{Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::domain::types::*;
+use crate::runtime::algorithm::MemoryAlgorithm;
 use crate::runtime::config::{MemoryStrategy, ServiceConfig};
 use crate::runtime::indexer;
 use crate::runtime::llm::Llm;
@@ -16,16 +17,26 @@ use crate::storage::schema;
 pub struct Engine {
     pub cfg: ServiceConfig,
     /// Selected once at construction; requests cannot replace the active algorithm.
-    strategy: MemoryStrategy,
+    algorithm: Arc<dyn MemoryAlgorithm>,
     pub llm: Llm,
     pub models: ModelHub,
     tenants: RwLock<HashMap<String, Arc<Tenant>>>,
 }
 
 impl Engine {
-    pub fn new(cfg: ServiceConfig, llm: Llm, models: ModelHub) -> Arc<Self> {
+    pub fn new(
+        cfg: ServiceConfig,
+        llm: Llm,
+        models: ModelHub,
+        algorithm: Arc<dyn MemoryAlgorithm>,
+    ) -> Arc<Self> {
+        assert_eq!(
+            algorithm.strategy(),
+            cfg.memory_strategy,
+            "algorithm does not match the configured memory strategy"
+        );
         Arc::new(Self {
-            strategy: cfg.memory_strategy,
+            algorithm,
             cfg,
             llm,
             models,
@@ -34,7 +45,63 @@ impl Engine {
     }
 
     pub fn strategy(&self) -> MemoryStrategy {
-        self.strategy
+        self.algorithm.strategy()
+    }
+
+    pub fn algorithm(&self) -> &dyn MemoryAlgorithm {
+        &*self.algorithm
+    }
+
+    pub async fn add_memories(
+        self: &Arc<Self>,
+        t: &Arc<Tenant>,
+        c: &Caller,
+        req: AddMemoriesReq,
+    ) -> ApiResult<Value> {
+        self.algorithm.add_memories(self, t, c, req).await
+    }
+
+    pub async fn search_memories(
+        self: &Arc<Self>,
+        t: &Arc<Tenant>,
+        c: &Caller,
+        req: SearchReq,
+    ) -> ApiResult<Value> {
+        self.algorithm.search_memories(self, t, c, req).await
+    }
+
+    pub async fn list_turns(
+        self: &Arc<Self>,
+        t: &Arc<Tenant>,
+        c: &Caller,
+        req: ListTurnsReq,
+    ) -> ApiResult<Value> {
+        self.algorithm.list_turns(self, t, c, req).await
+    }
+
+    pub async fn wait_idle(self: &Arc<Self>, t: &Arc<Tenant>) -> ApiResult<Value> {
+        self.algorithm.wait_idle(self, t).await
+    }
+
+    pub async fn on_session_start(
+        self: &Arc<Self>,
+        t: &Arc<Tenant>,
+        platform: &str,
+        project: &str,
+        session: &str,
+    ) {
+        self.algorithm
+            .on_session_start(self, t, platform, project, session)
+            .await
+    }
+
+    pub async fn run_jobs(
+        self: &Arc<Self>,
+        t: &Arc<Tenant>,
+        c: &Caller,
+        body: Value,
+    ) -> ApiResult<Value> {
+        self.algorithm.run_jobs(self, t, c, body).await
     }
 
     /// Shared language selection; each algorithm owns its actual prompt contract.
@@ -63,22 +130,20 @@ impl Engine {
             return Ok(t.clone());
         }
         let t = Arc::new(
-            Tenant::open(name, &self.cfg.data_dir, self.models.dim)
-                .await
-                .with_context(|| format!("open tenant {name}"))?,
+            Tenant::open(
+                name,
+                &self.cfg.data_dir,
+                self.models.dim,
+                self.algorithm.schema(),
+            )
+            .await
+            .with_context(|| format!("open tenant {name}"))?,
         );
         self.warm(&t).await?;
         map.insert(name.to_string(), t.clone());
         drop(map);
         tokio::spawn(indexer::run_index_worker(self.clone(), t.clone()));
-        match self.strategy {
-            MemoryStrategy::Mem0 => {
-                crate::algorithms::mem0::runtime::start(self.clone(), t.clone())
-            }
-            MemoryStrategy::Memos => {
-                crate::algorithms::memos::runtime::start(self.clone(), t.clone())
-            }
-        }
+        self.algorithm.start_workers(self.clone(), t.clone());
         tracing::info!(tenant = name, "tenant opened");
         Ok(t)
     }
@@ -99,29 +164,7 @@ impl Engine {
     /// Load the entity dictionary and vector caches; check index_meta (5.2 一致性与重建).
     async fn warm(&self, t: &Arc<Tenant>) -> Result<()> {
         // The demo uses one algorithm per process and data directory. Check only at startup.
-        let incompatible = match self.strategy {
-            MemoryStrategy::Mem0 => {
-                t.store
-                    .count(schema::TURNS, Some("extractState = 'pending'"))
-                    .await?
-                    + t.store
-                        .count(
-                            schema::REQUESTS,
-                            Some(
-                                "kind IN ['text','session_end'] AND status IN ['queued','running']",
-                            ),
-                        )
-                        .await?
-            }
-            MemoryStrategy::Memos => {
-                t.store
-                    .count(
-                        schema::REQUESTS,
-                        Some("kind = 'mem0' AND status IN ['queued','running','indexing']"),
-                    )
-                    .await?
-            }
-        };
+        let incompatible = self.algorithm.foreign_unfinished_jobs(t).await?;
         anyhow::ensure!(incompatible == 0,
             "data directory has unfinished jobs from another algorithm; use the selected algorithm's data directory");
         t.store.repair_integrity().await?;
