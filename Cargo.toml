@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/memory-service",
+    "crates/memory-config",
     "crates/memory-domain",
     "crates/memory-store",
     "crates/memory-fulltext",
@@ -32,6 +33,9 @@ incremental = true
 panic = "unwind"
 
 [profile.fast.package.memory-service]
+opt-level = 1
+
+[profile.fast.package.memory-config]
 opt-level = 1
 
 [profile.fast.package.memory-domain]

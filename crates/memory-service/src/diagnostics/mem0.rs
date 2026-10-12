@@ -2,9 +2,8 @@
 use crate::algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
 use crate::app::ingest;
 use crate::app::management;
-use crate::runtime::{
-    config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
-};
+use crate::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_config::ServiceConfig;
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
@@ -43,7 +42,7 @@ pub async fn selftest() {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
-        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Mem0),
+        crate::algorithms::select(memory_config::MemoryStrategy::Mem0),
     );
     let tenant = Arc::new(
         Tenant::open("test", &root, eng.models.dim, eng.algorithm().schema())
@@ -116,7 +115,7 @@ pub async fn selftest() {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
-        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Mem0),
+        crate::algorithms::select(memory_config::MemoryStrategy::Mem0),
     );
     let ann = mem0_retrieval::search(
         &ann_engine,

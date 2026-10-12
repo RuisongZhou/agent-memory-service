@@ -102,7 +102,8 @@ pub async fn formation_selftest() {
         serde_json::from_value::<RawRelation>(json!({"F":"F2","M":null,"type":"related"})).is_err()
     );
     use crate::app::ingest;
-    use crate::runtime::{config::ServiceConfig, indexer, llm::Llm, models::ModelHub};
+    use crate::runtime::{indexer, llm::Llm, models::ModelHub};
+    use memory_config::ServiceConfig;
     use memory_store::store::{self, to_doc, Tx};
     assert_eq!(std::env::var("MEMORY_MOCK_MODELS").as_deref(), Ok("1"));
     experience::rule_selftest();
@@ -110,13 +111,13 @@ pub async fn formation_selftest() {
     let dir = std::env::temp_dir().join(format!("memory-formation-selftest-{}", util::new_id("t")));
     let eng = Engine::new(
         ServiceConfig {
-            memory_strategy: crate::runtime::config::MemoryStrategy::Memos,
+            memory_strategy: memory_config::MemoryStrategy::Memos,
             data_dir: dir.clone(),
             ..Default::default()
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
-        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
+        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
     );
     let t = Arc::new(
         Tenant::open(

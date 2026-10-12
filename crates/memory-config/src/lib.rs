@@ -1,4 +1,4 @@
-//! Tunables. Defaults are the values given in the design document (初定 values marked).
+//! Startup configuration and tunables. Defaults are the values given in the design document (初定 values marked).
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

@@ -2,13 +2,8 @@
 use crate::algorithms;
 use crate::app::ingest;
 use crate::retrieval;
-use crate::runtime::{
-    config::{MemoryStrategy, ServiceConfig},
-    engine::Engine,
-    llm::Llm,
-    models::ModelHub,
-    tenant::Tenant,
-};
+use crate::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;

@@ -12,7 +12,7 @@ build:
 test:
 	$(PYTHON) -m pytest -q eval/tests
 test-rust:
-	$(CARGO) test --locked -p memory-rules -p memory-fulltext --profile fast $(JFLAG)
+	$(CARGO) test --locked -p memory-rules -p memory-fulltext -p memory-config --profile fast $(JFLAG)
 test-service:
 	$(CARGO) test --locked -p memory-domain -p memory-store -p memory-service --lib --profile fast $(JFLAG)
 selftest:

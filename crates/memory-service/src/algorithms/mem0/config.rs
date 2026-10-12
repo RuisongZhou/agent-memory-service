@@ -1,7 +1,7 @@
 //! Read-only view of the mem0 tunables inside the flat `ServiceConfig` file format.
 //! The file stays flat (serde `flatten` cannot be combined with `deny_unknown_fields`); this view lets the
 //! algorithm read its own section without reaching into the shared struct field by field.
-use crate::runtime::config::ServiceConfig;
+use memory_config::ServiceConfig;
 
 #[derive(Debug, Clone)]
 pub struct Mem0Config {

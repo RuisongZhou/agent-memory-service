@@ -2543,6 +2543,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "memory-domain"
 version = "0.1.0"
 dependencies = [
@@ -2570,12 +2579,9 @@ dependencies = [
 name = "memory-rules"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "blake3",
  "chrono",
  "regex",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2588,6 +2594,7 @@ dependencies = [
  "chrono",
  "clap",
  "lru",
+ "memory-config",
  "memory-domain",
  "memory-fulltext",
  "memory-rules",

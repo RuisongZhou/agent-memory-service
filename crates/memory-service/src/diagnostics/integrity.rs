@@ -1,9 +1,8 @@
 //! Persistent integrity and instruction tests. No generation or external model calls.
 use crate::app::ingest;
 use crate::retrieval;
-use crate::runtime::{
-    config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
-};
+use crate::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_config::ServiceConfig;
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
@@ -15,12 +14,12 @@ pub async fn selftest() {
     let dir = std::env::temp_dir().join(util::new_id("memory-integrity-"));
     let engine = Engine::new(
         ServiceConfig {
-            memory_strategy: crate::runtime::config::MemoryStrategy::Memos,
+            memory_strategy: memory_config::MemoryStrategy::Memos,
             ..Default::default()
         },
         Llm::new("http://127.0.0.1:1", "", "mock", 1, 1).unwrap(),
         ModelHub::mock(),
-        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
+        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
     );
     let tenant = Arc::new(
         Tenant::open("integrity", &dir, 1024, engine.algorithm().schema())

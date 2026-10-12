@@ -4,10 +4,8 @@ pub mod memos;
 
 use std::sync::Arc;
 
-use crate::runtime::{
-    algorithm::MemoryAlgorithm,
-    config::{MemoryStrategy, ServiceConfig},
-};
+use crate::runtime::algorithm::MemoryAlgorithm;
+use memory_config::{MemoryStrategy, ServiceConfig};
 
 pub fn select(strategy: MemoryStrategy) -> Arc<dyn MemoryAlgorithm> {
     match strategy {

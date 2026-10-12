@@ -1,8 +1,9 @@
 //! Semantic-only search. No generative calls, broad summaries or implicit cross-encoder.
 use super::config::Mem0Config;
 use super::repo::{self, InputFilter};
-use crate::runtime::{config::MemoryStrategy, engine::Engine, tenant::Tenant};
+use crate::runtime::{engine::Engine, tenant::Tenant};
 use anyhow::{anyhow, Result};
+use memory_config::MemoryStrategy;
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;

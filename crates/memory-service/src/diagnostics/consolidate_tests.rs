@@ -1,8 +1,7 @@
 //! Maintenance integration selftest. Supplied records and mock embeddings; never invokes a real LLM.
 use crate::algorithms::memos::formation::consolidate;
-use crate::runtime::{
-    config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
-};
+use crate::runtime::{engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_config::ServiceConfig;
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
@@ -38,13 +37,13 @@ pub async fn consolidation_selftest() {
     ));
     let eng = Engine::new(
         ServiceConfig {
-            memory_strategy: crate::runtime::config::MemoryStrategy::Memos,
+            memory_strategy: memory_config::MemoryStrategy::Memos,
             data_dir: dir.clone(),
             ..Default::default()
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
-        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
+        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
     );
     let t = Arc::new(
         Tenant::open(

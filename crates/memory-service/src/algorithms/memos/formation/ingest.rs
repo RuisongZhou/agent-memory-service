@@ -342,7 +342,7 @@ fn batch_ready(
     oldest: Option<&str>,
     force: bool,
     ended: bool,
-    cfg: &crate::runtime::config::ServiceConfig,
+    cfg: &memory_config::ServiceConfig,
     now: i64,
 ) -> bool {
     count > 0
@@ -356,7 +356,7 @@ fn batch_ready(
 
 #[cfg(feature = "selftest")]
 pub fn trigger_selftest() {
-    let cfg = crate::runtime::config::ServiceConfig::default();
+    let cfg = memory_config::ServiceConfig::default();
     let stamp = "2026-10-10T00:00:00Z";
     let start = util::ts_secs(stamp);
     assert!(!batch_ready(

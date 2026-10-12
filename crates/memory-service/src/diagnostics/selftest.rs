@@ -94,9 +94,8 @@ pub async fn store_roundtrip() {
 pub async fn retrieval_roundtrip() {
     use crate::app::management;
     use crate::retrieval;
-    use crate::runtime::{
-        config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
-    };
+    use crate::runtime::{engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant};
+    use memory_config::ServiceConfig;
     use memory_rules::timeparse;
     use memory_rules::util;
     use std::sync::Arc;
@@ -111,7 +110,7 @@ pub async fn retrieval_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
-        memory_strategy: crate::runtime::config::MemoryStrategy::Memos,
+        memory_strategy: memory_config::MemoryStrategy::Memos,
         data_dir: dir.clone(),
         ..Default::default()
     };
@@ -121,7 +120,7 @@ pub async fn retrieval_roundtrip() {
         cfg,
         llm,
         models,
-        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
+        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
     );
     let t = Arc::new(
         Tenant::open(
@@ -697,9 +696,8 @@ pub async fn retrieval_roundtrip() {
 /// window that matched; short turns keep their exact digest.
 pub async fn long_turn_roundtrip() {
     use crate::app::ingest;
-    use crate::runtime::{
-        config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
-    };
+    use crate::runtime::{engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant};
+    use memory_config::ServiceConfig;
     use memory_rules::util;
     use std::sync::Arc;
     let dir = std::env::temp_dir().join(format!(
@@ -708,7 +706,7 @@ pub async fn long_turn_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
-        memory_strategy: crate::runtime::config::MemoryStrategy::Memos,
+        memory_strategy: memory_config::MemoryStrategy::Memos,
         data_dir: dir.clone(),
         ..Default::default()
     };
@@ -719,7 +717,7 @@ pub async fn long_turn_roundtrip() {
         cfg,
         llm,
         models,
-        crate::algorithms::select(crate::runtime::config::MemoryStrategy::Memos),
+        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
     );
     let t = Arc::new(
         Tenant::open(

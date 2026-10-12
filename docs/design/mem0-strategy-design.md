@@ -353,7 +353,7 @@ J 指共用评判流程对答案正确性的通过率，F1 衡量与参考文本
 
 | 要理解的问题 | 代码位置和关键函数 |
 | --- | --- |
-| 默认选哪个策略 | `runtime/config.rs:8`，`MemoryStrategy`；默认 Mem0 |
+| 默认选哪个策略 | `crates/memory-config/src/lib.rs:8`，`MemoryStrategy`；默认 Mem0 |
 | 请求怎样进入形成模块 | `formation/ingest.rs`，`add_memories`；指令先走共享路径 |
 | 原始输入在哪里落盘 | `algorithms/mem0/formation.rs`，`enqueue`；事务一 |
 | 顺序、失败和恢复怎样工作 | `algorithms/mem0/formation.rs`，`process_until`；`publish_committed` |

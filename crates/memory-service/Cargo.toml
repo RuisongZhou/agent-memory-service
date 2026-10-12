@@ -13,6 +13,7 @@ default = ["selftest"]
 selftest = []
 
 [dependencies]
+memory-config = { path = "../memory-config" }
 memory-domain = { path = "../memory-domain" }
 memory-fulltext = { path = "../memory-fulltext" }
 memory-rules = { path = "../memory-rules" }

@@ -29,8 +29,6 @@ SQL_EXEMPT = ('memory-store/src/', 'memory-service/src/diagnostics/')
 ALGORITHMS = 'memory-service/src/algorithms/'
 # Module paths must follow the directory tree.
 PATH_ATTR = re.compile(r'#\[path\s*=')
-# memory-rules tests include the service's runtime/config.rs to check startup validation without the storage SDK.
-PATH_ATTR_EXEMPT = ('memory-rules/src/lib.rs',)
 # memory-domain is pure: no database, runtime, network or async code.
 DOMAIN_IO = re.compile(r'\bsurrealdb\b|\btokio\b|\breqwest\b|\basync\s+fn\b')
 DOMAIN_PREFIX = 'memory-domain/src/'
@@ -60,7 +58,7 @@ def rust_violations():
                 found.add(('cross-algorithm', rel))
         if not is_sql_exempt(rel) and RAW_SQL.search(text):
             found.add(('raw-sql', rel))
-        if rel not in PATH_ATTR_EXEMPT and PATH_ATTR.search(text):
+        if PATH_ATTR.search(text):
             found.add(('path-attr', rel))
         if rel.startswith(DOMAIN_PREFIX) and DOMAIN_IO.search(text):
             found.add(('domain-io', rel))
