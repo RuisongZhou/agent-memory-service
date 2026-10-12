@@ -194,13 +194,7 @@ pub(crate) async fn evidence_for(
     if ids.is_empty() {
         return Ok(out);
     }
-    let rows: Vec<EvidenceRec> = t
-        .store
-        .select_as(
-            "SELECT * OMIT id FROM evidence WHERE memoryIds CONTAINSANY $ids ORDER BY statedAt ASC",
-            vec![("ids", json!(ids))],
-        )
-        .await?;
+    let rows = t.store.evidence_for_memories(ids).await?;
     let want: HashSet<&String> = ids.iter().collect();
     for e in rows {
         for m in &e.memory_ids {

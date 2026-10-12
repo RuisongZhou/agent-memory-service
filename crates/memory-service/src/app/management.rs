@@ -69,7 +69,10 @@ pub async fn resolve_uncertainty(
     }
     // A competing assertion may participate in other unresolved questions. Do not silently resolve
     // those questions by declaring it current; keep that assertion disputed until they close too.
-    let others = t.store.select("SELECT memoryIds FROM uncertainties WHERE status = 'open' AND mid != $id AND memoryIds CONTAINS $keep", vec![("id", json!(req.id)),("keep",json!(req.keep_memory_id))]).await?;
+    let others = t
+        .store
+        .other_open_uncertainties(&req.id, &req.keep_memory_id)
+        .await?;
     let discarded: HashSet<_> = uncertainty
         .memory_ids
         .iter()
@@ -104,13 +107,7 @@ pub async fn resolve_uncertainty(
                 &memory.id,
                 patch(json!({"status":S_SUPERSEDED,"validUntil":now})),
             )?;
-            tx.raw(
-                &format!(
-                    "UPDATE memories:{} SET embedding = NONE RETURN NONE",
-                    safe_id(&memory.id)?
-                ),
-                vec![],
-            );
+            tx.clear_fields(schema::MEMORIES, &memory.id, &["embedding"])?;
         }
         tx.index_task(schema::MEMORIES, &memory.id, "upsert")?;
     }
@@ -369,31 +366,16 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
             relinked = json!({"prev": p.id, "next": n.id});
         }
         (Some(p), None) => {
-            tx.raw(
-                &format!(
-                    "UPDATE memories:{} SET supersededBy = NONE, validUntil = NONE RETURN NONE",
-                    safe_id(&p.id)?
-                ),
-                vec![],
-            );
+            tx.clear_fields(schema::MEMORIES, &p.id, &["supersededBy", "validUntil"])?;
         }
         (None, Some(n)) => {
-            tx.raw(
-                &format!(
-                    "UPDATE memories:{} SET supersedes = NONE RETURN NONE",
-                    safe_id(&n.id)?
-                ),
-                vec![],
-            );
+            tx.clear_fields(schema::MEMORIES, &n.id, &["supersedes"])?;
         }
         (None, None) => {}
     }
 
     // edges in other memories
-    let others = t
-        .store
-        .find_memories("related.id CONTAINS $id", vec![("id", json!(id))])
-        .await?;
+    let others = t.store.memories_referencing(&id).await?;
     let mut edges_removed = 0usize;
     for o in &others {
         if o.id == id {
@@ -410,13 +392,7 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
     }
 
     // evidence: rows only referencing this memory are deleted, others lose the reference
-    let ev: Vec<EvidenceRec> = t
-        .store
-        .select_as(
-            "SELECT * OMIT id FROM evidence WHERE memoryIds CONTAINS $id",
-            vec![("id", json!(id))],
-        )
-        .await?;
+    let ev = t.store.evidence_referencing(&id).await?;
     let (mut ev_deleted, mut ev_updated) = (0usize, 0usize);
     for e in &ev {
         let rest: Vec<String> = e.memory_ids.iter().filter(|x| **x != id).cloned().collect();
@@ -430,13 +406,7 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
     }
 
     // derived content in buffer turns (the fact text merged into the turn's full-text key, 3.4)
-    let turns: Vec<TurnRec> = t
-        .store
-        .select_as(
-            "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE derivedMemoryIds CONTAINS $id",
-            vec![("id", json!(id))],
-        )
-        .await?;
+    let turns = t.store.turns_deriving(&id).await?;
     for tr in &turns {
         let ids: Vec<String> = tr
             .derived_memory_ids
@@ -601,13 +571,7 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     for tb in schema::SHARED_TABLES.iter().chain(owned) {
         counts.insert((*tb).into(), json!(t.store.count(tb, None).await?));
     }
-    let rows = t
-        .store
-        .select(
-            "SELECT type, status, count() AS n FROM memories GROUP BY type, status",
-            vec![],
-        )
-        .await?;
+    let rows = t.store.memory_counts_by_type_status().await?;
     let mut by: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
     for r in rows {
         let ty = r
@@ -624,10 +588,7 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
         *by.entry(ty).or_default().entry(st).or_default() += n;
     }
     // persisted LLM usage rows: sum every numeric field (schema owned by the formation modules)
-    let usage_rows = t
-        .store
-        .select("SELECT * OMIT id FROM llm_usage", vec![])
-        .await?;
+    let usage_rows = t.store.table_docs(schema::LLM_USAGE).await?;
     let mut usage_sum: BTreeMap<String, f64> = BTreeMap::new();
     for r in &usage_rows {
         if let Some(o) = r.as_object() {
@@ -645,10 +606,7 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
         let chunks: usize = g.turn_chunks.values().map(|c| c.len()).sum();
         (g.memories.len(), g.turns.len(), chunks)
     };
-    let gap_rows = t
-        .store
-        .select("SELECT count() AS n FROM retrieval_log WHERE kind = 'search' AND returned.gap = true GROUP ALL", vec![])
-        .await?;
+    let gap_searches = t.store.gap_search_count().await?;
     Ok(json!({
         "tenant": t.name,
         "counts": counts,
@@ -656,7 +614,7 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
         "llm": {"process": eng.llm.usage_snapshot(), "persisted": usage_sum, "rows": usage_rows.len()},
         "index": {"fulltextDocs": t.ft.num_docs(), "memoryVectors": vm, "turnVectors": vt, "turnChunkVectors": vc,
                   "pendingTasks": indexer::pending(t).await?},
-        "retrieval": {"gapSearches": gap_rows.first().and_then(|r| r.get("n")).cloned().unwrap_or(json!(0))},
+        "retrieval": {"gapSearches": gap_searches},
         "jobs": indexer::stats_json(t),
     }))
 }
@@ -678,10 +636,7 @@ pub async fn export(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResul
         {
             return Err(ApiError::InvalidArgument("unsupported export table".into()));
         }
-        let records = t
-            .store
-            .select(&format!("SELECT * OMIT id FROM {table}"), vec![])
-            .await?;
+        let records = t.store.table_docs(table).await?;
         return Ok(json!({"table":table,"count":records.len(),"records":records}));
     }
     let as_list = |k: &str| -> Option<Vec<String>> {

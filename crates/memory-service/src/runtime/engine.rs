@@ -169,10 +169,7 @@ impl Engine {
             "data directory has unfinished jobs from another algorithm; use the selected algorithm's data directory");
         t.store.repair_integrity().await?;
         // entity alias dictionary (kept in memory, 5.2 实体索引)
-        let ents: Vec<EntityRec> = t
-            .store
-            .select_as("SELECT * OMIT id FROM entities", vec![])
-            .await?;
+        let ents = t.store.entities().await?;
         {
             let mut d = t.entities.write().await;
             for e in &ents {

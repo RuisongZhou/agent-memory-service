@@ -135,6 +135,20 @@ impl Tx {
         self.stmts.push(format!("DELETE {r} RETURN NONE"));
         Ok(self)
     }
+    /// Remove fields from a document: `UPDATE table:id SET f = NONE, ...`.
+    pub fn clear_fields(&mut self, table: &str, id: &str, fields: &[&str]) -> Result<&mut Self> {
+        let r = rid(table, id)?;
+        if table == schema::MEMORIES {
+            self.changed_memories = true;
+        }
+        let set = fields
+            .iter()
+            .map(|f| format!("{f} = NONE"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.stmts.push(format!("UPDATE {r} SET {set} RETURN NONE"));
+        Ok(self)
+    }
     pub fn raw(&mut self, sql: &str, binds: Vec<(&str, Value)>) -> &mut Self {
         // Raw statements are the escape hatch: conservatively drop the metadata snapshot.
         if sql.contains("memories") {

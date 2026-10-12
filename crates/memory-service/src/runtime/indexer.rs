@@ -131,13 +131,7 @@ pub async fn pending(t: &Tenant) -> Result<i64> {
 /// Process up to `limit` tasks in creation order. Returns the number processed.
 pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> Result<usize> {
     let _guard = t.lock_index().await;
-    let tasks = t
-        .store
-        .select(
-            &format!("SELECT * OMIT id FROM index_tasks ORDER BY createdTs ASC LIMIT {limit}"),
-            vec![],
-        )
-        .await?;
+    let tasks = t.store.pending_index_tasks(limit).await?;
     if tasks.is_empty() {
         return Ok(0);
     }
@@ -331,17 +325,11 @@ pub async fn schedule_rebuild(t: &Tenant, vectors: bool, fulltext: bool) -> Resu
         c.turn_chunks.clear();
     }
     let mut tx = Tx::new();
-    let mems = t.store.select("SELECT mid FROM memories", vec![]).await?;
-    for m in mems {
-        if let Some(id) = m.get("mid").and_then(|v| v.as_str()) {
-            tx.index_task(schema::MEMORIES, id, "upsert")?;
-        }
+    for id in t.store.record_ids(schema::MEMORIES).await? {
+        tx.index_task(schema::MEMORIES, &id, "upsert")?;
     }
-    let turns = t.store.select("SELECT mid FROM turns", vec![]).await?;
-    for m in turns {
-        if let Some(id) = m.get("mid").and_then(|v| v.as_str()) {
-            tx.index_task(schema::TURNS, id, "upsert")?;
-        }
+    for id in t.store.record_ids(schema::TURNS).await? {
+        tx.index_task(schema::TURNS, &id, "upsert")?;
     }
     t.store.commit(tx).await?;
     t.wake_indexer();
