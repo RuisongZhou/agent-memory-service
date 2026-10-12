@@ -19,8 +19,9 @@ import time
 from urllib.request import Request, urlopen
 
 from common import env
+from common import mem0_adapter
+from common.jsonl import save_json
 from common.llm import MODEL, QWEN_BASE_URL, api_key, set_ledger_path
-import mem0_run
 
 
 CASES = [
@@ -52,10 +53,6 @@ CASES = [
 ]
 
 
-def save(path, value):
-    Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -64,7 +61,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     logging.basicConfig(level=logging.ERROR)
     set_ledger_path(output / "usage_ledger.jsonl")
-    save(output / "cases.json", CASES)
+    save_json(output / "cases.json", CASES)
     protocol = {
         "model": MODEL, "base_url": QWEN_BASE_URL, "temperature": 0,
         "enable_thinking": False, "real_generation": True,
@@ -76,7 +73,7 @@ def main():
         "not_formal_benchmark": True,
     }
     report = {"protocol": protocol, "cases": [], "status": "running"}
-    save(output / "comparison.json", report)
+    save_json(output / "comparison.json", report)
     with socket.socket() as port_socket:
         port_socket.bind(("127.0.0.1", 0))
         port = port_socket.getsockname()[1]
@@ -110,9 +107,9 @@ def main():
                     time.sleep(.5)
             else:
                 raise RuntimeError("isolated daemon startup timed out")
-            save(output / "health-before.json", health)
+            save_json(output / "health-before.json", health)
             print("Real local embedding service ready", flush=True)
-            Memory, QwenLLM = mem0_run._install_mem0_patches(True)
+            Memory, QwenLLM = mem0_adapter.install_mem0_patches(True)
             observed = datetime(2026, 10, 10, 10, 0, tzinfo=timezone(timedelta(hours=8)))
             for case in CASES:
                 result = {"id": case["id"], "topic": case["topic"], "input": case["turns"]}
@@ -131,18 +128,18 @@ def main():
                     raise RuntimeError(f"{tenant}: service extraction did not complete")
                 for name, body in [("memories", {}), ("extract", {"table": "extract_log"}), ("usage", {"table": "llm_usage"})]:
                     value = api("/admin/export", body, tenant)
-                    save(case_dir / f"service-{name}.json", value)
+                    save_json(case_dir / f"service-{name}.json", value)
                     result[f"service_{name}"] = value
                 result["service_texts"] = [m["text"] for m in result["service_memories"]["memories"] if m["type"] == "fact"]
                 print(f"{case['id']}: service extracted {len(result['service_texts'])} facts", flush=True)
                 config = {"version": "v1.1", "vector_store": {"provider": "qdrant", "config": {
                     "collection_name": "memories", "path": str(case_dir / "mem0-store"), "embedding_model_dims": 1024}},
                     "llm": {"provider": "openai", "config": {"model": MODEL, "openai_base_url": QWEN_BASE_URL,
-                        "api_key": api_key(), "temperature": 0, "response_callback": mem0_run._ledger_callback(f"compare.{case['id']}.mem0")}},
+                        "api_key": api_key(), "temperature": 0, "response_callback": mem0_adapter.ledger_callback(f"compare.{case['id']}.mem0")}},
                     "embedder": {"provider": "openai", "config": {"model": "bge-m3", "openai_base_url": base + "/v1",
                         "api_key": "unused", "embedding_dims": 1024}},
                     "history_db_path": str(case_dir / "mem0-history.db"),
-                    "custom_instructions": mem0_run.mem0_custom_instructions()}
+                    "custom_instructions": mem0_adapter.mem0_custom_instructions()}
                 memory = Memory.from_config(config)
                 memory.llm.client.close()
                 memory.llm = QwenLLM(memory.llm.config)
@@ -154,11 +151,11 @@ def main():
                     trace.append(record)
                     response = original(messages, **kwargs)
                     record["response"] = response
-                    save(case_dir / "mem0-trace.json", trace)
+                    save_json(case_dir / "mem0-trace.json", trace)
                     return response
 
                 memory.llm.generate_response = capture
-                mem0_run._tls.observation_date = "2026-10-10"
+                mem0_adapter.thread_context.observation_date = "2026-10-10"
                 messages = [{"role": role, "content": text} for turn in case["turns"]
                             for role, text in zip(["user", "assistant"], turn)]
                 try:
@@ -168,16 +165,16 @@ def main():
                     memory.llm.client.close()
                     memory.embedding_model.client.close()
                     memory.vector_store.client.close()
-                save(case_dir / "comparison.json", result)
-                save(output / "comparison.json", report)
+                save_json(case_dir / "comparison.json", result)
+                save_json(output / "comparison.json", report)
                 print(f"{case['id']}: Mem0 extracted {len(result['mem0_texts'])} memories", flush=True)
             report["health_after"] = api("/health")
             report["status"] = "complete"
-            save(output / "comparison.json", report)
+            save_json(output / "comparison.json", report)
             print(f"Complete: {output / 'comparison.json'}", flush=True)
         except Exception as error:
             report.update(status="failed", error=f"{type(error).__name__}: {str(error)[:300]}")
-            save(output / "comparison.json", report)
+            save_json(output / "comparison.json", report)
             raise
         finally:
             process.terminate()

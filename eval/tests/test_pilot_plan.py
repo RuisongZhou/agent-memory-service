@@ -1,4 +1,4 @@
-import usage_stats
+from common import usage as usage_ledger
 import pilot_plan
 
 
@@ -15,7 +15,7 @@ def test_per_add_usage_includes_retries_without_extrapolation():
     rows = [{"component": "mem0-pilot.add", "add_id": "a", "hit": 10, "miss": 100, "out": 20},
             {"component": "mem0-pilot.add", "add_id": "a", "hit": 20, "miss": 120, "out": 30},
             {"component": "mem0-pilot.add", "add_id": "b", "hit": 0, "miss": 150, "out": 40}]
-    adds = usage_stats.summarize_adds(rows, "mem0-pilot.add")
+    adds = usage_ledger.summarize_adds(rows, "mem0-pilot.add")
     assert adds["n_adds"] == 2
     assert adds["adds"][0]["calls"] == 2 and adds["adds"][0]["miss"] == 220
     assert "usd" not in adds and "usd_per_add" not in adds

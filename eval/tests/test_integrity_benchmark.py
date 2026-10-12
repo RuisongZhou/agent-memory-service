@@ -1,5 +1,6 @@
-from integrity_benchmark import select_questions, semantic_hash, reuse_answers
-from answer_and_judge import fingerprint
+from integrity_benchmark import select_questions, reuse_answers
+from common.answers import fingerprint
+from common.corpus import semantic_hash
 from common import jsonl
 import pytest
 

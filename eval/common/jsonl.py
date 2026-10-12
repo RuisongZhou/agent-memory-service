@@ -1,4 +1,4 @@
-"""Tiny JSONL helpers for incremental, resumable outputs."""
+"""Tiny JSON/JSONL helpers for incremental, resumable outputs."""
 from __future__ import annotations
 
 import fcntl
@@ -54,3 +54,8 @@ def append(path: Path | str, row: dict[str, Any]) -> None:
 
 def keys(path: Path | str, field: str = "qid") -> set:
     return {r[field] for r in read(path) if field in r}
+
+
+def save_json(path: Path | str, value: Any) -> None:
+    """Write one pretty-printed UTF-8 JSON document (single-file results, not incremental)."""
+    Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")

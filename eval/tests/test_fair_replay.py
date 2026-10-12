@@ -1,6 +1,6 @@
 from common.metrics import count_tokens
-from fair_replay import legacy_blocks, pack_blocks
-from memory_run import format_context
+from common.context_format import format_context, pack_blocks
+from fair_replay import legacy_blocks
 
 
 def test_pack_preserves_whole_records_and_counts_separators():

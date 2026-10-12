@@ -115,14 +115,14 @@ def test_legacy_runner_rejects_mem0_health_before_ingestion(tmp_path):
 
 @pytest.mark.parametrize('arm,expected', [('current', 'current'), ('mem0-strategy', 'mem0')])
 def test_migration_control_overrides_inherited_strategy(monkeypatch, tmp_path, arm, expected):
-    import mem0_migration
+    from common import migration
     monkeypatch.setenv('MEMORY_STRATEGY', 'mem0' if arm == 'current' else 'memos')
     class Captured(Exception):
         pass
     def launch(command, *, env, **kwargs):
         assert env['MEMORY_STRATEGY'] == expected
         raise Captured
-    monkeypatch.setattr(mem0_migration.subprocess, 'Popen', launch)
+    monkeypatch.setattr(migration.subprocess, 'Popen', launch)
     with pytest.raises(Captured):
-        with mem0_migration.daemon(tmp_path, arm):
+        with migration.daemon(tmp_path, arm):
             pytest.fail('must stop before any HTTP requests')

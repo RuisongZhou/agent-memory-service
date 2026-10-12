@@ -7,47 +7,24 @@ Raw requests, responses, timing and corpus snapshots remain in ignored local res
 """
 from __future__ import annotations
 import argparse
-from argparse import Namespace
-from contextlib import contextmanager
 from datetime import timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import hashlib
 import json
-import os
 from pathlib import Path
-import socket
-import subprocess
-import threading
 import time
 
-import httpx
 from common import env, jsonl, locomo
-from common.llm import QWEN_BASE_URL, api_key, set_ledger_path
+from common.answers import fingerprint, summary_stats
+from common.context_format import pack_blocks
+from common.corpus import corpus_hash, sdk_corpus
+from common.llm import set_ledger_path
+from common.mem0_adapter import perspectives, thread_context
 from common.metrics import count_tokens, percentile
+from common.migration import daemon, export, relay, sdk_stores, service_blocks
 from common.protocol import guard
-from fair_replay import pack_blocks
 
 # Archived protocol arm names and the frozen current binary retain their original labels.
 # The live short-term/long-term algorithm is now named memos.
 ARMS = ('current', 'mem0-strategy', 'mem0-sdk')
-
-
-def sha(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def service_blocks(response, evidence=False):
-    blocks = []
-    for result in response.get('results', []):
-        memory = result['memory']
-        block = memory['text']
-        if evidence:
-            for source in result.get('evidence', []):
-                if source.get('context'):
-                    block += f"\nSource question at {source['context']['statedAt']}: {source['context']['span']}"
-                block += f"\nSource at {source['statedAt']}: {source['span']}"
-        blocks.append((result['score'], memory['id'], block))
-    return blocks
 
 
 def select_questions(conv, protocol):
@@ -55,129 +32,7 @@ def select_questions(conv, protocol):
     return [by_id[qid] for qid in protocol['qids']]
 
 
-@contextmanager
-def relay(root, arm, *, max_attempts=150):
-    lock = threading.Lock()
-    attempts = sum(1 for _ in jsonl.read(root / arm / 'provider.jsonl'))
-    upstream = httpx.Client(timeout=180, trust_env=True)
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_):
-            pass
-
-        def do_POST(self):
-            nonlocal attempts
-            if not self.path.endswith('/chat/completions'):
-                self.send_error(404)
-                return
-            body = self.rfile.read(int(self.headers['Content-Length']))
-            with lock:
-                attempts += 1
-                number = attempts
-            if number > max_attempts:
-                self.send_error(429, 'explicit formation attempt cap reached')
-                return
-            started = time.perf_counter()
-            record = {'arm': arm, 'attempt': number, 'request': json.loads(body)}
-            try:
-                response = upstream.post(QWEN_BASE_URL.rstrip('/') + '/chat/completions', content=body,
-                    headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_key()})
-                status, payload = response.status_code, response.content
-                record.update(status=status, response=response.json())
-            except Exception as error:
-                status, payload = 502, json.dumps({'error': {'type': type(error).__name__}}).encode()
-                record.update(status=status, error_type=type(error).__name__)
-            record['ms'] = 1000 * (time.perf_counter() - started)
-            with lock:
-                jsonl.append(root / arm / 'provider.jsonl', record)
-            self.send_response(status)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        yield f'http://127.0.0.1:{server.server_port}'
-    finally:
-        server.shutdown()
-        server.server_close()
-        upstream.close()
-
-
-@contextmanager
-def daemon(root, arm, *, paid=False, llm_url=None, max_calls=150):
-    from mem0_run import mem0_custom_instructions
-    target = root / arm
-    target.mkdir(exist_ok=True)
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
-    binary = root / 'current-agent-memoryd' if arm == 'current' else root / 'new-agent-memoryd'
-    config = {'defaultTokenBudget': 2000}
-    if arm != 'current':
-        config.update(memoryStrategy='mem0', mem0MaxTokens=8192, mem0CustomInstructions=mem0_custom_instructions())
-    config_path = target / 'config.json'
-    config_path.write_text(json.dumps(config, indent=2))
-    command = [str(binary.resolve()), 'serve', '--data-dir', str((target / 'store').resolve()),
-        '--config', str(config_path.resolve()), '--port', str(port), '--prompt-variant', 'en', '--llm-concurrency', '1', '--log-level', 'warn']
-    if arm != 'current':
-        command += ['--memory-strategy', 'mem0']
-    if llm_url:
-        command += ['--llm-base-url', llm_url]
-    child_env = dict(os.environ, QWEN_API_KEY=api_key() if paid else '', MEMORY_LLM_MAX_CALLS=str(max_calls) if paid else '0',
-        NO_PROXY='*', no_proxy='*', MEMORY_STRATEGY='current' if arm == 'current' else 'mem0')
-    child_env.pop('MEMORY_MOCK_MODELS', None)
-    with (target / 'service.log').open('a') as log:
-        process = subprocess.Popen(command, env=child_env, stdout=log, stderr=log)
-        with httpx.Client(base_url=f'http://127.0.0.1:{port}', timeout=300, trust_env=False) as client:
-            try:
-                for _ in range(600):
-                    if process.poll() is not None:
-                        raise RuntimeError('daemon failed: ' + (target / 'service.log').read_text()[-2500:])
-                    try:
-                        health = client.get('/health', timeout=1)
-                        health.raise_for_status()
-                        break
-                    except httpx.HTTPError:
-                        time.sleep(.1)
-                else:
-                    raise TimeoutError('daemon startup timed out')
-                (target / 'health.json').write_text(json.dumps(health.json(), indent=2))
-
-                def post(path, body, tenant='conv-26-en'):
-                    response = client.post(path, json=body, headers={'X-Memory-Tenant': tenant, 'X-Memory-Platform': 'locomo'})
-                    if response.is_error:
-                        raise RuntimeError(f'{path}: {response.status_code}: {response.text[:1500]}')
-                    return response.json()
-                yield post, f'http://127.0.0.1:{port}'
-            finally:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-
-
-def sdk_stores(root, url, relay_url=None):
-    import mem0_run
-    args = Namespace(stores_dir=root / 'mem0-sdk' / 'sdk-store', tag='mem0',
-        observation_date='session', no_custom_instructions=False, embed_url=url + '/v1',
-        llm_base_url=relay_url or mem0_run.QWEN_BASE_URL)
-    return mem0_run.Mem0Stores(args)
-
-
-def export(post, root, arm, tenants):
-    for tenant in tenants:
-        for table in [None, 'llm_usage', 'llm_responses', 'extract_log', 'retrieval_log'] + (['requests'] if arm == 'mem0-strategy' else []):
-            result = post('/admin/export', {} if table is None else {'table': table}, tenant)
-            (root / arm / f'{tenant}-{table or "corpus"}.json').write_text(json.dumps(result, indent=2))
-
-
 def ingest(root, arm, conv, protocol):
-    from mem0_run import perspectives, _tls
     target = root / arm
     target.mkdir(exist_ok=True)
     if (target / 'save-summary.json').exists():
@@ -233,9 +88,9 @@ def ingest(root, arm, conv, protocol):
                             utterances = session.utterances[offset:offset + protocol['batch_utterances']]
                             messages = [{'role': 'user' if u['speaker'] == perspective.speaker else 'assistant',
                                          'content': locomo.utterance_text(u)} for u in utterances]
-                            _tls.observation_date = session.start.date().isoformat()
-                            _tls.add_usage_rows = []
-                            _tls.usage_meta = {'arm': arm, 'session': session.key, 'speaker': perspective.speaker}
+                            thread_context.observation_date = session.start.date().isoformat()
+                            thread_context.add_usage_rows = []
+                            thread_context.usage_meta = {'arm': arm, 'session': session.key, 'speaker': perspective.speaker}
                             tick = time.perf_counter()
                             result = memory.add(messages, user_id=perspective.user_id, metadata={'timestamp': session.date_str})
                             jsonl.append(target / 'saves.jsonl', {'speaker': perspective.speaker, 'session': session.key,
@@ -255,24 +110,7 @@ def ingest(root, arm, conv, protocol):
 
 
 
-def sdk_corpus(memory):
-    points, offset = [], None
-    while True:
-        page, offset = memory.vector_store.client.scroll('mem0', limit=256, offset=offset,
-                                                         with_payload=True, with_vectors=False)
-        points.extend({'id': str(point.id), 'payload': point.payload} for point in page)
-        if offset is None:
-            break
-    return sorted(points, key=lambda point: point['id'])
-
-
-def corpus_hash(records):
-    return hashlib.sha256(json.dumps(sorted(records, key=lambda r: r.get('id', r.get('mid', ''))),
-                                    sort_keys=True).encode()).hexdigest()
-
-
 def search(root, arm, conv, protocol):
-    from mem0_run import perspectives
     target = root / arm
     if (target / 'contexts.jsonl').exists():
         raise ValueError('search already recorded; do not append mixed runs')
@@ -336,7 +174,6 @@ def search(root, arm, conv, protocol):
 
 def audit_report_inputs(target, protocol):
     """Validate persisted evidence; never infer a successful audit from absent artifacts."""
-    from answer_and_judge import fingerprint, _stats
     qids = protocol.get('qids', [])
     passes = protocol.get('passes', 0)
     if not qids or len(set(qids)) != len(qids) or not isinstance(passes, int) or passes < 2:
@@ -364,7 +201,7 @@ def audit_report_inputs(target, protocol):
                 or answer.get('J') != int(answer['judge_label'] == 'CORRECT')):
             raise ValueError(f'{target.name}: invalid answer fingerprint or judge label')
     summary = json.loads((target / 'summary-unified.json').read_text())
-    quality = _stats(answers)
+    quality = summary_stats(answers)
     if (summary.get('n_answered') != len(expected) or summary.get('n_contexts') != len(expected)
             or summary.get('overall') != quality):
         raise ValueError(f'{target.name}: summary does not match complete answers')

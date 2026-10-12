@@ -1,13 +1,15 @@
 from types import SimpleNamespace
 
-from mem0_migration import select_questions, service_blocks
-from fair_replay import pack_blocks
+from mem0_migration import select_questions
+from common.context_format import pack_blocks
+from common.migration import service_blocks
 import json
 import pytest
 from common import jsonl
 from common.metrics import count_tokens
-from answer_and_judge import fingerprint, _stats
-from mem0_migration import ARMS, corpus_hash, report
+from common.answers import fingerprint, summary_stats
+from common.corpus import corpus_hash
+from mem0_migration import ARMS, report
 
 
 def test_service_blocks_preserve_evidence_as_its_own_source_date():
@@ -51,7 +53,7 @@ def report_fixture(root):
             for i, ms in enumerate([100, 10, 20]):
                 jsonl.append(target / 'retrieval.jsonl', {'qid': qid, 'pass': i, 'search_ms': ms, 'context': context['context']})
         (target / 'summary-unified.json').write_text(json.dumps({
-            'overall': _stats(answers), 'n_contexts': 2, 'n_answered': 2}))
+            'overall': summary_stats(answers), 'n_contexts': 2, 'n_answered': 2}))
         (target / 'provider.jsonl').write_text(json.dumps({'ms': 500, 'response': {'usage': {}}}) + '\n')
         corpus = {'store': [{'id': 'm', 'text': 'Fact'}]}
         for name in ('corpus-before-search.json', 'corpus-after-search.json'):

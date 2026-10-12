@@ -31,7 +31,7 @@ def test_judge_prompt():
 
 
 def test_mem0_custom_instructions_loaded():
-    import mem0_run
+    from common import mem0_adapter
 
-    ci = mem0_run.mem0_custom_instructions()
+    ci = mem0_adapter.mem0_custom_instructions()
     assert "Extract memories only from user messages" in ci

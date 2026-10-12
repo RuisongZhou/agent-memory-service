@@ -43,16 +43,6 @@ ALLOWED = {
     ('raw-sql', 'retrieval/vector.rs'),
     ('raw-sql', 'runtime/engine.rs'),
     ('raw-sql', 'runtime/indexer.rs'),
-    ('script-import', 'answer_and_judge.py'),
-    ('script-import', 'conv26_report.py'),
-    ('script-import', 'extraction_compare.py'),
-    ('script-import', 'fair_replay.py'),
-    ('script-import', 'integrity_benchmark.py'),
-    ('script-import', 'locomo_full.py'),
-    ('script-import', 'locomo_trace_example.py'),
-    ('script-import', 'mem0_migration.py'),
-    ('script-import', 'preliminary_summary.py'),
-    ('script-import', 'report.py'),
 }
 
 
