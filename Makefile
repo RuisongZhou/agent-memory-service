@@ -4,7 +4,7 @@ CARGO ?= cargo
 JOBS ?=
 JFLAG = $(if $(JOBS),-j $(JOBS))
 
-.PHONY: setup build test test-rust test-service selftest smoke fmt check-public
+.PHONY: setup build test test-rust test-service selftest smoke fmt check-public check-arch
 setup:
 	python3 scripts/setup_eval.py
 build:
@@ -23,3 +23,5 @@ fmt:
 	$(CARGO) fmt --all -- --check
 check-public:
 	$(PYTHON) scripts/check_public.py
+check-arch:
+	$(PYTHON) scripts/check_architecture.py

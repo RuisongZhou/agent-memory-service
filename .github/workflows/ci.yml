@@ -22,6 +22,7 @@ jobs:
       - run: make setup
       - run: make test
       - run: make check-public
+      - run: make check-arch
   rust:
     runs-on: ubuntu-latest
     env:
