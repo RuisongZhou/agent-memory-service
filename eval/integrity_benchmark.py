@@ -21,8 +21,9 @@ import httpx
 from common import jsonl, locomo
 from common.metrics import TOKEN_COUNTER, count_tokens
 from common.protocol import guard
-from memory_run import format_context
-from answer_and_judge import fingerprint, _stats
+from common.answers import fingerprint, summary_stats
+from common.context_format import format_context
+from common.corpus import semantic_hash
 
 
 def select_questions(conv: dict, per_category: int = 8) -> list:
@@ -36,14 +37,6 @@ def select_questions(conv: dict, per_category: int = 8) -> list:
             raise ValueError(f"category {category} has only {len(group)} questions")
         selected.extend(group[:per_category])
     return selected
-
-
-def semantic_hash(records: list[dict]) -> str:
-    fields = ("id", "mid", "type", "text", "status", "scope", "effectiveAt", "validUntil",
-              "supersedes", "supersededBy", "usedMemoryIds", "derivation")
-    rows = [{key: row[key] for key in fields if key in row} for row in records]
-    rows.sort(key=lambda row: row.get("id", row.get("mid", "")))
-    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
 
 
 def reuse_answers(contexts: list[dict], source: Path) -> list[dict]:
@@ -165,13 +158,13 @@ def report(args) -> None:
                    and row.get("judge_label") in ("CORRECT", "WRONG")]
         if set(row["qid"] for row in matched) != expected:
             raise ValueError(f"{name}: incomplete or incompatible answer cohort")
-        entry = {"overall": _stats(matched), "by_category": {
-            str(cat): _stats([row for row in matched if row["category"] == cat]) for cat in locomo.EVAL_CATEGORIES}}
+        entry = {"overall": summary_stats(matched), "by_category": {
+            str(cat): summary_stats([row for row in matched if row["category"] == cat]) for cat in locomo.EVAL_CATEGORIES}}
         if name in ("current", "improved"):
             raw = list(jsonl.read(path / "retrieval.jsonl"))
-            entry["latency_by_pass"] = {str(i): _stats([{"J": 0, "f1": 0, "bleu1": 0, "search_ms": r["search_ms"]}
+            entry["latency_by_pass"] = {str(i): summary_stats([{"J": 0, "f1": 0, "bleu1": 0, "search_ms": r["search_ms"]}
                 for r in raw if r["pass"] == i]) for i in sorted({r["pass"] for r in raw})}
-            entry["warm_latency"] = _stats([{"J": 0, "f1": 0, "bleu1": 0, "search_ms": r["search_ms"]}
+            entry["warm_latency"] = summary_stats([{"J": 0, "f1": 0, "bleu1": 0, "search_ms": r["search_ms"]}
                                             for r in raw if r["pass"] > 0])
             entry["contexts_stable_across_passes"] = all(
                 len({format_context(row["response"], "time")[0] for row in raw if row["qid"] == qid}) == 1

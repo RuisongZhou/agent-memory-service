@@ -1,16 +1,13 @@
 //! Offline checks that the shared entry points preserve each algorithm's lifecycle.
-use crate::{
-    algorithms,
-    config::{MemoryStrategy, ServiceConfig},
-    engine::Engine,
-    ingest,
-    llm::Llm,
-    models::ModelHub,
-    retrieve, store,
-    tenant::Tenant,
-    types::*,
-    util,
-};
+use crate::algorithms;
+use memory_config::{MemoryStrategy, ServiceConfig};
+use memory_domain::types::*;
+use memory_engine::app::ingest;
+use memory_engine::retrieval;
+use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_rules::util;
+use memory_store::schema;
+use memory_store::store;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -22,6 +19,7 @@ fn engine(strategy: MemoryStrategy) -> Arc<Engine> {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
+        algorithms::select(strategy),
     )
 }
 
@@ -31,7 +29,11 @@ pub async fn selftest() {
         let root = std::env::temp_dir().join(util::new_id("algorithm-isolation-"));
         let eng = engine(strategy);
         // Workers are deliberately not started: each pending input can be inspected before formation.
-        let tenant = Arc::new(Tenant::open("test", &root, eng.models.dim).await.unwrap());
+        let tenant = Arc::new(
+            Tenant::open("test", &root, eng.models.dim, eng.algorithm().schema())
+                .await
+                .unwrap(),
+        );
         let caller = Caller {
             tenant: "test".into(),
             platform: "test".into(),
@@ -45,7 +47,11 @@ pub async fn selftest() {
         };
         tenant
             .store
-            .put_doc("sessions", &store::session_rid("test", "old"), &old_session)
+            .put_doc(
+                schema::SESSIONS,
+                &store::session_rid("test", "old"),
+                &old_session,
+            )
             .await
             .unwrap();
         let scope = json!({"project":"project", "session":"old"});
@@ -67,24 +73,19 @@ pub async fn selftest() {
         .await
         .unwrap();
         assert_eq!(receipt["status"], "queued");
-        assert_eq!(tenant.store.count("memories", None).await.unwrap(), 0);
+        assert_eq!(tenant.store.count(schema::MEMORIES, None).await.unwrap(), 0);
 
         match strategy {
             MemoryStrategy::Mem0 => {
-                assert_eq!(tenant.store.count("turns", None).await.unwrap(), 0);
+                assert_eq!(tenant.store.count(schema::TURNS, None).await.unwrap(), 0);
                 assert_eq!(
                     ingest::wait_idle(&eng, &tenant).await.unwrap()["status"],
                     "idle"
                 );
-                assert_eq!(tenant.store.count("memories", None).await.unwrap(), 1);
+                assert_eq!(tenant.store.count(schema::MEMORIES, None).await.unwrap(), 1);
                 assert!(matches!(
-                    algorithms::run_jobs(
-                        &eng,
-                        &tenant,
-                        &caller,
-                        json!({"jobs":["profile","skills"]})
-                    )
-                    .await,
+                    eng.run_jobs(&tenant, &caller, json!({"jobs":["profile","skills"]}))
+                        .await,
                     Err(ApiError::InvalidArgument(_))
                 ));
             }
@@ -92,7 +93,7 @@ pub async fn selftest() {
                 assert_eq!(
                     tenant
                         .store
-                        .count("turns", Some("extractState = 'pending'"))
+                        .count(schema::TURNS, Some("extractState = 'pending'"))
                         .await
                         .unwrap(),
                     1
@@ -101,7 +102,7 @@ pub async fn selftest() {
         }
 
         // Bootstrap can close buffered sessions, but cannot alter them when Mem0 is selected.
-        retrieve::get_context(
+        retrieval::get_context(
             &eng,
             &tenant,
             &caller,
@@ -140,13 +141,23 @@ pub async fn selftest() {
         assert_eq!(
             tenant
                 .store
-                .count("memories", Some("type = 'instruction'"))
+                .count(schema::MEMORIES, Some("type = 'instruction'"))
                 .await
                 .unwrap(),
             1
         );
-        assert_eq!(tenant.store.count("llm_responses", None).await.unwrap(), 0);
-        assert_eq!(tenant.store.count("llm_usage", None).await.unwrap(), 0);
+        assert_eq!(
+            tenant
+                .store
+                .count(schema::LLM_RESPONSES, None)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            tenant.store.count(schema::LLM_USAGE, None).await.unwrap(),
+            0
+        );
         drop(tenant);
         std::fs::remove_dir_all(root).unwrap();
     }

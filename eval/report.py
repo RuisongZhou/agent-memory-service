@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common.env import RESULTS_DIR  # noqa: E402
 from common.locomo import CATEGORY_NAMES, EVAL_CATEGORIES  # noqa: E402
 
-import usage_stats  # noqa: E402
+from common import usage as usage_ledger  # noqa: E402
 
 
 def fmt(x, nd=3, pct=False):
@@ -63,8 +63,8 @@ def main() -> None:
             *[fmt(row["J_by_category"][k], pct=True) for k in cat_keys],
             fmt(row["F1"], pct=True), fmt(row["BLEU1"], pct=True), fmt(row["context_tokens_mean"], 0),
             fmt(row["search_ms_mean"], 0), fmt(row["search_ms_p95"], 0)]) + " |")
-    ledger_rows = usage_stats.merge_rows([r for path in root.rglob("*ledger*.jsonl") for r in usage_stats.load_rows(path)])
-    total = usage_stats.summarize(ledger_rows)["total"]
+    ledger_rows = usage_ledger.merge_rows([r for path in root.rglob("*ledger*.jsonl") for r in usage_ledger.load_rows(path)])
+    total = usage_ledger.summarize(ledger_rows)["total"]
     warnings = []
     if any(not row["complete"] for row in table):
         warnings.append("Incomplete or unverified rows are observed partial results; they do not establish a full benchmark result.")

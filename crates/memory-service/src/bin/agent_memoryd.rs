@@ -73,6 +73,7 @@ enum Cmd {
         platform: String,
     },
     /// Run storage self-tests
+    #[cfg(feature = "selftest")]
     Selftest,
     /// Trigger an index rebuild on a running daemon
     Reindex {
@@ -147,7 +148,7 @@ fn main() -> anyhow::Result<()> {
                 if no_reranker {
                     cfg.use_reranker = false;
                 }
-                cfg.validate()?;
+                memory_service::algorithms::validate(&cfg)?;
                 let api_key = std::env::var("QWEN_API_KEY").unwrap_or_default();
                 let llm = Llm::new(
                     &llm_base_url,
@@ -162,7 +163,8 @@ fn main() -> anyhow::Result<()> {
                         || cfg.mem0_rerank)).then_some(cfg.rerank_url.as_str()),
                 )
                 .await?;
-                let eng = Engine::new(cfg, llm, models);
+                let algorithm = memory_service::algorithms::select(cfg.memory_strategy);
+                let eng = Engine::new(cfg, llm, models, algorithm);
                 // open the default store eagerly so its workers resume unfinished tasks
                 eng.tenant("default").await?;
                 let app = http::router(eng.clone());
@@ -170,6 +172,7 @@ fn main() -> anyhow::Result<()> {
                 tracing::info!("agent-memoryd listening on http://{host}:{port}");
                 axum::serve(listener, app).await?;
             }
+            #[cfg(feature = "selftest")]
             Cmd::Selftest => {
                 memory_service::selftest::store_roundtrip().await;
                 memory_service::integrity_tests::selftest().await;
@@ -177,7 +180,7 @@ fn main() -> anyhow::Result<()> {
                 memory_service::algorithm_isolation::selftest().await;
                 memory_service::selftest::retrieval_roundtrip().await;
                 memory_service::selftest::long_turn_roundtrip().await;
-                memory_service::extract::formation_selftest().await;
+                memory_service::algorithms::memos::formation::selftest::formation_selftest().await;
                 memory_service::consolidate_tests::consolidation_selftest().await;
             }
             Cmd::Mcp { url, platform } => {

@@ -1,8 +1,12 @@
 //! Offline integrity checks for the additive strategy, using mock embeddings and no provider.
-use super::{
-    config::ServiceConfig, engine::Engine, ingest, llm::Llm, manage, mem0_formation,
-    mem0_retrieval, models::ModelHub, tenant::Tenant, types::*, util,
-};
+use memory_algo_mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
+use memory_config::ServiceConfig;
+use memory_domain::types::*;
+use memory_engine::app::ingest;
+use memory_engine::app::management;
+use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_rules::util;
+use memory_store::schema;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -38,8 +42,13 @@ pub async fn selftest() {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
+        crate::algorithms::select(memory_config::MemoryStrategy::Mem0),
     );
-    let tenant = Arc::new(Tenant::open("test", &root, eng.models.dim).await.unwrap());
+    let tenant = Arc::new(
+        Tenant::open("test", &root, eng.models.dim, eng.algorithm().schema())
+            .await
+            .unwrap(),
+    );
     let caller = Caller {
         tenant: tenant.name.clone(),
         platform: "test".into(),
@@ -106,6 +115,7 @@ pub async fn selftest() {
         },
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         ModelHub::mock(),
+        crate::algorithms::select(memory_config::MemoryStrategy::Mem0),
     );
     let ann = mem0_retrieval::search(
         &ann_engine,
@@ -155,18 +165,18 @@ pub async fn selftest() {
         .await
         .unwrap();
     }
-    let filtered = super::retrieve::list_turns(
-        &eng,
-        &tenant,
-        &caller,
-        ListTurnsReq {
-            scope: clock_scope.clone(),
-            since: Some("2026-10-12T01:00:00Z".into()),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+    let filtered = eng
+        .list_turns(
+            &tenant,
+            &caller,
+            ListTurnsReq {
+                scope: clock_scope.clone(),
+                since: Some("2026-10-12T01:00:00Z".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(
         filtered["turns"]
             .as_array()
@@ -176,18 +186,18 @@ pub async fn selftest() {
             .collect::<Vec<_>>(),
         vec!["equal", "after"]
     );
-    assert!(super::retrieve::list_turns(
-        &eng,
-        &tenant,
-        &caller,
-        ListTurnsReq {
-            scope: clock_scope,
-            since: Some("invalid".into()),
-            ..Default::default()
-        }
-    )
-    .await
-    .is_err());
+    assert!(eng
+        .list_turns(
+            &tenant,
+            &caller,
+            ListTurnsReq {
+                scope: clock_scope,
+                since: Some("invalid".into()),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err());
     assert!(result["profiles"].as_array().unwrap().is_empty());
     let other = ReqScope {
         project: Some("b".into()),
@@ -219,7 +229,7 @@ pub async fn selftest() {
     tenant
         .store
         .merge_doc(
-            "requests",
+            schema::REQUESTS,
             rid,
             json!({"status":"indexing","searchable":false}),
         )
@@ -240,7 +250,7 @@ pub async fn selftest() {
         true
     );
     // Corrections preserve the interface and hide the old value before any later query.
-    let corrected = manage::correct_memory(
+    let corrected = management::correct_memory(
         &eng,
         &tenant,
         &caller,
@@ -254,7 +264,9 @@ pub async fn selftest() {
     .await
     .unwrap();
     let new_id = corrected["memory"]["id"].as_str().unwrap().to_string();
-    super::indexer::drain(&eng, &tenant).await.unwrap();
+    memory_engine::runtime::indexer::drain(&eng, &tenant)
+        .await
+        .unwrap();
     let result = mem0_retrieval::search(
         &eng,
         &tenant,
@@ -278,7 +290,7 @@ pub async fn selftest() {
         .iter()
         .any(|r| r["memory"]["id"] == new_id));
     // Feedback remains restricted to IDs actually returned by this search.
-    let feedback = manage::feedback(
+    let feedback = management::feedback(
         &eng,
         &tenant,
         FeedbackReq {
@@ -292,12 +304,15 @@ pub async fn selftest() {
     assert_eq!(feedback["accepted"], true);
     let feedback_log = tenant
         .store
-        .get_doc("retrieval_log", result["retrievalId"].as_str().unwrap())
+        .get_doc(
+            schema::RETRIEVAL_LOG,
+            result["retrievalId"].as_str().unwrap(),
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(feedback_log["feedback"]["applied"][0], new_id);
-    manage::delete_memory(&eng, &tenant, IdReq { id: new_id })
+    management::delete_memory(&eng, &tenant, IdReq { id: new_id })
         .await
         .unwrap();
     assert!(mem0_retrieval::search(

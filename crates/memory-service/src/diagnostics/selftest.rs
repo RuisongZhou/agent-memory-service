@@ -2,8 +2,9 @@
 //! need a second dependency build with dev-dependency features).
 use serde_json::json;
 
-use super::store::*;
-use super::types::*;
+use memory_domain::types::*;
+use memory_store::schema;
+use memory_store::store::*;
 
 fn tempdir() -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("memory-selftest-{}", std::process::id()));
@@ -14,7 +15,7 @@ fn tempdir() -> std::path::PathBuf {
 
 pub async fn store_roundtrip() {
     let dir = tempdir();
-    let s = Store::open(&dir.as_path().join("db"), 4).await.unwrap();
+    let s = Store::open(&dir.as_path().join("db"), 4, "").await.unwrap();
     let m = MemoryRec {
         id: "mabc123".into(),
         mtype: T_FACT.into(),
@@ -32,19 +33,25 @@ pub async fn store_roundtrip() {
         ..Default::default()
     };
     let mut tx = Tx::new();
-    tx.put("memories", &m.id, to_doc(&m).unwrap()).unwrap();
-    tx.index_task("memories", &m.id, "upsert").unwrap();
-    tx.merge("memories", &m.id, json!({"evidenceCount": 2}))
+    tx.put(schema::MEMORIES, &m.id, to_doc(&m).unwrap())
+        .unwrap();
+    tx.index_task(schema::MEMORIES, &m.id, "upsert").unwrap();
+    tx.merge(schema::MEMORIES, &m.id, json!({"evidenceCount": 2}))
         .unwrap();
     s.commit(tx).await.unwrap();
     let got = s.get_memory("mabc123").await.unwrap().unwrap();
     assert_eq!(got.text, m.text);
     assert_eq!(got.evidence_count, 2);
     assert_eq!(got.scope.project.as_deref(), Some("p1"));
-    s.set_embedding("memories", "mabc123", Some(&[0.1, 0.2, 0.3, 0.4]), "x")
-        .await
-        .unwrap();
-    let e = s.load_embeddings("memories").await.unwrap();
+    s.set_embedding(
+        schema::MEMORIES,
+        "mabc123",
+        Some(&[0.1, 0.2, 0.3, 0.4]),
+        "x",
+    )
+    .await
+    .unwrap();
+    let e = s.load_embeddings(schema::MEMORIES).await.unwrap();
     assert_eq!(e.len(), 1);
     assert_eq!(e[0].0, "mabc123");
     let found = s
@@ -60,7 +67,7 @@ pub async fn store_roundtrip() {
         .await
         .unwrap();
     assert_eq!(many.len(), 1);
-    assert_eq!(s.count("index_tasks", None).await.unwrap(), 1);
+    assert_eq!(s.count(schema::INDEX_TASKS, None).await.unwrap(), 1);
     let tasks = s
         .select(
             "SELECT * OMIT id FROM index_tasks ORDER BY createdTs ASC LIMIT 5",
@@ -71,7 +78,7 @@ pub async fn store_roundtrip() {
     assert_eq!(tasks[0]["targetId"], json!("mabc123"));
     // transaction failure rolls back
     let mut tx = Tx::new();
-    tx.merge("memories", "mabc123", json!({"status": "superseded"}))
+    tx.merge(schema::MEMORIES, "mabc123", json!({"status": "superseded"}))
         .unwrap();
     tx.raw("THROW 'boom'", vec![]);
     assert!(s.commit(tx).await.is_err());
@@ -85,10 +92,14 @@ pub async fn store_roundtrip() {
 /// Mock-model integration coverage for retrieval and management, including primary storage and indexes.
 /// No API key, generative-model request or background worker is involved.
 pub async fn retrieval_roundtrip() {
-    use super::{
-        config::ServiceConfig, engine::Engine, indexer, llm::Llm, manage, models::ModelHub,
-        retrieve, tenant::Tenant, timeparse, util,
+    use memory_config::ServiceConfig;
+    use memory_engine::app::management;
+    use memory_engine::retrieval;
+    use memory_engine::runtime::{
+        engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
     };
+    use memory_rules::timeparse;
+    use memory_rules::util;
     use std::sync::Arc;
     assert_eq!(
         std::env::var("MEMORY_MOCK_MODELS").as_deref(),
@@ -101,17 +112,27 @@ pub async fn retrieval_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
-        memory_strategy: super::config::MemoryStrategy::Memos,
+        memory_strategy: memory_config::MemoryStrategy::Memos,
         data_dir: dir.clone(),
         ..Default::default()
     };
     let llm = Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap();
     let models = ModelHub::mock();
-    let eng = Engine::new(cfg, llm, models);
+    let eng = Engine::new(
+        cfg,
+        llm,
+        models,
+        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
+    );
     let t = Arc::new(
-        Tenant::open("retrieval-selftest", &dir, eng.models.dim)
-            .await
-            .unwrap(),
+        Tenant::open(
+            "retrieval-selftest",
+            &dir,
+            eng.models.dim,
+            eng.algorithm().schema(),
+        )
+        .await
+        .unwrap(),
     );
     let c = Caller {
         tenant: t.name.clone(),
@@ -275,7 +296,7 @@ pub async fn retrieval_roundtrip() {
             created_at: now.clone(),
         },
     ];
-    let seeded = manage::seed(&eng, &t, json!({"memories":mems, "turns":turns, "sessions":sessions,
+    let seeded = management::seed(&eng, &t, json!({"memories":mems, "turns":turns, "sessions":sessions,
         "evidence":evidence, "entities":[{"id":"eservice", "name":"deployment service", "aliases":["service"], "scope":{"kind":"project", "project":"p1"}}]})).await.unwrap();
     assert_eq!(seeded["memories"], 30);
     let search_req = |query: &str| SearchReq {
@@ -295,18 +316,18 @@ pub async fn retrieval_roundtrip() {
             })
             .collect::<Vec<String>>()
     };
-    let port = retrieve::search_memories(
-        &eng,
-        &t,
-        &c,
-        SearchReq {
-            include_history: Some(true),
-            include_evidence: Some(true),
-            ..search_req("deployment service port 8100")
-        },
-    )
-    .await
-    .unwrap();
+    let port = eng
+        .search_memories(
+            &t,
+            &c,
+            SearchReq {
+                include_history: Some(true),
+                include_evidence: Some(true),
+                ..search_req("deployment service port 8100")
+            },
+        )
+        .await
+        .unwrap();
     assert!(ids(&port).contains(&"m01".into()));
     let p = port["results"]
         .as_array()
@@ -321,41 +342,44 @@ pub async fn retrieval_roundtrip() {
         .unwrap()
         .iter()
         .any(|v| v["turnId"] == "T1"));
-    let conflict = retrieve::search_memories(
-        &eng,
-        &t,
-        &c,
-        SearchReq {
-            top_k: Some(1),
-            ..search_req("deployment region")
-        },
-    )
-    .await
-    .unwrap();
+    let conflict = eng
+        .search_memories(
+            &t,
+            &c,
+            SearchReq {
+                top_k: Some(1),
+                ..search_req("deployment region")
+            },
+        )
+        .await
+        .unwrap();
     assert!(ids(&conflict).contains(&"m02".into()) && ids(&conflict).contains(&"m03".into()));
     assert_eq!(
         conflict["results"][0]["slot"],
         conflict["results"][1]["slot"]
     );
-    let candidate = retrieve::search_memories(&eng, &t, &c, search_req("candidatefact"))
+    let candidate = eng
+        .search_memories(&t, &c, search_req("candidatefact"))
         .await
         .unwrap();
     assert!(ids(&candidate).contains(&"m04".into()));
-    let private = retrieve::search_memories(&eng, &t, &c, search_req("secretproject"))
+    let private = eng
+        .search_memories(&t, &c, search_req("secretproject"))
         .await
         .unwrap();
     assert!(ids(&private).is_empty() && private["recentTurns"].as_array().unwrap().is_empty());
-    let cross =
-        retrieve::search_memories(&eng, &t, &c, search_req("crossscope public predecessor"))
-            .await
-            .unwrap();
+    let cross = eng
+        .search_memories(&t, &c, search_req("crossscope public predecessor"))
+        .await
+        .unwrap();
     assert!(ids(&cross).contains(&"m14".into()));
     assert!(!ids(&cross).contains(&"m13".into()));
-    let buffer = retrieve::search_memories(&eng, &t, &c, search_req("bufferonly"))
+    let buffer = eng
+        .search_memories(&t, &c, search_req("bufferonly"))
         .await
         .unwrap();
     assert_eq!(buffer["recentTurns"][0]["turnId"], "T2");
-    let log_count = t.store.count("retrieval_log", None).await.unwrap();
+    let log_count = t.store.count(schema::RETRIEVAL_LOG, None).await.unwrap();
     let access = t
         .store
         .get_memory("m01")
@@ -363,8 +387,7 @@ pub async fn retrieval_roundtrip() {
         .unwrap()
         .unwrap()
         .last_accessed_at;
-    retrieve::search_memories(
-        &eng,
+    eng.search_memories(
         &t,
         &c,
         SearchReq {
@@ -375,7 +398,7 @@ pub async fn retrieval_roundtrip() {
     .await
     .unwrap();
     assert_eq!(
-        t.store.count("retrieval_log", None).await.unwrap(),
+        t.store.count(schema::RETRIEVAL_LOG, None).await.unwrap(),
         log_count
     );
     assert_eq!(
@@ -388,7 +411,7 @@ pub async fn retrieval_roundtrip() {
         access
     );
     for budget in [1, 50, 1500] {
-        let context = retrieve::get_context(
+        let context = retrieval::get_context(
             &eng,
             &t,
             &c,
@@ -417,33 +440,33 @@ pub async fn retrieval_roundtrip() {
             .unwrap()
             .contains("secret full steps"));
     }
-    let listed = retrieve::list_turns(
-        &eng,
-        &t,
-        &c,
-        ListTurnsReq {
-            scope: scope.clone(),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+    let listed = eng
+        .list_turns(
+            &t,
+            &c,
+            ListTurnsReq {
+                scope: scope.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(listed["sessions"][0]["session"], "s1");
-    let raw = retrieve::list_turns(
-        &eng,
-        &t,
-        &c,
-        ListTurnsReq {
-            scope: scope.clone(),
-            turn_ids: Some(vec!["T2".into()]),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+    let raw = eng
+        .list_turns(
+            &t,
+            &c,
+            ListTurnsReq {
+                scope: scope.clone(),
+                turn_ids: Some(vec!["T2".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(raw["turns"].as_array().unwrap().len(), 1);
     assert_eq!(raw["turns"][0]["project"], "p1");
-    let history = retrieve::get_memory(
+    let history = retrieval::get_memory(
         &eng,
         &t,
         GetMemoryReq {
@@ -457,7 +480,8 @@ pub async fn retrieval_roundtrip() {
     assert_eq!(history["history"].as_array().unwrap().len(), 2);
     assert_eq!(history["history"][0]["validUntil"], now);
     for n in 1..=3 {
-        let r = retrieve::search_memories(&eng, &t, &c, search_req("candidateskill"))
+        let r = eng
+            .search_memories(&t, &c, search_req("candidateskill"))
             .await
             .unwrap();
         assert!(ids(&r).contains(&"m11".into()));
@@ -467,8 +491,8 @@ pub async fn retrieval_roundtrip() {
             outcome: "helpful".into(),
         };
         let (a, b) = tokio::join!(
-            manage::feedback(&eng, &t, req.clone()),
-            manage::feedback(&eng, &t, req)
+            management::feedback(&eng, &t, req.clone()),
+            management::feedback(&eng, &t, req)
         );
         assert_ne!(a.unwrap()["accepted"], b.unwrap()["accepted"]);
         assert_eq!(
@@ -485,10 +509,11 @@ pub async fn retrieval_roundtrip() {
         t.store.get_memory("m11").await.unwrap().unwrap().status,
         S_CURRENT
     );
-    let r = retrieve::search_memories(&eng, &t, &c, search_req("candidateskill"))
+    let r = eng
+        .search_memories(&t, &c, search_req("candidateskill"))
         .await
         .unwrap();
-    manage::feedback(
+    management::feedback(
         &eng,
         &t,
         FeedbackReq {
@@ -502,10 +527,10 @@ pub async fn retrieval_roundtrip() {
     let skill = t.store.get_memory("m11").await.unwrap().unwrap();
     assert_eq!(skill.status, S_CANDIDATE);
     assert_eq!(skill.helpful_count, 0);
-    let expired = t.store.log("retrieval_log", json!({"kind":"search", "createdAt":(util::now()-chrono::Duration::hours(25)).to_rfc3339(),
+    let expired = t.store.log(schema::RETRIEVAL_LOG, json!({"kind":"search", "createdAt":(util::now()-chrono::Duration::hours(25)).to_rfc3339(),
         "returned":{"memories":[{"id":"m04"}]}})).await.unwrap();
     assert_eq!(
-        manage::feedback(
+        management::feedback(
             &eng,
             &t,
             FeedbackReq {
@@ -518,7 +543,7 @@ pub async fn retrieval_roundtrip() {
         .unwrap()["accepted"],
         false
     );
-    let corrected = manage::correct_memory(
+    let corrected = management::correct_memory(
         &eng,
         &t,
         &c,
@@ -533,10 +558,10 @@ pub async fn retrieval_roundtrip() {
     let new_id = corrected["memory"]["id"].as_str().unwrap().to_string();
     assert_eq!(corrected["memory"]["source"]["origin"], ORIGIN_EXPLICIT);
     assert!(
-        matches!(manage::correct_memory(&eng, &t, &c, CorrectMemoryReq { id:"m20".into(), ..Default::default() }).await, Err(ApiError::NotCurrent(id)) if id == new_id)
+        matches!(management::correct_memory(&eng, &t, &c, CorrectMemoryReq { id:"m20".into(), ..Default::default() }).await, Err(ApiError::NotCurrent(id)) if id == new_id)
     );
     assert!(matches!(
-        manage::correct_memory(
+        management::correct_memory(
             &eng,
             &t,
             &c,
@@ -549,7 +574,7 @@ pub async fn retrieval_roundtrip() {
         Err(ApiError::NotCurrent(_))
     ));
     assert!(matches!(
-        manage::correct_memory(
+        management::correct_memory(
             &eng,
             &t,
             &c,
@@ -562,7 +587,7 @@ pub async fn retrieval_roundtrip() {
         .await,
         Err(ApiError::InvalidArgument(_))
     ));
-    manage::correct_memory(
+    management::correct_memory(
         &eng,
         &t,
         &c,
@@ -577,7 +602,7 @@ pub async fn retrieval_roundtrip() {
         t.store.get_memory("m21").await.unwrap().unwrap().status,
         S_SUPERSEDED
     );
-    let deletion = manage::delete_memory(&eng, &t, IdReq { id: "m02".into() })
+    let deletion = management::delete_memory(&eng, &t, IdReq { id: "m02".into() })
         .await
         .unwrap();
     assert_eq!(deletion["evidenceUpdated"], 1);
@@ -585,14 +610,14 @@ pub async fn retrieval_roundtrip() {
         t.store.get_memory("m03").await.unwrap().unwrap().status,
         S_CURRENT
     );
-    let deleted = manage::delete_memory(&eng, &t, IdReq { id: "m01".into() })
+    let deleted = management::delete_memory(&eng, &t, IdReq { id: "m01".into() })
         .await
         .unwrap();
     assert_eq!(deleted["derivedDeleted"], json!(["m16"]));
     assert!(t.store.get_memory("m16").await.unwrap().is_none());
     assert!(t
         .store
-        .get_doc("evidence", "eport")
+        .get_doc(schema::EVIDENCE, "eport")
         .await
         .unwrap()
         .is_none());
@@ -607,18 +632,18 @@ pub async fn retrieval_roundtrip() {
     assert!(!t.vecs.read().await.memories.contains_key("m01"));
     indexer::drain(&eng, &t).await.unwrap();
     assert_eq!(
-        manage::export(&eng, &t, json!({})).await.unwrap()["count"],
+        management::export(&eng, &t, json!({})).await.unwrap()["count"],
         28
     );
     assert!(
-        manage::stats(&eng, &t).await.unwrap()["counts"]["retrieval_log"]
+        management::stats(&eng, &t).await.unwrap()["counts"]["retrieval_log"]
             .as_i64()
             .unwrap()
             > 0
     );
     // Pure logic remains covered by selftest without rebuilding main-crate test dependencies.
     assert_eq!(
-        retrieve::mmr_order(
+        retrieval::mmr_order(
             &[1.0, 0.98, 0.9],
             &|i, j| if (i == 0 && j == 1) || (i == 1 && j == 0) {
                 0.99
@@ -631,10 +656,10 @@ pub async fn retrieval_roundtrip() {
     );
     let mut used = 0;
     assert_eq!(
-        retrieve::pack(&[50, 4, 3], 7, &mut used),
+        retrieval::pack(&[50, 4, 3], 7, &mut used),
         vec![false, true, true]
     );
-    assert!((retrieve::evidence_mult(8) - 1.15).abs() < 1e-10);
+    assert!((retrieval::evidence_mult(8) - 1.15).abs() < 1e-10);
     let reference = chrono::DateTime::parse_from_rfc3339("2026-10-09T10:00:00+08:00").unwrap();
     for (q, start, end) in [
         ("last Saturday", "2026-10-03", "2026-10-04"),
@@ -672,10 +697,12 @@ pub async fn retrieval_roundtrip() {
 /// Long turns: the buffer stores complete messages, indexes their windows, and search returns the
 /// window that matched; short turns keep their exact digest.
 pub async fn long_turn_roundtrip() {
-    use super::{
-        config::ServiceConfig, engine::Engine, indexer, ingest, llm::Llm, models::ModelHub,
-        retrieve, tenant::Tenant, util,
+    use memory_config::ServiceConfig;
+    use memory_engine::app::ingest;
+    use memory_engine::runtime::{
+        engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
     };
+    use memory_rules::util;
     use std::sync::Arc;
     let dir = std::env::temp_dir().join(format!(
         "memory-long-turn-selftest-{}-{}",
@@ -683,18 +710,28 @@ pub async fn long_turn_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
-        memory_strategy: super::config::MemoryStrategy::Memos,
+        memory_strategy: memory_config::MemoryStrategy::Memos,
         data_dir: dir.clone(),
         ..Default::default()
     };
     let (digest_max, formation_max) = (cfg.digest_max_bytes, cfg.max_message_bytes);
     let llm = Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap();
     let models = ModelHub::mock();
-    let eng = Engine::new(cfg, llm, models);
+    let eng = Engine::new(
+        cfg,
+        llm,
+        models,
+        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
+    );
     let t = Arc::new(
-        Tenant::open("long-turn-selftest", &dir, eng.models.dim)
-            .await
-            .unwrap(),
+        Tenant::open(
+            "long-turn-selftest",
+            &dir,
+            eng.models.dim,
+            eng.algorithm().schema(),
+        )
+        .await
+        .unwrap(),
     );
     let c = Caller {
         tenant: t.name.clone(),
@@ -765,7 +802,7 @@ pub async fn long_turn_roundtrip() {
     assert_eq!(stored[0].1.len(), long.chunks.len());
     // A later re-index (e.g. after extraction updates derived text) keeps the window vectors.
     let mut tx = Tx::new();
-    tx.index_task("turns", &rid, "upsert").unwrap();
+    tx.index_task(schema::TURNS, &rid, "upsert").unwrap();
     t.store.commit(tx).await.unwrap();
     indexer::drain(&eng, &t).await.unwrap();
     assert_eq!(
@@ -788,7 +825,8 @@ pub async fn long_turn_roundtrip() {
             .cloned()
             .unwrap_or_else(|| panic!("{id} not recalled: {r}"))
     };
-    let r = retrieve::search_memories(&eng, &t, &c, search("zephyrquartz linker failed"))
+    let r = eng
+        .search_memories(&t, &c, search("zephyrquartz linker failed"))
         .await
         .unwrap();
     let hit = turn(&r, "L1");
@@ -798,7 +836,8 @@ pub async fn long_turn_roundtrip() {
     assert!(view.len() <= digest_max + 2 * "…".len());
     assert_eq!(hit["complete"], false);
     assert_eq!(hit["excerpt"]["role"], "assistant");
-    let r = retrieve::search_memories(&eng, &t, &c, search("which tea do I like"))
+    let r = eng
+        .search_memories(&t, &c, search("which tea do I like"))
         .await
         .unwrap();
     let hit = turn(&r, "S1");

@@ -19,10 +19,9 @@ import subprocess
 import time
 from urllib.request import Request, urlopen
 
-from common import env, locomo
+from common import env, locomo, mem0_adapter
+from common.jsonl import save_json
 from common.llm import MODEL, QWEN_BASE_URL, api_key, set_ledger_path
-from extraction_compare import save
-import mem0_run
 
 
 def main():
@@ -49,7 +48,7 @@ def main():
                 "model": MODEL, "temperature": 0, "enable_thinking": False, "real_generation": True,
                 "service_prompt": "p1_en + p2_en (unified formation, LoCoMo human-human adaptation)",
                 "service_output_format": "facts-object-v2", "service_source_span_limit_chars": 1024,
-                "service_prompt_sha256": hashlib.sha256(b"".join((env.ROOT_DIR / "crates/memory-service/src/algorithms/memos/formation/prompts" / n).read_bytes() for n in ("p1_en.txt", "p2_en.txt", "p12_structure_en.txt"))).hexdigest(),
+                "service_prompt_sha256": hashlib.sha256(b"".join((env.ROOT_DIR / "crates/memory-algo-memos/src/formation/prompts" / n).read_bytes() for n in ("p1_en.txt", "p2_en.txt", "p12_structure_en.txt"))).hexdigest(),
                 "mem0_prompt": "default additive + existing LoCoMo custom instructions",
                 "mem0_version": importlib.metadata.version("mem0ai"),
                 "service_batch": "3 paired turns", "mem0_batch": "2 messages, both speaker perspectives",
@@ -63,7 +62,7 @@ def main():
             raise RuntimeError("resume requires unchanged protocol and an unfinished Mem0 stage")
         result["status"] = "running"
         result.pop("error", None)
-    save(output / "result.json", result)
+    save_json(output / "result.json", result)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -117,18 +116,18 @@ def main():
                 result["service_search"] = api("/v1/search_memories", result["service_search_request"])
             result["service_retrieval_trace"] = api("/admin/export", {"table": "retrieval_log"})
             print(f"Service saved {len(result['service_memories']['memories'])} memories and returned {len(result['service_search']['results'])}", flush=True)
-            save(output / "result.json", result)
-            Memory, QwenLLM = mem0_run._install_mem0_patches(True)
-            for perspective in mem0_run.perspectives(conversation):
+            save_json(output / "result.json", result)
+            Memory, QwenLLM = mem0_adapter.install_mem0_patches(True)
+            for perspective in mem0_adapter.perspectives(conversation):
                 directory = output / f"mem0-{perspective.speaker}"
                 directory.mkdir()
                 config = {"version": "v1.1", "vector_store": {"provider": "qdrant", "config": {
                     "collection_name": "memories", "path": str(directory / "store"), "embedding_model_dims": 1024}},
                     "llm": {"provider": "openai", "config": {"model": MODEL, "openai_base_url": QWEN_BASE_URL,
-                        "api_key": api_key(), "temperature": 0, "response_callback": mem0_run._ledger_callback(f"locomo-example.{perspective.speaker}")}},
+                        "api_key": api_key(), "temperature": 0, "response_callback": mem0_adapter.ledger_callback(f"locomo-example.{perspective.speaker}")}},
                     "embedder": {"provider": "openai", "config": {"model": "bge-m3", "openai_base_url": base + "/v1",
                         "api_key": "unused", "embedding_dims": 1024}}, "history_db_path": str(directory / "history.db"),
-                    "custom_instructions": mem0_run.mem0_custom_instructions()}
+                    "custom_instructions": mem0_adapter.mem0_custom_instructions()}
                 memory = Memory.from_config(config)
                 memories.append(memory)
                 memory.llm.client.close()
@@ -145,7 +144,7 @@ def main():
                     return response
 
                 memory.llm.generate_response = generation
-                mem0_run._tls.observation_date = excerpt.start.date().isoformat()
+                mem0_adapter.thread_context.observation_date = excerpt.start.date().isoformat()
                 mapped = [{"role": "user" if u["speaker"] == perspective.speaker else "assistant",
                            "content": locomo.utterance_text(u)} for u in excerpt.utterances]
                 for offset in range(0, len(mapped), 2):
@@ -181,16 +180,16 @@ def main():
 
                 memory.vector_store.keyword_search = keywords
                 own["search"] = memory.search(question.question, top_k=30, filters={"user_id": perspective.user_id}, explain=True)
-                save(directory / "trace.json", own)
-                save(output / "result.json", result)
+                save_json(directory / "trace.json", own)
+                save_json(output / "result.json", result)
                 print(f"Mem0 {perspective.speaker}: saved {len(own['saved_memories']['results'])}, returned {len(own['search']['results'])}", flush=True)
             result["health_after"] = api("/health")
             result["status"] = "complete"
-            save(output / "result.json", result)
+            save_json(output / "result.json", result)
             print(f"Complete: {output / 'result.json'}", flush=True)
         except Exception as error:
             result.update(status="failed", error=f"{type(error).__name__}: {str(error)[:300]}")
-            save(output / "result.json", result)
+            save_json(output / "result.json", result)
             raise
         finally:
             for memory in memories:

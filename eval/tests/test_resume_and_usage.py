@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 import answer_and_judge
-import usage_stats
 import report
 from common import jsonl
+from common import usage as usage_ledger
 from common.llm import LLM, LLMOutputError, LLMResult, Ledger, usage_tokens
 from common.protocol import guard
 
@@ -53,7 +53,7 @@ def test_usage_fallback_and_token_summary(tmp_path):
     weekday = datetime(2026, 10, 9, 1, tzinfo=timezone.utc)
     ledger = Ledger(tmp_path / "usage.jsonl")
     ledger.record("fake.ingest", 100, 200, 30, ts=weekday, calls=3)
-    summary = usage_stats.summarize(list(jsonl.read(ledger.path)))
+    summary = usage_ledger.summarize(list(jsonl.read(ledger.path)))
     assert summary["total"]["hit"] == 100
     assert "usd" not in summary["total"] and "peak_calls" not in summary["components"]["fake.ingest"]
     assert summary["total"]["calls"] == 3

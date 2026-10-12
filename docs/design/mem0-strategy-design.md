@@ -34,13 +34,13 @@ HTTP / MCP 层负责接收请求和确定调用方；形成层负责把输入变
 | 层 | 主要代码 | 本方案中的职责 |
 | --- | --- | --- |
 | API | `api/http.rs`、`formation/ingest.rs` | 参数校验、接口路由、策略选择、任务回执 |
-| 形成 | `algorithms/mem0/formation.rs` | 有序输入、提示词、输出校验、去重、提交事实 |
-| 检索 | `algorithms/mem0/retrieval.rs` | 可见范围、语义召回、可选重排、预算装载 |
-| 运行时 | `runtime/engine.rs`、`llm.rs`、`models.rs`、`indexer.rs` | 恢复、LLM 重试、向量服务、缓存和索引维护 |
-| 存储 | `storage/store.rs` | SurrealKV 事务、记录查询、持久索引任务 |
+| 形成 | `memory-algo-mem0/src/formation.rs` | 有序输入、提示词、输出校验、去重、提交事实 |
+| 检索 | `memory-algo-mem0/src/retrieval.rs` | 可见范围、语义召回、可选重排、预算装载 |
+| 运行时 | `memory-engine/src/runtime/engine.rs`、`llm.rs`、`models.rs`、`indexer.rs` | 恢复、LLM 重试、向量服务、缓存和索引维护 |
+| 存储 | `memory-store/src/store.rs` | SurrealKV 事务、记录查询、持久索引任务 |
 | 纯规则 | `memory-rules/src/mem0.rs` | 内容标识、相似度排序和稳定的同分次序 |
 
-`domain/types.rs` 定义共享请求和记录类型。代码从 `formation/ingest.rs::add_memories` 和 `retrieval/mod.rs::search_memories` 进入公共服务层，再由 `algorithms/mod.rs` 选择完整算法。`algorithms/mem0` 与 `algorithms/memos` 分别拥有形成、检索与后台生命周期；后者使用配置名 `memos`。两者共用存储、模型客户端、索引、指令和记录管理组件。
+`memory-domain/src/types.rs` 定义共享请求和记录类型。代码从 `formation/ingest.rs::add_memories` 和 `retrieval/mod.rs::search_memories` 进入公共服务层，再由 `memory-service/src/algorithms.rs` 选择完整算法。`memory-algo-mem0` 与 `memory-algo-memos` 两个 crate 分别拥有形成、检索与后台生命周期；后者使用配置名 `memos`。两者共用存储、模型客户端、索引、指令和记录管理组件。
 
 ### 消息 记忆和向量
 
@@ -154,7 +154,7 @@ HTTP / MCP 层负责接收请求和确定调用方；形成层负责把输入变
 
 目前，`linked_memory_ids` **只进行类型和引用合法性校验，没有写成关系边，也没有填入记忆的 `related` 字段**。因此不能据此声称新方案已经实现记忆图谱或自动关系检索。
 
-`runtime/llm.rs` 在解析前先持久化模型原始响应，再执行 JSON 和结构校验。新方案最多尝试 6 次，每次修复提供原始任务、具体字段错误和输出结构，不回显有问题的 assistant JSON。重试退避为 2、4、8、16、32 秒。这样既能审计错误，也避免数值 ID 等错误结构在对话中不断被复制。
+`memory-engine/src/runtime/llm.rs` 在解析前先持久化模型原始响应，再执行 JSON 和结构校验。新方案最多尝试 6 次，每次修复提供原始任务、具体字段错误和输出结构，不回显有问题的 assistant JSON。重试退避为 2、4、8、16、32 秒。这样既能审计错误，也避免数值 ID 等错误结构在对话中不断被复制。
 
 ### 去重与向量化后的提交
 
@@ -353,23 +353,23 @@ J 指共用评判流程对答案正确性的通过率，F1 衡量与参考文本
 
 | 要理解的问题 | 代码位置和关键函数 |
 | --- | --- |
-| 默认选哪个策略 | `runtime/config.rs:8`，`MemoryStrategy`；默认 Mem0 |
+| 默认选哪个策略 | `crates/memory-config/src/lib.rs:8`，`MemoryStrategy`；默认 Mem0 |
 | 请求怎样进入形成模块 | `formation/ingest.rs`，`add_memories`；指令先走共享路径 |
-| 原始输入在哪里落盘 | `algorithms/mem0/formation.rs`，`enqueue`；事务一 |
-| 顺序、失败和恢复怎样工作 | `algorithms/mem0/formation.rs`，`process_until`；`publish_committed` |
-| LLM 输入如何拼装 | `algorithms/mem0/formation.rs`，`form`；`algorithms/mem0/prompts/additive.txt` |
-| 字段错误怎样校验 | `algorithms/mem0/formation.rs`，`validate_output`、`contract` |
-| 响应先记日志还是先解析 | `runtime/llm.rs`，`contract_call_logged`、`corrective_messages` |
+| 原始输入在哪里落盘 | `memory-algo-mem0/src/formation.rs`，`enqueue`；事务一 |
+| 顺序、失败和恢复怎样工作 | `memory-algo-mem0/src/formation.rs`，`process_until`；`publish_committed` |
+| LLM 输入如何拼装 | `memory-algo-mem0/src/formation.rs`，`form`；`memory-algo-mem0/src/prompts/additive.txt` |
+| 字段错误怎样校验 | `memory-algo-mem0/src/formation.rs`，`validate_output`、`contract` |
+| 响应先记日志还是先解析 | `memory-engine/src/runtime/llm.rs`，`contract_call_logged`、`corrective_messages` |
 | 内容去重和排序规则 | `memory-rules/src/mem0.rs`，`content_key`、`rank` |
-| 事实与向量怎样提交 | `algorithms/mem0/formation.rs`，`form` 的事务二；`storage/store.rs::commit` |
-| 查询如何调用嵌入、选择结果 | `algorithms/mem0/retrieval.rs`，`search`、`dense_with_vector` |
-| 模型与缓存在哪里 | `runtime/models.rs`，`ModelHub::embed`、`embed_uncached`、`rerank` |
-| 索引为什么不会重复嵌入 | `runtime/indexer.rs`，`upsert_preindexed` 处理分支 |
-| 启动后如何恢复 | `runtime/engine.rs`，`warm`；存储完整性与模型版本检查 |
-| 为什么新方案没有自动 P2 | `algorithms/mod.rs`，按算法注册后台任务；P2 与维护只属于 memos |
+| 事实与向量怎样提交 | `memory-algo-mem0/src/formation.rs`，`form` 的事务二；`memory-store/src/store.rs::commit` |
+| 查询如何调用嵌入、选择结果 | `memory-algo-mem0/src/retrieval.rs`，`search`、`dense_with_vector` |
+| 模型与缓存在哪里 | `memory-engine/src/runtime/models.rs`，`ModelHub::embed`、`embed_uncached`、`rerank` |
+| 索引为什么不会重复嵌入 | `memory-engine/src/runtime/indexer.rs`，`upsert_preindexed` 处理分支 |
+| 启动后如何恢复 | `memory-engine/src/runtime/engine.rs`，`warm`；存储完整性与模型版本检查 |
+| 为什么新方案没有自动 P2 | `memory-service/src/algorithms.rs`，按算法注册后台任务；P2 与维护只属于 memos |
 | 完整测试如何组织输入和评价 | `eval/locomo_full.py`、`eval/mem0_migration.py`、`eval/answer_and_judge.py` |
 
-上表路径除纯规则和评估文件外，均相对 `crates/memory-service/src/`。完整接口类型见 `domain/types.rs`，配置和调用约定见 `docs/api.md`。
+上表路径中以 `memory-` 开头的相对 `crates/`，其余相对 `crates/memory-service/src/`。完整接口类型见 `crates/memory-domain/src/types.rs`（存储见 `crates/memory-store/src/`），配置和调用约定见 `docs/api.md`。
 
 ### 从现象回到证据
 

@@ -30,13 +30,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from common import env  # noqa: E402,F401
 from common import jsonl, prompts  # noqa: E402
+from common.answers import build_answer_prompt, fingerprint, summary_stats  # noqa: E402
 from common.env import RESULTS_DIR  # noqa: E402
 from common.llm import LLM, LLMOutputError, FatalAPIError, default_ledger, set_ledger_path  # noqa: E402
 from common.locomo import CATEGORY_NAMES, EVAL_CATEGORIES  # noqa: E402
-from common.metrics import bleu1, f1_score, mean, percentile  # noqa: E402
+from common.metrics import bleu1, f1_score  # noqa: E402
 from common.reporting import scope_for  # noqa: E402
 
-import usage_stats  # noqa: E402
+from common import usage as usage_ledger  # noqa: E402
 
 log = logging.getLogger("answer_and_judge")
 
@@ -44,21 +45,6 @@ log = logging.getLogger("answer_and_judge")
 def components(system: str, setting: str, prompt: str) -> tuple[str, str]:
     suffix = "" if prompt == "unified" else f"/{prompt}"
     return f"answer.{system}/{setting}{suffix}", f"judge.{system}/{setting}{suffix}"
-
-
-def build_answer_prompt(rec: dict, variant: str) -> str:
-    if variant == "unified":
-        return prompts.render_unified(rec["context"], rec["question"])
-    if "speaker_1_memories" not in rec:
-        raise SystemExit("--answer-prompt mem0-original needs mem0 records (speaker_1_memories / speaker_2_memories)")
-    return prompts.render_mem0_original(rec["speaker_1"], rec["speaker_1_memories"], rec["speaker_2"],
-                                        rec.get("speaker_2_memories", []), rec["question"])
-
-
-def fingerprint(rec: dict, variant: str) -> str:
-    value = {k: rec.get(k) for k in ("system", "setting", "qid", "question", "answer")}
-    value["prompt"] = build_answer_prompt(rec, variant)
-    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
 async def process(llm: LLM, rec: dict, args, comp_answer: str, comp_judge: str, out: Path) -> None:
@@ -117,23 +103,6 @@ async def process(llm: LLM, rec: dict, args, comp_answer: str, comp_judge: str, 
     })
 
 
-def _stats(rows: list[dict]) -> dict:
-    lat = [r["search_ms"] for r in rows if r.get("search_ms") is not None]
-    ctx = [r["context_tokens"] for r in rows if r.get("context_tokens") is not None]
-    rnd = lambda x, n=4: None if x is None else round(x, n)  # noqa: E731
-    return {
-        "n": len(rows),
-        "J": rnd(mean(r["J"] for r in rows)),
-        "F1": rnd(mean(r["f1"] for r in rows)),
-        "BLEU1": rnd(mean(r["bleu1"] for r in rows)),
-        "context_tokens_mean": rnd(mean(ctx), 1),
-        "n_memories_mean": rnd(mean(r["n_memories"] for r in rows if r.get("n_memories") is not None), 2),
-        "n_turns_mean": rnd(mean(r["n_turns"] for r in rows if r.get("n_turns") is not None), 2),
-        "search_ms_mean": rnd(mean(lat), 1),
-        "search_ms_p95": rnd(percentile(lat, 95), 1),
-    }
-
-
 def summarize(answers_path: Path, contexts: list[dict], system: str, setting: str, prompt: str,
               ledger_path: Path) -> dict:
     rows = {r["qid"]: r for r in jsonl.read(answers_path)}  # last record per qid wins
@@ -144,20 +113,20 @@ def summarize(answers_path: Path, contexts: list[dict], system: str, setting: st
     for c in EVAL_CATEGORIES:
         rs = [r for r in rows if int(r["category"]) == c]
         if rs:
-            by_cat[f"{c}-{CATEGORY_NAMES[c]}"] = _stats(rs)
+            by_cat[f"{c}-{CATEGORY_NAMES[c]}"] = summary_stats(rs)
     comp_answer, comp_judge = components(system, setting, prompt)
-    ledger_rows = usage_stats.load_rows(ledger_path)
+    ledger_rows = usage_ledger.load_rows(ledger_path)
     usage = {
-        "ingest": usage_stats.summarize(ledger_rows, prefix=f"{system}.")["total"],  # mem0: <tag>.add; memory: <tag>.ingest/jobs/purge
-        "answer": usage_stats.summarize(ledger_rows, exact=comp_answer)["total"],
-        "judge": usage_stats.summarize(ledger_rows, exact=comp_judge)["total"],
+        "ingest": usage_ledger.summarize(ledger_rows, prefix=f"{system}.")["total"],  # mem0: <tag>.add; memory: <tag>.ingest/jobs/purge
+        "answer": usage_ledger.summarize(ledger_rows, exact=comp_answer)["total"],
+        "judge": usage_ledger.summarize(ledger_rows, exact=comp_judge)["total"],
         "ledger_available": ledger_path.exists(),
     }
     completed_hashes = {r["qid"]: r["source_hash"] for r in rows}
     matched_usage_rows = [r for r in ledger_rows if r.get("component") in (comp_answer, comp_judge)
                          and r.get("qid") in completed_hashes
                          and r.get("source_hash") == completed_hashes[r["qid"]]]
-    matched = usage_stats.summarize(matched_usage_rows)["total"]
+    matched = usage_ledger.summarize(matched_usage_rows)["total"]
     matched_components = {}
     for record in matched_usage_rows:
         matched_components.setdefault(record["qid"], set()).add(record["component"])
@@ -169,7 +138,7 @@ def summarize(answers_path: Path, contexts: list[dict], system: str, setting: st
     return {
         "system": system, "setting": setting, "answer_prompt": prompt,
         "n_contexts": len(contexts), "n_answered": len(rows),
-        "overall": _stats(rows), "by_category": by_cat, "usage": usage,
+        "overall": summary_stats(rows), "by_category": by_cat, "usage": usage,
         "token_counter": contexts[0].get("token_counter") if contexts else None,
         "scope": scope_for(answers_path, contexts, rows),
     }

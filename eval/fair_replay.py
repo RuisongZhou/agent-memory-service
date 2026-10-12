@@ -16,18 +16,10 @@ import httpx
 
 from common import env, jsonl, locomo
 from common.metrics import TOKEN_COUNTER, count_tokens
+from common.context_format import format_context, pack_blocks
+from common.corpus import semantic_hash
+from common.mem0_adapter import Mem0Stores, perspectives
 from common.protocol import guard
-from memory_run import format_context
-
-
-def pack_blocks(blocks: list[str], budget: int) -> str:
-    """Keep whole records in ranking order; count delimiters in the shared tokenizer."""
-    kept = []
-    for block in blocks:
-        candidate = "\n\n".join([*kept, block])
-        if count_tokens(candidate) <= budget:
-            kept.append(block)
-    return "\n\n".join(kept)
 
 
 def legacy_blocks(context: str) -> list[str]:
@@ -85,7 +77,6 @@ def main() -> None:
                 parser.error("mem0 needs copied --mem0-stores")
             from argparse import Namespace
             from qdrant_client import QdrantClient, models
-            from mem0_run import Mem0Stores, perspectives
             ps = perspectives(conv)
             # Original vectors were Candle FP32. Every current record is embedded with the same
             # HTTP service used by our systems; payloads, formation and history are preserved.
@@ -152,7 +143,6 @@ def main() -> None:
             if args.system != "mem0":
                 after = post("/admin/export", {})
                 (target / "corpus-after.json").write_text(json.dumps(after, indent=2))
-                from integrity_benchmark import semantic_hash
                 if semantic_hash(before["memories"]) != semantic_hash(after["memories"]):
                     raise ValueError("formation changed the measured corpus")
         finally:

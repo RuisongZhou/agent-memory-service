@@ -6,7 +6,7 @@ import json
 import pytest
 
 import mem0_run
-from common import jsonl, locomo
+from common import jsonl, locomo, mem0_adapter
 from common.llm import set_ledger_path
 
 
@@ -14,7 +14,7 @@ def test_mem0_real_class_disables_thinking_and_records_usage(tmp_path, monkeypat
     monkeypatch.setenv("QWEN_API_KEY", "test-not-a-real-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     ledger = set_ledger_path(tmp_path / "ledger.jsonl")
-    _, cls = mem0_run._install_mem0_patches(True)
+    _, cls = mem0_adapter.install_mem0_patches(True)
     calls = []
     response = SimpleNamespace(usage={"prompt_tokens": 120, "completion_tokens": 10,
                                      "prompt_cache_hit_tokens": 20},
@@ -22,7 +22,7 @@ def test_mem0_real_class_disables_thinking_and_records_usage(tmp_path, monkeypat
                                                         reasoning_content=None), finish_reason="stop")])
     llm = cls({"model": "qwen3.8-flash", "openai_base_url": "https://maas.qianwenaiapi.com/compatible-mode/v1",
                "api_key": "test-not-a-real-key", "temperature": 0,
-               "response_callback": mem0_run._ledger_callback("offline.add")})
+               "response_callback": mem0_adapter.ledger_callback("offline.add")})
     def fake_create(**kwargs):
         calls.append(kwargs)
         return response
@@ -40,18 +40,18 @@ def test_mem0_real_class_disables_thinking_and_records_usage(tmp_path, monkeypat
 
 
 def test_observation_date_patch_uses_session_date():
-    mm, _ = mem0_run._install_mem0_patches(True)
+    mm, _ = mem0_adapter.install_mem0_patches(True)
     import mem0.memory.main as main
-    mem0_run._tls.observation_date = "2023-05-08"
+    mem0_adapter.thread_context.observation_date = "2023-05-08"
     prompt = main.generate_additive_extraction_prompt(existing_memories=[], new_messages="Yesterday I ran",
                                                        last_k_messages=[], custom_instructions=None)
     assert "2023-05-08" in prompt
-    mem0_run._tls.observation_date = None
+    mem0_adapter.thread_context.observation_date = None
 
 
 def test_mem0_protocol_uses_two_perspectives_and_odd_batch():
     conv = locomo.load()[0]
-    ps = mem0_run.perspectives(conv)
+    ps = mem0_adapter.perspectives(conv)
     assert len(ps) == 2
     a = list(mem0_run.batches_for(conv, ps[0], 2, 2))
     b = list(mem0_run.batches_for(conv, ps[1], 2, 2))
@@ -67,7 +67,7 @@ def test_search_refuses_partially_ingested_session(tmp_path):
     args = Namespace(setting=None, top_k=30, results_dir=str(tmp_path), tag="mem0-offline",
                      perspectives="both", sessions=2, batch_size=2)
     progress = tmp_path / args.tag / "ingest_progress.jsonl"
-    p = mem0_run.perspectives(locomo.load()[0])[0]
+    p = mem0_adapter.perspectives(locomo.load()[0])[0]
     jsonl.append(progress, {"user_id": p.user_id, "session": "session_1", "batch": 0, "ok": True})
     with pytest.raises(RuntimeError, match="batches not ingested"):
         mem0_run.run_search(args, locomo.load()[:1], None)
@@ -107,7 +107,7 @@ def test_real_mem0_qdrant_pipeline_two_sessions_ten_questions(tmp_path, monkeypa
                      results_dir=str(tmp_path), top_k=30, setting=None,
                      limit=10, qids=None)
     data = locomo.load()[:1]
-    stores = mem0_run.Mem0Stores(args)
+    stores = mem0_adapter.Mem0Stores(args)
     try:
         mem0_run.run_ingest(args, data, stores)
         mem0_run.run_search(args, data, stores)
@@ -127,9 +127,9 @@ def test_real_mem0_qdrant_pipeline_two_sessions_ten_questions(tmp_path, monkeypa
     assert all(r["usage"]["llm_calls"] == 1 and r["usage"]["miss"] > 0 for r in progress)
     assert all(r["speaker_1"] == "Caroline" and r["speaker_2"] == "Melanie" for r in rows)
     assert all(r["token_counter"] == "tiktoken/cl100k_base" for r in rows)
-    reopened = mem0_run.Mem0Stores(args)
+    reopened = mem0_adapter.Mem0Stores(args)
     try:
-        p = mem0_run.perspectives(data[0])[0]
+        p = mem0_adapter.perspectives(data[0])[0]
         assert reopened.get(p).get_all(filters={"user_id": p.user_id})["results"]
     finally:
         reopened.close()

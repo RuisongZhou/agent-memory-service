@@ -2543,6 +2543,82 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory-algo-mem0"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "memory-config",
+ "memory-domain",
+ "memory-engine",
+ "memory-rules",
+ "memory-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "memory-algo-memos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chrono",
+ "memory-config",
+ "memory-domain",
+ "memory-engine",
+ "memory-fulltext",
+ "memory-rules",
+ "memory-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "memory-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "memory-domain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "memory-rules",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "memory-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chrono",
+ "lru",
+ "memory-config",
+ "memory-domain",
+ "memory-fulltext",
+ "memory-rules",
+ "memory-store",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "memory-fulltext"
 version = "0.1.0"
 dependencies = [
@@ -2559,12 +2635,9 @@ dependencies = [
 name = "memory-rules"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "blake3",
  "chrono",
  "regex",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2573,23 +2646,38 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "blake3",
  "chrono",
  "clap",
- "lru",
+ "memory-algo-mem0",
+ "memory-algo-memos",
+ "memory-config",
+ "memory-domain",
+ "memory-engine",
  "memory-fulltext",
  "memory-rules",
+ "memory-store",
  "mimalloc",
- "regex",
  "reqwest",
  "rmcp",
  "serde",
  "serde_json",
- "surrealdb",
- "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "memory-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "memory-domain",
+ "memory-rules",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "tokio",
 ]
 
 [[package]]

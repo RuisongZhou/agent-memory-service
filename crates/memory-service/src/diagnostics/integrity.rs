@@ -1,16 +1,12 @@
 //! Persistent integrity and instruction tests. No generation or external model calls.
-use super::{
-    config::ServiceConfig,
-    engine::Engine,
-    ingest,
-    llm::Llm,
-    models::ModelHub,
-    retrieve,
-    store::{to_doc, Tx},
-    tenant::Tenant,
-    types::*,
-    util,
-};
+use memory_config::ServiceConfig;
+use memory_domain::types::*;
+use memory_engine::app::ingest;
+use memory_engine::retrieval;
+use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_rules::util;
+use memory_store::schema;
+use memory_store::store::{to_doc, Tx};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -18,13 +14,18 @@ pub async fn selftest() {
     let dir = std::env::temp_dir().join(util::new_id("memory-integrity-"));
     let engine = Engine::new(
         ServiceConfig {
-            memory_strategy: super::config::MemoryStrategy::Memos,
+            memory_strategy: memory_config::MemoryStrategy::Memos,
             ..Default::default()
         },
         Llm::new("http://127.0.0.1:1", "", "mock", 1, 1).unwrap(),
         ModelHub::mock(),
+        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
     );
-    let tenant = Arc::new(Tenant::open("integrity", &dir, 1024).await.unwrap());
+    let tenant = Arc::new(
+        Tenant::open("integrity", &dir, 1024, engine.algorithm().schema())
+            .await
+            .unwrap(),
+    );
     let fact = MemoryRec {
         id: "fact".into(),
         mtype: T_FACT.into(),
@@ -59,7 +60,8 @@ pub async fn selftest() {
     };
     let mut tx = Tx::new();
     for rec in [&fact, &profile, &skill, &historical] {
-        tx.put("memories", &rec.id, to_doc(rec).unwrap()).unwrap();
+        tx.put(schema::MEMORIES, &rec.id, to_doc(rec).unwrap())
+            .unwrap();
     }
     tenant.store.commit(tx).await.unwrap();
     let first = tenant.store.active_memory_meta().await.unwrap();
@@ -69,7 +71,7 @@ pub async fn selftest() {
     ));
     let mut rollback = Tx::new();
     rollback
-        .merge("memories", &fact.id, json!({"status":S_SUPERSEDED}))
+        .merge(schema::MEMORIES, &fact.id, json!({"status":S_SUPERSEDED}))
         .unwrap();
     rollback.raw("THROW 'rollback'", vec![]);
     assert!(tenant.store.commit(rollback).await.is_err());
@@ -84,7 +86,7 @@ pub async fn selftest() {
         S_CURRENT
     );
     let mut tx = Tx::new();
-    tx.merge("memories", &fact.id, json!({"status":S_SUPERSEDED}))
+    tx.merge(schema::MEMORIES, &fact.id, json!({"status":S_SUPERSEDED}))
         .unwrap();
     tenant.store.commit(tx).await.unwrap();
     for id in [&profile.id, &skill.id] {
@@ -114,7 +116,7 @@ pub async fn selftest() {
     };
     tenant
         .store
-        .put_doc("memories", &missing.id, &missing)
+        .put_doc(schema::MEMORIES, &missing.id, &missing)
         .await
         .unwrap();
     tenant.store.repair_integrity().await.unwrap();
@@ -154,7 +156,7 @@ pub async fn selftest() {
             .unwrap()["duplicate"],
         true
     );
-    let context = retrieve::get_context(
+    let context = retrieval::get_context(
         &engine,
         &tenant,
         &caller,
@@ -170,7 +172,7 @@ pub async fn selftest() {
         .as_str()
         .unwrap()
         .contains("Prefer brief answers."));
-    let other = retrieve::get_context(
+    let other = retrieval::get_context(
         &engine,
         &tenant,
         &caller,
@@ -200,33 +202,33 @@ pub async fn selftest() {
     };
     tenant
         .store
-        .put_doc("memories", &port.id, &port)
+        .put_doc(schema::MEMORIES, &port.id, &port)
         .await
         .unwrap();
-    let applied = super::relations::apply(
+    let applied = memory_algo_memos::formation::relations::apply(
         &engine,
         &tenant,
-        vec![super::relations::NewFact {
+        vec![memory_algo_memos::formation::relations::NewFact {
             fidx: 1,
             text: "Port is 8100".into(),
             scope: port.scope.clone(),
             entity_ids: vec![],
             effective_at: "2026-10-11".into(),
             origin: ORIGIN_USER.into(),
-            sources: vec![super::relations::FactSource {
+            sources: vec![memory_algo_memos::formation::relations::FactSource {
                 turn_id: "T1".into(),
                 span: "Port is 8100".into(),
                 role: "user".into(),
                 stated_at: "2026-10-11T00:00:00Z".into(),
                 stated: (1, 0),
             }],
-            relations: vec![super::relations::plan::Rel {
-                target: super::relations::plan::Target::Old(port.id.clone()),
+            relations: vec![memory_algo_memos::formation::relations::plan::Rel {
+                target: memory_algo_memos::formation::relations::plan::Target::Old(port.id.clone()),
                 relation: "conflicts".into(),
             }],
             reason: None,
         }],
-        super::relations::WriteCtx {
+        memory_algo_memos::formation::relations::WriteCtx {
             platform: caller.platform.clone(),
             now: util::now_str(),
             turns: vec![],
@@ -252,7 +254,7 @@ pub async fn selftest() {
         keep_memory_id: chosen.clone(),
         reason: "Verified the configured port".into(),
     };
-    super::manage::resolve_uncertainty(&tenant, &caller, resolution.clone())
+    memory_engine::app::management::resolve_uncertainty(&tenant, &caller, resolution.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -278,14 +280,14 @@ pub async fn selftest() {
     assert_eq!(
         tenant
             .store
-            .get_doc("uncertainties", &resolution.id)
+            .get_doc(schema::UNCERTAINTIES, &resolution.id)
             .await
             .unwrap()
             .unwrap()["status"],
         "resolved"
     );
     assert!(
-        super::manage::resolve_uncertainty(&tenant, &caller, resolution)
+        memory_engine::app::management::resolve_uncertainty(&tenant, &caller, resolution)
             .await
             .is_err()
     );
@@ -293,7 +295,7 @@ pub async fn selftest() {
     assert_eq!(
         tenant
             .store
-            .count("uncertainties", Some("status = 'open'"))
+            .count(schema::UNCERTAINTIES, Some("status = 'open'"))
             .await
             .unwrap(),
         0
@@ -303,7 +305,7 @@ pub async fn selftest() {
     // The embedded connection releases its datastore asynchronously after its final drop.
     let reopened = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            match Tenant::open("integrity", &dir, 1024).await {
+            match Tenant::open("integrity", &dir, 1024, engine.algorithm().schema()).await {
                 Ok(tenant) => break tenant,
                 Err(error)
                     if format!("{error:#}").contains("is already locked by another process") =>
@@ -326,7 +328,7 @@ pub async fn selftest() {
     assert_eq!(
         reopened
             .store
-            .count("uncertainties", Some("status = 'open'"))
+            .count(schema::UNCERTAINTIES, Some("status = 'open'"))
             .await
             .unwrap(),
         0
@@ -371,7 +373,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
                 related,
                 ..template.clone()
             };
-            tx.put("memories", &record.id, to_doc(&record).unwrap())
+            tx.put(schema::MEMORIES, &record.id, to_doc(&record).unwrap())
                 .unwrap();
         }
         t.store.commit(tx).await.unwrap();
@@ -393,7 +395,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
         if name == "chain" {
             let mut rollback = Tx::new();
             rollback
-                .merge("memories", &ids("b"), json!({"status":S_SUPERSEDED}))
+                .merge(schema::MEMORIES, &ids("b"), json!({"status":S_SUPERSEDED}))
                 .unwrap();
             rollback.raw("THROW 'rollback shared conflict'", vec![]);
             assert!(t.store.commit(rollback).await.is_err());
@@ -403,7 +405,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
             );
             assert_eq!(open().await.len(), 2);
         }
-        super::manage::resolve_uncertainty(
+        memory_engine::app::management::resolve_uncertainty(
             t,
             caller,
             ResolveUncertaintyReq {
@@ -445,7 +447,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
             .collect::<Vec<_>>();
         assert_eq!(remaining.len(), usize::from(name != "chain"));
         if let Some(question) = remaining.first() {
-            super::manage::resolve_uncertainty(
+            memory_engine::app::management::resolve_uncertainty(
                 t,
                 caller,
                 ResolveUncertaintyReq {

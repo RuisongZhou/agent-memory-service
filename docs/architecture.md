@@ -1,16 +1,32 @@
 # Module architecture
 
-The Cargo workspace contains three crates. `memory-service` coordinates the shared store and API and calls embedding/rerank models served by external llama-server processes; `memory-fulltext` owns lexical/entity indexing; `memory-rules` contains deterministic temporal and revision rules without storage dependencies.
+The Cargo workspace contains nine crates:
+
+| Crate | Responsibility | Workspace dependencies |
+|---|---|---|
+| `memory-rules` | Deterministic temporal, identifier and revision rules, with no storage dependencies | none |
+| `memory-fulltext` | Lexical and entity indexing | none |
+| `memory-config` | Startup configuration and tunables | none |
+| `memory-domain` | Shared records, request types, errors and pure integrity planners, with no I/O | `memory-rules` |
+| `memory-store` | SurrealDB persistence on top of the domain types | `memory-domain`, `memory-rules` |
+| `memory-engine` | Shared engine: tenant registry, workers, model/LLM clients, shared retrieval components and use cases; algorithms plug in through `runtime::algorithm::MemoryAlgorithm` | `memory-config`, `memory-domain`, `memory-store`, `memory-rules`, `memory-fulltext` |
+| `memory-algo-mem0` | The mem0 algorithm | the engine's dependencies and `memory-engine` |
+| `memory-algo-memos` | The memos algorithm and its selftests (feature `selftest`) | the engine's dependencies and `memory-engine` |
+| `memory-service` | HTTP/MCP transports, algorithm selection, selftests and the `agent-memoryd` binary; calls embedding/rerank models served by external llama-server processes | any |
+
+Dependencies point one way: `memory-rules` <- `memory-domain` <- `memory-store` <- `memory-engine` <- `memory-algo-mem0` / `memory-algo-memos` <- `memory-service`; `memory-config` and `memory-fulltext` are leaves used by the engine and the algorithms. The two algorithm crates never depend on each other. `scripts/check_architecture.py` (`make check-arch`) parses each `Cargo.toml` and enforces this graph.
 
 The demo chooses one complete algorithm at startup using `--memory-strategy` or the existing configuration.
 `Engine::new` fixes that selection for the process lifetime. Every tenant in that process uses the same
-algorithm. `algorithms/mod.rs` contains simple entry-point dispatch to the selected implementation.
+algorithm. The engine holds an `Arc<dyn MemoryAlgorithm>` (`memory-engine/src/runtime/algorithm.rs`) and never names a concrete
+algorithm; `memory-service`'s `algorithms::select` is the composition-time factory. The trait covers formation, retrieval, worker
+startup, private tables and DDL, and optional session/maintenance/provenance hooks.
 The configuration value `memos` selects short-term buffering with asynchronous long-term formation; `mem0` remains the default.
 
 | Algorithm | Formation and lifecycle | Retrieval | Code ownership |
 |---|---|---|---|
-| `mem0` | Durable ordered inputs, additive extraction, scoped exact deduplication and atomic vector admission | Semantic search with explicitly enabled reranking; raw submitted batches | `algorithms/mem0/{formation.rs,retrieval.rs,runtime.rs,prompts/}` |
-| Memos | Complete short-term turns, asynchronous P1 facts, session-end P2 experiences and P3/P4/P5 maintenance | Vector/BM25/entity/time fusion, recent-turn recall and update-chain history | `algorithms/memos/{formation/,retrieval/,runtime.rs}` |
+| `mem0` | Durable ordered inputs, additive extraction, scoped exact deduplication and atomic vector admission | Semantic search with explicitly enabled reranking; raw submitted batches | `memory-algo-mem0/src/{formation.rs,retrieval.rs,runtime.rs,prompts/}` |
+| Memos | Complete short-term turns, asynchronous P1 facts, session-end P2 experiences and P3/P4/P5 maintenance | Vector/BM25/entity/time fusion, recent-turn recall and update-chain history | `memory-algo-memos/src/{formation/,retrieval/,runtime.rs}` |
 
 Neither algorithm calls the other algorithm's formation, retrieval or maintenance implementation.
 Their prompt contracts, batching rules, provenance, ranking and existing numeric settings remain distinct.
@@ -18,21 +34,21 @@ The Memos pipeline is a supported algorithm and benchmark control, not unused Me
 
 Shared components retain their layer boundaries:
 
-| Directory | Responsibility |
+| Layer | Responsibility |
 |---|---|
-| `api/` | HTTP/MCP transport, explicit corrections, deletion, feedback and administration |
-| `formation/` | Common admission checks, request inspection, algorithm dispatch and explicit instruction writes |
-| `retrieval/` | Entry points, scope primitives, scoring helpers, ANN access, authoritative records/evidence/history and context assembly |
-| `runtime/` | Configuration, engine, reference time, tenant registry, model clients and the shared index worker |
-| `storage/` | SurrealKV schema, transactions, integrity constraints and durable index tasks |
-| `domain/` | Shared records, request schemas and errors |
-| `diagnostics/` | Offline database, algorithm-isolation and end-to-end selftests |
+| `api/` (`memory-service`) | HTTP and MCP transport only |
+| `app/` (`memory-engine`) | Use cases shared by every algorithm: admission checks, request inspection, explicit instruction writes, corrections, deletion, feedback and administration |
+| `retrieval/` (`memory-engine`) | Entry points, scope primitives, scoring helpers, ANN access, authoritative records/evidence/history and context assembly |
+| `runtime/` (`memory-engine`) | Engine, reference time, tenant registry, model clients and the shared index worker; configuration lives in `memory-config` |
+| `memory-store` crate | SurrealKV schema, transactions, integrity constraints and durable index tasks (`crates/memory-store`); re-exported by `memory-service` as `storage` |
+| `memory-domain` crate | Shared records, request schemas, errors and pure integrity planners, with no I/O (`crates/memory-domain`); re-exported by `memory-service` as `domain` |
+| `diagnostics/` (`memory-service`) | Offline database, algorithm-isolation and end-to-end selftests |
 
 Root Rust module names for moved stages are retained as compatibility reexports. Algorithm implementations
 use their own stage modules and shared components directly. `memory-rules` owns deterministic planners
 and Mem0 identity/ranking rules; `memory-fulltext` owns lexical/entity indexing.
 
-Tenant startup launches the shared index worker and calls only the selected algorithm's `runtime::start`.
+Tenant startup launches the shared index worker and calls only the selected algorithm's `start_workers`.
 Mem0 starts one ordered formation worker. Memos starts its fact/session formation worker and periodic
 maintenance worker. Only Memos context bootstrap closes earlier open sessions. `/admin/run_jobs`
 is Memos maintenance and returns an argument error in Mem0 mode.
@@ -57,7 +73,7 @@ The current design remains a text-memory service. The following changes adapt Su
 
 `profile` and `skill` are current views. Session experiences are historical observations: their lineage remains queryable when later facts change. Treating every historical experience as a current factual assertion would erase useful history. Legacy profiles/skills use `usedMemoryIds` as their dependencies; startup repairs missing or non-current inputs before warming indexes. Stale views are excluded immediately through primary-record eligibility, including while an asynchronous index still contains them. Rebuilding a view is explicit P3/P5 work; a read never triggers paid synthesis.
 
-Storage serialises integrity decisions and related writes per store. A source change, transitive invalidation, uncertainty closure and index tasks commit as one transaction. Failed transactions do not publish a new metadata snapshot. The pure invalidation planner has no database, network or model dependencies. This adds O(N) metadata inspection to a source-retirement transaction; it removes repeated scans from stable retrieval but does not claim to be a large-scale graph implementation.
+Storage serialises integrity decisions and related writes per store. A source change, transitive invalidation, uncertainty closure and index tasks commit as one transaction. Failed transactions do not publish a new metadata snapshot. The invalidation and conflict-repair rules are pure planners in `memory-domain/src/integrity.rs` with no database, network or model dependencies; `memory-store/src/integrity.rs` only loads their inputs and appends their plans to the transaction. This adds O(N) metadata inspection to a source-retirement transaction; it removes repeated scans from stable retrieval but does not claim to be a large-scale graph implementation.
 
 The tokenizer cache holds at most 2048 entries and only caches entries of up to 4096 tokens. Keys include the model server and exact input text. Models remain fixed for a connected runtime; reconnect/restart replaces the cache. Model IDs and quantisation continue to govern stored-vector rebuilds.
 
@@ -77,9 +93,9 @@ Search reranks assertions together with a bounded verbatim evidence excerpt and,
 
 For the complete Chinese design report, request lifecycle diagrams, code-reading map and full LoCoMo evidence, see [新方案设计与实现说明](design/mem0-strategy-design.md).
 
-The default `mem0` strategy selects paired formation/retrieval modules. `algorithms/mem0/formation.rs` owns durable
+The default `mem0` strategy selects paired formation/retrieval modules. `memory-algo-mem0/src/formation.rs` owns durable
 ordered inputs, the pinned one-call additive extraction contract, scoped content identity and batch
-vector admission. `algorithms/mem0/retrieval.rs` owns semantic search and explicitly enabled reranking. Pure ranking
+vector admission. `memory-algo-mem0/src/retrieval.rs` owns semantic search and explicitly enabled reranking. Pure ranking
 and content identity live in `memory-rules::mem0`; generic transactions and vector reads remain in storage.
 The Memos algorithm remains selectable as `memos`, with its numeric defaults unchanged.
 

@@ -36,6 +36,8 @@
 /eval/stores/
 /eval/pilot-plan*.json
 **/*-store/
+# The storage crate is source, not a generated store.
+!crates/memory-store/
 **/mem0-stores/
 *.sqlite*
 *.db

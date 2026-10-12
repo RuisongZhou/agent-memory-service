@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-import usage_stats
+from common import usage as usage_ledger
 
 
 def build(root):
@@ -25,10 +25,10 @@ def build(root):
         summaries.append(summary)
     if len({s['scope']['qid_cohort_hash'] for s in summaries}) != 1:
         raise ValueError('question cohorts differ')
-    rows = usage_stats.merge_rows(usage_stats.load_rows(root/'usage_ledger.jsonl'))
+    rows = usage_ledger.merge_rows(usage_ledger.load_rows(root/'usage_ledger.jsonl'))
     pilot_rows = [r for r in rows if 'conv26' in r.get('component', '')]
     return {'summaries': [{k: v for k, v in summary.items() if k != 'cost'} for summary in summaries],
-            'pilot_usage': usage_stats.summarize(pilot_rows), 'cohort_questions': 152,
+            'pilot_usage': usage_ledger.summarize(pilot_rows), 'cohort_questions': 152,
             'automatic_full_run': False}
 
 

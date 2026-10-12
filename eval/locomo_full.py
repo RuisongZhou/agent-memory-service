@@ -22,11 +22,13 @@ import sys
 import time
 
 from common import env, jsonl, locomo, model_metadata, prompts
+from common.answers import fingerprint, summary_stats
+from common.context_format import pack_blocks
+from common.corpus import corpus_hash, sdk_corpus
 from common.llm import MODEL, set_ledger_path
+from common.mem0_adapter import install_mem0_patches, mem0_custom_instructions, perspectives, thread_context
 from common.metrics import TOKEN_COUNTER, count_tokens, percentile
-from fair_replay import pack_blocks
-from mem0_migration import corpus_hash, daemon, export, relay, sdk_corpus, sdk_stores, service_blocks, sha
-from mem0_run import _tls, mem0_custom_instructions, perspectives
+from common.migration import daemon, export, relay, sdk_stores, service_blocks, sha
 
 ARMS = ('mem0-strategy', 'mem0-sdk')
 REPO = Path(__file__).resolve().parents[1]
@@ -164,9 +166,9 @@ def ingest(root, arm, conv, spec):
                     jsonl.append(target/'batch-starts.jsonl', {'key': key, 'state': state})
                 tick = time.perf_counter()
                 if memory:
-                    _tls.observation_date = s.start.date().isoformat()
-                    _tls.add_usage_rows = []
-                    _tls.usage_meta = {'arm': arm, 'conv': p.conv, 'batch_key': key}
+                    thread_context.observation_date = s.start.date().isoformat()
+                    thread_context.add_usage_rows = []
+                    thread_context.usage_meta = {'arm': arm, 'conv': p.conv, 'batch_key': key}
                     clean = [{k: v for k, v in m.items() if k != 'timestamp'} for m in messages]
                     for attempt in range(1, 4):
                         try:
@@ -307,7 +309,6 @@ def answer(root, data, spec):
 
 
 def report(root, data, spec):
-    from answer_and_judge import _stats, fingerprint
     result = {'protocol': spec, 'systems': {}}
     lines = ['# Full LoCoMo: new strategy and Mem0 OSS', '',
              'All 10 conversations, 272 sessions, 5882 source utterances; 1540 standard QA and 446 adversarial QA. Fresh stores, identical pilot settings, no score-guided tuning.', '',
@@ -333,10 +334,10 @@ def report(root, data, spec):
             raise RuntimeError('Final batch/retrieval coverage audit failed')
         warm = [q['search_ms'] for q in retrievals if q['pass'] > 0]
         first = [q['search_ms'] for q in retrievals if q['pass'] == 0]
-        stats = _stats(standard)
+        stats = summary_stats(standard)
         row = {'standard': stats, 'standard_correct': sum(q['J'] for q in standard),
-               'adversarial_abstention': _stats(adversarial), 'by_category': {
-                   str(i): _stats([q for q in standard if q['category'] == i]) for i in range(1, 5)},
+               'adversarial_abstention': summary_stats(adversarial), 'by_category': {
+                   str(i): summary_stats([q for q in standard if q['category'] == i]) for i in range(1, 5)},
                'save_work_ms': sum(q['ms'] for q in saves), 'save_batches': len(saves),
                'save_batch_p50_ms': percentile([q['ms'] for q in saves], 50),
                'save_batch_p95_ms': percentile([q['ms'] for q in saves], 95),
@@ -382,8 +383,7 @@ def main():
         report(root, data, spec)
         return
     # Initialize the timestamp adapter once before concurrent SDK workers use it.
-    from mem0_run import _install_mem0_patches
-    _install_mem0_patches(True)
+    install_mem0_patches(True)
     for arm in ARMS:
         started = time.perf_counter()
         errors = []

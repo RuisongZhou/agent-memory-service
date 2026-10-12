@@ -4,7 +4,7 @@ CARGO ?= cargo
 JOBS ?=
 JFLAG = $(if $(JOBS),-j $(JOBS))
 
-.PHONY: setup build test test-rust test-service selftest smoke fmt check-public
+.PHONY: setup build test test-rust test-service selftest smoke fmt check-public check-arch
 setup:
 	python3 scripts/setup_eval.py
 build:
@@ -12,9 +12,9 @@ build:
 test:
 	$(PYTHON) -m pytest -q eval/tests
 test-rust:
-	$(CARGO) test --locked -p memory-rules -p memory-fulltext --profile fast $(JFLAG)
+	$(CARGO) test --locked -p memory-rules -p memory-fulltext -p memory-config --profile fast $(JFLAG)
 test-service:
-	$(CARGO) test --locked -p memory-service --lib --profile fast $(JFLAG)
+	$(CARGO) test --locked -p memory-domain -p memory-store -p memory-engine -p memory-algo-mem0 -p memory-algo-memos -p memory-service --lib --profile fast $(JFLAG)
 selftest:
 	MEMORY_MOCK_MODELS=1 target/fast/agent-memoryd selftest
 smoke:
@@ -23,3 +23,5 @@ fmt:
 	$(CARGO) fmt --all -- --check
 check-public:
 	$(PYTHON) scripts/check_public.py
+check-arch:
+	$(PYTHON) scripts/check_architecture.py

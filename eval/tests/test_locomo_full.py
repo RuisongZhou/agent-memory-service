@@ -2,7 +2,13 @@ from common import locomo
 from locomo_full import batches, batch_key, questions, protocol
 
 
-def test_full_dataset_coverage_and_frozen_workload():
+def test_full_dataset_coverage_and_frozen_workload(monkeypatch, tmp_path):
+    # The protocol fingerprints the daemon binary; the Python CI job does not build it.
+    import locomo_full
+    binary = tmp_path / 'target/fast/agent-memoryd'
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b'binary')
+    monkeypatch.setattr(locomo_full, 'REPO', tmp_path)
     data = locomo.load()
     spec = protocol(data, 10)
     rows = [q for c in data for q in questions(c)]
@@ -44,15 +50,15 @@ def test_both_perspectives_preserve_every_utterance_once_and_batch_order():
 
 
 def test_sdk_relay_configuration_is_per_store_not_a_global_mutation(monkeypatch, tmp_path):
-    import mem0_run
-    from mem0_migration import sdk_stores
-    original = mem0_run.QWEN_BASE_URL
-    monkeypatch.setattr(mem0_run, 'Mem0Stores', lambda args: args)
+    from common import mem0_adapter
+    from common.migration import sdk_stores
+    original = mem0_adapter.QWEN_BASE_URL
+    monkeypatch.setattr(mem0_adapter, 'Mem0Stores', lambda args: args)
     first = sdk_stores(tmp_path, 'http://embed', 'http://relay-1')
     second = sdk_stores(tmp_path, 'http://embed', 'http://relay-2')
     assert first.llm_base_url == 'http://relay-1'
     assert second.llm_base_url == 'http://relay-2'
-    assert mem0_run.QWEN_BASE_URL == original
+    assert mem0_adapter.QWEN_BASE_URL == original
 
 
 def test_resume_refuses_changed_context_packing_code(monkeypatch, tmp_path):

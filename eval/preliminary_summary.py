@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import usage_stats
+from common import usage as usage_ledger
 from common.usage_records import usage_entries
 from common.llm import Ledger
 
@@ -24,14 +24,14 @@ def load_usage(path):
 def summarize(root, *, ledgers=None, usage_exports=None):
     root = Path(root)
     paths = list(dict.fromkeys(Path(p).resolve() for p in (ledgers if ledgers is not None else root.rglob("*ledger*.jsonl"))))
-    rows = [row for path in paths for row in usage_stats.load_rows(path)]
+    rows = [row for path in paths for row in usage_ledger.load_rows(path)]
     exports = []
     for tenant, path in usage_exports or []:
         converted = [Ledger.row(**entry) for entry in usage_entries(load_usage(path), tenant, f"example.{tenant}")]
         rows.extend(converted)
         exports.append({"tenant": tenant, "path": str(path), "usage_records": len(converted)})
-    merged = usage_stats.merge_rows(rows)
-    measured = usage_stats.summarize(merged)
+    merged = usage_ledger.merge_rows(rows)
+    measured = usage_ledger.summarize(merged)
     return {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "ledger_files": [str(p) for p in paths], "example_usage_exports": exports,
             "n_deduplicated_records": len(rows) - len(merged),

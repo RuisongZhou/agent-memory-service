@@ -48,7 +48,7 @@ curl -s http://127.0.0.1:8765/v1/search_memories \
   -d '{"query":"current project decisions","scope":{"project":"demo"},"touch":false}'
 ```
 
-The core schemas are in `crates/memory-service/src/domain/types.rs`; examples live in `examples/`.
+The core schemas are in `crates/memory-domain/src/types.rs`; examples live in `examples/`.
 
 ## Recent-turn buffer
 
@@ -101,7 +101,7 @@ selects all visible project records in the single-user store. Caller headers rem
 not authentication.
 
 The extraction prompt is vendored unchanged with its Apache 2.0 license and NOTICE in
-`crates/memory-service/src/algorithms/mem0/prompts/`. Strict parsing, scoped hash deduplication,
+`crates/memory-algo-mem0/src/prompts/`. Strict parsing, scoped hash deduplication,
 atomic primary/vector storage and batch provenance are application adaptations, not SDK guarantees.
 
 ## Memos strategy: fact formation

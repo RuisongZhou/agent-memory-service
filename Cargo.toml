@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/memory-service", "crates/memory-fulltext", "crates/memory-rules"]
+members = [
+    "crates/memory-service",
+    "crates/memory-config",
+    "crates/memory-engine",
+    "crates/memory-algo-mem0",
+    "crates/memory-algo-memos",
+    "crates/memory-domain",
+    "crates/memory-store",
+    "crates/memory-fulltext",
+    "crates/memory-rules",
+]
 default-members = ["crates/memory-service"]
 
 [workspace.package]
@@ -26,4 +36,22 @@ incremental = true
 panic = "unwind"
 
 [profile.fast.package.memory-service]
+opt-level = 1
+
+[profile.fast.package.memory-config]
+opt-level = 1
+
+[profile.fast.package.memory-engine]
+opt-level = 1
+
+[profile.fast.package.memory-algo-mem0]
+opt-level = 1
+
+[profile.fast.package.memory-algo-memos]
+opt-level = 1
+
+[profile.fast.package.memory-domain]
+opt-level = 1
+
+[profile.fast.package.memory-store]
 opt-level = 1

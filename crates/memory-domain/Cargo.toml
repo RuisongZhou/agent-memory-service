@@ -1,0 +1,15 @@
+[package]
+name = "memory-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure memory records, API types, errors and integrity planning for the memory service"
+publish = false
+
+[dependencies]
+memory-rules = { path = "../memory-rules" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
