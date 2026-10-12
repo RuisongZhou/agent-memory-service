@@ -1,6 +1,6 @@
 //! Memos algorithm background scheduling.
 use super::formation::ingest::process_available;
-use crate::{engine::Engine, tenant::Tenant};
+use crate::runtime::{engine::Engine, tenant::Tenant};
 use std::{sync::Arc, time::Duration};
 
 pub fn start(eng: Arc<Engine>, t: Arc<Tenant>) {

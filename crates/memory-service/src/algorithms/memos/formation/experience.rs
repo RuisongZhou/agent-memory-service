@@ -1,10 +1,8 @@
 //! Session-end P2 validation and a transaction independent of fact formation.
-use crate::{
-    store::{self, to_doc, Tx},
-    types::*,
-    util,
-};
+use crate::domain::types::*;
+use crate::storage::store::{self, to_doc, Tx};
 use anyhow::{anyhow, Result};
+use memory_rules::util;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -120,7 +118,11 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    pub async fn commit(self, tenant: &crate::tenant::Tenant, platform: &str) -> Result<()> {
+    pub async fn commit(
+        self,
+        tenant: &crate::runtime::tenant::Tenant,
+        platform: &str,
+    ) -> Result<()> {
         let mut tx = Tx::new();
         let mut out = super::relations::Applied::default();
         let mut texts = HashMap::new();
@@ -510,6 +512,7 @@ pub fn prepare(
 }
 
 /// Pure acceptance checks callable from the daemon selftest without loading a model or a test build.
+#[cfg(feature = "selftest")]
 pub fn rule_selftest() {
     let e = Experience {
         situation: "slow query".into(),

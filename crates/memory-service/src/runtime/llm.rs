@@ -103,7 +103,7 @@ impl Llm {
         system: &str,
         user: &str,
         max_tokens: u32,
-        store: &super::store::Store,
+        store: &crate::storage::store::Store,
         stage: &str,
     ) -> Result<LlmReply> {
         self.json_call_impl(system, user, max_tokens, Some((store, stage)), false, None)
@@ -116,7 +116,7 @@ impl Llm {
         system: &str,
         user: &str,
         max_tokens: u32,
-        store: &super::store::Store,
+        store: &crate::storage::store::Store,
         stage: &str,
     ) -> Result<LlmReply> {
         self.json_call_impl(system, user, max_tokens, Some((store, stage)), true, None)
@@ -129,7 +129,7 @@ impl Llm {
         system: &str,
         user: &str,
         max_tokens: u32,
-        store: &super::store::Store,
+        store: &crate::storage::store::Store,
         stage: &str,
         contract: &JsonContract,
     ) -> Result<LlmReply> {
@@ -149,7 +149,7 @@ impl Llm {
         system: &str,
         user: &str,
         max_tokens: u32,
-        usage_log: Option<(&super::store::Store, &str)>,
+        usage_log: Option<(&crate::storage::store::Store, &str)>,
         values_only: bool,
         contract: Option<&JsonContract>,
     ) -> Result<LlmReply> {
@@ -175,7 +175,7 @@ impl Llm {
         let url = format!("{}/chat/completions", self.base_url);
         let mut last_err = anyhow!("no attempt");
         for attempt in 0..6u32 {
-            let request_time = super::util::now();
+            let request_time = memory_rules::util::now();
             self.total_attempts
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                     if self.max_calls.map(|limit| n >= limit).unwrap_or(false) {
@@ -207,7 +207,7 @@ impl Llm {
                             .log(
                                 "llm_responses",
                                 json!({"stage":stage,"model":self.model,
-                            "createdAt":super::util::fmt_ts(&request_time),"attempt":attempt+1,
+                            "createdAt":memory_rules::util::fmt_ts(&request_time),"attempt":attempt+1,
                             "request":body,"transportError":last_err.to_string()}),
                             )
                             .await?;
@@ -222,7 +222,7 @@ impl Llm {
                     last_err = anyhow!("read error: {e}");
                     if let Some((store, stage)) = usage_log {
                         store.log("llm_responses", json!({"stage":stage,"model":self.model,
-                            "createdAt":super::util::fmt_ts(&request_time),"attempt":attempt+1,
+                            "createdAt":memory_rules::util::fmt_ts(&request_time),"attempt":attempt+1,
                             "request":body,"httpStatus":status.as_u16(),"transportError":last_err.to_string()})).await?;
                     }
                     continue;
@@ -231,20 +231,23 @@ impl Llm {
             // Persist the exact HTTP body before decoding, including non-2xx and malformed replies.
             let response_log_id = if let Some((store, stage)) = usage_log {
                 Some(store.log("llm_responses", json!({"stage":stage,"model":self.model,
-                    "createdAt":super::util::fmt_ts(&request_time),"receivedAt":super::util::now_str(),
+                    "createdAt":memory_rules::util::fmt_ts(&request_time),"receivedAt":memory_rules::util::now_str(),
                     "attempt":attempt+1,"httpStatus":status.as_u16(),"request":body,
                     "rawBody":text,"latencyMs":started.elapsed().as_millis() as u64})).await?)
             } else {
                 None
             };
             if status.as_u16() == 429 || status.is_server_error() {
-                last_err = anyhow!("HTTP {status}: {}", crate::util::truncate_bytes(&text, 300));
+                last_err = anyhow!(
+                    "HTTP {status}: {}",
+                    memory_rules::util::truncate_bytes(&text, 300)
+                );
                 continue;
             }
             if !status.is_success() {
                 return Err(anyhow!(
                     "HTTP {status}: {}",
-                    crate::util::truncate_bytes(&text, 500)
+                    memory_rules::util::truncate_bytes(&text, 500)
                 ));
             }
             let v: Value = match serde_json::from_str(&text) {
@@ -304,7 +307,7 @@ impl Llm {
                     .log(
                         "llm_usage",
                         json!({"stage":stage,"model":self.model,
-                    "createdAt":super::util::fmt_ts(&request_time),"receivedAt":super::util::now_str(),"attempt":attempt+1,
+                    "createdAt":memory_rules::util::fmt_ts(&request_time),"receivedAt":memory_rules::util::now_str(),"attempt":attempt+1,
                     "promptTokens":usage.prompt_tokens,"completionTokens":usage.completion_tokens,
                     "cacheHitTokens":usage.cache_hit_tokens,
                     "cacheMissTokens":usage.prompt_tokens.saturating_sub(usage.cache_hit_tokens),
@@ -413,6 +416,6 @@ pub fn parse_json_loose(s: &str) -> Result<Value> {
     }
     Err(anyhow!(
         "cannot parse JSON from: {}",
-        crate::util::truncate_bytes(s, 200)
+        memory_rules::util::truncate_bytes(s, 200)
     ))
 }

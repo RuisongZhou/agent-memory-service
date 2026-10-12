@@ -6,7 +6,8 @@ pub mod memos;
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::{config::MemoryStrategy, engine::Engine, tenant::Tenant, types::*};
+use crate::domain::types::*;
+use crate::runtime::{config::MemoryStrategy, engine::Engine, tenant::Tenant};
 
 pub async fn add_memories(
     eng: &Arc<Engine>,

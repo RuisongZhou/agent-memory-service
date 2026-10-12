@@ -1,6 +1,8 @@
 //! Shared authoritative record, revision-chain and evidence reads.
 use super::visibility::Vis;
-use crate::{engine::Engine, store::safe_id, tenant::Tenant, types::*};
+use crate::domain::types::*;
+use crate::runtime::{engine::Engine, tenant::Tenant};
+use crate::storage::store::safe_id;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::{

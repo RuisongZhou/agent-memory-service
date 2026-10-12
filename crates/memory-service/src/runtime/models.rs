@@ -494,7 +494,7 @@ pub fn mock_embed(text: &str, dim: usize) -> Vec<f32> {
         .map(|w| w.to_string())
         .collect();
     for w in chars.windows(2) {
-        if super::util::is_cjk(w[0]) && super::util::is_cjk(w[1]) {
+        if memory_rules::util::is_cjk(w[0]) && memory_rules::util::is_cjk(w[1]) {
             toks.push(w.iter().collect());
         }
     }

@@ -1,15 +1,11 @@
 //! Completed-turn buffer, durable receipts and serialised formation jobs (chapters 2–4).
 use super::extract;
-use crate::{admission::required_scope, tasks::get_task};
-use crate::{
-    engine::Engine,
-    indexer,
-    store::{self, from_doc, to_doc, Tx},
-    tenant::Tenant,
-    types::*,
-    util,
-};
+use crate::domain::types::*;
+use crate::formation::{admission::required_scope, tasks::get_task};
+use crate::runtime::{engine::Engine, indexer, tenant::Tenant};
+use crate::storage::store::{self, from_doc, to_doc, Tx};
 use anyhow::{anyhow, Result};
+use memory_rules::util;
 use serde_json::{json, Value};
 use std::sync::{atomic::Ordering, Arc};
 use std::time::{Duration, Instant};
@@ -379,7 +375,7 @@ fn batch_ready(
     oldest: Option<&str>,
     force: bool,
     ended: bool,
-    cfg: &crate::config::ServiceConfig,
+    cfg: &crate::runtime::config::ServiceConfig,
     now: i64,
 ) -> bool {
     count > 0
@@ -391,8 +387,9 @@ fn batch_ready(
                 .unwrap_or(false))
 }
 
+#[cfg(feature = "selftest")]
 pub fn trigger_selftest() {
-    let cfg = crate::config::ServiceConfig::default();
+    let cfg = crate::runtime::config::ServiceConfig::default();
     let stamp = "2026-10-10T00:00:00Z";
     let start = util::ts_secs(stamp);
     assert!(!batch_ready(

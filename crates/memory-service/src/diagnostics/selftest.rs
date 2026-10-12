@@ -2,8 +2,8 @@
 //! need a second dependency build with dev-dependency features).
 use serde_json::json;
 
-use super::store::*;
-use super::types::*;
+use crate::domain::types::*;
+use crate::storage::store::*;
 
 fn tempdir() -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("memory-selftest-{}", std::process::id()));
@@ -85,10 +85,13 @@ pub async fn store_roundtrip() {
 /// Mock-model integration coverage for retrieval and management, including primary storage and indexes.
 /// No API key, generative-model request or background worker is involved.
 pub async fn retrieval_roundtrip() {
-    use super::{
-        config::ServiceConfig, engine::Engine, indexer, llm::Llm, manage, models::ModelHub,
-        retrieve, tenant::Tenant, timeparse, util,
+    use crate::api::manage;
+    use crate::retrieval;
+    use crate::runtime::{
+        config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
     };
+    use memory_rules::timeparse;
+    use memory_rules::util;
     use std::sync::Arc;
     assert_eq!(
         std::env::var("MEMORY_MOCK_MODELS").as_deref(),
@@ -101,7 +104,7 @@ pub async fn retrieval_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
-        memory_strategy: super::config::MemoryStrategy::Memos,
+        memory_strategy: crate::runtime::config::MemoryStrategy::Memos,
         data_dir: dir.clone(),
         ..Default::default()
     };
@@ -295,7 +298,7 @@ pub async fn retrieval_roundtrip() {
             })
             .collect::<Vec<String>>()
     };
-    let port = retrieve::search_memories(
+    let port = retrieval::search_memories(
         &eng,
         &t,
         &c,
@@ -321,7 +324,7 @@ pub async fn retrieval_roundtrip() {
         .unwrap()
         .iter()
         .any(|v| v["turnId"] == "T1"));
-    let conflict = retrieve::search_memories(
+    let conflict = retrieval::search_memories(
         &eng,
         &t,
         &c,
@@ -337,21 +340,21 @@ pub async fn retrieval_roundtrip() {
         conflict["results"][0]["slot"],
         conflict["results"][1]["slot"]
     );
-    let candidate = retrieve::search_memories(&eng, &t, &c, search_req("candidatefact"))
+    let candidate = retrieval::search_memories(&eng, &t, &c, search_req("candidatefact"))
         .await
         .unwrap();
     assert!(ids(&candidate).contains(&"m04".into()));
-    let private = retrieve::search_memories(&eng, &t, &c, search_req("secretproject"))
+    let private = retrieval::search_memories(&eng, &t, &c, search_req("secretproject"))
         .await
         .unwrap();
     assert!(ids(&private).is_empty() && private["recentTurns"].as_array().unwrap().is_empty());
     let cross =
-        retrieve::search_memories(&eng, &t, &c, search_req("crossscope public predecessor"))
+        retrieval::search_memories(&eng, &t, &c, search_req("crossscope public predecessor"))
             .await
             .unwrap();
     assert!(ids(&cross).contains(&"m14".into()));
     assert!(!ids(&cross).contains(&"m13".into()));
-    let buffer = retrieve::search_memories(&eng, &t, &c, search_req("bufferonly"))
+    let buffer = retrieval::search_memories(&eng, &t, &c, search_req("bufferonly"))
         .await
         .unwrap();
     assert_eq!(buffer["recentTurns"][0]["turnId"], "T2");
@@ -363,7 +366,7 @@ pub async fn retrieval_roundtrip() {
         .unwrap()
         .unwrap()
         .last_accessed_at;
-    retrieve::search_memories(
+    retrieval::search_memories(
         &eng,
         &t,
         &c,
@@ -388,7 +391,7 @@ pub async fn retrieval_roundtrip() {
         access
     );
     for budget in [1, 50, 1500] {
-        let context = retrieve::get_context(
+        let context = retrieval::get_context(
             &eng,
             &t,
             &c,
@@ -417,7 +420,7 @@ pub async fn retrieval_roundtrip() {
             .unwrap()
             .contains("secret full steps"));
     }
-    let listed = retrieve::list_turns(
+    let listed = retrieval::list_turns(
         &eng,
         &t,
         &c,
@@ -429,7 +432,7 @@ pub async fn retrieval_roundtrip() {
     .await
     .unwrap();
     assert_eq!(listed["sessions"][0]["session"], "s1");
-    let raw = retrieve::list_turns(
+    let raw = retrieval::list_turns(
         &eng,
         &t,
         &c,
@@ -443,7 +446,7 @@ pub async fn retrieval_roundtrip() {
     .unwrap();
     assert_eq!(raw["turns"].as_array().unwrap().len(), 1);
     assert_eq!(raw["turns"][0]["project"], "p1");
-    let history = retrieve::get_memory(
+    let history = retrieval::get_memory(
         &eng,
         &t,
         GetMemoryReq {
@@ -457,7 +460,7 @@ pub async fn retrieval_roundtrip() {
     assert_eq!(history["history"].as_array().unwrap().len(), 2);
     assert_eq!(history["history"][0]["validUntil"], now);
     for n in 1..=3 {
-        let r = retrieve::search_memories(&eng, &t, &c, search_req("candidateskill"))
+        let r = retrieval::search_memories(&eng, &t, &c, search_req("candidateskill"))
             .await
             .unwrap();
         assert!(ids(&r).contains(&"m11".into()));
@@ -485,7 +488,7 @@ pub async fn retrieval_roundtrip() {
         t.store.get_memory("m11").await.unwrap().unwrap().status,
         S_CURRENT
     );
-    let r = retrieve::search_memories(&eng, &t, &c, search_req("candidateskill"))
+    let r = retrieval::search_memories(&eng, &t, &c, search_req("candidateskill"))
         .await
         .unwrap();
     manage::feedback(
@@ -618,7 +621,7 @@ pub async fn retrieval_roundtrip() {
     );
     // Pure logic remains covered by selftest without rebuilding main-crate test dependencies.
     assert_eq!(
-        retrieve::mmr_order(
+        retrieval::mmr_order(
             &[1.0, 0.98, 0.9],
             &|i, j| if (i == 0 && j == 1) || (i == 1 && j == 0) {
                 0.99
@@ -631,10 +634,10 @@ pub async fn retrieval_roundtrip() {
     );
     let mut used = 0;
     assert_eq!(
-        retrieve::pack(&[50, 4, 3], 7, &mut used),
+        retrieval::pack(&[50, 4, 3], 7, &mut used),
         vec![false, true, true]
     );
-    assert!((retrieve::evidence_mult(8) - 1.15).abs() < 1e-10);
+    assert!((retrieval::evidence_mult(8) - 1.15).abs() < 1e-10);
     let reference = chrono::DateTime::parse_from_rfc3339("2026-10-09T10:00:00+08:00").unwrap();
     for (q, start, end) in [
         ("last Saturday", "2026-10-03", "2026-10-04"),
@@ -672,10 +675,12 @@ pub async fn retrieval_roundtrip() {
 /// Long turns: the buffer stores complete messages, indexes their windows, and search returns the
 /// window that matched; short turns keep their exact digest.
 pub async fn long_turn_roundtrip() {
-    use super::{
-        config::ServiceConfig, engine::Engine, indexer, ingest, llm::Llm, models::ModelHub,
-        retrieve, tenant::Tenant, util,
+    use crate::formation::ingest;
+    use crate::retrieval;
+    use crate::runtime::{
+        config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
     };
+    use memory_rules::util;
     use std::sync::Arc;
     let dir = std::env::temp_dir().join(format!(
         "memory-long-turn-selftest-{}-{}",
@@ -683,7 +688,7 @@ pub async fn long_turn_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
-        memory_strategy: super::config::MemoryStrategy::Memos,
+        memory_strategy: crate::runtime::config::MemoryStrategy::Memos,
         data_dir: dir.clone(),
         ..Default::default()
     };
@@ -788,7 +793,7 @@ pub async fn long_turn_roundtrip() {
             .cloned()
             .unwrap_or_else(|| panic!("{id} not recalled: {r}"))
     };
-    let r = retrieve::search_memories(&eng, &t, &c, search("zephyrquartz linker failed"))
+    let r = retrieval::search_memories(&eng, &t, &c, search("zephyrquartz linker failed"))
         .await
         .unwrap();
     let hit = turn(&r, "L1");
@@ -798,7 +803,7 @@ pub async fn long_turn_roundtrip() {
     assert!(view.len() <= digest_max + 2 * "…".len());
     assert_eq!(hit["complete"], false);
     assert_eq!(hit["excerpt"]["role"], "assistant");
-    let r = retrieve::search_memories(&eng, &t, &c, search("which tea do I like"))
+    let r = retrieval::search_memories(&eng, &t, &c, search("which tea do I like"))
         .await
         .unwrap();
     let hit = turn(&r, "S1");

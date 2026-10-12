@@ -12,8 +12,8 @@ use surrealdb::engine::local::{Db, SurrealKv};
 use surrealdb::Surreal;
 use tokio::sync::{Mutex, RwLock};
 
-use super::types::*;
-use super::util;
+use crate::domain::types::*;
+use memory_rules::util;
 
 const SCHEMA: &str = r#"
 DEFINE TABLE IF NOT EXISTS turns SCHEMALESS;

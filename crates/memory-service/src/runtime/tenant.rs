@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use super::store::Store;
+use crate::storage::store::Store;
 
 /// In-memory vector cache for brute-force cosine search (5.3: ≤ 20,000 visible records).
 #[derive(Default)]

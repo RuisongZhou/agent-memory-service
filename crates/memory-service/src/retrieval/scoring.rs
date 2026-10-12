@@ -1,5 +1,5 @@
 //! Deterministic fusion, diversity, time decay and token packing rules.
-use crate::util;
+use memory_rules::util;
 use std::collections::{HashMap, HashSet};
 
 /// Reciprocal rank fusion, equal weights: Σ 1 / (k + rank), rank starting at 1. Sorted by score desc;

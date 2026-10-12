@@ -1,16 +1,12 @@
 //! Persistent integrity and instruction tests. No generation or external model calls.
-use super::{
-    config::ServiceConfig,
-    engine::Engine,
-    ingest,
-    llm::Llm,
-    models::ModelHub,
-    retrieve,
-    store::{to_doc, Tx},
-    tenant::Tenant,
-    types::*,
-    util,
+use crate::domain::types::*;
+use crate::formation::ingest;
+use crate::retrieval;
+use crate::runtime::{
+    config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
 };
+use crate::storage::store::{to_doc, Tx};
+use memory_rules::util;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -18,7 +14,7 @@ pub async fn selftest() {
     let dir = std::env::temp_dir().join(util::new_id("memory-integrity-"));
     let engine = Engine::new(
         ServiceConfig {
-            memory_strategy: super::config::MemoryStrategy::Memos,
+            memory_strategy: crate::runtime::config::MemoryStrategy::Memos,
             ..Default::default()
         },
         Llm::new("http://127.0.0.1:1", "", "mock", 1, 1).unwrap(),
@@ -154,7 +150,7 @@ pub async fn selftest() {
             .unwrap()["duplicate"],
         true
     );
-    let context = retrieve::get_context(
+    let context = retrieval::get_context(
         &engine,
         &tenant,
         &caller,
@@ -170,7 +166,7 @@ pub async fn selftest() {
         .as_str()
         .unwrap()
         .contains("Prefer brief answers."));
-    let other = retrieve::get_context(
+    let other = retrieval::get_context(
         &engine,
         &tenant,
         &caller,
@@ -203,30 +199,32 @@ pub async fn selftest() {
         .put_doc("memories", &port.id, &port)
         .await
         .unwrap();
-    let applied = super::relations::apply(
+    let applied = crate::algorithms::memos::formation::relations::apply(
         &engine,
         &tenant,
-        vec![super::relations::NewFact {
+        vec![crate::algorithms::memos::formation::relations::NewFact {
             fidx: 1,
             text: "Port is 8100".into(),
             scope: port.scope.clone(),
             entity_ids: vec![],
             effective_at: "2026-10-11".into(),
             origin: ORIGIN_USER.into(),
-            sources: vec![super::relations::FactSource {
+            sources: vec![crate::algorithms::memos::formation::relations::FactSource {
                 turn_id: "T1".into(),
                 span: "Port is 8100".into(),
                 role: "user".into(),
                 stated_at: "2026-10-11T00:00:00Z".into(),
                 stated: (1, 0),
             }],
-            relations: vec![super::relations::plan::Rel {
-                target: super::relations::plan::Target::Old(port.id.clone()),
+            relations: vec![crate::algorithms::memos::formation::relations::plan::Rel {
+                target: crate::algorithms::memos::formation::relations::plan::Target::Old(
+                    port.id.clone(),
+                ),
                 relation: "conflicts".into(),
             }],
             reason: None,
         }],
-        super::relations::WriteCtx {
+        crate::algorithms::memos::formation::relations::WriteCtx {
             platform: caller.platform.clone(),
             now: util::now_str(),
             turns: vec![],
@@ -252,7 +250,7 @@ pub async fn selftest() {
         keep_memory_id: chosen.clone(),
         reason: "Verified the configured port".into(),
     };
-    super::manage::resolve_uncertainty(&tenant, &caller, resolution.clone())
+    crate::api::manage::resolve_uncertainty(&tenant, &caller, resolution.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -285,7 +283,7 @@ pub async fn selftest() {
         "resolved"
     );
     assert!(
-        super::manage::resolve_uncertainty(&tenant, &caller, resolution)
+        crate::api::manage::resolve_uncertainty(&tenant, &caller, resolution)
             .await
             .is_err()
     );
@@ -403,7 +401,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
             );
             assert_eq!(open().await.len(), 2);
         }
-        super::manage::resolve_uncertainty(
+        crate::api::manage::resolve_uncertainty(
             t,
             caller,
             ResolveUncertaintyReq {
@@ -445,7 +443,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
             .collect::<Vec<_>>();
         assert_eq!(remaining.len(), usize::from(name != "chain"));
         if let Some(question) = remaining.first() {
-            super::manage::resolve_uncertainty(
+            crate::api::manage::resolve_uncertainty(
                 t,
                 caller,
                 ResolveUncertaintyReq {

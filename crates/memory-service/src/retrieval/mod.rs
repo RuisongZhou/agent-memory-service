@@ -6,11 +6,12 @@ pub mod scoring;
 pub(crate) mod vector;
 pub mod visibility;
 
-use crate::{engine::Engine, tenant::Tenant, types::*};
+use crate::domain::types::*;
+use crate::runtime::{engine::Engine, tenant::Tenant};
 use serde_json::Value;
 use std::sync::Arc;
 
-pub use crate::reference_time::ref_now;
+pub use crate::runtime::reference_time::ref_now;
 pub async fn get_context(
     eng: &Arc<Engine>,
     t: &Arc<Tenant>,

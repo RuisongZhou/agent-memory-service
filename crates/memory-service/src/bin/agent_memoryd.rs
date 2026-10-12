@@ -73,6 +73,7 @@ enum Cmd {
         platform: String,
     },
     /// Run storage self-tests
+    #[cfg(feature = "selftest")]
     Selftest,
     /// Trigger an index rebuild on a running daemon
     Reindex {
@@ -170,6 +171,7 @@ fn main() -> anyhow::Result<()> {
                 tracing::info!("agent-memoryd listening on http://{host}:{port}");
                 axum::serve(listener, app).await?;
             }
+            #[cfg(feature = "selftest")]
             Cmd::Selftest => {
                 memory_service::selftest::store_roundtrip().await;
                 memory_service::integrity_tests::selftest().await;
@@ -177,7 +179,7 @@ fn main() -> anyhow::Result<()> {
                 memory_service::algorithm_isolation::selftest().await;
                 memory_service::selftest::retrieval_roundtrip().await;
                 memory_service::selftest::long_turn_roundtrip().await;
-                memory_service::extract::formation_selftest().await;
+                memory_service::algorithms::memos::formation::selftest::formation_selftest().await;
                 memory_service::consolidate_tests::consolidation_selftest().await;
             }
             Cmd::Mcp { url, platform } => {

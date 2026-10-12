@@ -9,11 +9,11 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::engine::Engine;
-use crate::store::{self, to_doc, Tx};
-use crate::tenant::Tenant;
-use crate::types::*;
-use crate::util;
+use crate::domain::types::*;
+use crate::runtime::engine::Engine;
+use crate::runtime::tenant::Tenant;
+use crate::storage::store::{self, to_doc, Tx};
+use memory_rules::util;
 use plan::{Node, Rel, Target};
 
 /// Where a fact's supporting span came from.

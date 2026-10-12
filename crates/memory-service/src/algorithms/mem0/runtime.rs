@@ -1,5 +1,5 @@
 //! Ordered Mem0 job scheduling. No buffered session or maintenance work runs here.
-use crate::{engine::Engine, tenant::Tenant};
+use crate::runtime::{engine::Engine, tenant::Tenant};
 use std::{sync::Arc, time::Duration};
 
 pub fn start(eng: Arc<Engine>, t: Arc<Tenant>) {

@@ -273,8 +273,8 @@ impl TurnRec {
         let (user_max, assistant_max) = Self::digest_limits(digest_max);
         let digest = format!(
             "{}\n{}",
-            crate::util::truncate_bytes(user, user_max),
-            crate::util::truncate_bytes(assistant, assistant_max)
+            memory_rules::util::truncate_bytes(user, user_max),
+            memory_rules::util::truncate_bytes(assistant, assistant_max)
         );
         let mut chunks = Vec::new();
         for (role, text, max) in [
@@ -283,7 +283,7 @@ impl TurnRec {
         ] {
             if text.len() > max {
                 chunks.extend(
-                    crate::util::text_chunks(text, assistant_max)
+                    memory_rules::util::text_chunks(text, assistant_max)
                         .into_iter()
                         .map(|(start, end)| TurnChunk {
                             role: role.into(),
@@ -319,16 +319,16 @@ impl TurnRec {
     pub fn chunk_view(&self, i: usize, digest_max: usize) -> Option<String> {
         let c = self.chunks.get(i)?;
         let (user_max, assistant_max) = Self::digest_limits(digest_max);
-        let window = crate::util::excerpt(self.message(&c.role), c.start, c.end)?;
+        let window = memory_rules::util::excerpt(self.message(&c.role), c.start, c.end)?;
         Some(if c.role == "user" {
             format!(
                 "{window}\n{}",
-                crate::util::truncate_bytes(&self.assistant_message, assistant_max)
+                memory_rules::util::truncate_bytes(&self.assistant_message, assistant_max)
             )
         } else {
             format!(
                 "{}\n{window}",
-                crate::util::truncate_bytes(&self.user_message, user_max)
+                memory_rules::util::truncate_bytes(&self.user_message, user_max)
             )
         })
     }
@@ -336,8 +336,8 @@ impl TurnRec {
     /// The bounded view formation reads: a message over `max_bytes` keeps its head and tail halves.
     pub fn clipped(&self, max_bytes: usize) -> TurnRec {
         let mut tr = self.clone();
-        tr.user_message = crate::util::clip_message(&self.user_message, max_bytes);
-        tr.assistant_message = crate::util::clip_message(&self.assistant_message, max_bytes);
+        tr.user_message = memory_rules::util::clip_message(&self.user_message, max_bytes);
+        tr.assistant_message = memory_rules::util::clip_message(&self.assistant_message, max_bytes);
         tr.chunks.clear(); // offsets refer to the stored messages
         tr
     }

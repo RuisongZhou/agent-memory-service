@@ -1,8 +1,10 @@
 //! Daily maintenance (4.5), idle sessions (3.3), successful-buffer purge (3.2).
 use super::{extract, prompts};
-use crate::store::{self, to_doc, Tx};
-use crate::{engine::Engine, indexer, tenant::Tenant, types::*, util};
+use crate::domain::types::*;
+use crate::runtime::{engine::Engine, indexer, tenant::Tenant};
+use crate::storage::store::{self, to_doc, Tx};
 use anyhow::{anyhow, bail, Result};
+use memory_rules::util;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

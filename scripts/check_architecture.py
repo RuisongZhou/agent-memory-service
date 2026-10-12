@@ -17,7 +17,7 @@ ALGORITHM_REF = re.compile(r'algorithms::|\bmem0_(?:sources|hashes|history)\b')
 ALGORITHM_EXEMPT = ('algorithms/', 'bin/', 'diagnostics/')
 # One algorithm must not reach into the other.
 CROSS_ALGORITHM = {'algorithms/mem0/': re.compile(r'\bmemos::'), 'algorithms/memos/': re.compile(r'\bmem0::')}
-# Raw SurrealQL belongs to the storage layer.
+# Raw SurrealQL belongs to the storage layer; test-only selftest modules may inspect tables directly.
 RAW_SQL = re.compile(r'"(?:SELECT|UPDATE|DELETE|INSERT|CREATE|DEFINE|BEGIN) |\b(?:SELECT|UPDATE|DELETE) [a-z*]')
 SQL_EXEMPT = ('storage/', 'diagnostics/')
 # Module paths must follow the directory tree.
@@ -31,7 +31,6 @@ ALLOWED = {
     ('algorithm-ref', 'api/http.rs'),
     ('algorithm-ref', 'retrieval/records.rs'),
     ('algorithm-ref', 'retrieval/mod.rs'),
-    ('path-attr', 'lib.rs'),
     ('raw-sql', 'algorithms/mem0/formation.rs'),
     ('raw-sql', 'algorithms/mem0/retrieval.rs'),
     ('raw-sql', 'algorithms/memos/formation/consolidate.rs'),
@@ -67,7 +66,7 @@ def rust_violations():
         for prefix, pattern in CROSS_ALGORITHM.items():
             if rel.startswith(prefix) and pattern.search(text):
                 found.add(('cross-algorithm', rel))
-        if not rel.startswith(SQL_EXEMPT) and RAW_SQL.search(text):
+        if not rel.startswith(SQL_EXEMPT) and path.name != 'selftest.rs' and RAW_SQL.search(text):
             found.add(('raw-sql', rel))
         if PATH_ATTR.search(text):
             found.add(('path-attr', rel))

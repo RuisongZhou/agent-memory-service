@@ -1,15 +1,11 @@
 //! Durable Mem0 2.2.1 additive formation. Raw inputs precede generation; vectors and receipts
 //! commit together. Batch provenance is never presented as a verified per-claim quotation.
-use crate::{
-    engine::Engine,
-    llm::JsonContract,
-    store::{self, Tx},
-    tasks,
-    tenant::Tenant,
-    types::*,
-    util,
-};
+use crate::domain::types::*;
+use crate::formation::tasks;
+use crate::runtime::{engine::Engine, llm::JsonContract, tenant::Tenant};
+use crate::storage::store::{self, Tx};
 use anyhow::{anyhow, ensure, Result};
+use memory_rules::util;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -591,7 +587,7 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
             )
             .await?;
         if pending == 0 {
-            crate::indexer::drain(eng, t).await?;
+            crate::runtime::indexer::drain(eng, t).await?;
             return Ok(json!({"status":"idle","pendingRequests":0,"indexTasks":0,
                 "failedRequests":t.store.count("requests",Some("kind = 'mem0' AND status = 'failed'")).await?}));
         }

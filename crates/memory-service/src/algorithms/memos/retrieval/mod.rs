@@ -19,17 +19,17 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::engine::Engine;
-use crate::indexer;
-use crate::store::{safe_id, turn_rid, Tx};
-use crate::tenant::Tenant;
-use crate::timeparse::{self, TimeWindow};
-use crate::types::*;
-use crate::util;
+use crate::domain::types::*;
+use crate::runtime::engine::Engine;
+use crate::runtime::indexer;
+use crate::runtime::tenant::Tenant;
+use crate::storage::store::{safe_id, turn_rid, Tx};
+use memory_rules::timeparse::{self, TimeWindow};
+use memory_rules::util;
 
 const ACTIVE: [&str; 3] = [S_CURRENT, S_CONFLICT, S_CANDIDATE];
 const RECALL_TYPES: [&str; 3] = [T_FACT, T_EXPERIENCE, T_SKILL];
-use crate::retrieve::{
+use crate::retrieval::{
     records::{evidence_for, evidence_json, latest_profile, Loader, MAX_CHAIN_HOPS},
     scoring::*,
     vector::hnsw_search,
@@ -77,7 +77,7 @@ async fn load_active_meta(t: &Tenant) -> Result<Vec<MemMeta>> {
         .collect())
 }
 
-use crate::reference_time::ref_now;
+use crate::runtime::reference_time::ref_now;
 
 fn ms(t: Instant) -> f64 {
     (t.elapsed().as_secs_f64() * 10_000.0).round() / 10.0

@@ -8,11 +8,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::engine::Engine;
-use super::store::{from_doc, Tx};
-use super::tenant::Tenant;
-use super::types::*;
-use super::util;
+use crate::domain::types::*;
+use crate::runtime::engine::Engine;
+use crate::runtime::tenant::Tenant;
+use crate::storage::store::{from_doc, Tx};
+use memory_rules::util;
 
 /// Text that goes into the vector index for a memory (5.1 table), or None when the type is not indexed.
 pub fn vector_text(m: &MemoryRec) -> Option<String> {

@@ -1,16 +1,17 @@
 //! Offline checks that the shared entry points preserve each algorithm's lifecycle.
-use crate::{
-    algorithms,
+use crate::algorithms;
+use crate::domain::types::*;
+use crate::formation::ingest;
+use crate::retrieval;
+use crate::runtime::{
     config::{MemoryStrategy, ServiceConfig},
     engine::Engine,
-    ingest,
     llm::Llm,
     models::ModelHub,
-    retrieve, store,
     tenant::Tenant,
-    types::*,
-    util,
 };
+use crate::storage::store;
+use memory_rules::util;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -101,7 +102,7 @@ pub async fn selftest() {
         }
 
         // Bootstrap can close buffered sessions, but cannot alter them when Mem0 is selected.
-        retrieve::get_context(
+        retrieval::get_context(
             &eng,
             &tenant,
             &caller,

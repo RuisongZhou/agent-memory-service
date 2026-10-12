@@ -1,16 +1,11 @@
 //! Maintenance integration selftest. Supplied records and mock embeddings; never invokes a real LLM.
-use super::{
-    config::ServiceConfig,
-    consolidate,
-    engine::Engine,
-    indexer,
-    llm::Llm,
-    models::ModelHub,
-    store::{self, to_doc, Tx},
-    tenant::Tenant,
-    types::*,
-    util,
+use crate::algorithms::memos::formation::consolidate;
+use crate::domain::types::*;
+use crate::runtime::{
+    config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
 };
+use crate::storage::store::{self, to_doc, Tx};
+use memory_rules::util;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -42,7 +37,7 @@ pub async fn consolidation_selftest() {
     ));
     let eng = Engine::new(
         ServiceConfig {
-            memory_strategy: super::config::MemoryStrategy::Memos,
+            memory_strategy: crate::runtime::config::MemoryStrategy::Memos,
             data_dir: dir.clone(),
             ..Default::default()
         },

@@ -10,9 +10,13 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use super::engine::Engine;
-use super::types::*;
-use super::{algorithms, indexer, ingest, manage, retrieve};
+use crate::algorithms;
+use crate::api::manage;
+use crate::domain::types::*;
+use crate::formation::ingest;
+use crate::retrieval;
+use crate::runtime::engine::Engine;
+use crate::runtime::indexer;
 
 pub fn router(eng: Arc<Engine>) -> Router {
     Router::new()
@@ -78,10 +82,10 @@ async fn api(
         match name.as_str() {
             "add_memories" => ingest::add_memories(&eng, &t, &c, parse(body)?).await,
             "get_task" => ingest::get_task(&eng, &t, parse(body)?).await,
-            "search_memories" => retrieve::search_memories(&eng, &t, &c, parse(body)?).await,
-            "get_context" => retrieve::get_context(&eng, &t, &c, parse(body)?).await,
-            "list_turns" => retrieve::list_turns(&eng, &t, &c, parse(body)?).await,
-            "get_memory" => retrieve::get_memory(&eng, &t, parse(body)?).await,
+            "search_memories" => retrieval::search_memories(&eng, &t, &c, parse(body)?).await,
+            "get_context" => retrieval::get_context(&eng, &t, &c, parse(body)?).await,
+            "list_turns" => retrieval::list_turns(&eng, &t, &c, parse(body)?).await,
+            "get_memory" => retrieval::get_memory(&eng, &t, parse(body)?).await,
             "correct_memory" => manage::correct_memory(&eng, &t, &c, parse(body)?).await,
             "delete_memory" => manage::delete_memory(&eng, &t, parse(body)?).await,
             "feedback" => manage::feedback(&eng, &t, parse(body)?).await,

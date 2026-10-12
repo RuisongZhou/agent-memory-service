@@ -1,6 +1,8 @@
 //! Semantic-only search. No generative calls, broad summaries or implicit cross-encoder.
-use crate::{config::MemoryStrategy, engine::Engine, tenant::Tenant, types::*, util};
+use crate::domain::types::*;
+use crate::runtime::{config::MemoryStrategy, engine::Engine, tenant::Tenant};
 use anyhow::{anyhow, Result};
+use memory_rules::util;
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc, time::Instant};
 
@@ -58,7 +60,7 @@ pub async fn dense_with_vector(
         let mut k = limit * 2;
         let mut hits = Vec::new();
         for attempt in 0..3 {
-            hits = crate::retrieve::vector::hnsw_search(t, query, k)
+            hits = crate::retrieval::vector::hnsw_search(t, query, k)
                 .await?
                 .into_iter()
                 .filter(|(id, _)| ids.contains(id))
@@ -219,7 +221,7 @@ pub async fn search(
 fn visible(scope: &MemScope, project: &str, platform: &str) -> bool {
     (project == "*" && scope.kind == "project")
         || (platform == "*" && scope.kind == "platform")
-        || crate::retrieve::visibility::visible(scope, project, platform)
+        || crate::retrieval::visibility::visible(scope, project, platform)
 }
 /// Inspect complete raw inputs independently of whether extraction succeeded.
 pub async fn list_inputs(

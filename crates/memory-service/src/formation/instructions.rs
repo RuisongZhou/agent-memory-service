@@ -1,10 +1,8 @@
 //! Explicit behavioural memory. Untrusted recalled text is never promoted into instructions.
-use super::{
-    store::{self, to_doc, Tx},
-    tenant::Tenant,
-    types::*,
-    util,
-};
+use crate::domain::types::*;
+use crate::runtime::tenant::Tenant;
+use crate::storage::store::{self, to_doc, Tx};
+use memory_rules::util;
 use serde_json::{json, Value};
 use std::sync::Arc;
 

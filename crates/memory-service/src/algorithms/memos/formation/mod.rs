@@ -6,3 +6,5 @@ pub mod ingest;
 pub mod prompts;
 pub mod relations;
 pub mod schema;
+#[cfg(feature = "selftest")]
+pub mod selftest;

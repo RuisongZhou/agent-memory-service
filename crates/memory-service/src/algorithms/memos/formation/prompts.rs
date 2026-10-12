@@ -206,8 +206,8 @@ pub fn block(tag: &str, body: &str) -> String {
 
 /// Resolve only the Memos algorithm's prompt family using shared language configuration.
 pub fn for_tenant(
-    eng: &crate::engine::Engine,
-    tenant: &crate::tenant::Tenant,
+    eng: &crate::runtime::engine::Engine,
+    tenant: &crate::runtime::tenant::Tenant,
 ) -> &'static PromptSet {
     get(eng.prompt_variant_for(tenant))
 }

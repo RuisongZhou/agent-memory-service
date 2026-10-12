@@ -1,6 +1,8 @@
 //! Shared admission, explicit instructions and durable request inspection.
-pub use crate::tasks::get_task;
-use crate::{admission::required_scope, engine::Engine, tenant::Tenant, types::*};
+use crate::domain::types::*;
+use crate::formation::admission::required_scope;
+pub use crate::formation::tasks::get_task;
+use crate::runtime::{engine::Engine, tenant::Tenant};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -21,7 +23,7 @@ pub async fn add_memories(
         ));
     }
     if req.memory_type.as_deref() == Some(T_INSTRUCTION) {
-        return crate::instructions::store(t, c, &req, project, session).await;
+        return crate::formation::instructions::store(t, c, &req, project, session).await;
     }
     if req.memory_scope.is_some() {
         return Err(ApiError::InvalidArgument(
@@ -55,6 +57,3 @@ pub async fn add_memories(
 pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     crate::algorithms::wait_idle(eng, t).await
 }
-
-// Retained entry point for the Memos trigger selftest.
-pub use crate::algorithms::memos::formation::ingest::trigger_selftest;

@@ -4,12 +4,12 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use super::engine::Engine;
-use super::indexer;
-use super::store::{patch, safe_id, session_rid, to_doc, turn_rid, Tx};
-use super::tenant::Tenant;
-use super::types::*;
-use super::util;
+use crate::domain::types::*;
+use crate::runtime::engine::Engine;
+use crate::runtime::indexer;
+use crate::runtime::tenant::Tenant;
+use crate::storage::store::{patch, safe_id, session_rid, to_doc, turn_rid, Tx};
+use memory_rules::util;
 
 /// Helpful feedback count at which a candidate skill is enabled (4.5 / 5.5).
 const SKILL_ENABLE_HELPFUL: i64 = 3;
@@ -50,7 +50,7 @@ pub async fn resolve_uncertainty(
             "uncertainty is already resolved".into(),
         ));
     }
-    let uncertainty: UncertaintyRec = super::store::from_doc(record)?;
+    let uncertainty: UncertaintyRec = crate::storage::store::from_doc(record)?;
     if !uncertainty.memory_ids.contains(&req.keep_memory_id) {
         return Err(ApiError::InvalidArgument(
             "keepMemoryId is not a competing assertion".into(),

@@ -7,6 +7,11 @@ repository.workspace = true
 description = "Local shared memory service with evidence, revisions, HTTP and MCP"
 publish = false
 
+[features]
+default = ["selftest"]
+# Self-tests behind `agent-memoryd selftest`; disable for a daemon without diagnostics.
+selftest = []
+
 [dependencies]
 memory-fulltext = { path = "../memory-fulltext" }
 memory-rules = { path = "../memory-rules" }

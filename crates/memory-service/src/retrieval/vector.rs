@@ -1,5 +1,5 @@
 //! Shared ANN access. Filtering and ranking remain in the selected algorithm.
-use crate::tenant::Tenant;
+use crate::runtime::tenant::Tenant;
 use anyhow::Result;
 use serde_json::json;
 

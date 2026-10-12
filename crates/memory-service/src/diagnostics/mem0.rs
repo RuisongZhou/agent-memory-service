@@ -1,8 +1,12 @@
 //! Offline integrity checks for the additive strategy, using mock embeddings and no provider.
-use super::{
-    config::ServiceConfig, engine::Engine, ingest, llm::Llm, manage, mem0_formation,
-    mem0_retrieval, models::ModelHub, tenant::Tenant, types::*, util,
+use crate::algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
+use crate::api::manage;
+use crate::domain::types::*;
+use crate::formation::ingest;
+use crate::runtime::{
+    config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
 };
+use memory_rules::util;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -155,7 +159,7 @@ pub async fn selftest() {
         .await
         .unwrap();
     }
-    let filtered = super::retrieve::list_turns(
+    let filtered = crate::retrieval::list_turns(
         &eng,
         &tenant,
         &caller,
@@ -176,7 +180,7 @@ pub async fn selftest() {
             .collect::<Vec<_>>(),
         vec!["equal", "after"]
     );
-    assert!(super::retrieve::list_turns(
+    assert!(crate::retrieval::list_turns(
         &eng,
         &tenant,
         &caller,
@@ -254,7 +258,7 @@ pub async fn selftest() {
     .await
     .unwrap();
     let new_id = corrected["memory"]["id"].as_str().unwrap().to_string();
-    super::indexer::drain(&eng, &tenant).await.unwrap();
+    crate::runtime::indexer::drain(&eng, &tenant).await.unwrap();
     let result = mem0_retrieval::search(
         &eng,
         &tenant,
