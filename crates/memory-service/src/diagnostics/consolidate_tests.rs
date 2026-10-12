@@ -42,7 +42,7 @@ pub async fn consolidation_selftest() {
     ));
     let eng = Engine::new(
         ServiceConfig {
-            memory_strategy: super::config::MemoryStrategy::Current,
+            memory_strategy: super::config::MemoryStrategy::Memos,
             data_dir: dir.clone(),
             ..Default::default()
         },

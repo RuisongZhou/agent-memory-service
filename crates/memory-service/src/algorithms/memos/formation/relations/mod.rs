@@ -3,16 +3,17 @@
 //! edges, evidence, old-memory status changes, entities, turns.extractedAt, requests, index tasks).
 pub use memory_rules::relations as plan;
 
+use super::prompts;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::engine::Engine;
-use super::store::{self, to_doc, Tx};
-use super::tenant::Tenant;
-use super::types::*;
-use super::util;
+use crate::engine::Engine;
+use crate::store::{self, to_doc, Tx};
+use crate::tenant::Tenant;
+use crate::types::*;
+use crate::util;
 use plan::{Node, Rel, Target};
 
 /// Where a fact's supporting span came from.
@@ -391,7 +392,11 @@ where
                     .iter()
                     .find(|(_, tr)| tr.turn_id == s.turn_id)
                     .and_then(|(_, tr)| {
-                        source_context(tr, &s.role, eng.prompts_for(t).both_speakers_first_hand)
+                        source_context(
+                            tr,
+                            &s.role,
+                            prompts::for_tenant(eng, t).both_speakers_first_hand,
+                        )
                     }),
                 id: util::new_id("e"),
                 memory_ids: vec![id.clone()],
@@ -414,7 +419,11 @@ where
                     .iter()
                     .find(|(_, tr)| tr.turn_id == s.turn_id)
                     .and_then(|(_, tr)| {
-                        source_context(tr, &s.role, eng.prompts_for(t).both_speakers_first_hand)
+                        source_context(
+                            tr,
+                            &s.role,
+                            prompts::for_tenant(eng, t).both_speakers_first_hand,
+                        )
                     }),
                 id: util::new_id("e"),
                 memory_ids: vec![target.clone()],

@@ -10,9 +10,9 @@ The adapted English prompt treats both people as first-hand sources and preserve
 
 ## Pipeline
 
-Current conversation formation uses frequent P1 facts (`facts-object-v2`) and independent session-end P2 experiences/summary (`session-experience-object-v1`), with JSON object mode and strict local structural/provenance validation. Explicit fact writes use the same fact contract. See [api.md](api.md). The daemon persists every raw HTTP response in `llm_responses`, including failed attempts and retries. Historical combined P1/P2 runs retain their original results and prompt hashes; a protocol change requires a fresh result/store directory.
+Memos conversation formation uses frequent P1 facts (`facts-object-v2`) and independent session-end P2 experiences/summary (`session-experience-object-v1`), with JSON object mode and strict local structural/provenance validation. Explicit fact writes use the same fact contract. See [api.md](api.md). The daemon persists every raw HTTP response in `llm_responses`, including failed attempts and retries. Historical combined P1/P2 runs retain their original results and prompt hashes; a protocol change requires a fresh result/store directory.
 
-The legacy service workflow requires `MEMORY_STRATEGY=current`; `memory_run.py` and archived replays reject a connected daemon reporting `mem0`. Launching extraction comparisons, retained-store replays and the local llama-server smoke pins `current`, including when the parent environment selects Mem0. Frozen older control binaries ignore this environment variable and retain their original pipeline. The normal service default remains `mem0`.
+The legacy service workflow requires `MEMORY_STRATEGY=memos`; `memory_run.py` and archived replays reject a connected daemon reporting `mem0`. Launching extraction comparisons, retained-store replays and the local llama-server smoke pins `memos`, including when the parent environment selects Mem0. Frozen older control binaries ignore this environment variable and retain their original pipeline. The normal service default remains `mem0`.
 
 1. Check rules, fake HTTP/MCP integration and actual model numerical correctness before paid calls.
 2. Ingest each session and wait for pending extraction/index tasks and failure counts to be zero.
@@ -30,7 +30,7 @@ The daemon supplies BGE-M3 embeddings to both systems. Retrieval is measured seq
 After building and downloading models locally, start a fresh store:
 
 ```sh
-.venv/bin/python scripts/serve.py --memory-strategy current --data-dir results/pilot/service-store --max-calls 512 --llm-concurrency 4
+.venv/bin/python scripts/serve.py --memory-strategy memos --data-dir results/pilot/service-store --max-calls 512 --llm-concurrency 4
 .venv/bin/python eval/memory_run.py --base-url http://127.0.0.1:8765 --tag memory-en --prompt-variant en --convs conv-26 --results-dir results/pilot
 .venv/bin/python eval/memory_run.py --base-url http://127.0.0.1:8765 --tag memory-zh --prompt-variant zh --convs conv-26 --results-dir results/pilot
 .venv/bin/python eval/mem0_run.py --embed-url http://127.0.0.1:8765/v1 --tag mem0 --convs conv-26 --workers 2 --results-dir results/pilot --stores-dir results/pilot/mem0-stores
@@ -60,7 +60,7 @@ The archived-replay audit in `eval/fair_replay.py` uses a shared 2,000-token cap
 offline verification. Freeze `protocol.json` and baseline source/binary snapshots before changes or scores.
 All arms start with empty stores and consume the same chronological LoCoMo source sessions. Select only
 questions whose reference evidence is contained in those sessions; never pass answers/evidence to formation
-or retrieval. Current retains its native paired-turn pipeline; Mem0/new use both user perspectives with
+or retrieval. Memos retains its native paired-turn pipeline; Mem0/new use both user perspectives with
 identical message batching and observation dates. Report that work difference and total provider attempts.
 
 `--stage ingest` measures complete formation and index visibility, excluding startup/exports. `--stage search`
@@ -109,3 +109,5 @@ The frozen source manifest includes `eval/fair_replay.py`, which supplies shared
 Additive retries regenerate from the original input with the concrete validation error, rather than
 echoing malformed JSON as an assistant message. Raw provider replies remain durable before validation;
 numeric linked IDs are rejected, never silently coerced. The legacy strategy retains its repair exchange.
+
+The active algorithm is named `memos`. Archived result directories, protocol arm labels and frozen control binaries named `current` retain their original provenance; readers accept that historical health label. New demo launches use `MEMORY_STRATEGY=memos`.

@@ -1,11 +1,10 @@
 //! Durable Mem0 2.2.1 additive formation. Raw inputs precede generation; vectors and receipts
 //! commit together. Batch provenance is never presented as a verified per-claim quotation.
-use super::{
+use crate::{
     engine::Engine,
-    ingest,
     llm::JsonContract,
-    mem0_retrieval,
     store::{self, Tx},
+    tasks,
     tenant::Tenant,
     types::*,
     util,
@@ -20,7 +19,7 @@ use std::{
 };
 
 pub const FORMAT: &str = "mem0-additive-v1";
-pub const SYSTEM: &str = include_str!("prompts/mem0/additive.txt");
+pub const SYSTEM: &str = include_str!("prompts/additive.txt");
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,7 +177,7 @@ pub async fn enqueue(
             let mut out = if req.sync.unwrap_or(req.text.is_some()) {
                 wait(eng, t, &id).await?
             } else {
-                ingest::get_task(eng, t, GetTaskReq { request_id: id }).await?
+                tasks::get_task(eng, t, GetTaskReq { request_id: id }).await?
             };
             out["duplicate"] = json!(true);
             return Ok(out);
@@ -206,7 +205,7 @@ pub async fn enqueue(
     let mut out = if req.sync.unwrap_or(req.text.is_some()) {
         wait(eng, t, &id).await?
     } else {
-        ingest::get_task(eng, t, GetTaskReq { request_id: id }).await?
+        tasks::get_task(eng, t, GetTaskReq { request_id: id }).await?
     };
     out["duplicate"] = json!(false);
     Ok(out)
@@ -308,7 +307,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
             .iter()
             .map(|m| format!("{}: {}\n", m.role, m.content))
             .collect::<String>();
-        let old = mem0_retrieval::dense(
+        let old = super::retrieval::dense(
             eng,
             t,
             &query,
@@ -370,7 +369,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
                 eng.cfg.mem0_custom_instructions
             ));
         }
-        if eng.prompts_for(t).variant == "zh" {
+        if eng.prompt_variant_for(t) == "zh" {
             sections.push("## Language Requirement\nRespond in the same language and script as the new messages.".into());
         }
         sections.push("# Output:".into());
@@ -549,7 +548,7 @@ async fn wait(eng: &Arc<Engine>, t: &Arc<Tenant>, id: &str) -> ApiResult<Value> 
         if available {
             process_until(eng, t, Some(id)).await?;
         }
-        let out = ingest::get_task(
+        let out = tasks::get_task(
             eng,
             t,
             GetTaskReq {
@@ -592,7 +591,7 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
             )
             .await?;
         if pending == 0 {
-            super::indexer::drain(eng, t).await?;
+            crate::indexer::drain(eng, t).await?;
             return Ok(json!({"status":"idle","pendingRequests":0,"indexTasks":0,
                 "failedRequests":t.store.count("requests",Some("kind = 'mem0' AND status = 'failed'")).await?}));
         }
@@ -603,87 +602,5 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     }
 }
 
-/// Inspect complete raw inputs independently of whether extraction succeeded.
-pub async fn list_inputs(
-    eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
-    c: &Caller,
-    req: ListTurnsReq,
-) -> ApiResult<Value> {
-    let budget = req.token_budget.unwrap_or(eng.cfg.default_token_budget);
-    if budget == 0 {
-        return Err(ApiError::InvalidArgument(
-            "tokenBudget must be positive".into(),
-        ));
-    }
-    let since = req
-        .since
-        .as_deref()
-        .map(str::trim)
-        .filter(|since| !since.is_empty())
-        .map(|since| {
-            util::parse_ts_fixed(since).ok_or_else(|| {
-                ApiError::InvalidArgument(format!("since is not RFC3339: {since:?}"))
-            })
-        })
-        .transpose()?;
-    let mut sql = "SELECT * OMIT id FROM requests WHERE kind = 'mem0'".to_string();
-    let mut binds = Vec::new();
-    if let Some(project) = req.scope.project.as_deref().filter(|s| *s != "*") {
-        sql.push_str(" AND project = $project");
-        binds.push(("project", json!(project)));
-    }
-    if req.scope.platform.as_deref() != Some("*") {
-        if req
-            .scope
-            .platform
-            .as_deref()
-            .is_some_and(|s| s != c.platform)
-        {
-            return Err(ApiError::InvalidArgument(
-                "platform is supplied by the connection".into(),
-            ));
-        }
-        sql.push_str(" AND platform = $platform");
-        binds.push(("platform", json!(c.platform)));
-    }
-    if let Some(session) = req.scope.session.as_deref().filter(|s| *s != "*") {
-        sql.push_str(" AND session = $session_filter");
-        binds.push(("session_filter", json!(session)));
-    }
-    if let Some(ids) = req.turn_ids {
-        sql.push_str(" AND turnId IN $ids");
-        binds.push(("ids", json!(ids)));
-    }
-    sql.push_str(" ORDER BY inputSeq ASC");
-    let rows = t.store.select(&sql, binds).await?;
-    let mut turns = Vec::new();
-    let mut used = 0;
-    for row in rows {
-        let messages: Vec<InMessage> =
-            serde_json::from_value(row["inputMessages"].clone()).map_err(anyhow::Error::from)?;
-        if messages.is_empty() {
-            continue;
-        }
-        if let Some(since) = since {
-            let ended = util::parse_ts_fixed(&messages.last().unwrap().timestamp)
-                .ok_or_else(|| anyhow!("stored input timestamp is not RFC3339"))?;
-            if ended < since {
-                continue;
-            }
-        }
-        let cost = messages
-            .iter()
-            .map(|m| util::est_tokens(&m.content))
-            .sum::<usize>();
-        if used + cost > budget {
-            continue;
-        }
-        used += cost;
-        turns.push(json!({"turnId":row["turnId"],"requestId":row["requestId"],"platform":row["platform"],
-            "project":row["project"],"session":row["session"],"messages":messages,
-            "startedAt":messages.first().unwrap().timestamp,"endedAt":messages.last().unwrap().timestamp,
-            "complete":true,"extractState":row["status"]}));
-    }
-    Ok(json!({"turns":turns,"tokensUsed":used}))
-}
+// Compatibility alias; raw-input inspection belongs to this algorithm's retrieval module.
+pub use super::retrieval::list_inputs;

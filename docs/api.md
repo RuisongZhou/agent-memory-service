@@ -18,6 +18,18 @@ All service calls are JSON `POST /v1/<interface>` requests. `X-Memory-Platform` 
 
 `POST /v1/embeddings` accepts a string or a nonempty array of at most 128 strings. Non-string array elements are rejected; token usage is an approximation, not provider billing.
 
+## MCP and harness integration
+
+The stdio bridge exposes `add_memories`, `search_memories`, `get_context`, `get_task`, `list_turns`,
+`get_memory`, `correct_memory`, and `feedback`, forwarding their JSON arguments to the matching HTTP
+endpoint. Launch it with `agent-memoryd mcp --url http://127.0.0.1:8765 --platform <harness>` after
+starting the daemon. HTTP failures become MCP tool results with `isError:true`; success content is
+JSON text. There is no Streamable HTTP MCP endpoint.
+
+See [MCP/harness integration](mcp-harness.md) for parameter/result examples, the different Mem0/Memos
+`list_turns` shapes, Codex/Claude Code configuration and automatic dialogue capture through a durable
+local outbox. MCP registration alone does not capture conversations or inject bootstrap context.
+
 ## Startup
 
 Use `agent-memoryd serve --help` for paths, model selection, host/port, LLM and concurrency settings. `--config examples/service-config.json` overrides algorithm tunables. CLI/environment settings override config-file paths, prompt variant and LLM connection settings. Unknown JSON fields and invalid score/concurrency/batch values are rejected before model servers are contacted or stores load. Startup waits up to 60 s for the embedding endpoint and any enabled reranker and fails if either is unreachable (the reranker is skipped with `--no-reranker`). Inputs are truncated to 512 tokens and rerank logits are mapped to 0..1 with a sigmoid. Stored vectors are tagged with the embedding model id (`<alias>-<GGUF type>`); a different model or quantisation triggers re-embedding on the next start.
@@ -48,10 +60,12 @@ Formation keeps its bounded view of each message: over `maxMessageBytes` (defaul
 
 ## Memory strategy
 
-`memoryStrategy:"mem0"` is the default. `--memory-strategy current` (or `MEMORY_STRATEGY=current`)
+`memoryStrategy:"mem0"` is the default. `--memory-strategy memos` (or `MEMORY_STRATEGY=memos`)
 selects the preserved fact/experience formation and hybrid retrieval implementation described below.
 Both use the existing Rust daemon, SurrealDB store, HTTP/MCP interfaces and explicit instruction/correction APIs.
-Do not switch a store with unfinished jobs: drain it using the original strategy first.
+The algorithm is chosen before the daemon starts serving requests and is fixed for that process.
+All tenants use that same choice. HTTP/MCP requests do not select an algorithm.
+Use a separate data directory for each demo algorithm; startup rejects unfinished jobs from the other algorithm.
 
 In Mem0 mode each submitted request is a durable ordered job. `messages` accepts 1–128 user/assistant
 messages in timestamp order; `turnId` remains required. `text` has the existing 4 KB bound. `infer:false`
@@ -67,7 +81,8 @@ After cache publication the receipt becomes `completed`, `formed:true`, `searcha
 Interrupted publication resumes from durable vectors without another model call. `sync:true` waits
 for this visibility; an asynchronous `requestId` confirms input persistence only. `get_task` reports
 these phases. `list_turns` returns complete submitted message batches. `sessionEnded` closes an ordered
-input job; it does not run P2. Automatic profile/experience/merge/skill maintenance is disabled.
+input job; it does not run P2. Automatic profile/experience/merge/skill maintenance is disabled. `/admin/run_jobs` belongs to the
+Memos algorithm and returns HTTP 400 in Mem0 mode; select `memos` to run its maintenance.
 
 For Mem0 `list_turns`, `since` is an inclusive RFC3339 cutoff against the batch's final message. It compares actual instants across UTC offsets, rejects invalid timestamps, and returns complete matching batches.
 
@@ -86,10 +101,10 @@ selects all visible project records in the single-user store. Caller headers rem
 not authentication.
 
 The extraction prompt is vendored unchanged with its Apache 2.0 license and NOTICE in
-`crates/memory-service/src/formation/prompts/mem0/`. Strict parsing, scoped hash deduplication,
+`crates/memory-service/src/algorithms/mem0/prompts/`. Strict parsing, scoped hash deduplication,
 atomic primary/vector storage and batch provenance are application adaptations, not SDK guarantees.
 
-## Current strategy: fact formation
+## Memos strategy: fact formation
 
 ### Explicit instructions (both strategies)
 
@@ -111,7 +126,7 @@ P1 and explicit P1-b model replies use `facts-object-v2`: `{"facts":[...]}`. Eac
 
 For the English human-human adapter, an assistant-role reply may carry a separate `evidence.context: {span, statedAt}` containing its paired first-hand question (at most 1024 characters). The copied question supplies discourse qualifiers, not a new assertion. It commits with the verified reply; ordinary agent conversations do not enable this adapter.
 
-## Current strategy: session-end experience formation
+## Memos strategy: session-end experience formation
 
 P2 runs only once the session is ended, after pending fact jobs have completed or permanently failed. A session ends through `sessionEnded:true`, a new-session lifecycle signal, or the existing idle timeout (default 60 minutes). P2 reads the retained session transcript and returns `session-experience-object-v1`: `analysis`, `experiences` and `summary`. Experiences use `situation`, `approach`, `result`, `lesson`, `scope`, `turnIds` and `relations`; the summary uses `goal`, `outcome`, `decisions` and `openIssues`. Only verified outcomes can form experiences; at most three are generated per ended-session job.
 

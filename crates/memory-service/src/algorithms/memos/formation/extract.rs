@@ -1,5 +1,6 @@
 //! P1/P1-b: visible recall, documented prompt layout, deterministic validation and atomic formation.
-use super::{engine::Engine, prompts, relations, tenant::Tenant, types::*, util};
+use super::{prompts, relations};
+use crate::{engine::Engine, tenant::Tenant, types::*, util};
 use anyhow::{anyhow, Result};
 use memory_fulltext::FtFilter;
 use relations::{
@@ -11,11 +12,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-pub fn visible(scope: &MemScope, project: &str, platform: &str) -> bool {
-    scope.kind == "global"
-        || (scope.kind == "project" && scope.project.as_deref() == Some(project))
-        || (scope.kind == "platform" && scope.platform.as_deref() == Some(platform))
-}
+pub use crate::retrieve::visibility::visible;
 
 /// Three independent ranked channels, fused with RRF k=60; re-check authoritative scope/status.
 pub async fn recall(
@@ -43,7 +40,7 @@ pub async fn recall(
         candidates
             .values()
             .filter(|m| !cache.memories.contains_key(&m.id))
-            .filter_map(|m| super::indexer::vector_text(m).map(|text| (m.id.clone(), text)))
+            .filter_map(|m| crate::indexer::vector_text(m).map(|text| (m.id.clone(), text)))
             .collect()
     };
     if !missing.is_empty() {
@@ -134,7 +131,7 @@ async fn call_logged_contract(
     system: &str,
     user: &str,
     max_tokens: u32,
-    contract: Option<&super::llm::JsonContract>,
+    contract: Option<&crate::llm::JsonContract>,
 ) -> Result<Value> {
     let values_only = contract.is_none() && matches!(stage, "P1" | "P1-b");
     let reply = if let Some(contract) = contract {
@@ -176,15 +173,15 @@ async fn call_logged_contract(
                     return Err(error);
                 }
             };
-            let mut record = json!({"stage":stage,"createdAt":now,"variant":eng.prompts_for(t).variant,
+            let mut record = json!({"stage":stage,"createdAt":now,"variant":prompts::for_tenant(eng, t).variant,
                 "systemHash":blake3::hash(system.as_bytes()).to_hex().to_string(),"inputHash":blake3::hash(user.as_bytes()).to_hex().to_string(),
                 "outputHash":blake3::hash(output.to_string().as_bytes()).to_hex().to_string(),"output":output,"status":"model_completed",
                 "responseLogId":r.response_log_id});
             if values_only || contract.is_some() {
                 record["outputFormat"] = json!(if stage == "P2" {
-                    super::formation_schema::EXPERIENCE_FORMAT
+                    super::schema::EXPERIENCE_FORMAT
                 } else if contract.is_some() {
-                    super::formation_schema::FACT_FORMAT
+                    super::schema::FACT_FORMAT
                 } else {
                     "fact-values-v1"
                 });
@@ -726,7 +723,7 @@ pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> R
     let first = turns
         .first()
         .ok_or_else(|| anyhow!("empty extraction batch"))?;
-    let p = eng.prompts_for(t);
+    let p = prompts::for_tenant(eng, t);
     let query = turns
         .iter()
         .map(TurnRec::full_text)
@@ -778,7 +775,7 @@ pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> R
         .iter()
         .map(|tr| tr.turn_id.clone())
         .collect::<Vec<_>>();
-    let contract = super::llm::JsonContract {
+    let contract = crate::llm::JsonContract {
         echo_invalid_response: true,
         name: "facts_object_v2",
         schema: fact_source_contract(&ids, &turns, p.both_speakers_first_hand),
@@ -800,14 +797,14 @@ pub async fn batch(eng: &Arc<Engine>, t: &Arc<Tenant>, turns: Vec<TurnRec>) -> R
 /// Provenance is part of the local model contract, so a bad quote receives the same bounded
 /// repair exchange as malformed JSON. Never approximate a quote or repair evidence ourselves.
 fn fact_source_contract(ids: &[String], turns: &[TurnRec], first_hand: bool) -> Value {
-    let mut schema = super::formation_schema::facts_for_turns(ids);
+    let mut schema = super::schema::facts_for_turns(ids);
     schema["x-source-turns"] = json!(turns);
     schema["x-both-speakers-first-hand"] = json!(first_hand);
     schema
 }
 
 fn validate_fact_source_contract(schema: &Value, output: &Value) -> Result<()> {
-    super::formation_schema::validate_schema(schema, output)?;
+    super::schema::validate_schema(schema, output)?;
     let output = facts_from_flat_object(output)?;
     let turns: Vec<TurnRec> = serde_json::from_value(schema["x-source-turns"].clone())?;
     let first_hand = schema["x-both-speakers-first-hand"]
@@ -841,7 +838,7 @@ async fn commit_facts(
     output: Value,
 ) -> Result<Applied> {
     let first = turns.first().ok_or_else(|| anyhow!("empty fact commit"))?;
-    let p = eng.prompts_for(t);
+    let p = prompts::for_tenant(eng, t);
     let (facts, new_entities) = validate(
         t,
         output,
@@ -862,7 +859,7 @@ async fn commit_facts(
             now: util::now_str(),
             turns: turns
                 .into_iter()
-                .map(|tr| (super::store::turn_rid(&tr.platform, &tr.turn_id), tr))
+                .map(|tr| (crate::store::turn_rid(&tr.platform, &tr.turn_id), tr))
                 .collect(),
             text_request: None,
             text_turn_id: None,
@@ -901,7 +898,7 @@ pub async fn session_experience(
         .filter(|tr| tr.seq > session.last_experience_seq)
         .map(|tr| tr.turn_id.clone())
         .collect();
-    let p = eng.prompts_for(t);
+    let p = prompts::for_tenant(eng, t);
     let query = turns
         .iter()
         .map(TurnRec::full_text)
@@ -951,11 +948,11 @@ pub async fn session_experience(
         .iter()
         .map(|tr| tr.turn_id.clone())
         .collect::<Vec<_>>();
-    let contract = super::llm::JsonContract {
+    let contract = crate::llm::JsonContract {
         echo_invalid_response: true,
         name: "session_experience_object_v1",
-        schema: super::formation_schema::experiences_for_turns(&ids),
-        validate: super::formation_schema::validate_schema,
+        schema: super::schema::experiences_for_turns(&ids),
+        validate: super::schema::validate_schema,
     };
     let output = call_logged_contract(
         eng,
@@ -994,7 +991,7 @@ async fn commit_experience(
         &old,
         output,
         watermark,
-        eng.prompts_for(t).variant,
+        prompts::for_tenant(eng, t).variant,
         &util::now_str(),
     )?;
     prepared.commit(t, &snapshot.platform).await
@@ -1009,7 +1006,7 @@ pub async fn explicit(
     request: &str,
     now: &str,
 ) -> Result<Applied> {
-    let p = eng.prompts_for(t);
+    let p = prompts::for_tenant(eng, t);
     let old = recall(
         eng,
         t,
@@ -1030,7 +1027,7 @@ pub async fn explicit(
     );
     let mut schema = fact_source_contract(&["text".into()], &[], false);
     schema["x-source-text"] = json!(text);
-    let contract = super::llm::JsonContract {
+    let contract = crate::llm::JsonContract {
         echo_invalid_response: true,
         name: "facts_object_v2",
         schema,
@@ -1211,7 +1208,7 @@ pub async fn formation_selftest() {
     assert!(
         serde_json::from_value::<RawRelation>(json!({"F":"F2","M":null,"type":"related"})).is_err()
     );
-    use super::{
+    use crate::{
         config::ServiceConfig,
         indexer, ingest,
         llm::Llm,
@@ -1224,7 +1221,7 @@ pub async fn formation_selftest() {
     let dir = std::env::temp_dir().join(format!("memory-formation-selftest-{}", util::new_id("t")));
     let eng = Engine::new(
         ServiceConfig {
-            memory_strategy: super::config::MemoryStrategy::Current,
+            memory_strategy: crate::config::MemoryStrategy::Memos,
             data_dir: dir.clone(),
             ..Default::default()
         },
@@ -1585,7 +1582,8 @@ pub async fn formation_selftest() {
 
 /// Verify shared commits, retained cross-batch provenance, retry safety and legacy P1 backfill.
 async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
-    use super::{consolidate, indexer, ingest};
+    use super::consolidate;
+    use crate::{indexer, ingest};
     let t = Arc::new(
         Tenant::open("split-selftest-en", dir, eng.models.dim)
             .await
@@ -1785,7 +1783,7 @@ async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     t.store
         .merge_doc(
             "sessions",
-            &super::store::session_rid("test", "S"),
+            &crate::store::session_rid("test", "S"),
             json!({"experienceFailures":4,"experienceRetryAtTs":0}),
         )
         .await

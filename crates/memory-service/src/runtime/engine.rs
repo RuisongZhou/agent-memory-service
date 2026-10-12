@@ -5,16 +5,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::config::ServiceConfig;
+use super::config::{MemoryStrategy, ServiceConfig};
+use super::indexer;
 use super::llm::Llm;
 use super::models::ModelHub;
-use super::prompts::{self, PromptSet};
 use super::tenant::{valid_tenant, Tenant};
 use super::types::*;
-use super::{consolidate, indexer, ingest};
 
 pub struct Engine {
     pub cfg: ServiceConfig,
+    /// Selected once at construction; requests cannot replace the active algorithm.
+    strategy: MemoryStrategy,
     pub llm: Llm,
     pub models: ModelHub,
     tenants: RwLock<HashMap<String, Arc<Tenant>>>,
@@ -23,6 +24,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(cfg: ServiceConfig, llm: Llm, models: ModelHub) -> Arc<Self> {
         Arc::new(Self {
+            strategy: cfg.memory_strategy,
             cfg,
             llm,
             models,
@@ -30,18 +32,18 @@ impl Engine {
         })
     }
 
-    pub fn prompts(&self) -> &'static PromptSet {
-        prompts::get(&self.cfg.prompt_variant)
+    pub fn strategy(&self) -> MemoryStrategy {
+        self.strategy
     }
 
-    /// Evaluation tenants may select language without loading another copy of the models.
-    pub fn prompts_for(&self, tenant: &Tenant) -> &'static PromptSet {
+    /// Shared language selection; each algorithm owns its actual prompt contract.
+    pub fn prompt_variant_for<'a>(&'a self, tenant: &Tenant) -> &'a str {
         if tenant.name.ends_with("-en") {
-            prompts::get("en")
+            "en"
         } else if tenant.name.ends_with("-zh") {
-            prompts::get("zh")
+            "zh"
         } else {
-            self.prompts()
+            &self.cfg.prompt_variant
         }
     }
 
@@ -68,8 +70,14 @@ impl Engine {
         map.insert(name.to_string(), t.clone());
         drop(map);
         tokio::spawn(indexer::run_index_worker(self.clone(), t.clone()));
-        tokio::spawn(ingest::run_extract_worker(self.clone(), t.clone()));
-        tokio::spawn(consolidate::run_periodic(self.clone(), t.clone()));
+        match self.strategy {
+            MemoryStrategy::Mem0 => {
+                crate::algorithms::mem0::runtime::start(self.clone(), t.clone())
+            }
+            MemoryStrategy::Memos => {
+                crate::algorithms::memos::runtime::start(self.clone(), t.clone())
+            }
+        }
         tracing::info!(tenant = name, "tenant opened");
         Ok(t)
     }
@@ -83,31 +91,38 @@ impl Engine {
             .read()
             .await
             .iter()
-            .map(|(name, t)| (name.clone(), self.prompts_for(t).variant.to_string()))
+            .map(|(name, t)| (name.clone(), self.prompt_variant_for(t).to_string()))
             .collect()
     }
 
     /// Load the entity dictionary and vector caches; check index_meta (5.2 一致性与重建).
     async fn warm(&self, t: &Arc<Tenant>) -> Result<()> {
-        let incompatible = if self.cfg.memory_strategy == super::config::MemoryStrategy::Mem0 {
-            t.store
-                .count("turns", Some("extractState = 'pending'"))
-                .await?
-                + t.store
+        // The demo uses one algorithm per process and data directory. Check only at startup.
+        let incompatible = match self.strategy {
+            MemoryStrategy::Mem0 => {
+                t.store
+                    .count("turns", Some("extractState = 'pending'"))
+                    .await?
+                    + t.store
+                        .count(
+                            "requests",
+                            Some(
+                                "kind IN ['text','session_end'] AND status IN ['queued','running']",
+                            ),
+                        )
+                        .await?
+            }
+            MemoryStrategy::Memos => {
+                t.store
                     .count(
                         "requests",
-                        Some("kind IN ['text','session_end'] AND status IN ['queued','running']"),
+                        Some("kind = 'mem0' AND status IN ['queued','running','indexing']"),
                     )
                     .await?
-        } else {
-            t.store
-                .count(
-                    "requests",
-                    Some("kind = 'mem0' AND status IN ['queued','running','indexing']"),
-                )
-                .await?
+            }
         };
-        anyhow::ensure!(incompatible==0,"unfinished jobs belong to another memory strategy; drain with the original strategy before switching");
+        anyhow::ensure!(incompatible == 0,
+            "data directory has unfinished jobs from another algorithm; use the selected algorithm's data directory");
         t.store.repair_integrity().await?;
         // entity alias dictionary (kept in memory, 5.2 实体索引)
         let ents: Vec<EntityRec> = t

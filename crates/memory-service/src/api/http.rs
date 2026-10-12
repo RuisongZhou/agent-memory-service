@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use super::engine::Engine;
 use super::types::*;
-use super::{consolidate, indexer, ingest, manage, retrieve};
+use super::{algorithms, indexer, ingest, manage, retrieve};
 
 pub fn router(eng: Arc<Engine>) -> Router {
     Router::new()
@@ -62,7 +62,7 @@ async fn health(State(eng): State<Arc<Engine>>) -> Json<Value> {
         "llm": eng.llm.usage_snapshot(),
         "tenants": eng.tenant_names().await,
         "tenantPromptVariants": eng.tenant_prompt_variants().await,
-        "memoryStrategy": eng.cfg.memory_strategy,
+        "memoryStrategy": eng.strategy(),
     }))
 }
 
@@ -107,7 +107,7 @@ async fn admin(
     let res: ApiResult<Value> = async {
         let t = eng.tenant(&c.tenant).await?;
         match name.as_str() {
-            "run_jobs" => consolidate::run_jobs(&eng, &t, &c, body).await,
+            "run_jobs" => algorithms::run_jobs(&eng, &t, &c, body).await,
             "wait_idle" => ingest::wait_idle(&eng, &t).await,
             "stats" => manage::stats(&eng, &t).await,
             "export" => manage::export(&eng, &t, body).await,

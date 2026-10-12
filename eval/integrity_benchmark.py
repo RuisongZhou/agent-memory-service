@@ -88,8 +88,8 @@ def collect(args) -> None:
             return response.json()
 
         health = client.get('/health').json()
-        if health.get('memoryStrategy', 'current') != 'current':
-            raise ValueError('retained-snapshot replay requires MEMORY_STRATEGY=current')
+        if health.get('memoryStrategy', 'memos') not in ('memos', 'current'):
+            raise ValueError('retained-snapshot replay requires MEMORY_STRATEGY=memos')
         # Warm/open the store and finish only rebuildable indexes. Do not invoke wait_idle:
         # legacy formation receipts do not describe the current session-end contract.
         before = post("/admin/export", {})["memories"]
@@ -224,8 +224,8 @@ def main() -> None:
     environment.pop("QWEN_API_KEY", None)
     environment.pop("MEMORY_MOCK_MODELS", None)
     environment["MEMORY_LLM_MAX_CALLS"] = "1"
-    # Older frozen control binaries ignore this variable; newer binaries select the same pipeline.
-    environment["MEMORY_STRATEGY"] = "current"
+    # Keep the archived control binary's launch contract; the rebuilt arm uses the renamed algorithm.
+    environment["MEMORY_STRATEGY"] = "current" if args.system == "current" else "memos"
     port = urlsplit(args.base_url).port
     if not port:
         parser.error("base-url must include a localhost port")

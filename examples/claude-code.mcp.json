@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "shared-memory": {
+      "type": "stdio",
+      "command": "/absolute/path/agent-memory-service/target/fast/agent-memoryd",
+      "args": ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "claude-code"]
+    }
+  }
+}

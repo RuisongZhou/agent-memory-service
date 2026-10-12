@@ -34,5 +34,5 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - run: make fmt test-rust build selftest
+      - run: make fmt test-rust test-service build selftest
       - run: python3 scripts/http_smoke.py --bin target/fast/agent-memoryd --output results/http-smoke.json

@@ -1,6 +1,7 @@
 //! Daily maintenance (4.5), idle sessions (3.3), successful-buffer purge (3.2).
-use super::store::{self, to_doc, Tx};
-use super::{engine::Engine, extract, indexer, prompts, tenant::Tenant, types::*, util};
+use super::{extract, prompts};
+use crate::store::{self, to_doc, Tx};
+use crate::{engine::Engine, indexer, tenant::Tenant, types::*, util};
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -11,7 +12,7 @@ fn normalized(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(super) fn profile_length_exceeded(text: &str, variant: &str, max_chars: usize) -> bool {
+pub(crate) fn profile_length_exceeded(text: &str, variant: &str, max_chars: usize) -> bool {
     if variant == "en" {
         text.split_whitespace().count() > 350
     } else {
@@ -62,7 +63,7 @@ async fn profile(eng: &Arc<Engine>, t: &Arc<Tenant>, scope: MemScope, now: &str)
         t.store.commit(tx).await?;
         return Ok(json!({"skipped":"no current facts"}));
     }
-    let p = eng.prompts_for(t);
+    let p = prompts::for_tenant(eng, t);
     let project = scope.kind == "project";
     let map: HashMap<_, _> = facts
         .iter()
@@ -405,7 +406,7 @@ async fn merge(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<Value> {
         }
     }
     drop(cache);
-    let p = eng.prompts_for(t);
+    let p = prompts::for_tenant(eng, t);
     let mut proposals = 0;
     for batch in pairs.chunks(10) {
         let input = batch
@@ -516,7 +517,7 @@ async fn skills(eng: &Arc<Engine>, t: &Arc<Tenant>, now: &str) -> Result<Value> 
         }
     }
     drop(cache);
-    let p = eng.prompts_for(t);
+    let p = prompts::for_tenant(eng, t);
     let mut created = Vec::new();
     for group in groups
         .into_iter()
@@ -880,9 +881,6 @@ pub async fn run_periodic(eng: Arc<Engine>, t: Arc<Tenant>) {
 }
 
 async fn periodic_tick(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
-    if eng.cfg.memory_strategy == super::config::MemoryStrategy::Mem0 {
-        return Ok(());
-    }
     let now = util::now();
     let timestamp = util::fmt_ts(&now);
     {

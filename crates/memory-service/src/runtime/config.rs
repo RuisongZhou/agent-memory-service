@@ -2,11 +2,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// One strategy selects a matched formation and retrieval pipeline.
+/// Startup selection for the complete formation/retrieval algorithm; fixed for the process lifetime.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryStrategy {
-    Current,
+    /// Short-term buffering with asynchronous long-term formation and hybrid retrieval.
+    Memos,
+    /// Ordered additive formation with semantic retrieval.
     #[default]
     Mem0,
 }
@@ -142,7 +144,7 @@ impl ServiceConfig {
         anyhow::ensure!(self.mem0_max_tokens > 0, "mem0MaxTokens must be positive");
         anyhow::ensure!(
             self.mem0_top_k > 0
-                && (self.memory_strategy == MemoryStrategy::Current
+                && (self.memory_strategy == MemoryStrategy::Memos
                     || self.mem0_top_k <= self.max_top_k),
             "mem0TopK must be within maxTopK"
         );
@@ -232,7 +234,7 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
-        cfg.memory_strategy = MemoryStrategy::Current;
+        cfg.memory_strategy = MemoryStrategy::Memos;
         cfg.default_top_k = 5;
         cfg.mem0_top_k = 20;
         assert!(cfg.validate().is_ok());

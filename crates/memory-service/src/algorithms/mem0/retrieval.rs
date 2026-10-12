@@ -1,6 +1,6 @@
 //! Semantic-only search. No generative calls, broad summaries or implicit cross-encoder.
-use super::{config::MemoryStrategy, engine::Engine, extract, tenant::Tenant, types::*, util};
-use anyhow::Result;
+use crate::{config::MemoryStrategy, engine::Engine, tenant::Tenant, types::*, util};
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc, time::Instant};
 
@@ -58,7 +58,7 @@ pub async fn dense_with_vector(
         let mut k = limit * 2;
         let mut hits = Vec::new();
         for attempt in 0..3 {
-            hits = super::retrieve::hnsw_search(t, query, k)
+            hits = crate::retrieve::vector::hnsw_search(t, query, k)
                 .await?
                 .into_iter()
                 .filter(|(id, _)| ids.contains(id))
@@ -219,5 +219,89 @@ pub async fn search(
 fn visible(scope: &MemScope, project: &str, platform: &str) -> bool {
     (project == "*" && scope.kind == "project")
         || (platform == "*" && scope.kind == "platform")
-        || extract::visible(scope, project, platform)
+        || crate::retrieve::visibility::visible(scope, project, platform)
+}
+/// Inspect complete raw inputs independently of whether extraction succeeded.
+pub async fn list_inputs(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    c: &Caller,
+    req: ListTurnsReq,
+) -> ApiResult<Value> {
+    let budget = req.token_budget.unwrap_or(eng.cfg.default_token_budget);
+    if budget == 0 {
+        return Err(ApiError::InvalidArgument(
+            "tokenBudget must be positive".into(),
+        ));
+    }
+    let since = req
+        .since
+        .as_deref()
+        .map(str::trim)
+        .filter(|since| !since.is_empty())
+        .map(|since| {
+            util::parse_ts_fixed(since).ok_or_else(|| {
+                ApiError::InvalidArgument(format!("since is not RFC3339: {since:?}"))
+            })
+        })
+        .transpose()?;
+    let mut sql = "SELECT * OMIT id FROM requests WHERE kind = 'mem0'".to_string();
+    let mut binds = Vec::new();
+    if let Some(project) = req.scope.project.as_deref().filter(|s| *s != "*") {
+        sql.push_str(" AND project = $project");
+        binds.push(("project", json!(project)));
+    }
+    if req.scope.platform.as_deref() != Some("*") {
+        if req
+            .scope
+            .platform
+            .as_deref()
+            .is_some_and(|s| s != c.platform)
+        {
+            return Err(ApiError::InvalidArgument(
+                "platform is supplied by the connection".into(),
+            ));
+        }
+        sql.push_str(" AND platform = $platform");
+        binds.push(("platform", json!(c.platform)));
+    }
+    if let Some(session) = req.scope.session.as_deref().filter(|s| *s != "*") {
+        sql.push_str(" AND session = $session_filter");
+        binds.push(("session_filter", json!(session)));
+    }
+    if let Some(ids) = req.turn_ids {
+        sql.push_str(" AND turnId IN $ids");
+        binds.push(("ids", json!(ids)));
+    }
+    sql.push_str(" ORDER BY inputSeq ASC");
+    let rows = t.store.select(&sql, binds).await?;
+    let mut turns = Vec::new();
+    let mut used = 0;
+    for row in rows {
+        let messages: Vec<InMessage> =
+            serde_json::from_value(row["inputMessages"].clone()).map_err(anyhow::Error::from)?;
+        if messages.is_empty() {
+            continue;
+        }
+        if let Some(since) = since {
+            let ended = util::parse_ts_fixed(&messages.last().unwrap().timestamp)
+                .ok_or_else(|| anyhow!("stored input timestamp is not RFC3339"))?;
+            if ended < since {
+                continue;
+            }
+        }
+        let cost = messages
+            .iter()
+            .map(|m| util::est_tokens(&m.content))
+            .sum::<usize>();
+        if used + cost > budget {
+            continue;
+        }
+        used += cost;
+        turns.push(json!({"turnId":row["turnId"],"requestId":row["requestId"],"platform":row["platform"],
+            "project":row["project"],"session":row["session"],"messages":messages,
+            "startedAt":messages.first().unwrap().timestamp,"endedAt":messages.last().unwrap().timestamp,
+            "complete":true,"extractState":row["status"]}));
+    }
+    Ok(json!({"turns":turns,"tokensUsed":used}))
 }

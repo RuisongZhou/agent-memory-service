@@ -65,7 +65,7 @@ def main():
     if args.max_calls > 12 or args.max_calls < 1:
         parser.error("this example is authorized for at most 12 attempts")
     binary = args.bin.resolve()
-    sources = [ROOT / "crates/memory-service/src" / name for name in ("formation/extract.rs", "formation/experience.rs", "runtime/llm.rs")]
+    sources = [ROOT / "crates/memory-service/src" / name for name in ("algorithms/memos/formation/extract.rs", "algorithms/memos/formation/experience.rs", "runtime/llm.rs")]
     if not binary.exists() or any(binary.stat().st_mtime < path.stat().st_mtime for path in sources):
         raise SystemExit("binary predates formation/accounting source; root must rebuild before this real example")
     if b"systemHash" not in binary.read_bytes():

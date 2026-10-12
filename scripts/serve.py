@@ -14,7 +14,7 @@ def main():
     parser.add_argument('--data-dir', type=Path, default=ROOT/'daemon-data')
     parser.add_argument('--embed-url', default='http://127.0.0.1:8081', help='llama-server embedding endpoint (scripts/llama_servers.sh)')
     parser.add_argument('--rerank-url', default='http://127.0.0.1:8082', help='llama-server rerank endpoint')
-    parser.add_argument('--memory-strategy', choices=['mem0','current'])
+    parser.add_argument('--memory-strategy', choices=['mem0','memos'])
     parser.add_argument('--config', type=Path)
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--mock', action='store_true')

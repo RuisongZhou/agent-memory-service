@@ -18,7 +18,7 @@ pub async fn selftest() {
     let dir = std::env::temp_dir().join(util::new_id("memory-integrity-"));
     let engine = Engine::new(
         ServiceConfig {
-            memory_strategy: super::config::MemoryStrategy::Current,
+            memory_strategy: super::config::MemoryStrategy::Memos,
             ..Default::default()
         },
         Llm::new("http://127.0.0.1:1", "", "mock", 1, 1).unwrap(),

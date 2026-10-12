@@ -92,7 +92,7 @@ def main():
             return json.load(response)
 
     child_env = dict(os.environ, QWEN_API_KEY=api_key(), QWEN_BASE_URL=QWEN_BASE_URL,
-                     LLM_MODEL=MODEL, MEMORY_LLM_MAX_CALLS="15", MEMORY_STRATEGY="current")
+                     LLM_MODEL=MODEL, MEMORY_LLM_MAX_CALLS="15", MEMORY_STRATEGY="memos")
     child_env.pop("MEMORY_MOCK_MODELS", None)
     command = [str(env.ROOT_DIR / "target/fast/agent-memoryd"), "serve",
                "--data-dir", str(output / "service-store"),

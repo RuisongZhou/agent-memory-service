@@ -203,3 +203,11 @@ pub fn session_experience(p: &PromptSet) -> String {
 pub fn block(tag: &str, body: &str) -> String {
     format!("<{tag}>\n{}\n</{tag}>", body.trim_end())
 }
+
+/// Resolve only the Memos algorithm's prompt family using shared language configuration.
+pub fn for_tenant(
+    eng: &crate::engine::Engine,
+    tenant: &crate::tenant::Tenant,
+) -> &'static PromptSet {
+    get(eng.prompt_variant_for(tenant))
+}

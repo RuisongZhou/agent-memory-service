@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "python3 \"/absolute/path/agent-memory-service/scripts/harness_memory.py\" --project agent-memory-service --platform codex hook",
+        "timeout": 3
+      }]
+    }]
+  }
+}

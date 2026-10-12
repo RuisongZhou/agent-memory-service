@@ -1,18 +1,15 @@
-//! Shared local memory service. Physical modules follow API, formation, retrieval, runtime and storage layers.
+//! Two independent memory algorithms over shared API, runtime, storage and retrieval components.
+#[path = "formation/admission.rs"]
+pub(crate) mod admission;
+#[path = "diagnostics/algorithm_isolation.rs"]
+pub mod algorithm_isolation;
+pub mod algorithms;
 #[path = "runtime/config.rs"]
 pub mod config;
-#[path = "formation/consolidate.rs"]
-pub mod consolidate;
 #[path = "diagnostics/consolidate_tests.rs"]
 pub mod consolidate_tests;
 #[path = "runtime/engine.rs"]
 pub mod engine;
-#[path = "formation/experience.rs"]
-pub mod experience;
-#[path = "formation/extract.rs"]
-pub mod extract;
-#[path = "formation/schema.rs"]
-pub mod formation_schema;
 #[path = "api/http.rs"]
 pub mod http;
 #[path = "runtime/indexer.rs"]
@@ -29,27 +26,28 @@ pub mod llm;
 pub mod manage;
 #[path = "api/mcp.rs"]
 pub mod mcp;
-#[path = "formation/mem0.rs"]
-pub mod mem0_formation;
-#[path = "retrieval/mem0.rs"]
-pub mod mem0_retrieval;
 #[path = "diagnostics/mem0.rs"]
 pub mod mem0_tests;
 #[path = "runtime/models.rs"]
 pub mod models;
-#[path = "formation/prompts.rs"]
-pub mod prompts;
-#[path = "formation/relations/mod.rs"]
-pub mod relations;
+#[path = "runtime/reference_time.rs"]
+pub mod reference_time;
 #[path = "retrieval/mod.rs"]
 pub mod retrieve;
 #[path = "diagnostics/selftest.rs"]
 pub mod selftest;
 #[path = "storage/store.rs"]
 pub mod store;
+#[path = "formation/tasks.rs"]
+pub mod tasks;
 #[path = "runtime/tenant.rs"]
 pub mod tenant;
 #[path = "domain/types.rs"]
 pub mod types;
 pub use engine::Engine;
 pub use memory_rules::{timeparse, util};
+
+// Stable Rust facade for existing clients and diagnostics; implementations live with their algorithm.
+pub use algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
+pub use algorithms::memos::formation::schema as formation_schema;
+pub use algorithms::memos::formation::{consolidate, experience, extract, prompts, relations};

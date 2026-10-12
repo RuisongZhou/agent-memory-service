@@ -1,7 +1,7 @@
 //! `agent-memoryd` — 共享记忆库 daemon.
 //!
 //!   agent-memoryd serve  --data-dir D [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
-//!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 5 ★ tools)
+//!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 8 tools)
 //!   agent-memoryd reindex --vector | --fulltext | --all [--url ...]
 use clap::{Parser, Subcommand};
 use memory_service::{config::ServiceConfig, http, llm::Llm, models::ModelHub, Engine};
@@ -59,13 +59,13 @@ enum Cmd {
         /// Optional JSON file overriding ServiceConfig fields (camelCase)
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Select matched formation/retrieval: mem0 (default) or current (preserved baseline).
+        /// Select matched formation/retrieval: mem0 (default) or memos (short-term buffers and asynchronous formation).
         #[arg(long, env = "MEMORY_STRATEGY")]
         memory_strategy: Option<String>,
         #[arg(long, env = "LOG_LEVEL", default_value = "info")]
         log_level: String,
     },
-    /// MCP stdio shim exposing the 5 ★ tools; forwards to a running daemon
+    /// MCP stdio shim exposing eight memory tools; forwards to a running daemon
     Mcp {
         #[arg(long, default_value = "http://127.0.0.1:8765")]
         url: String,
@@ -158,7 +158,7 @@ fn main() -> anyhow::Result<()> {
                 )?;
                 let models = ModelHub::connect(
                     &cfg.embed_url,
-                    (cfg.use_reranker && (cfg.memory_strategy == memory_service::config::MemoryStrategy::Current
+                    (cfg.use_reranker && (cfg.memory_strategy == memory_service::config::MemoryStrategy::Memos
                         || cfg.mem0_rerank)).then_some(cfg.rerank_url.as_str()),
                 )
                 .await?;
@@ -174,6 +174,7 @@ fn main() -> anyhow::Result<()> {
                 memory_service::selftest::store_roundtrip().await;
                 memory_service::integrity_tests::selftest().await;
                 memory_service::mem0_tests::selftest().await;
+                memory_service::algorithm_isolation::selftest().await;
                 memory_service::selftest::retrieval_roundtrip().await;
                 memory_service::selftest::long_turn_roundtrip().await;
                 memory_service::extract::formation_selftest().await;

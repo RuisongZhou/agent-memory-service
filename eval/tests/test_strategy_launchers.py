@@ -17,10 +17,10 @@ def script(name):
 
 
 @pytest.mark.parametrize('cli,environment,dotenv,config', [
-    (None, None, '', 'current'),
-    (None, 'mem0', '', 'current'),
-    (None, None, 'MEMORY_STRATEGY=current\n', 'mem0'),
-    ('current', 'mem0', '', 'mem0'),
+    (None, None, '', 'memos'),
+    (None, 'mem0', '', 'memos'),
+    (None, None, 'MEMORY_STRATEGY=memos\n', 'mem0'),
+    ('memos', 'mem0', '', 'mem0'),
     (None, None, '', None),
 ])
 def test_wrapper_preserves_strategy_precedence(monkeypatch, tmp_path, cli, environment, dotenv, config):
@@ -52,7 +52,7 @@ def test_wrapper_preserves_strategy_precedence(monkeypatch, tmp_path, cli, envir
         assert command[command.index('--memory-strategy') + 1] == cli
     else:
         assert '--memory-strategy' not in command
-    assert emitted['env'].get('MEMORY_STRATEGY') == (environment or ('current' if dotenv else None))
+    assert emitted['env'].get('MEMORY_STRATEGY') == (environment or ('memos' if dotenv else None))
     if config:
         assert command[command.index('--config') + 1] == str(cfg)
 
@@ -71,9 +71,9 @@ def test_legacy_launcher_overrides_inherited_mem0(monkeypatch, tmp_path, name):
             'qa': [{'category': 4, 'question': 'Synthetic question?', 'answer': 'Synthetic source', 'evidence': ['D1:3']}]}
         monkeypatch.setattr(module.locomo, 'load', lambda: [conv])
     if name == 'integrity_benchmark':
-        store = tmp_path / 'current-store'
+        store = tmp_path / 'improved-store'
         store.mkdir()
-        argv = [name, '--root', str(tmp_path), '--system', 'current', '--store', str(store), '--bin', '/unused']
+        argv = [name, '--root', str(tmp_path), '--system', 'improved', '--store', str(store), '--bin', '/unused']
     else:
         argv = [name, '--output-dir', str(tmp_path / 'output')]
         monkeypatch.setattr(module, 'set_ledger_path', lambda _: None)
@@ -87,17 +87,17 @@ def test_legacy_launcher_overrides_inherited_mem0(monkeypatch, tmp_path, name):
     monkeypatch.setattr(module.subprocess, 'Popen', launch)
     with pytest.raises(Captured):
         module.main()
-    assert emitted['env']['MEMORY_STRATEGY'] == 'current'
+    assert emitted['env']['MEMORY_STRATEGY'] == 'memos'
     # Environment selection also works with older frozen binaries lacking the new CLI option.
     assert '--memory-strategy' not in emitted['command']
 
 
-def test_llama_smoke_environment_pins_current_without_inheriting_provider_settings(monkeypatch):
+def test_llama_smoke_environment_pins_memos_without_inheriting_provider_settings(monkeypatch):
     module = script('llama_http_smoke')
     monkeypatch.setenv('MEMORY_STRATEGY', 'mem0')
     monkeypatch.setenv('QWEN_API_KEY', 'must-not-be-inherited')
     environment = module.sanitized_environment()
-    assert environment['MEMORY_STRATEGY'] == 'current'
+    assert environment['MEMORY_STRATEGY'] == 'memos'
     assert environment['QWEN_API_KEY'] == 'localhost-stub-placeholder'
 
 
@@ -107,14 +107,16 @@ def test_legacy_runner_rejects_mem0_health_before_ingestion(tmp_path):
     runner = memory_run.Runner(Namespace(
         results_dir=str(tmp_path), tag='legacy', sessions=1, top_k=10, token_budget=2000,
         memory_order='time', retention_days=0), None, None, [])
-    with pytest.raises(memory_run.DaemonError, match='requires MEMORY_STRATEGY=current'):
+    with pytest.raises(memory_run.DaemonError, match='requires MEMORY_STRATEGY=memos'):
         runner.validate_prompt_health({'memoryStrategy': 'mem0'})
+    runner.validate_prompt_health({'memoryStrategy': 'memos'})
+    runner.validate_prompt_health({'memoryStrategy': 'current'})  # Archived control metadata.
 
 
 @pytest.mark.parametrize('arm,expected', [('current', 'current'), ('mem0-strategy', 'mem0')])
 def test_migration_control_overrides_inherited_strategy(monkeypatch, tmp_path, arm, expected):
     import mem0_migration
-    monkeypatch.setenv('MEMORY_STRATEGY', 'mem0' if arm == 'current' else 'current')
+    monkeypatch.setenv('MEMORY_STRATEGY', 'mem0' if arm == 'current' else 'memos')
     class Captured(Exception):
         pass
     def launch(command, *, env, **kwargs):

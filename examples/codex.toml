@@ -1,0 +1,8 @@
+# Merge into the project's .codex/config.toml. Replace /absolute/path with your checkout.
+# Optional automatic dialogue capture: remove notify if you only want MCP tools.
+notify = ["python3", "/absolute/path/agent-memory-service/scripts/harness_memory.py", "--project", "agent-memory-service", "--platform", "codex", "codex-notify"]
+
+[mcp_servers.shared-memory]
+command = "/absolute/path/agent-memory-service/target/fast/agent-memoryd"
+args = ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "codex"]
+tool_timeout_sec = 180

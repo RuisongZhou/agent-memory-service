@@ -252,8 +252,9 @@ class Runner:
         return f"{sid}-{variant}" if variant else sid
 
     def validate_prompt_health(self, health: dict) -> None:
-        if health.get("memoryStrategy", "current") != "current":
-            raise DaemonError("legacy evaluation requires MEMORY_STRATEGY=current")
+        # Historical control daemons may still report the original current algorithm label.
+        if health.get("memoryStrategy", "memos") not in ("memos", "current"):
+            raise DaemonError("legacy evaluation requires MEMORY_STRATEGY=memos")
         if getattr(self.a, "actual_model_runtime", None) is not None:
             try:
                 model_metadata.assert_same(self.a.actual_model_runtime, health)

@@ -27,6 +27,8 @@ from common.metrics import count_tokens, percentile
 from common.protocol import guard
 from fair_replay import pack_blocks
 
+# Archived protocol arm names and the frozen current binary retain their original labels.
+# The live short-term/long-term algorithm is now named memos.
 ARMS = ('current', 'mem0-strategy', 'mem0-sdk')
 
 

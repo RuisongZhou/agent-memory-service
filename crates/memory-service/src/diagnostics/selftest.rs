@@ -101,7 +101,7 @@ pub async fn retrieval_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
-        memory_strategy: super::config::MemoryStrategy::Current,
+        memory_strategy: super::config::MemoryStrategy::Memos,
         data_dir: dir.clone(),
         ..Default::default()
     };
@@ -683,7 +683,7 @@ pub async fn long_turn_roundtrip() {
         util::new_id("t")
     ));
     let cfg = ServiceConfig {
-        memory_strategy: super::config::MemoryStrategy::Current,
+        memory_strategy: super::config::MemoryStrategy::Memos,
         data_dir: dir.clone(),
         ..Default::default()
     };

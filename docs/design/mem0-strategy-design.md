@@ -1,6 +1,6 @@
 # Agent Memory Service 新方案设计与实现说明
 
-版本日期：2026 年 10 月 12 日。本文以当前工作区代码为准，说明默认 `mem0` 策略；保留的旧实现通过 `current` 策略选择。报告中的运行数据来自已完成的完整 LoCoMo 实验，本次撰写没有重新调用付费模型或重跑数据集。
+版本日期：2026 年 10 月 12 日。本文以当前工作区代码为准，说明默认 `mem0` 策略；保留的旧实现通过 `memos` 策略选择。报告中的运行数据来自已完成的完整 LoCoMo 实验，本次撰写没有重新调用付费模型或重跑数据集。
 
 这套方案把每次输入作为一个可恢复的任务：先保存完整消息，再利用相关旧记忆和近期消息，让 LLM 抽取新的事实；随后批量生成向量，将事实、向量和来源一起提交。查询时，把问题转为向量，筛选可见记忆，按相关性和上下文预算返回结果。最终回答由调用服务的 Agent 生成。
 
@@ -8,13 +8,13 @@
 
 ## 1 现有方案与改进目标
 
-保留的 `current` 方案以经过来源校验的事实为基础，分阶段形成经验、画像和技能。对话事实抽取按批次或手动刷新触发；经验和会话总结在会话结束后生成。检索组合向量、全文、实体和时间通道，处理更新链、来源片段和上下文组织。
+保留的 `memos` 方案以经过来源校验的事实为基础，分阶段形成经验、画像和技能。对话事实抽取按批次或手动刷新触发；经验和会话总结在会话结束后生成。检索组合向量、全文、实体和时间通道，处理更新链、来源片段和上下文组织。
 
 这些能力适合需要可验证证据、修订和复杂知识管理的场景，也增加了保存阶段的模型任务、检索通道和上下文组织工作。过去的 LoCoMo 比较还存在语料、上下文预算和评价方式不一致的问题，历史分数不能直接当作新旧算法差异的证据。
 
 新方案的目标是先建立一条容易测量的路径：输入批次通常只做一次增量抽取；保存过程中完成向量生成；查询默认只做语义检索，不触发生成式模型。原始输入、失败日志和显式纠错能力继续保留，使流程简化后仍能追查结果。
 
-| 设计项 | 保留的 `current` | 默认的 `mem0` |
+| 设计项 | 保留的 `memos` | 默认的 `mem0` |
 | --- | --- | --- |
 | 自动形成 | 事实，以及独立的会话结束经验和维护任务 | 每次输入任务抽取新增事实 |
 | 抽取上下文 | 来源约束、批次及阶段相关上下文 | 最近 10 条消息、相关旧事实、本批新消息 |
@@ -34,13 +34,13 @@ HTTP / MCP 层负责接收请求和确定调用方；形成层负责把输入变
 | 层 | 主要代码 | 本方案中的职责 |
 | --- | --- | --- |
 | API | `api/http.rs`、`formation/ingest.rs` | 参数校验、接口路由、策略选择、任务回执 |
-| 形成 | `formation/mem0.rs` | 有序输入、提示词、输出校验、去重、提交事实 |
-| 检索 | `retrieval/mem0.rs` | 可见范围、语义召回、可选重排、预算装载 |
+| 形成 | `algorithms/mem0/formation.rs` | 有序输入、提示词、输出校验、去重、提交事实 |
+| 检索 | `algorithms/mem0/retrieval.rs` | 可见范围、语义召回、可选重排、预算装载 |
 | 运行时 | `runtime/engine.rs`、`llm.rs`、`models.rs`、`indexer.rs` | 恢复、LLM 重试、向量服务、缓存和索引维护 |
 | 存储 | `storage/store.rs` | SurrealKV 事务、记录查询、持久索引任务 |
 | 纯规则 | `memory-rules/src/mem0.rs` | 内容标识、相似度排序和稳定的同分次序 |
 
-`domain/types.rs` 定义共享请求和记录类型。代码从 `formation/ingest.rs::add_memories` 进入新方案，从 `retrieval/mod.rs::search_memories` 分派到新检索；无需改变调用方的 HTTP / MCP 接口。
+`domain/types.rs` 定义共享请求和记录类型。代码从 `formation/ingest.rs::add_memories` 和 `retrieval/mod.rs::search_memories` 进入公共服务层，再由 `algorithms/mod.rs` 选择完整算法。`algorithms/mem0` 与 `algorithms/memos` 分别拥有形成、检索与后台生命周期；后者使用配置名 `memos`。两者共用存储、模型客户端、索引、指令和记录管理组件。
 
 ### 消息 记忆和向量
 
@@ -297,7 +297,7 @@ make build
 
 `make build` 已固定为 `cargo build --locked -p memory-service --bin agent-memoryd --profile fast`，生成 `target/fast/agent-memoryd`。真实运行前按既有配置启动嵌入服务，并设置本地密钥；密钥不写入命令示例和报告。用于无付费验证时给包装器增加 `--mock`。
 
-对照方案使用 `--memory-strategy current` 和独立的新数据目录。在同一存储中切换策略前，必须先用原策略排空未完成任务；启动代码会拒绝存在另一策略未完成工作的一些不兼容状态。公平基准更适合分别建立干净存储，记录语料、模型、参数和上下文指纹。
+demo 在启动时选择一种算法：`--memory-strategy mem0` 或 `--memory-strategy memos`。整个进程及其中的所有 tenant 固定使用这一算法，请求处理不改变算法选择。两种 demo 使用各自的数据目录；公平基准分别建立干净存储，记录语料、模型、参数和上下文指纹。
 
 ## 8 完整 LoCoMo 验证结果
 
@@ -325,7 +325,7 @@ J 指共用评判流程对答案正确性的通过率，F1 衡量与参考文本
 
 还有 446 道 category 5 对抗题，使用另行声明的语义拒答扩展，新方案通过率 50.90%，SDK 为 54.93%。它们没有纳入标准 J / F1；`summary-unified.json` 的混合总分也不能代替表中标准分数。
 
-本次 SDK 使用本地 Qdrant，缺少可选 fastembed / spaCy 功能，只评估语义路径，不代表 Mem0 托管平台或论文中的全部能力。远端提示词缓存与执行顺序没有完全控制；完整数据也包含此前用于开发的小样本，不能称为未接触的独立测试集。全量测试只比较新方案和 SDK，未重跑 `current`，故此处不拼接旧方案历史分数。
+本次 SDK 使用本地 Qdrant，缺少可选 fastembed / spaCy 功能，只评估语义路径，不代表 Mem0 托管平台或论文中的全部能力。远端提示词缓存与执行顺序没有完全控制；完整数据也包含此前用于开发的小样本，不能称为未接触的独立测试集。全量测试只比较新方案和 SDK，未重跑 `memos`（历史标签为 `current`），故此处不拼接旧方案历史分数。
 
 原始证据包括 `comparison.md`、`completion-audit.json`、`paired-analysis.json`、固定协议、源码和二进制指纹、各批次输入及响应、三遍检索、上下文、回答和评判结果。本报告只引用汇总事实，不复制数据库、密钥、模型权重或大量原始对话。
 
@@ -354,19 +354,19 @@ J 指共用评判流程对答案正确性的通过率，F1 衡量与参考文本
 | 要理解的问题 | 代码位置和关键函数 |
 | --- | --- |
 | 默认选哪个策略 | `runtime/config.rs:8`，`MemoryStrategy`；默认 Mem0 |
-| 请求怎样进入形成模块 | `formation/ingest.rs:53`，`add_memories`；指令先走共享路径 |
-| 原始输入在哪里落盘 | `formation/mem0.rs:113`，`enqueue`；事务一 |
-| 顺序、失败和恢复怎样工作 | `formation/mem0.rs:219`，`process_until`；`publish_committed` |
-| LLM 输入如何拼装 | `formation/mem0.rs`，`form`；`prompts/mem0/additive.txt` |
-| 字段错误怎样校验 | `formation/mem0.rs:39`，`validate_output`、`contract` |
+| 请求怎样进入形成模块 | `formation/ingest.rs`，`add_memories`；指令先走共享路径 |
+| 原始输入在哪里落盘 | `algorithms/mem0/formation.rs`，`enqueue`；事务一 |
+| 顺序、失败和恢复怎样工作 | `algorithms/mem0/formation.rs`，`process_until`；`publish_committed` |
+| LLM 输入如何拼装 | `algorithms/mem0/formation.rs`，`form`；`algorithms/mem0/prompts/additive.txt` |
+| 字段错误怎样校验 | `algorithms/mem0/formation.rs`，`validate_output`、`contract` |
 | 响应先记日志还是先解析 | `runtime/llm.rs`，`contract_call_logged`、`corrective_messages` |
 | 内容去重和排序规则 | `memory-rules/src/mem0.rs`，`content_key`、`rank` |
-| 事实与向量怎样提交 | `formation/mem0.rs`，`form` 的事务二；`storage/store.rs::commit` |
-| 查询如何调用嵌入、选择结果 | `retrieval/mem0.rs:98`，`search`、`dense_with_vector` |
+| 事实与向量怎样提交 | `algorithms/mem0/formation.rs`，`form` 的事务二；`storage/store.rs::commit` |
+| 查询如何调用嵌入、选择结果 | `algorithms/mem0/retrieval.rs`，`search`、`dense_with_vector` |
 | 模型与缓存在哪里 | `runtime/models.rs`，`ModelHub::embed`、`embed_uncached`、`rerank` |
 | 索引为什么不会重复嵌入 | `runtime/indexer.rs`，`upsert_preindexed` 处理分支 |
 | 启动后如何恢复 | `runtime/engine.rs`，`warm`；存储完整性与模型版本检查 |
-| 为什么新方案没有自动 P2 | `formation/consolidate.rs`，`periodic_tick` 的策略分支 |
+| 为什么新方案没有自动 P2 | `algorithms/mod.rs`，按算法注册后台任务；P2 与维护只属于 memos |
 | 完整测试如何组织输入和评价 | `eval/locomo_full.py`、`eval/mem0_migration.py`、`eval/answer_and_judge.py` |
 
 上表路径除纯规则和评估文件外，均相对 `crates/memory-service/src/`。完整接口类型见 `domain/types.rs`，配置和调用约定见 `docs/api.md`。
@@ -393,6 +393,6 @@ make fmt
 
 ## 附录 实现依据与交付材料
 
-实现依据为当前工作区的形成、检索、运行时、存储和纯规则代码，以及 `docs/api.md`、`docs/architecture.md`、`.env.example`、`examples/service-config.json` 和 Makefile。第三方 additive 提示词及许可位于 `crates/memory-service/src/formation/prompts/mem0/`。
+实现依据为当前工作区的形成、检索、运行时、存储和纯规则代码，以及 `docs/api.md`、`docs/architecture.md`、`.env.example`、`examples/service-config.json` 和 Makefile。第三方 additive 提示词及许可位于 `crates/memory-service/src/algorithms/mem0/prompts/`。
 
 实验依据为 `results/locomo-full-mem0-20261011-v3/comparison.md` 和完成审计；这些实验材料按仓库规则保留在本地，不进入公共版本库。图 1 和图 2 的可编辑源文件分别为 `docs/diagrams/mem0-write-flow.drawio`、`docs/diagrams/mem0-read-flow.drawio`，PNG 中亦嵌入 draw.io 源数据。

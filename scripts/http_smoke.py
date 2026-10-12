@@ -141,8 +141,8 @@ def main():
                 time.sleep(0.1)
             raise AssertionError(f'formation did not complete: {tasks}')
 
-        def start():
-            p = subprocess.Popen([str(binary), 'serve', '--memory-strategy', 'current', '--data-dir', str(temp/'data'),
+        def start(strategy='memos'):
+            p = subprocess.Popen([str(binary), 'serve', '--memory-strategy', strategy, '--data-dir', str(temp/strategy),
                                   '--port', str(port), '--llm-base-url', f'http://127.0.0.1:{stub.server_port}',
                                   '--log-level', 'warn'],
                                  env=env, stdout=logfile, stderr=logfile)
@@ -161,14 +161,14 @@ def main():
                 (['--host', '0.0.0.0'], 'loopback'),
                 (['--llm-concurrency', '0'], 'positive'),
             ]:
-                failed = subprocess.run([str(binary), 'serve', '--memory-strategy', 'current', *extra], env=env,
+                failed = subprocess.run([str(binary), 'serve', '--memory-strategy', 'memos', *extra], env=env,
                                         capture_output=True, text=True)
                 assert failed.returncode != 0 and expected in failed.stderr, failed.stderr
             for value, expected in [([], 'JSON object'), ({'batchTurns': 0}, 'batchTurns'),
                                     ({'batchTruns': 3}, 'unknown field')]:
                 config = temp/'invalid-config.json'
                 config.write_text(json.dumps(value))
-                failed = subprocess.run([str(binary), 'serve', '--memory-strategy', 'current', '--config', str(config)],
+                failed = subprocess.run([str(binary), 'serve', '--memory-strategy', 'memos', '--config', str(config)],
                                         env=env, capture_output=True, text=True)
                 assert failed.returncode != 0 and expected in failed.stderr, failed.stderr
             failed = subprocess.run([str(binary), 'reindex'], env=env, capture_output=True, text=True)
@@ -255,6 +255,7 @@ def main():
                                                     'touch': False, 'includeRecent': True})
             assert search['results'] and search['profiles'], search
             health = request('/health')
+            assert health['memoryStrategy'] == 'memos', health
             assert health['tenantPromptVariants']['http-smoke-en'] == 'en', health
             assert health['llm']['calls'] == len(Stub.calls)
             assert not {'estimatedUsd', 'maxEstimatedUsd', 'offPeakOnly'} & health['llm'].keys()
@@ -334,12 +335,26 @@ def main():
                 rpc({'jsonrpc':'2.0','method':'notifications/initialized'},False)
                 listing=rpc({'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}})
                 names={tool['name'] for tool in listing['result']['tools']}
-                assert names=={'add_memories','search_memories','get_memory','correct_memory','feedback'},names
+                assert names=={'add_memories','search_memories','get_context','get_task','list_turns',
+                               'get_memory','correct_memory','feedback'},names
+                def call(tool, arguments, identifier):
+                    response = rpc({'jsonrpc':'2.0','id':identifier,'method':'tools/call',
+                                    'params':{'name':tool,'arguments':arguments}})['result']
+                    assert not response.get('isError', False), response
+                    return json.loads(response['content'][0]['text'])
                 mid=reloaded['results'][0]['memory']['id']
-                result=rpc({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{
-                    'name':'get_memory','arguments':{'id':mid,'includeEvidence':True}}})
-                assert not result['result'].get('isError',False),result
-                assert json.loads(result['result']['content'][0]['text'])['memory']['id']==mid,result
+                assert call('get_memory', {'id':mid,'includeEvidence':True}, 3)['memory']['id']==mid
+                assert call('get_task', {'requestId':receipts[0]['requestId']}, 4)==tasks[0]
+                # An instruction is synchronous and never invokes the generation stub.
+                instruction = call('add_memories', {'scope':scope, 'memoryType':'instruction',
+                                   'text':'Keep source evidence with project decisions.'}, 5)
+                context = call('get_context', {'scope':scope,'tokenBudget':1500}, 6)
+                assert instruction['memoryIds'][0] in {m['id'] for m in context['instructions']}, context
+                listed = call('list_turns', {'scope':scope,'tokenBudget':2000}, 7)
+                assert listed == request('/v1/list_turns', {'scope':scope,'tokenBudget':2000}), listed
+                invalid = rpc({'jsonrpc':'2.0','id':8,'method':'tools/call','params':{
+                    'name':'get_task','arguments':{}}})['result']
+                assert invalid['isError'] and 'HTTP 400' in invalid['content'][0]['text'], invalid
             finally:
                 bridge.stdin.close()
                 try:
@@ -347,13 +362,46 @@ def main():
                 except subprocess.TimeoutExpired:
                     bridge.terminate();bridge.wait(timeout=10)
             assert request('/health')['llm']['calls'] == 0  # Restart retrieval needs no generation.
+            # Run the same public bridge against Mem0 using raw inputs, with no LLM calls.
+            proc.terminate(); proc.wait(timeout=15)
+            proc = start('mem0')
+            bridge = subprocess.Popen([str(binary),'mcp','--url',base,'--platform','locomo'],
+                env=dict(env,MEMORY_TENANT='http-smoke-en'),stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                stderr=logfile,text=True)
+            try:
+                rpc({'jsonrpc':'2.0','id':1,'method':'initialize','params':{
+                    'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'offline-smoke','version':'1'}}})
+                rpc({'jsonrpc':'2.0','method':'notifications/initialized'},False)
+                raw = dict(payloads[0], infer=False, sync=True)
+                receipt = call('add_memories', raw, 2)
+                task = call('get_task', {'requestId':receipt['requestId']}, 3)
+                assert task['status']=='completed' and task['formed'] and task['searchable'], task
+                listed = call('list_turns', {'scope':scope,'turnIds':[raw['turnId']],
+                              'since':raw['messages'][-1]['timestamp'],'tokenBudget':2000}, 4)
+                assert len(listed['turns'])==1 and listed['turns'][0]['messages']==raw['messages'], listed
+                assert listed['turns'][0]['complete'], listed
+                instruction = call('add_memories', {'scope':scope,'memoryType':'instruction',
+                                   'text':'Keep source evidence with project decisions.'}, 5)
+                context = call('get_context', {'scope':scope,'tokenBudget':1500}, 6)
+                assert instruction['memoryIds'][0] in {m['id'] for m in context['instructions']}, context
+                invalid = rpc({'jsonrpc':'2.0','id':7,'method':'tools/call','params':{
+                    'name':'list_turns','arguments':{'scope':scope,'since':'not-a-date'}}})['result']
+                assert invalid['isError'] and 'HTTP 400' in invalid['content'][0]['text'], invalid
+            finally:
+                bridge.stdin.close()
+                try:
+                    bridge.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    bridge.terminate();bridge.wait(timeout=10)
+            assert request('/health')['llm']['calls'] == 0
             report = {'ok': True, 'mockModels': True, 'realLlmCalls': 0, 'stubCalls': len(Stub.calls),
                       'stages': Stub.calls, 'persistedUsageRows': usage_records['count'] + edge_usage, 'restartMemoryVectors': 11,
                       'checks': ['json_object with local validation and raw response persistence', 'independent fact and session-end experience commits',
                                  'three-turn/manual/session-end/300-second triggers', 'no redundant session-end P2 call',
                                  'P2 summary', 'P3 profiles', 'P4 proposal', 'P5 candidate/idempotency', 'span validation',
                                  'receipt idempotency', 'purge keeps evidence', 'tenant prompt',
-                                 'retry usage', 'restart vectors', 'MCP initialize/list/call/tenant', 'zero-generation retrieval',
+                                 'retry usage', 'restart vectors', 'MCP eight tools/tenant/platform',
+                                 'MCP context/task/turns/errors in memos and mem0', 'zero-generation retrieval',
                                  'loopback and config guards', 'strict embedding input', 'reindex failure exit status']}
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, indent=2) + '\n')

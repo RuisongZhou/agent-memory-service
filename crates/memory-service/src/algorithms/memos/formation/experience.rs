@@ -1,5 +1,5 @@
 //! Session-end P2 validation and a transaction independent of fact formation.
-use super::{
+use crate::{
     store::{self, to_doc, Tx},
     types::*,
     util,
@@ -120,7 +120,7 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    pub async fn commit(self, tenant: &super::tenant::Tenant, platform: &str) -> Result<()> {
+    pub async fn commit(self, tenant: &crate::tenant::Tenant, platform: &str) -> Result<()> {
         let mut tx = Tx::new();
         let mut out = super::relations::Applied::default();
         let mut texts = HashMap::new();

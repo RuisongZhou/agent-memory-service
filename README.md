@@ -8,7 +8,7 @@ This is an experimental implementation. A 152-question LoCoMo pilot is complete;
 
 ```text
 crates/
-  memory-service/   API, formation, retrieval, runtime, storage and diagnostics
+  memory-service/   Two algorithms (mem0, memos) and shared service layers
   memory-fulltext/  Tantivy, Chinese tokenization and entity aliases
   memory-rules/     Pure date, identifier and revision-planning rules
 eval/              LoCoMo runner, mem0 baseline, answer/judge and usage
@@ -25,7 +25,7 @@ Install Rust and Python 3.11 or later. Commands run from the repository root.
 ```sh
 make setup                 # Python dependencies, public dataset and tokenizer caches
 make build                 # CPU build
-make test-rust test        # Small Rust crates and Python tests
+make test-rust test-service test        # Small Rust crates and Python tests
 make selftest smoke        # Mock models and localhost LLM stub; no paid requests
 ```
 
@@ -47,7 +47,7 @@ Writing dialogue and running maintenance can invoke the configured LLM. Generati
 
 ## Interfaces
 
-HTTP exposes `add_memories`, `get_task`, `search_memories`, `get_context`, `list_turns`, `get_memory`, `correct_memory`, `delete_memory`, and `feedback` under `/v1/`. The stdio MCP bridge exposes five tools: add, search, get, correct and feedback. See [API reference](docs/api.md).
+HTTP exposes `add_memories`, `get_task`, `search_memories`, `get_context`, `list_turns`, `get_memory`, `correct_memory`, `delete_memory`, and `feedback` under `/v1/`. The stdio MCP bridge exposes eight tools: add, search, context, task status, turns, get, correct and feedback. See [API reference](docs/api.md) and [MCP/harness integration](docs/mcp-harness.md) for Codex/Claude Code configuration, lifecycle semantics and the local dialogue outbox example.
 
 ## Development and attribution
 
@@ -55,7 +55,8 @@ See [CONTRIBUTING](CONTRIBUTING.md) and [architecture](docs/architecture.md). CI
 
 The initial memory-service code derives from [memory-mcp-1file](https://github.com/pomazanbohdan/memory-mcp-1file); its MIT copyright notice is retained. Copied evaluation assets have separate Apache-2.0 notices. LoCoMo is downloaded locally under CC BY-NC 4.0 and is not redistributed here. Details are in [THIRD_PARTY](THIRD_PARTY.md).
 
-The default daemon pipeline follows Mem0 OSS 2.2.1 additive formation and semantic retrieval. Select
-`--memory-strategy current` to retain the original pipeline as a control. See `docs/api.md` for visibility,
-provenance, configuration and migration semantics. The copied extraction prompt retains its Apache 2.0
+The daemon chooses one algorithm at startup and uses it throughout that process. The default is
+Mem0 OSS 2.2.1 additive formation and semantic retrieval; `--memory-strategy memos` selects short-term
+buffering and asynchronous long-term formation. Use separate data directories for the two demo runs.
+See `docs/api.md` for visibility, provenance and startup configuration. The copied extraction prompt retains its Apache 2.0
 license and NOTICE; no SDK weights or local evaluation traces are distributed.
