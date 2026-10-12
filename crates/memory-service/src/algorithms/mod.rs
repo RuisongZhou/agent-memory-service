@@ -16,9 +16,10 @@ pub fn select(strategy: MemoryStrategy) -> Arc<dyn MemoryAlgorithm> {
     }
 }
 
-/// Validate a configuration for its selected strategy: the algorithm's own section first, then the shared
-/// tunables (the order in which a config failing both has always reported its error).
+/// Validate a configuration for its selected strategy: every algorithm section's well-formedness, the
+/// selected algorithm's own bounds, then the shared tunables (the order a config failing several reports).
 pub fn validate(cfg: &ServiceConfig) -> anyhow::Result<()> {
+    mem0::config::validate_section(cfg)?;
     select(cfg.memory_strategy).validate_config(cfg)?;
     cfg.validate()
 }
@@ -81,5 +82,21 @@ mod tests {
             ..Default::default()
         };
         assert!(validate(&mem0).is_err());
+    }
+
+    #[test]
+    fn mem0_section_is_well_formed_under_every_strategy() {
+        let memos = ServiceConfig {
+            memory_strategy: MemoryStrategy::Memos,
+            mem0_threshold: 1.5,
+            ..Default::default()
+        };
+        assert!(validate(&memos).is_err());
+        let memos = ServiceConfig {
+            memory_strategy: MemoryStrategy::Memos,
+            mem0_top_k: 0,
+            ..Default::default()
+        };
+        assert!(validate(&memos).is_err());
     }
 }

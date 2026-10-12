@@ -28,3 +28,15 @@ impl From<&ServiceConfig> for Mem0Config {
         }
     }
 }
+
+/// Well-formedness of the mem0 section. The file carries it under every strategy, so it is checked even
+/// when another algorithm is selected; the bound against `maxTopK` belongs to `Mem0::validate_config`.
+pub fn validate_section(cfg: &ServiceConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        cfg.mem0_threshold.is_finite() && (0.0..=1.0).contains(&cfg.mem0_threshold),
+        "mem0Threshold must be between 0 and 1"
+    );
+    anyhow::ensure!(cfg.mem0_max_tokens > 0, "mem0MaxTokens must be positive");
+    anyhow::ensure!(cfg.mem0_top_k > 0, "mem0TopK must be within maxTopK");
+    Ok(())
+}
