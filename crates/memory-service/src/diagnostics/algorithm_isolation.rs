@@ -1,10 +1,10 @@
 //! Offline checks that the shared entry points preserve each algorithm's lifecycle.
 use crate::algorithms;
-use crate::app::ingest;
-use crate::retrieval;
-use crate::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
 use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::types::*;
+use memory_engine::app::ingest;
+use memory_engine::retrieval;
+use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
 use memory_rules::util;
 use memory_store::schema;
 use memory_store::store;

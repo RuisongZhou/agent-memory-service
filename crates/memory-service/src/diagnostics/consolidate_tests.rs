@@ -1,8 +1,8 @@
 //! Maintenance integration selftest. Supplied records and mock embeddings; never invokes a real LLM.
-use crate::algorithms::memos::formation::consolidate;
-use crate::runtime::{engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_algo_memos::formation::consolidate;
 use memory_config::ServiceConfig;
 use memory_domain::types::*;
+use memory_engine::runtime::{engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant};
 use memory_rules::util;
 use memory_store::schema;
 use memory_store::store::{self, to_doc, Tx};

@@ -8,7 +8,11 @@ This is an experimental implementation. A 152-question LoCoMo pilot is complete;
 
 ```text
 crates/
-  memory-service/   Two algorithms (mem0, memos) and shared service layers
+  memory-service/   Daemon binary, HTTP/MCP transports, algorithm selection and selftests
+  memory-engine/    Shared engine: tenants, workers, model clients, retrieval components, use cases
+  memory-algo-mem0/ The mem0 algorithm
+  memory-algo-memos/ The memos algorithm
+  memory-config/    Startup configuration and tunables
   memory-domain/    Pure records, API types, errors and integrity planning
   memory-store/     SurrealDB persistence: transactions, schema and repositories
   memory-fulltext/  Tantivy, Chinese tokenization and entity aliases

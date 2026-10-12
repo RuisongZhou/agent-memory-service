@@ -101,7 +101,7 @@ selects all visible project records in the single-user store. Caller headers rem
 not authentication.
 
 The extraction prompt is vendored unchanged with its Apache 2.0 license and NOTICE in
-`crates/memory-service/src/algorithms/mem0/prompts/`. Strict parsing, scoped hash deduplication,
+`crates/memory-algo-mem0/src/prompts/`. Strict parsing, scoped hash deduplication,
 atomic primary/vector storage and batch provenance are application adaptations, not SDK guarantees.
 
 ## Memos strategy: fact formation

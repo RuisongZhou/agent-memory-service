@@ -1,10 +1,10 @@
 //! Offline integrity checks for the additive strategy, using mock embeddings and no provider.
-use crate::algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
-use crate::app::ingest;
-use crate::app::management;
-use crate::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_algo_mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
 use memory_config::ServiceConfig;
 use memory_domain::types::*;
+use memory_engine::app::ingest;
+use memory_engine::app::management;
+use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
 use memory_rules::util;
 use memory_store::schema;
 use serde_json::json;
@@ -264,7 +264,9 @@ pub async fn selftest() {
     .await
     .unwrap();
     let new_id = corrected["memory"]["id"].as_str().unwrap().to_string();
-    crate::runtime::indexer::drain(&eng, &tenant).await.unwrap();
+    memory_engine::runtime::indexer::drain(&eng, &tenant)
+        .await
+        .unwrap();
     let result = mem0_retrieval::search(
         &eng,
         &tenant,

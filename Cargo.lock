@@ -2543,6 +2543,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory-algo-mem0"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "memory-config",
+ "memory-domain",
+ "memory-engine",
+ "memory-rules",
+ "memory-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "memory-algo-memos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chrono",
+ "memory-config",
+ "memory-domain",
+ "memory-engine",
+ "memory-fulltext",
+ "memory-rules",
+ "memory-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "memory-config"
 version = "0.1.0"
 dependencies = [
@@ -2560,6 +2596,26 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "memory-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chrono",
+ "lru",
+ "memory-config",
+ "memory-domain",
+ "memory-fulltext",
+ "memory-rules",
+ "memory-store",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2594,8 +2650,11 @@ dependencies = [
  "chrono",
  "clap",
  "lru",
+ "memory-algo-mem0",
+ "memory-algo-memos",
  "memory-config",
  "memory-domain",
+ "memory-engine",
  "memory-fulltext",
  "memory-rules",
  "memory-store",

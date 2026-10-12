@@ -1,0 +1,24 @@
+[package]
+name = "memory-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared memory engine: tenant registry, model clients, retrieval components and use cases that algorithms plug into"
+publish = false
+
+[dependencies]
+memory-config = { path = "../memory-config" }
+memory-domain = { path = "../memory-domain" }
+memory-fulltext = { path = "../memory-fulltext" }
+memory-rules = { path = "../memory-rules" }
+memory-store = { path = "../memory-store" }
+anyhow = "1"
+blake3 = "1"
+chrono = { version = "0.4", features = ["serde"] }
+lru = "0.16.2"
+reqwest = { version = "0.13", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"

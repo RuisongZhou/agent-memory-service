@@ -92,10 +92,12 @@ pub async fn store_roundtrip() {
 /// Mock-model integration coverage for retrieval and management, including primary storage and indexes.
 /// No API key, generative-model request or background worker is involved.
 pub async fn retrieval_roundtrip() {
-    use crate::app::management;
-    use crate::retrieval;
-    use crate::runtime::{engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant};
     use memory_config::ServiceConfig;
+    use memory_engine::app::management;
+    use memory_engine::retrieval;
+    use memory_engine::runtime::{
+        engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
+    };
     use memory_rules::timeparse;
     use memory_rules::util;
     use std::sync::Arc;
@@ -695,9 +697,11 @@ pub async fn retrieval_roundtrip() {
 /// Long turns: the buffer stores complete messages, indexes their windows, and search returns the
 /// window that matched; short turns keep their exact digest.
 pub async fn long_turn_roundtrip() {
-    use crate::app::ingest;
-    use crate::runtime::{engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant};
     use memory_config::ServiceConfig;
+    use memory_engine::app::ingest;
+    use memory_engine::runtime::{
+        engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
+    };
     use memory_rules::util;
     use std::sync::Arc;
     let dir = std::env::temp_dir().join(format!(

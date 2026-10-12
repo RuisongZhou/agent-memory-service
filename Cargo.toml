@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "crates/memory-service",
     "crates/memory-config",
+    "crates/memory-engine",
+    "crates/memory-algo-mem0",
+    "crates/memory-algo-memos",
     "crates/memory-domain",
     "crates/memory-store",
     "crates/memory-fulltext",
@@ -36,6 +39,15 @@ panic = "unwind"
 opt-level = 1
 
 [profile.fast.package.memory-config]
+opt-level = 1
+
+[profile.fast.package.memory-engine]
+opt-level = 1
+
+[profile.fast.package.memory-algo-mem0]
+opt-level = 1
+
+[profile.fast.package.memory-algo-memos]
 opt-level = 1
 
 [profile.fast.package.memory-domain]

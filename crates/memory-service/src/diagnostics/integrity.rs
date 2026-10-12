@@ -1,9 +1,9 @@
 //! Persistent integrity and instruction tests. No generation or external model calls.
-use crate::app::ingest;
-use crate::retrieval;
-use crate::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
 use memory_config::ServiceConfig;
 use memory_domain::types::*;
+use memory_engine::app::ingest;
+use memory_engine::retrieval;
+use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
 use memory_rules::util;
 use memory_store::schema;
 use memory_store::store::{to_doc, Tx};
@@ -205,32 +205,30 @@ pub async fn selftest() {
         .put_doc(schema::MEMORIES, &port.id, &port)
         .await
         .unwrap();
-    let applied = crate::algorithms::memos::formation::relations::apply(
+    let applied = memory_algo_memos::formation::relations::apply(
         &engine,
         &tenant,
-        vec![crate::algorithms::memos::formation::relations::NewFact {
+        vec![memory_algo_memos::formation::relations::NewFact {
             fidx: 1,
             text: "Port is 8100".into(),
             scope: port.scope.clone(),
             entity_ids: vec![],
             effective_at: "2026-10-11".into(),
             origin: ORIGIN_USER.into(),
-            sources: vec![crate::algorithms::memos::formation::relations::FactSource {
+            sources: vec![memory_algo_memos::formation::relations::FactSource {
                 turn_id: "T1".into(),
                 span: "Port is 8100".into(),
                 role: "user".into(),
                 stated_at: "2026-10-11T00:00:00Z".into(),
                 stated: (1, 0),
             }],
-            relations: vec![crate::algorithms::memos::formation::relations::plan::Rel {
-                target: crate::algorithms::memos::formation::relations::plan::Target::Old(
-                    port.id.clone(),
-                ),
+            relations: vec![memory_algo_memos::formation::relations::plan::Rel {
+                target: memory_algo_memos::formation::relations::plan::Target::Old(port.id.clone()),
                 relation: "conflicts".into(),
             }],
             reason: None,
         }],
-        crate::algorithms::memos::formation::relations::WriteCtx {
+        memory_algo_memos::formation::relations::WriteCtx {
             platform: caller.platform.clone(),
             now: util::now_str(),
             turns: vec![],
@@ -256,7 +254,7 @@ pub async fn selftest() {
         keep_memory_id: chosen.clone(),
         reason: "Verified the configured port".into(),
     };
-    crate::app::management::resolve_uncertainty(&tenant, &caller, resolution.clone())
+    memory_engine::app::management::resolve_uncertainty(&tenant, &caller, resolution.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -289,7 +287,7 @@ pub async fn selftest() {
         "resolved"
     );
     assert!(
-        crate::app::management::resolve_uncertainty(&tenant, &caller, resolution)
+        memory_engine::app::management::resolve_uncertainty(&tenant, &caller, resolution)
             .await
             .is_err()
     );
@@ -407,7 +405,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
             );
             assert_eq!(open().await.len(), 2);
         }
-        crate::app::management::resolve_uncertainty(
+        memory_engine::app::management::resolve_uncertainty(
             t,
             caller,
             ResolveUncertaintyReq {
@@ -449,7 +447,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
             .collect::<Vec<_>>();
         assert_eq!(remaining.len(), usize::from(name != "chain"));
         if let Some(question) = remaining.first() {
-            crate::app::management::resolve_uncertainty(
+            memory_engine::app::management::resolve_uncertainty(
                 t,
                 caller,
                 ResolveUncertaintyReq {

@@ -10,12 +10,12 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::app::ingest;
-use crate::app::management;
-use crate::retrieval;
-use crate::runtime::engine::Engine;
-use crate::runtime::indexer;
 use memory_domain::types::*;
+use memory_engine::app::ingest;
+use memory_engine::app::management;
+use memory_engine::retrieval;
+use memory_engine::runtime::engine::Engine;
+use memory_engine::runtime::indexer;
 
 pub fn router(eng: Arc<Engine>) -> Router {
     Router::new()
