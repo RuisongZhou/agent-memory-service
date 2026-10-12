@@ -720,7 +720,7 @@ pub async fn export(_eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResu
 /// Body: `{memories: [MemoryRec], turns: [TurnRec], sessions: [SessionRec], evidence: [EvidenceRec],
 /// entities: [EntityRec]}` in the API's camelCase JSON.
 pub async fn seed(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResult<Value> {
-    if eng.models.embed_model_id != "mock-bow-1024" {
+    if !eng.models.is_mock() {
         return Err(ApiError::InvalidArgument(
             "seed is available only with mock models".into(),
         ));

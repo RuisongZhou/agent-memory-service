@@ -1,7 +1,7 @@
 //! Completed-turn buffer, durable receipts and serialised formation jobs (chapters 2–4).
 use super::extract;
+use crate::app::{admission::required_scope, tasks::get_task};
 use crate::domain::types::*;
-use crate::formation::{admission::required_scope, tasks::get_task};
 use crate::runtime::{engine::Engine, indexer, tenant::Tenant};
 use crate::storage::schema::{self, request_kind};
 use crate::storage::store::{self, from_doc, to_doc, Tx};

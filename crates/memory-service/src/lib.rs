@@ -1,18 +1,19 @@
 //! Two independent memory algorithms over shared API, runtime, storage and retrieval components.
 pub mod algorithms;
 pub mod api;
+pub mod app;
 #[cfg(feature = "selftest")]
 pub mod diagnostics;
 pub mod domain;
-pub mod formation;
 pub mod retrieval;
 pub mod runtime;
 pub mod storage;
 
 // Flat facade for external clients (binary, examples); internal code uses the canonical paths.
-pub use api::{http, manage, mcp};
+pub use api::{http, mcp};
+pub use app::management as manage;
+pub use app::{ingest, instructions, tasks};
 pub use domain::types;
-pub use formation::{ingest, instructions, tasks};
 pub use memory_rules::{timeparse, util};
 pub use retrieval as retrieve;
 pub use runtime::engine::Engine;

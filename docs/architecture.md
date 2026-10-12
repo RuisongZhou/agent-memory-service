@@ -20,8 +20,8 @@ Shared components retain their layer boundaries:
 
 | Directory | Responsibility |
 |---|---|
-| `api/` | HTTP/MCP transport, explicit corrections, deletion, feedback and administration |
-| `formation/` | Common admission checks, request inspection, algorithm dispatch and explicit instruction writes |
+| `api/` | HTTP and MCP transport only |
+| `app/` | Use cases shared by every algorithm: admission checks, request inspection, explicit instruction writes, corrections, deletion, feedback and administration |
 | `retrieval/` | Entry points, scope primitives, scoring helpers, ANN access, authoritative records/evidence/history and context assembly |
 | `runtime/` | Configuration, engine, reference time, tenant registry, model clients and the shared index worker |
 | `storage/` | SurrealKV schema, transactions, integrity constraints and durable index tasks |

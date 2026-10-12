@@ -1,6 +1,6 @@
 //! Persistent integrity and instruction tests. No generation or external model calls.
+use crate::app::ingest;
 use crate::domain::types::*;
-use crate::formation::ingest;
 use crate::retrieval;
 use crate::runtime::{
     config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
@@ -252,7 +252,7 @@ pub async fn selftest() {
         keep_memory_id: chosen.clone(),
         reason: "Verified the configured port".into(),
     };
-    crate::api::manage::resolve_uncertainty(&tenant, &caller, resolution.clone())
+    crate::app::management::resolve_uncertainty(&tenant, &caller, resolution.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -285,7 +285,7 @@ pub async fn selftest() {
         "resolved"
     );
     assert!(
-        crate::api::manage::resolve_uncertainty(&tenant, &caller, resolution)
+        crate::app::management::resolve_uncertainty(&tenant, &caller, resolution)
             .await
             .is_err()
     );
@@ -403,7 +403,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
             );
             assert_eq!(open().await.len(), 2);
         }
-        crate::api::manage::resolve_uncertainty(
+        crate::app::management::resolve_uncertainty(
             t,
             caller,
             ResolveUncertaintyReq {
@@ -445,7 +445,7 @@ async fn shared_conflict_regression(t: &Arc<Tenant>, caller: &Caller, template: 
             .collect::<Vec<_>>();
         assert_eq!(remaining.len(), usize::from(name != "chain"));
         if let Some(question) = remaining.first() {
-            crate::api::manage::resolve_uncertainty(
+            crate::app::management::resolve_uncertainty(
                 t,
                 caller,
                 ResolveUncertaintyReq {

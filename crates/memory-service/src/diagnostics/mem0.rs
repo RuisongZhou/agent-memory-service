@@ -1,8 +1,8 @@
 //! Offline integrity checks for the additive strategy, using mock embeddings and no provider.
 use crate::algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
-use crate::api::manage;
+use crate::app::ingest;
+use crate::app::management;
 use crate::domain::types::*;
-use crate::formation::ingest;
 use crate::runtime::{
     config::ServiceConfig, engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant,
 };
@@ -245,7 +245,7 @@ pub async fn selftest() {
         true
     );
     // Corrections preserve the interface and hide the old value before any later query.
-    let corrected = manage::correct_memory(
+    let corrected = management::correct_memory(
         &eng,
         &tenant,
         &caller,
@@ -283,7 +283,7 @@ pub async fn selftest() {
         .iter()
         .any(|r| r["memory"]["id"] == new_id));
     // Feedback remains restricted to IDs actually returned by this search.
-    let feedback = manage::feedback(
+    let feedback = management::feedback(
         &eng,
         &tenant,
         FeedbackReq {
@@ -305,7 +305,7 @@ pub async fn selftest() {
         .unwrap()
         .unwrap();
     assert_eq!(feedback_log["feedback"]["applied"][0], new_id);
-    manage::delete_memory(&eng, &tenant, IdReq { id: new_id })
+    management::delete_memory(&eng, &tenant, IdReq { id: new_id })
         .await
         .unwrap();
     assert!(mem0_retrieval::search(

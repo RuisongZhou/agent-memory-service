@@ -92,7 +92,7 @@ pub async fn store_roundtrip() {
 /// Mock-model integration coverage for retrieval and management, including primary storage and indexes.
 /// No API key, generative-model request or background worker is involved.
 pub async fn retrieval_roundtrip() {
-    use crate::api::manage;
+    use crate::app::management;
     use crate::retrieval;
     use crate::runtime::{
         config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
@@ -285,7 +285,7 @@ pub async fn retrieval_roundtrip() {
             created_at: now.clone(),
         },
     ];
-    let seeded = manage::seed(&eng, &t, json!({"memories":mems, "turns":turns, "sessions":sessions,
+    let seeded = management::seed(&eng, &t, json!({"memories":mems, "turns":turns, "sessions":sessions,
         "evidence":evidence, "entities":[{"id":"eservice", "name":"deployment service", "aliases":["service"], "scope":{"kind":"project", "project":"p1"}}]})).await.unwrap();
     assert_eq!(seeded["memories"], 30);
     let search_req = |query: &str| SearchReq {
@@ -477,8 +477,8 @@ pub async fn retrieval_roundtrip() {
             outcome: "helpful".into(),
         };
         let (a, b) = tokio::join!(
-            manage::feedback(&eng, &t, req.clone()),
-            manage::feedback(&eng, &t, req)
+            management::feedback(&eng, &t, req.clone()),
+            management::feedback(&eng, &t, req)
         );
         assert_ne!(a.unwrap()["accepted"], b.unwrap()["accepted"]);
         assert_eq!(
@@ -498,7 +498,7 @@ pub async fn retrieval_roundtrip() {
     let r = retrieval::search_memories(&eng, &t, &c, search_req("candidateskill"))
         .await
         .unwrap();
-    manage::feedback(
+    management::feedback(
         &eng,
         &t,
         FeedbackReq {
@@ -515,7 +515,7 @@ pub async fn retrieval_roundtrip() {
     let expired = t.store.log(schema::RETRIEVAL_LOG, json!({"kind":"search", "createdAt":(util::now()-chrono::Duration::hours(25)).to_rfc3339(),
         "returned":{"memories":[{"id":"m04"}]}})).await.unwrap();
     assert_eq!(
-        manage::feedback(
+        management::feedback(
             &eng,
             &t,
             FeedbackReq {
@@ -528,7 +528,7 @@ pub async fn retrieval_roundtrip() {
         .unwrap()["accepted"],
         false
     );
-    let corrected = manage::correct_memory(
+    let corrected = management::correct_memory(
         &eng,
         &t,
         &c,
@@ -543,10 +543,10 @@ pub async fn retrieval_roundtrip() {
     let new_id = corrected["memory"]["id"].as_str().unwrap().to_string();
     assert_eq!(corrected["memory"]["source"]["origin"], ORIGIN_EXPLICIT);
     assert!(
-        matches!(manage::correct_memory(&eng, &t, &c, CorrectMemoryReq { id:"m20".into(), ..Default::default() }).await, Err(ApiError::NotCurrent(id)) if id == new_id)
+        matches!(management::correct_memory(&eng, &t, &c, CorrectMemoryReq { id:"m20".into(), ..Default::default() }).await, Err(ApiError::NotCurrent(id)) if id == new_id)
     );
     assert!(matches!(
-        manage::correct_memory(
+        management::correct_memory(
             &eng,
             &t,
             &c,
@@ -559,7 +559,7 @@ pub async fn retrieval_roundtrip() {
         Err(ApiError::NotCurrent(_))
     ));
     assert!(matches!(
-        manage::correct_memory(
+        management::correct_memory(
             &eng,
             &t,
             &c,
@@ -572,7 +572,7 @@ pub async fn retrieval_roundtrip() {
         .await,
         Err(ApiError::InvalidArgument(_))
     ));
-    manage::correct_memory(
+    management::correct_memory(
         &eng,
         &t,
         &c,
@@ -587,7 +587,7 @@ pub async fn retrieval_roundtrip() {
         t.store.get_memory("m21").await.unwrap().unwrap().status,
         S_SUPERSEDED
     );
-    let deletion = manage::delete_memory(&eng, &t, IdReq { id: "m02".into() })
+    let deletion = management::delete_memory(&eng, &t, IdReq { id: "m02".into() })
         .await
         .unwrap();
     assert_eq!(deletion["evidenceUpdated"], 1);
@@ -595,7 +595,7 @@ pub async fn retrieval_roundtrip() {
         t.store.get_memory("m03").await.unwrap().unwrap().status,
         S_CURRENT
     );
-    let deleted = manage::delete_memory(&eng, &t, IdReq { id: "m01".into() })
+    let deleted = management::delete_memory(&eng, &t, IdReq { id: "m01".into() })
         .await
         .unwrap();
     assert_eq!(deleted["derivedDeleted"], json!(["m16"]));
@@ -617,11 +617,11 @@ pub async fn retrieval_roundtrip() {
     assert!(!t.vecs.read().await.memories.contains_key("m01"));
     indexer::drain(&eng, &t).await.unwrap();
     assert_eq!(
-        manage::export(&eng, &t, json!({})).await.unwrap()["count"],
+        management::export(&eng, &t, json!({})).await.unwrap()["count"],
         28
     );
     assert!(
-        manage::stats(&eng, &t).await.unwrap()["counts"]["retrieval_log"]
+        management::stats(&eng, &t).await.unwrap()["counts"]["retrieval_log"]
             .as_i64()
             .unwrap()
             > 0
@@ -682,7 +682,7 @@ pub async fn retrieval_roundtrip() {
 /// Long turns: the buffer stores complete messages, indexes their windows, and search returns the
 /// window that matched; short turns keep their exact digest.
 pub async fn long_turn_roundtrip() {
-    use crate::formation::ingest;
+    use crate::app::ingest;
     use crate::retrieval;
     use crate::runtime::{
         config::ServiceConfig, engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,

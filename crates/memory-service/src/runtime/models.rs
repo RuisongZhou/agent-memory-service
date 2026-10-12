@@ -62,6 +62,11 @@ impl ModelHub {
         }
     }
 
+    /// True for the hashed bag-of-words hub selected by `MEMORY_MOCK_MODELS=1`.
+    pub fn is_mock(&self) -> bool {
+        self.backend == "mock"
+    }
+
     /// Connect to the embedding server and, when given, the rerank server. Waits for servers
     /// that are still loading, then probes both endpoints once.
     pub async fn connect(embed_url: &str, rerank_url: Option<&str>) -> Result<Self> {

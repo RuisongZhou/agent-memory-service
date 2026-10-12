@@ -1,7 +1,7 @@
 //! Offline checks that the shared entry points preserve each algorithm's lifecycle.
 use crate::algorithms;
+use crate::app::ingest;
 use crate::domain::types::*;
-use crate::formation::ingest;
 use crate::retrieval;
 use crate::runtime::{
     config::{MemoryStrategy, ServiceConfig},

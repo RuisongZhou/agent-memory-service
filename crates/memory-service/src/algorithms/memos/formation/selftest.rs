@@ -101,7 +101,7 @@ pub async fn formation_selftest() {
     assert!(
         serde_json::from_value::<RawRelation>(json!({"F":"F2","M":null,"type":"related"})).is_err()
     );
-    use crate::formation::ingest;
+    use crate::app::ingest;
     use crate::runtime::{config::ServiceConfig, indexer, llm::Llm, models::ModelHub};
     use crate::storage::store::{self, to_doc, Tx};
     assert_eq!(std::env::var("MEMORY_MOCK_MODELS").as_deref(), Ok("1"));
@@ -474,7 +474,7 @@ pub async fn formation_selftest() {
 /// Verify shared commits, retained cross-batch provenance, retry safety and legacy P1 backfill.
 async fn session_split_selftest(eng: &Arc<Engine>, dir: &std::path::PathBuf) {
     use super::consolidate;
-    use crate::formation::ingest;
+    use crate::app::ingest;
     use crate::runtime::indexer;
     let t = Arc::new(
         Tenant::open("split-selftest-en", dir, eng.models.dim)

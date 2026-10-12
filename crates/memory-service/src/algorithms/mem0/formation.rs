@@ -1,7 +1,7 @@
 //! Durable Mem0 2.2.1 additive formation. Raw inputs precede generation; vectors and receipts
 //! commit together. Batch provenance is never presented as a verified per-claim quotation.
+use crate::app::tasks;
 use crate::domain::types::*;
-use crate::formation::tasks;
 use crate::runtime::{engine::Engine, llm::JsonContract, tenant::Tenant};
 use crate::storage::schema::{self, request_kind};
 use crate::storage::store::{self, Tx};

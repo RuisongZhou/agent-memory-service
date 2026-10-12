@@ -1,4 +1,3 @@
-//! HTTP and MCP surfaces plus explicit record management.
+//! HTTP and MCP transport surfaces.
 pub mod http;
-pub mod manage;
 pub mod mcp;
