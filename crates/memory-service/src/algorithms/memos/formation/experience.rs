@@ -156,7 +156,7 @@ impl Prepared {
             tx.index_task(schema::TURNS, &rid, "upsert")?;
         }
         tenant.store.commit(tx).await?;
-        tenant.index_notify.notify_one();
+        tenant.wake_indexer();
         Ok(())
     }
 
@@ -197,7 +197,7 @@ impl Prepared {
     }
 }
 
-/// Caller holds extract_lock and ingest_lock. Current and retained unfinished-task turns may supply evidence.
+/// Caller holds the formation and ingest locks (`lock_formation`, `lock_ingest`). Current and retained unfinished-task turns may supply evidence.
 pub fn prepare(
     session: &SessionRec,
     turns: &[TurnRec],

@@ -13,6 +13,6 @@ pub async fn run_extract_worker(eng: Arc<Engine>, t: Arc<Tenant>) {
         if let Err(e) = process_available(&eng, &t, false, None).await {
             tracing::error!(tenant=%t.name,"formation worker: {e:#}");
         }
-        tokio::select! {_ = t.extract_notify.notified()=>{}, _ = tokio::time::sleep(Duration::from_secs(2))=>{}}
+        tokio::select! {_ = t.formation_signal()=>{}, _ = tokio::time::sleep(Duration::from_secs(2))=>{}}
     }
 }

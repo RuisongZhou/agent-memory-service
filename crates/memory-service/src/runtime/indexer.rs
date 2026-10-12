@@ -4,7 +4,6 @@
 use anyhow::Result;
 use memory_fulltext::FtDoc;
 use serde_json::{json, Value};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -118,7 +117,7 @@ pub async fn run_index_worker(eng: Arc<Engine>, t: Arc<Tenant>) {
             }
         }
         tokio::select! {
-            _ = t.index_notify.notified() => {},
+            _ = t.indexer_signal() => {},
             _ = tokio::time::sleep(Duration::from_secs(1)) => {},
         }
     }
@@ -131,7 +130,7 @@ pub async fn pending(t: &Tenant) -> Result<i64> {
 
 /// Process up to `limit` tasks in creation order. Returns the number processed.
 pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> Result<usize> {
-    let _guard = t.index_lock.lock().await;
+    let _guard = t.lock_index().await;
     let tasks = t
         .store
         .select(
@@ -321,7 +320,7 @@ pub async fn drain(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
 
 /// Queue a full rebuild (5.2): vector → re-embed every active memory and turn; full-text → clear and re-add.
 pub async fn schedule_rebuild(t: &Tenant, vectors: bool, fulltext: bool) -> Result<()> {
-    let _guard = t.index_lock.lock().await;
+    let _guard = t.lock_index().await;
     if fulltext {
         t.ft.clear()?;
     }
@@ -345,10 +344,10 @@ pub async fn schedule_rebuild(t: &Tenant, vectors: bool, fulltext: bool) -> Resu
         }
     }
     t.store.commit(tx).await?;
-    t.index_notify.notify_one();
+    t.wake_indexer();
     Ok(())
 }
 
 pub fn stats_json(t: &Tenant) -> Value {
-    json!({"pendingJobs": t.pending_jobs.load(Ordering::Relaxed)})
+    json!({"pendingJobs": t.pending_jobs()})
 }

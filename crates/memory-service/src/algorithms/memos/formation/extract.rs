@@ -988,7 +988,7 @@ pub(super) async fn commit_experience(
     watermark: i64,
 ) -> Result<()> {
     // New arrivals may reopen the session during generation; preserve their sequence and end state.
-    let _ingest = t.ingest_lock.lock().await;
+    let _ingest = t.lock_ingest().await;
     let session = t
         .store
         .get_session(&snapshot.platform, &snapshot.session)

@@ -53,7 +53,7 @@ pub async fn store(
             "memoryScope must be global, current project or caller platform".into(),
         ));
     }
-    let _guard = t.ingest_lock.lock().await;
+    let _guard = t.lock_ingest().await;
     let request = match req.turn_id.as_deref().filter(|key| !key.is_empty()) {
         Some(key) => store::hashed_id("rq", &format!("instruction:{}:{key}", caller.platform)),
         None => util::new_id("rq"),

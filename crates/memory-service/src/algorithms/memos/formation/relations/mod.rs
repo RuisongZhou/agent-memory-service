@@ -587,7 +587,7 @@ where
             c.memories.remove(id);
         }
     }
-    t.index_notify.notify_one();
+    t.wake_indexer();
 
     out.actions = p
         .log

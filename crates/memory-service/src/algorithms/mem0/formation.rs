@@ -155,7 +155,7 @@ pub async fn enqueue(
     } else {
         vec![]
     };
-    let guard = t.ingest_lock.lock().await;
+    let guard = t.lock_ingest().await;
     let key = req
         .turn_id
         .as_ref()
@@ -198,7 +198,7 @@ pub async fn enqueue(
         "formed":false,"searchable":false,"failures":0}))?;
     t.store.commit(tx).await?;
     drop(guard);
-    t.extract_notify.notify_one();
+    t.wake_formation();
     let mut out = if req.sync.unwrap_or(req.text.is_some()) {
         wait(eng, t, &id).await?
     } else {
@@ -213,7 +213,7 @@ pub async fn process_jobs(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
 }
 
 async fn process_until(eng: &Arc<Engine>, t: &Arc<Tenant>, stop: Option<&str>) -> Result<()> {
-    let _guard = t.extract_lock.lock().await;
+    let _guard = t.lock_formation().await;
     let jobs = t.store.select("SELECT * OMIT id FROM requests WHERE kind = 'mem0' AND status IN ['queued','running','indexing'] ORDER BY inputSeq ASC", vec![]).await?;
     for job in jobs {
         if job["retryAtTs"].as_i64().unwrap_or(0) > util::now().timestamp() {
@@ -507,7 +507,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
         vectors.memories.insert(id, vector);
     }
     drop(vectors);
-    t.index_notify.notify_one();
+    t.wake_indexer();
     t.store.merge_doc(schema::REQUESTS,id,json!({"status":"completed","searchable":true,"latencyMs":{"recall":recall_ms,"model":model_ms,
         "embed":embed_ms,"persist":tick.elapsed().as_secs_f64()*1000.0,
         "total":started.elapsed().as_secs_f64()*1000.0}})).await?;
@@ -541,7 +541,7 @@ async fn wait(eng: &Arc<Engine>, t: &Arc<Tenant>, id: &str) -> ApiResult<Value> 
     loop {
         // A background job may already hold the formation lock; poll its published receipt
         // instead of waiting for unrelated later jobs in that worker snapshot.
-        let available = t.extract_lock.try_lock().is_ok();
+        let available = t.try_lock_formation().is_some();
         if available {
             process_until(eng, t, Some(id)).await?;
         }

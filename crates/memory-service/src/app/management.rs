@@ -36,7 +36,7 @@ pub async fn resolve_uncertainty(
     caller: &Caller,
     req: ResolveUncertaintyReq,
 ) -> ApiResult<Value> {
-    let _guard = t.extract_lock.lock().await;
+    let _guard = t.lock_formation().await;
     safe_id(&req.id).map_err(|_| ApiError::InvalidArgument("invalid uncertainty id".into()))?;
     if req.reason.len() > MAX_TEXT_BYTES {
         return Err(ApiError::PayloadTooLarge("reason exceeds 4 KB".into()));
@@ -117,7 +117,7 @@ pub async fn resolve_uncertainty(
     tx.merge(schema::UNCERTAINTIES, &req.id, json!({"status":"resolved","resolvedAt":now,
         "resolution":{"keepMemoryId":req.keep_memory_id,"platform":caller.platform,"reason":req.reason}}))?;
     t.store.commit(tx).await?;
-    t.index_notify.notify_one();
+    t.wake_indexer();
     Ok(json!({"id":req.id,"status":"resolved","keepMemoryId":req.keep_memory_id}))
 }
 
@@ -163,7 +163,7 @@ pub async fn correct_memory(
     req: CorrectMemoryReq,
 ) -> ApiResult<Value> {
     let _ = eng;
-    let _guard = t.extract_lock.lock().await;
+    let _guard = t.lock_formation().await;
     let old = must_get(t, &req.id).await?;
     if old.status != S_CURRENT {
         return Err(ApiError::NotCurrent(chain_current(t, &old).await?));
@@ -297,7 +297,7 @@ pub async fn correct_memory(
         }
     };
     t.store.commit(tx).await?;
-    t.index_notify.notify_one();
+    t.wake_indexer();
     Ok(out)
 }
 
@@ -311,7 +311,7 @@ pub async fn correct_memory(
 /// superseded with no successor); a `conflict` memory whose only conflict partner was deleted returns to
 /// `current`.
 pub async fn delete_memory(eng: &Arc<Engine>, t: &Arc<Tenant>, req: IdReq) -> ApiResult<Value> {
-    let _guard = t.extract_lock.lock().await;
+    let _guard = t.lock_formation().await;
     must_get(t, &req.id).await?;
     // Profiles and skills copy their source memories. Delete these derived records transitively;
     // otherwise a deleted fact would still be disclosed through the next context injection.
@@ -481,7 +481,7 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
 
 pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> ApiResult<Value> {
     let _ = eng;
-    let _guard = t.extract_lock.lock().await;
+    let _guard = t.lock_formation().await;
     let outcome = req.outcome.trim().to_string();
     if !["helpful", "irrelevant", "wrong"].contains(&outcome.as_str()) {
         return Err(ApiError::InvalidArgument(format!(
@@ -587,7 +587,7 @@ pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> A
         json!({"feedback": {"used": req.used, "applied": applied, "outcome": outcome, "at": now}}),
     )?;
     t.store.commit(tx).await?;
-    t.index_notify.notify_one();
+    t.wake_indexer();
     Ok(json!({"accepted": true, "changed": changed, "ignored": ignored}))
 }
 
@@ -723,7 +723,7 @@ pub async fn seed(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResult<
             "seed is available only with mock models".into(),
         ));
     }
-    let _guard = t.extract_lock.lock().await;
+    let _guard = t.lock_formation().await;
     fn list<T: serde::de::DeserializeOwned>(body: &Value, k: &str) -> ApiResult<Vec<T>> {
         match body.get(k) {
             None | Some(Value::Null) => Ok(vec![]),

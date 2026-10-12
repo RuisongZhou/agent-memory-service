@@ -8,7 +8,7 @@ use crate::storage::store::{self, from_doc, to_doc, Tx};
 use anyhow::{anyhow, Result};
 use memory_rules::util;
 use serde_json::{json, Value};
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn validate_messages(messages: &[InMessage]) -> ApiResult<(&InMessage, &InMessage)> {
@@ -60,7 +60,7 @@ pub async fn add_memories(
             return Err(ApiError::InvalidArgument("turnId required".into()));
         }
     }
-    let guard = t.ingest_lock.lock().await;
+    let guard = t.lock_ingest().await;
     if let Some(turn_id) = &req.turn_id {
         if req.messages.is_some() {
             if let Some(tr) = t.store.get_turn(&c.platform, turn_id).await? {
@@ -69,7 +69,7 @@ pub async fn add_memories(
                     end_session(t, &tr.platform, &tr.session).await?;
                 }
                 drop(guard);
-                t.extract_notify.notify_one();
+                t.wake_formation();
                 let mut receipt = get_task(
                     eng,
                     t,
@@ -221,8 +221,8 @@ pub async fn add_memories(
     }
     t.store.commit(tx).await?;
     drop(guard);
-    t.index_notify.notify_one();
-    t.extract_notify.notify_one();
+    t.wake_indexer();
+    t.wake_formation();
     let sync = req.sync.unwrap_or(req.text.is_some());
     if sync {
         let mut value = wait_request(eng, t, &request, true).await?;
@@ -322,11 +322,7 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
                 experiences += 1;
             }
         }
-        if pending == 0
-            && requests == 0
-            && experiences == 0
-            && t.pending_jobs.load(Ordering::Relaxed) == 0
-        {
+        if pending == 0 && requests == 0 && experiences == 0 && t.pending_jobs() == 0 {
             indexer::drain(eng, t).await?;
             return Ok(
                 json!({"status":"idle","pendingTurns":0,"pendingJobs":0,"indexTasks":0,
@@ -340,19 +336,6 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
             "pendingRequests":requests,"pendingExperiences":experiences,"indexTasks":indexer::pending(t).await?}));
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-struct ActiveJob<'a>(&'a std::sync::atomic::AtomicI64);
-impl<'a> ActiveJob<'a> {
-    fn new(t: &'a Tenant) -> Self {
-        t.pending_jobs.fetch_add(1, Ordering::Relaxed);
-        Self(&t.pending_jobs)
-    }
-}
-impl Drop for ActiveJob<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -429,8 +412,8 @@ pub(crate) async fn process_available(
     force: bool,
     force_request: Option<&str>,
 ) -> Result<()> {
-    let _lock = t.extract_lock.lock().await;
-    let _active = ActiveJob::new(t);
+    let _lock = t.lock_formation().await;
+    let _active = t.begin_job();
     let now = util::now();
     let jobs = t
         .store
@@ -621,7 +604,7 @@ async fn finish_end_requests(
 ) -> Result<()> {
     // A turn or another end signal may arrive during P2 generation. Never acknowledge an end
     // beyond the processed snapshot, or overwrite a reopened session's state.
-    let _ingest = t.ingest_lock.lock().await;
+    let _ingest = t.lock_ingest().await;
     let Some(current) = t
         .store
         .get_session(&session.platform, &session.session)
@@ -658,7 +641,7 @@ pub async fn on_session_start(
     project: &str,
     session: &str,
 ) {
-    let _guard = t.ingest_lock.lock().await;
+    let _guard = t.lock_ingest().await;
     let result: Result<()> = async {
         let sessions: Vec<SessionRec> = t
             .store
@@ -679,7 +662,7 @@ pub async fn on_session_start(
     if let Err(e) = result {
         tracing::error!(tenant=%t.name,"end earlier sessions: {e:#}");
     }
-    t.extract_notify.notify_one();
+    t.wake_formation();
 }
 
 #[cfg(test)]

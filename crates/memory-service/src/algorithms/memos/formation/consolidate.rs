@@ -308,7 +308,7 @@ async fn merge_exact(t: &Arc<Tenant>, a: &MemoryRec, b: &MemoryRec) -> Result<()
     tx.index_task(schema::MEMORIES, &b.id, "upsert")?;
     t.store.commit(tx).await?;
     t.vecs.write().await.memories.remove(&b.id);
-    t.index_notify.notify_one();
+    t.wake_indexer();
     Ok(())
 }
 
@@ -709,7 +709,7 @@ async fn skills(eng: &Arc<Engine>, t: &Arc<Tenant>, now: &str) -> Result<Value> 
         existing.push(rec);
         created.push(id);
     }
-    t.index_notify.notify_one();
+    t.wake_indexer();
     Ok(json!({"created":created}))
 }
 
@@ -779,7 +779,7 @@ pub async fn purge(t: &Arc<Tenant>, as_of: &str, days: f64) -> Result<Value> {
         }
     }
     t.store.commit(tx).await?;
-    t.index_notify.notify_one();
+    t.wake_indexer();
     Ok(
         json!({"purgedTurns":removed.len(),"purgedSessions":dropped,"retentionDays":days,"remainingTurns":t.store.count(schema::TURNS,None).await?}),
     )
@@ -835,7 +835,7 @@ pub async fn run_jobs(
             "retentionDays must be nonnegative".into(),
         ));
     }
-    let _guard = t.extract_lock.lock().await;
+    let _guard = t.lock_formation().await;
     let mut results = serde_json::Map::new();
     for job in jobs {
         let value = match job.as_str() {
@@ -890,7 +890,7 @@ async fn periodic_tick(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
     let now = util::now();
     let timestamp = util::fmt_ts(&now);
     {
-        let _guard = t.ingest_lock.lock().await;
+        let _guard = t.lock_ingest().await;
         let sessions: Vec<SessionRec> = t
             .store
             .select_as("SELECT * OMIT id FROM sessions", vec![])
@@ -913,7 +913,7 @@ async fn periodic_tick(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
         }
         t.store.commit(tx).await?;
         if ended {
-            t.extract_notify.notify_one();
+            t.wake_formation();
         }
     }
     // Evaluation controls its clock via run_jobs(asOf); fresh tenants defer automatic LLM jobs.
