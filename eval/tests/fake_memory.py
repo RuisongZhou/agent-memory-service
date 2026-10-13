@@ -32,10 +32,7 @@ class State:
         self.purged = set()
         self.errors = []
         self.llm = {"calls": 0, "promptTokens": 0, "completionTokens": 0, "cacheHitTokens": 0}
-        self.default_prompt = "en"
         self.usage = defaultdict(list)
-        self.idle_overrides = {}
-        self.purge_remaining = 0
 
     def add_usage(self, tenant, stage, hit, miss, out):
         self.llm["calls"] += 1
@@ -80,7 +77,7 @@ class State:
                 self.add_usage(tenant, "P2", 500, 1000, 250)
                 return 200, {"idle": True, "status": "idle", "pendingTurns": 0, "pendingJobs": 0,
                              "indexTasks": 0, "failedTurns": 0, "failedRequests": 0,
-                             "failedExperiences": 0, **self.idle_overrides}
+                             "failedExperiences": 0}
             if path == "/admin/run_jobs":
                 if not _rfc3339(body.get("asOf", "")):
                     return self.err("bad asOf")
@@ -89,7 +86,7 @@ class State:
                     self.purged.add(tenant)
                 else:
                     self.add_usage(tenant, "P3", 0, 2000, 300)
-                jobs = {j: ({"remainingTurns": self.purge_remaining} if j == "purge" else {"ok": True})
+                jobs = {j: ({"remainingTurns": 0} if j == "purge" else {"ok": True})
                         for j in body.get("jobs", [])}
                 return 200, {"ok": True, "status": "completed", "jobs": jobs}
             if path == "/v1/search_memories":
@@ -115,7 +112,7 @@ class State:
                 return 200, {"retrievalId": "rt", "profiles": [results[0]["memory"]],
                              "results": results[1:], "recentTurns": recent, "gap": False}
             if path == "/admin/stats":
-                remaining = self.purge_remaining if tenant in self.purged else len(self.turns[tenant])
+                remaining = 0 if tenant in self.purged else len(self.turns[tenant])
                 return 200, {"turns": remaining, "counts": {"turns": remaining}, "llm": dict(self.llm)}
             if path == "/admin/export" and body.get("table") == "llm_usage":
                 return 200, {"table": "llm_usage", "records": list(self.usage[tenant]), "count": len(self.usage[tenant])}
@@ -139,8 +136,8 @@ def make_handler(state: State):
             if self.path == "/health":
                 with state.lock:
                     tenant_variants = {tenant: (tenant.rsplit("-", 1)[1] if tenant.endswith(("-en", "-zh"))
-                                                else state.default_prompt) for tenant in state.turns}
-                    return self._send(200, {"ok": True, "promptVariant": state.default_prompt,
+                                                else "en") for tenant in state.turns}
+                    return self._send(200, {"ok": True, "promptVariant": "en",
                                            "tenantPromptVariants": tenant_variants,
                                            "modelBackend": "mock", "modelDevice": "mock", "modelDtype": "f32",
                                            "embedModel": "mock-bow-1024", "rerankModel": None,
@@ -148,11 +145,7 @@ def make_handler(state: State):
             self._send(404, {})
 
         def do_POST(self):
-            n = int(self.headers.get("Content-Length") or 0)
-            try:
-                body = json.loads(self.rfile.read(n) or b"{}")
-            except json.JSONDecodeError:
-                return self._send(400, {"code": "INVALID_ARGUMENT", "message": "json"})
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             code, obj = state.handle(self.path, self.headers.get("X-Memory-Tenant", "default"),
                                      self.headers.get("X-Memory-Platform", "sdk"), body)
             self._send(code, obj)

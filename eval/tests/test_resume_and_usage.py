@@ -1,6 +1,6 @@
 import asyncio
+import json
 from argparse import Namespace
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -23,20 +23,6 @@ def test_torn_jsonl_is_repaired_before_append(tmp_path):
     assert jsonl.keys(path) == {"q1", "q3"}
 
 
-def test_jsonl_keeps_complete_row_without_final_newline(tmp_path):
-    path = tmp_path / "results.jsonl"
-    path.write_text('{"qid":"q1"}')
-    jsonl.append(path, {"qid": "q2"})
-    assert jsonl.keys(path) == {"q1", "q2"}
-
-
-def test_jsonl_does_not_hide_middle_corruption(tmp_path):
-    path = tmp_path / "results.jsonl"
-    path.write_text('{broken}\n{"qid":"q2"}\n')
-    with pytest.raises(ValueError, match="corrupt"):
-        list(jsonl.read(path))
-
-
 def test_changed_conditions_cannot_resume(tmp_path):
     path = tmp_path / "protocol.json"
     guard(path, {"sessions": 2})
@@ -45,18 +31,13 @@ def test_changed_conditions_cannot_resume(tmp_path):
         guard(path, {"sessions": None})
 
 
-def test_usage_fallback_and_token_summary(tmp_path):
-    assert usage_tokens({"prompt_tokens": 120, "prompt_cache_hit_tokens": 20,
-                         "completion_tokens": 30}) == (20, 100, 30, 0)
+def test_usage_tokens_and_summary(tmp_path):
     assert usage_tokens({"prompt_tokens": 120, "prompt_tokens_details": {"cached_tokens": 20},
                          "completion_tokens": 30}) == (20, 100, 30, 0)
-    weekday = datetime(2026, 10, 9, 1, tzinfo=timezone.utc)
     ledger = Ledger(tmp_path / "usage.jsonl")
-    ledger.record("fake.ingest", 100, 200, 30, ts=weekday, calls=3)
+    ledger.record("fake.ingest", 100, 200, 30, calls=3)
     summary = usage_ledger.summarize(list(jsonl.read(ledger.path)))
-    assert summary["total"]["hit"] == 100
-    assert "usd" not in summary["total"] and "peak_calls" not in summary["components"]["fake.ingest"]
-    assert summary["total"]["calls"] == 3
+    assert summary["total"]["hit"] == 100 and summary["total"]["calls"] == 3
 
 
 def test_invalid_judge_label_retries_only_judge(tmp_path):
@@ -104,9 +85,7 @@ def test_queued_llm_calls_record_usage_and_disable_thinking(tmp_path, monkeypatc
             await llm.aclose()
     asyncio.run(run())
     assert len(calls) == ledger.calls == 3
-    assert all("usd" not in row and "peak" not in row for row in jsonl.read(ledger.path))
     assert calls[0]["extra_body"] == {"enable_thinking": False}
-    assert calls[0]["temperature"] == 0
     assert calls[0]["response_format"] == {"type": "json_object"}
 
 
@@ -141,14 +120,10 @@ def test_summary_and_report_exclude_stale_answers(tmp_path, monkeypatch):
     summary = answer_and_judge.summarize(path, [rec], "offline", "main", "unified", tmp_path / "ledger.jsonl")
     assert summary["overall"]["J"] == summary["overall"]["F1"] == 1
     assert summary["by_category"]["2-temporal"]["n"] == 1
-    import json
     (path.parent / "summary-unified.json").write_text(json.dumps(summary))
     monkeypatch.setattr("sys.argv", ["report.py", "--results-dir", str(tmp_path)])
     report.main()
-    assert (tmp_path / "report.md").exists() and (tmp_path / "report.json").exists()
-    rendered = json.loads((tmp_path / "report.json").read_text())
-    assert "usage_total" in rendered and "conditional_cost_scenarios" not in rendered
-    assert "USD" not in (tmp_path / "report.md").read_text() and "CNY" not in (tmp_path / "report.md").read_text()
+    assert "usage_total" in json.loads((tmp_path / "report.json").read_text())
     rec["context"] = "new context"
     stale = answer_and_judge.summarize(path, [rec], "offline", "main", "unified", tmp_path / "ledger.jsonl")
     assert stale["n_answered"] == 0

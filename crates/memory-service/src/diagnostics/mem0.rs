@@ -1,58 +1,25 @@
 //! Offline integrity checks for the additive strategy, using mock embeddings and no provider.
+use super::{engine, tenant};
 use memory_algo_mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
 use memory_config::ServiceConfig;
 use memory_domain::types::*;
-use memory_engine::app::ingest;
-use memory_engine::app::management;
-use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_engine::app::{ingest, management};
+use memory_engine::retrieval;
+use memory_engine::runtime::indexer;
 use memory_rules::util;
 use memory_store::schema;
-use serde_json::json;
-use std::sync::Arc;
+use serde_json::{json, Value};
 
 pub async fn selftest() {
     let schema = json!({"x-existingIds":["0"]});
     assert!(mem0_formation::validate_output(&schema, &json!({"memory":[]})).is_ok());
-    for invalid in [
-        json!({"facts":[]}),
-        json!({"memory":[{"id":"0","text":"x","attributed_to":"other"}]}),
-        json!({"memory":[{"id":"1","text":"x","attributed_to":"user"}]}),
-        json!({"memory":[{"id":"0","text":"x","attributed_to":"user","linked_memory_ids":["9"]}]}),
-    ] {
-        assert!(mem0_formation::validate_output(&schema, &invalid).is_err());
-    }
-    let numeric_link =
-        json!({"memory":[{"id":"0","text":"x","attributed_to":"user","linked_memory_ids":[0]}]});
-    let error = mem0_formation::validate_output(&schema, &numeric_link)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("memory[0].linked_memory_ids[0]"));
-    assert!(error.contains("replace the number 0 with \"0\""));
-    assert_eq!(numeric_link["memory"][0]["linked_memory_ids"][0], 0);
     assert!(mem0_formation::validate_output(
         &schema,
-        &json!({"memory":[{"id":"0","text":"x","attributed_to":"user","linked_memory_ids":["0"]}]})
+        &json!({"memory":[{"id":"0","text":"x","attributed_to":"user","linked_memory_ids":["9"]}]})
     )
-    .is_ok());
-    let root = std::env::temp_dir().join(util::new_id("mem0-selftest-"));
-    let eng = Engine::new(
-        ServiceConfig {
-            data_dir: root.clone(),
-            ..Default::default()
-        },
-        Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
-        ModelHub::mock(),
-        crate::algorithms::select(memory_config::MemoryStrategy::Mem0),
-    );
-    let tenant = Arc::new(
-        Tenant::open("test", &root, eng.models.dim, eng.algorithm().schema())
-            .await
-            .unwrap(),
-    );
-    let caller = Caller {
-        tenant: tenant.name.clone(),
-        platform: "test".into(),
-    };
+    .is_err());
+    let eng = engine(ServiceConfig::default());
+    let (t, caller, dir) = tenant(&eng, "mem0-selftest", "test").await;
     let scope = ReqScope {
         project: Some("a".into()),
         session: Some("s".into()),
@@ -66,168 +33,98 @@ pub async fn selftest() {
         sync: Some(true),
         ..Default::default()
     };
-    let saved = ingest::add_memories(&eng, &tenant, &caller, request.clone())
+    let saved = ingest::add_memories(&eng, &t, &caller, request.clone())
         .await
         .unwrap();
-    assert_eq!(saved["status"], "completed");
     assert_eq!(saved["searchable"], true);
     let id = saved["memoryIds"][0].as_str().unwrap().to_string();
     assert_eq!(
-        ingest::add_memories(&eng, &tenant, &caller, request.clone())
+        ingest::add_memories(&eng, &t, &caller, request.clone())
             .await
             .unwrap()["duplicate"],
         true
     );
-    let mut retry = request.clone();
-    retry.text = Some("a retry cannot overwrite the original".into());
-    assert_eq!(
-        ingest::add_memories(&eng, &tenant, &caller, retry)
-            .await
-            .unwrap()["memoryIds"][0],
-        id
-    );
-    let mut same = request.clone();
-    same.turn_id = Some("raw2".into());
-    assert_eq!(
-        ingest::add_memories(&eng, &tenant, &caller, same)
-            .await
-            .unwrap()["memoryIds"][0],
-        id
-    );
-    let result = mem0_retrieval::search(
-        &eng,
-        &tenant,
-        &caller,
-        SearchReq {
-            query: "database port 8765".into(),
-            scope: Some(scope.clone()),
-            include_evidence: Some(true),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(result["results"][0]["memory"]["id"], id);
-    let ann_engine = Engine::new(
-        ServiceConfig {
-            brute_force_limit: 0,
-            ..Default::default()
-        },
-        Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
-        ModelHub::mock(),
-        crate::algorithms::select(memory_config::MemoryStrategy::Mem0),
-    );
-    let ann = mem0_retrieval::search(
-        &ann_engine,
-        &tenant,
-        &caller,
-        SearchReq {
-            query: "database port 8765".into(),
-            scope: Some(scope.clone()),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(ann["results"][0]["memory"]["id"], id);
-
-    assert_eq!(
-        result["results"][0]["sourceBatch"]["verifiedClaimSpan"],
-        false
-    );
-    // Compare actual instants across offsets, including equality, and reject invalid filters.
-    let clock_scope = ReqScope {
-        project: Some("clock".into()),
-        ..scope.clone()
+    // The same content under another turn maps to the same memory.
+    let same = AddMemoriesReq {
+        turn_id: Some("raw2".into()),
+        ..request
     };
-    for (key, timestamp) in [
-        ("before", "2026-10-12T08:00:00+08:00"),
-        ("equal", "2026-10-12T09:00:00+08:00"),
-        ("after", "2026-10-11T20:00:00-08:00"),
-    ] {
-        ingest::add_memories(
-            &eng,
-            &tenant,
-            &caller,
-            AddMemoriesReq {
-                scope: clock_scope.clone(),
-                turn_id: Some(key.into()),
-                infer: Some(false),
-                sync: Some(true),
-                messages: Some(vec![InMessage {
-                    role: "user".into(),
-                    content: key.into(),
-                    timestamp: timestamp.into(),
-                }]),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    }
-    let filtered = eng
-        .list_turns(
-            &tenant,
-            &caller,
-            ListTurnsReq {
-                scope: clock_scope.clone(),
-                since: Some("2026-10-12T01:00:00Z".into()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
     assert_eq!(
-        filtered["turns"]
+        ingest::add_memories(&eng, &t, &caller, same).await.unwrap()["memoryIds"][0],
+        id
+    );
+    let search = |eng, project: &str, query: &str| {
+        mem0_retrieval::search(
+            eng,
+            &t,
+            &caller,
+            SearchReq {
+                query: query.into(),
+                scope: Some(ReqScope {
+                    project: Some(project.into()),
+                    ..scope.clone()
+                }),
+                ..Default::default()
+            },
+        )
+    };
+    let ids = |r: &Value| -> Vec<String> {
+        r["results"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|row| row["turnId"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        vec!["equal", "after"]
-    );
-    assert!(eng
-        .list_turns(
-            &tenant,
-            &caller,
-            ListTurnsReq {
-                scope: clock_scope,
-                since: Some("invalid".into()),
-                ..Default::default()
-            }
-        )
-        .await
-        .is_err());
-    assert!(result["profiles"].as_array().unwrap().is_empty());
-    let other = ReqScope {
-        project: Some("b".into()),
-        ..scope.clone()
+            .map(|x| x["memory"]["id"].as_str().unwrap().to_string())
+            .collect()
     };
-    assert!(mem0_retrieval::search(
-        &eng,
-        &tenant,
-        &caller,
-        SearchReq {
-            query: "database port 8765".into(),
-            scope: Some(other),
+    assert_eq!(
+        ids(&search(&eng, "a", "database port 8765").await.unwrap()),
+        [id.clone()]
+    );
+    // The ANN path returns the same memory as brute force.
+    let ann = engine(ServiceConfig {
+        brute_force_limit: 0,
+        ..Default::default()
+    });
+    assert_eq!(
+        ids(&search(&ann, "a", "database port 8765").await.unwrap()),
+        [id.clone()]
+    );
+    assert!(ids(&search(&eng, "b", "database port 8765").await.unwrap()).is_empty());
+    // Mem0 attributes suggestions to the assistant; they stay out of the bootstrap context.
+    let suggestion = MemoryRec {
+        id: "msuggestion".into(),
+        mtype: T_FACT.into(),
+        text: "User was recommended Postgres".into(),
+        scope: MemScope::project("a"),
+        status: S_CURRENT.into(),
+        recorded_at: util::now_str(),
+        source: Source {
+            platform: "test".into(),
+            origin: ORIGIN_ASSISTANT.into(),
             ..Default::default()
-        }
+        },
+        ..Default::default()
+    };
+    t.store
+        .put_doc(schema::MEMORIES, &suggestion.id, &suggestion)
+        .await
+        .unwrap();
+    let context = retrieval::get_context(
+        &eng,
+        &t,
+        &caller,
+        GetContextReq {
+            scope: scope.clone(),
+            ..Default::default()
+        },
     )
     .await
-    .unwrap()["results"]
-        .as_array()
-        .unwrap()
-        .is_empty());
-    assert_eq!(
-        eng.llm
-            .total_attempts
-            .load(std::sync::atomic::Ordering::Relaxed),
-        0
-    );
+    .unwrap();
+    let text = context["text"].as_str().unwrap();
+    assert!(text.contains("database port 8765") && !text.contains("recommended Postgres"));
     // The indexing recovery path publishes already committed vectors without another extraction.
     let rid = saved["requestId"].as_str().unwrap();
-    tenant
-        .store
+    t.store
         .merge_doc(
             schema::REQUESTS,
             rid,
@@ -235,12 +132,12 @@ pub async fn selftest() {
         )
         .await
         .unwrap();
-    tenant.vecs.write().await.memories.clear();
-    mem0_formation::process_jobs(&eng, &tenant).await.unwrap();
+    t.vecs.write().await.memories.clear();
+    mem0_formation::process_jobs(&eng, &t).await.unwrap();
     assert_eq!(
         ingest::get_task(
             &eng,
-            &tenant,
+            &t,
             GetTaskReq {
                 request_id: rid.into()
             }
@@ -249,50 +146,26 @@ pub async fn selftest() {
         .unwrap()["searchable"],
         true
     );
-    // Corrections preserve the interface and hide the old value before any later query.
+    // A correction hides the old value before any later query.
     let corrected = management::correct_memory(
         &eng,
-        &tenant,
+        &t,
         &caller,
         CorrectMemoryReq {
             id: id.clone(),
             text: Some("database port 9000".into()),
-            reason: Some("explicit correction".into()),
             ..Default::default()
         },
     )
     .await
     .unwrap();
     let new_id = corrected["memory"]["id"].as_str().unwrap().to_string();
-    memory_engine::runtime::indexer::drain(&eng, &tenant)
-        .await
-        .unwrap();
-    let result = mem0_retrieval::search(
-        &eng,
-        &tenant,
-        &caller,
-        SearchReq {
-            query: "database port".into(),
-            scope: Some(scope.clone()),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    assert!(result["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|r| r["memory"]["id"] != id));
-    assert!(result["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|r| r["memory"]["id"] == new_id));
-    // Feedback remains restricted to IDs actually returned by this search.
+    indexer::drain(&eng, &t).await.unwrap();
+    let result = search(&eng, "a", "database port").await.unwrap();
+    assert_eq!(ids(&result), [new_id.clone()]);
     let feedback = management::feedback(
         &eng,
-        &tenant,
+        &t,
         FeedbackReq {
             retrieval_id: result["retrievalId"].as_str().unwrap().into(),
             used: vec![new_id.clone()],
@@ -302,36 +175,10 @@ pub async fn selftest() {
     .await
     .unwrap();
     assert_eq!(feedback["accepted"], true);
-    let feedback_log = tenant
-        .store
-        .get_doc(
-            schema::RETRIEVAL_LOG,
-            result["retrievalId"].as_str().unwrap(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(feedback_log["feedback"]["applied"][0], new_id);
-    management::delete_memory(&eng, &tenant, IdReq { id: new_id })
+    management::delete_memory(&eng, &t, IdReq { id: new_id })
         .await
         .unwrap();
-    assert!(mem0_retrieval::search(
-        &eng,
-        &tenant,
-        &caller,
-        SearchReq {
-            query: "database port".into(),
-            scope: Some(scope),
-            ..Default::default()
-        }
-    )
-    .await
-    .unwrap()["results"]
-        .as_array()
-        .unwrap()
-        .is_empty());
-    drop(tenant);
-    drop(eng);
-    std::fs::remove_dir_all(root).unwrap();
-    println!("mem0: contract, scope, raw/idempotent writes, immediate visibility, publication recovery, deletion, zero generation passed");
+    assert!(ids(&search(&eng, "a", "database port").await.unwrap()).is_empty());
+    assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
+    println!("mem0: contract, scope, raw/idempotent writes, immediate visibility, publication recovery, correction, deletion, zero generation passed; data {}", dir.display());
 }

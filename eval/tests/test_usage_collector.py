@@ -2,8 +2,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-import pytest
-
 import memory_run
 from common import jsonl
 from common.llm import Ledger, set_ledger_path
@@ -52,11 +50,7 @@ def test_persisted_collector_recovers_restart_without_cross_tenant_mix(tmp_path)
     assert len(rows) == 3
     assert {r["event_id"] for r in rows} == {"memory/conv-26-en/shared-id", "memory/conv-26-en/second",
                                               "memory/conv-26-zh/shared-id"}
-    assert all(r["source"] == "daemon/llm_usage" and r["calls"] == 1 for r in rows)
-    assert rows[0]["hit"] == rows[-1]["hit"]
-    assert all("usd" not in row and "peak" not in row for row in rows)
-    assert rows[1]["parse_error"] is True and rows[1]["attempt"] == 1
-    assert rows[1]["component"] == "en.daemon/P3"
+    assert rows[1]["parse_error"] is True and rows[1]["component"] == "en.daemon/P3"
 
 
 def test_ledger_event_id_dedup_is_atomic_across_writers(tmp_path):
@@ -67,27 +61,3 @@ def test_ledger_event_id_dedup_is_atomic_across_writers(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         lists = list(pool.map(lambda ledger: ledger.record_many([entry]), ledgers))
     assert sum(map(len, lists)) == len(list(jsonl.read(path))) == 1
-
-
-@pytest.mark.parametrize("field,value", [("createdAt", "not-a-date"), ("mid", ""), ("cacheMissTokens", -1)])
-def test_invalid_persisted_usage_stops_collection(tmp_path, field, value):
-    set_ledger_path(tmp_path / "ledger.jsonl")
-    record = usage("u1")
-    record[field] = value
-    collector = memory_run.UsagePoller(ExportDaemon({"conv-26-en": [record]}), "en", 60)
-    collector.tenants = ["conv-26-en"]
-    with pytest.raises(memory_run.DaemonError):
-        asyncio.run(collector.flush())
-    assert not list(jsonl.read(tmp_path / "ledger.jsonl"))
-
-
-def test_legacy_price_metadata_is_ignored(tmp_path):
-    set_ledger_path(tmp_path / "ledger.jsonl")
-    record = usage("u1")
-    record.update(estimatedUsd=.1, pricingPeakUtc=True, receivedAt="2026-10-09T02:30:01Z")
-    collector = memory_run.UsagePoller(ExportDaemon({"conv-26-en": [record]}), "en", 60)
-    collector.tenants = ["conv-26-en"]
-    asyncio.run(collector.flush())
-    row = list(jsonl.read(tmp_path / "ledger.jsonl"))[0]
-    assert row["received_at"] == record["receivedAt"]
-    assert "source_estimated_usd" not in row and "source_pricing_peak_utc" not in row

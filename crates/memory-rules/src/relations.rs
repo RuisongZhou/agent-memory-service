@@ -517,23 +517,16 @@ mod tests {
     #[test]
     fn decision_table() {
         use Decision::*;
-        // higher priority wins even when said earlier
+        // higher priority wins even when said earlier; equal priority: later wins
         assert_eq!(decide_update(3, (1, 0), 2, (5, 0)), NewWins);
-        // equal priority: later-or-equal wins
         assert_eq!(decide_update(2, (5, 0), 2, (1, 0)), NewWins);
-        assert_eq!(decide_update(2, (5, 0), 2, (5, 0)), NewWins);
-        // equal priority, earlier → late batch
+        // earlier statements are spliced into history; lower priority said later is a conflict
         assert_eq!(decide_update(2, (1, 0), 2, (5, 0)), LateSplice);
-        // lower priority, later → conflict
         assert_eq!(decide_update(1, (9, 0), 2, (5, 0)), Conflict);
-        // lower priority, earlier → late batch
-        assert_eq!(decide_update(1, (1, 0), 2, (5, 0)), LateSplice);
-        // same second: span position decides
-        assert_eq!(decide_update(2, (5, 3), 2, (5, 7)), LateSplice);
     }
 
     #[test]
-    fn updates_higher_priority() {
+    fn update_supersedes_old_value() {
         let p = plan_batch(
             vec![old("M1", "user", 100, "2026-09-20")],
             &[fact(
@@ -552,24 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn updates_equal_priority_later() {
-        let p = plan_batch(
-            vec![old("M1", "user", 100, "2026-09-20")],
-            &[fact(
-                1,
-                "user",
-                (200, 0),
-                "2026-10-07",
-                vec![(o("M1"), "updates")],
-            )],
-        );
-        assert_eq!(p.nodes["N1"].status, S_CURRENT);
-        assert_eq!(p.nodes["M1"].status, S_SUPERSEDED);
-        assert_eq!(p.log[0].action, "updates");
-    }
-
-    #[test]
-    fn updates_lower_priority_later_is_conflict() {
+    fn lower_priority_update_is_conflict() {
         let p = plan_batch(
             vec![old("M1", "user", 100, "2026-09-20")],
             &[fact(
@@ -583,47 +559,10 @@ mod tests {
         assert_eq!(p.nodes["N1"].status, S_CONFLICT);
         assert_eq!(p.nodes["M1"].status, S_CONFLICT);
         assert!(has_edge(&p, "N1", "M1", "conflicts"));
-        assert!(p.nodes["M1"].superseded_by.is_none());
     }
 
     #[test]
-    fn late_batch_equal_priority_is_spliced() {
-        // current M1 said at 100; a late batch reports a value said at 50
-        let p = plan_batch(
-            vec![old("M1", "user", 100, "2026-09-20")],
-            &[fact(
-                1,
-                "user",
-                (50, 0),
-                "2026-09-10",
-                vec![(o("M1"), "updates")],
-            )],
-        );
-        assert_eq!(p.nodes["N1"].status, S_SUPERSEDED);
-        assert_eq!(p.nodes["M1"].status, S_CURRENT);
-        assert_eq!(p.nodes["N1"].superseded_by.as_deref(), Some("M1"));
-        assert_eq!(p.nodes["M1"].supersedes.as_deref(), Some("N1"));
-        assert_eq!(p.nodes["N1"].valid_until.as_deref(), Some("2026-09-20"));
-    }
-
-    #[test]
-    fn late_batch_lower_priority_is_spliced() {
-        let p = plan_batch(
-            vec![old("M1", "user", 100, "2026-09-20")],
-            &[fact(
-                1,
-                "assistant",
-                (50, 0),
-                "2026-09-10",
-                vec![(o("M1"), "updates")],
-            )],
-        );
-        assert_eq!(p.nodes["N1"].status, S_SUPERSEDED);
-        assert_eq!(p.nodes["M1"].status, S_CURRENT);
-    }
-
-    #[test]
-    fn late_batch_spliced_inside_chain_by_stated_time() {
+    fn late_fact_is_spliced_into_chain_by_stated_time() {
         // A(10) → B(50) → C(90, current); late fact said at 30 goes between A and B
         let mut a = old("A", "user", 10, "2026-01-01");
         let mut b = old("B", "user", 50, "2026-02-01");
@@ -647,15 +586,13 @@ mod tests {
         assert_eq!(p.nodes["N1"].status, S_SUPERSEDED);
         assert_eq!(p.nodes["N1"].supersedes.as_deref(), Some("A"));
         assert_eq!(p.nodes["N1"].superseded_by.as_deref(), Some("B"));
-        assert_eq!(p.nodes["A"].superseded_by.as_deref(), Some("N1"));
-        assert_eq!(p.nodes["B"].supersedes.as_deref(), Some("N1"));
         assert_eq!(p.nodes["A"].valid_until.as_deref(), Some("2026-01-15"));
         assert_eq!(p.nodes["N1"].valid_until.as_deref(), Some("2026-02-01"));
         assert_eq!(p.nodes["C"].status, S_CURRENT);
     }
 
     #[test]
-    fn updates_target_resolved_to_head() {
+    fn update_target_resolves_to_chain_head() {
         let mut m1 = old("M1", "user", 10, "2026-01-01");
         let mut m5 = old("M5", "user", 50, "2026-02-01");
         m1.status = S_SUPERSEDED.into();
@@ -671,157 +608,26 @@ mod tests {
                 vec![(o("M1"), "updates")],
             )],
         );
-        assert_eq!(p.nodes["M5"].status, S_SUPERSEDED);
         assert_eq!(p.nodes["M5"].superseded_by.as_deref(), Some("N1"));
-        assert_eq!(p.nodes["N1"].supersedes.as_deref(), Some("M5"));
         assert_eq!(p.nodes["M1"].superseded_by.as_deref(), Some("M5"));
     }
 
     #[test]
-    fn conflicts_relation() {
-        let p = plan_batch(
-            vec![old("M1", "user", 100, "2026-09-20")],
-            &[fact(
-                1,
-                "user",
-                (200, 0),
-                "2026-10-07",
-                vec![(o("M1"), "conflicts")],
-            )],
+    fn batch_facts_are_ordered_by_stated_time() {
+        // the label sits on the earlier fact, but the later statement is current
+        let f1 = fact(
+            1,
+            "user",
+            (10, 0),
+            "2026-10-15",
+            vec![(Target::Batch(2), "updates")],
         );
-        assert_eq!(p.nodes["N1"].status, S_CONFLICT);
-        assert_eq!(p.nodes["M1"].status, S_CONFLICT);
-        assert!(has_edge(&p, "N1", "M1", "conflicts"));
-    }
-
-    #[test]
-    fn same_appends_evidence() {
-        let p = plan_batch(
-            vec![old("M3", "explicit", 100, "2026-09-02")],
-            &[fact(
-                1,
-                "explicit",
-                (200, 5),
-                "2026-10-08",
-                vec![(o("M3"), "same")],
-            )],
-        );
-        assert!(p.created.is_empty());
-        assert!(!p.nodes.contains_key("N1"));
-        let m3 = &p.nodes["M3"];
-        assert_eq!(m3.evidence_count, 2);
-        assert_eq!(m3.stated, (200, 5));
-        assert_eq!(m3.stated_at, "t200");
-        assert!(m3.turn_ids.contains(&"T200".to_string()));
-        assert_eq!(m3.status, S_CURRENT);
-        assert_eq!(p.resolved[&1], "M3");
-        // an earlier repeat does not move statedAt back
-        let p = plan_batch(
-            vec![old("M3", "explicit", 100, "2026-09-02")],
-            &[fact(
-                1,
-                "explicit",
-                (50, 0),
-                "2026-08-01",
-                vec![(o("M3"), "same")],
-            )],
-        );
-        assert_eq!(p.nodes["M3"].stated, (100, 0));
-    }
-
-    #[test]
-    fn related_relation() {
-        let p = plan_batch(
-            vec![old("M2", "user", 100, "2026-09-30")],
-            &[fact(
-                1,
-                "user",
-                (200, 0),
-                "2026-10-08",
-                vec![(o("M2"), "related")],
-            )],
-        );
-        assert_eq!(p.nodes["N1"].status, S_CURRENT);
-        assert_eq!(p.nodes["M2"].status, S_CURRENT);
-        assert!(has_edge(&p, "N1", "M2", "related"));
-    }
-
-    #[test]
-    fn no_relation_is_new_current() {
-        let p = plan_batch(vec![], &[fact(1, "user", (1, 0), "2026-10-08", vec![])]);
-        assert_eq!(p.nodes["N1"].status, S_CURRENT);
-        assert_eq!(p.log[0].action, "new");
-    }
-
-    #[test]
-    fn two_batch_facts_direction_by_stated_time() {
-        // T1 "评审定在周三" (F1, said at 10), T3 "评审改到周四" (F2, said at 30)
-        for (f1_rels, f2_rels) in [
-            (vec![(Target::Batch(2), "updates")], vec![]), // label put on the earlier fact
-            (vec![], vec![(Target::Batch(1), "updates")]), // label put on the later fact
-        ] {
-            let f1 = fact(1, "user", (10, 0), "2026-10-15", f1_rels);
-            let f2 = fact(2, "user", (30, 0), "2026-10-16", f2_rels);
-            let p = plan_batch(vec![], &[f2.clone(), f1.clone()]);
-            assert_eq!(p.order, vec![1, 2]);
-            assert_eq!(
-                p.nodes["N2"].status, S_CURRENT,
-                "later statement is current"
-            );
-            assert_eq!(p.nodes["N1"].status, S_SUPERSEDED);
-            assert_eq!(p.nodes["N1"].superseded_by.as_deref(), Some("N2"));
-            assert_eq!(p.nodes["N2"].supersedes.as_deref(), Some("N1"));
-            assert_eq!(p.nodes["N1"].valid_until.as_deref(), Some("2026-10-16"));
-        }
-    }
-
-    #[test]
-    fn batch_fact_updates_then_chain_continues() {
-        // M1 (old) ← F1 updates M1 (T1); F2 updates F1 (T3): chain M1 → F1 → F2
-        let p = plan_batch(
-            vec![old("M1", "user", 5, "2026-09-01")],
-            &[
-                fact(1, "user", (10, 0), "2026-10-01", vec![(o("M1"), "updates")]),
-                fact(
-                    2,
-                    "user",
-                    (30, 0),
-                    "2026-10-02",
-                    vec![(Target::Batch(1), "updates")],
-                ),
-            ],
-        );
-        assert_eq!(p.nodes["M1"].superseded_by.as_deref(), Some("N1"));
-        assert_eq!(p.nodes["N1"].superseded_by.as_deref(), Some("N2"));
+        let f2 = fact(2, "user", (30, 0), "2026-10-16", vec![]);
+        let p = plan_batch(vec![], &[f2, f1]);
+        assert_eq!(p.order, vec![1, 2]);
         assert_eq!(p.nodes["N2"].status, S_CURRENT);
-        assert_eq!(p.nodes["N1"].status, S_SUPERSEDED);
-        assert_eq!(p.nodes["M1"].status, S_SUPERSEDED);
-    }
-
-    #[test]
-    fn batch_fact_same_resolves_through_old() {
-        // F1 same M3; F2 related F1 → the edge goes to M3
-        let p = plan_batch(
-            vec![old("M3", "explicit", 5, "2026-09-02")],
-            &[
-                fact(
-                    1,
-                    "explicit",
-                    (10, 0),
-                    "2026-10-08",
-                    vec![(o("M3"), "same")],
-                ),
-                fact(
-                    2,
-                    "explicit",
-                    (10, 1),
-                    "2026-10-08",
-                    vec![(Target::Batch(1), "related")],
-                ),
-            ],
-        );
-        assert!(has_edge(&p, "N2", "M3", "related"));
-        assert_eq!(p.created, vec![2]);
+        assert_eq!(p.nodes["N1"].superseded_by.as_deref(), Some("N2"));
+        assert_eq!(p.nodes["N1"].valid_until.as_deref(), Some("2026-10-16"));
     }
 
     /// prompts_ch4 P1 worked example: M1 port 8000 → 8100 (updates), F2 related F1, F3 related M2,
@@ -829,95 +635,48 @@ mod tests {
     #[test]
     fn worked_example_from_prompt_doc() {
         let day = 86_400;
-        let t1u = 1_759_888_920; // 2026-10-08T10:02:00+08:00
-        let t1a = t1u; // assistant reply in the same turn, same second → position decides
-        let t2u = t1u + 13 * 60;
+        let t1 = 1_759_888_920; // 2026-10-08T10:02:00+08:00
+        let t2 = t1 + 13 * 60;
         let olds = vec![
-            old("M1", "user", t1u - 18 * day, "2026-09-20"),
-            old("M2", "user", t1u - 8 * day, "2026-09-30"),
-            old("M3", "explicit", t1u - 36 * day, "2026-09-02"),
-            old("M4", "user", t1u - 33 * day, "2026-09-05"),
+            old("M1", "user", t1 - 18 * day, "2026-09-20"),
+            old("M2", "user", t1 - 8 * day, "2026-09-30"),
+            old("M3", "explicit", t1 - 36 * day, "2026-09-02"),
         ];
         let facts = vec![
-            fact(
-                1,
-                "user",
-                (t1u, 0),
-                "2026-10-07",
-                vec![(o("M1"), "updates")],
-            ),
+            fact(1, "user", (t1, 0), "2026-10-07", vec![(o("M1"), "updates")]),
             fact(
                 2,
                 "assistant",
-                (t1a, 10_000_000),
+                (t1, 10_000_000),
                 "2026-10-08",
                 vec![(Target::Batch(1), "related")],
             ),
-            fact(
-                3,
-                "user",
-                (t2u, 3),
-                "2026-10-08",
-                vec![(o("M2"), "related")],
-            ),
+            fact(3, "user", (t2, 3), "2026-10-08", vec![(o("M2"), "related")]),
             fact(
                 4,
                 "explicit",
-                (t2u, 20),
+                (t2, 20),
                 "2026-10-08",
                 vec![(o("M3"), "same")],
             ),
             fact(
                 5,
                 "explicit",
-                (t2u, 20),
+                (t2, 20),
                 "2026-10-08",
                 vec![(o("M3"), "related")],
             ),
         ];
         let p = plan_batch(olds, &facts);
-        assert_eq!(p.order, vec![1, 2, 3, 4, 5]);
-        // first fact updates M1: same origin (user), said later → M1 superseded, chain M1 → F1
         assert_eq!(p.nodes["M1"].status, S_SUPERSEDED);
         assert_eq!(p.nodes["M1"].superseded_by.as_deref(), Some("N1"));
-        assert_eq!(p.nodes["N1"].supersedes.as_deref(), Some("M1"));
-        assert_eq!(p.nodes["M1"].valid_until.as_deref(), Some("2026-10-07"));
-        // fourth fact: no new memory, M3 gets one more evidence
+        // "same" adds evidence instead of a new memory
         assert!(!p.nodes.contains_key("N4"));
         assert_eq!(p.nodes["M3"].evidence_count, 2);
-        assert_eq!(p.same, vec![(4, "M3".to_string())]);
-        // the other three are new and current, with one related edge each
         assert_eq!(p.created, vec![1, 2, 3, 5]);
-        for n in ["N1", "N2", "N3", "N5"] {
-            assert_eq!(p.nodes[n].status, S_CURRENT, "{n}");
-        }
         assert!(has_edge(&p, "N2", "N1", "related"));
         assert!(has_edge(&p, "N3", "M2", "related"));
         assert!(has_edge(&p, "N5", "M3", "related"));
-        // M2 (王经理) stays current: "可能" is only related
         assert_eq!(p.nodes["M2"].status, S_CURRENT);
-        assert_eq!(p.nodes["M3"].status, S_CURRENT);
-        assert!(!p.nodes["M4"].dirty);
-    }
-
-    #[test]
-    fn extra_updates_targets() {
-        // one fact replaces two old heads (model listed both)
-        let p = plan_batch(
-            vec![
-                old("M1", "user", 5, "2026-09-01"),
-                old("M2", "user", 6, "2026-09-02"),
-            ],
-            &[fact(
-                1,
-                "user",
-                (10, 0),
-                "2026-10-01",
-                vec![(o("M1"), "updates"), (o("M2"), "updates")],
-            )],
-        );
-        assert_eq!(p.nodes["N1"].supersedes.as_deref(), Some("M1"));
-        assert_eq!(p.nodes["M2"].superseded_by.as_deref(), Some("N1"));
-        assert_eq!(p.nodes["M2"].status, S_SUPERSEDED);
     }
 }

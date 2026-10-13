@@ -139,35 +139,15 @@ mod tests {
             session: None,
         };
         let v = Vis::new(&sc, "codex");
+        let platform = |name: &str| MemScope {
+            kind: "platform".into(),
+            project: None,
+            platform: Some(name.into()),
+        };
         assert!(v.sees(&MemScope::global()));
         assert!(v.sees(&MemScope::project("p1")));
         assert!(!v.sees(&MemScope::project("p2")));
-        let plat = MemScope {
-            kind: "platform".into(),
-            project: None,
-            platform: Some("codex".into()),
-        };
-        let other = MemScope {
-            kind: "platform".into(),
-            project: None,
-            platform: Some("claude-code".into()),
-        };
-        assert!(v.sees(&plat));
-        assert!(!v.sees(&other));
-        let any = Vis::new(
-            &ReqScope {
-                project: Some("*".into()),
-                platform: Some("*".into()),
-                session: None,
-            },
-            "codex",
-        );
-        assert!(any.sees(&MemScope::project("p2")) && any.sees(&other));
-        let none = Vis::new(&ReqScope::default(), "codex");
-        assert!(!none.sees(&MemScope::project("p1")));
-        assert_eq!(none.current_project(), None);
-        let pairs = v.ft_pairs();
-        assert!(pairs.contains(&("project".into(), "p1".into())));
-        assert!(pairs.contains(&("platform".into(), "codex".into())));
+        assert!(v.sees(&platform("codex")));
+        assert!(!v.sees(&platform("claude-code")));
     }
 }

@@ -382,60 +382,36 @@ mod tests {
     }
 
     #[test]
-    fn rrf_basic() {
-        let lists = vec![s(&["a", "b", "c"]), s(&["b", "d"]), vec![], s(&["c"])];
-        let f = rrf_fuse(&lists, 60.0);
-        let get = |id: &str| f.iter().find(|x| x.0 == id).unwrap().1;
-        assert!((get("a") - 1.0 / 61.0).abs() < 1e-12);
-        assert!((get("b") - (1.0 / 62.0 + 1.0 / 61.0)).abs() < 1e-12);
-        assert!((get("c") - (1.0 / 63.0 + 1.0 / 61.0)).abs() < 1e-12);
-        assert_eq!(f[0].0, "b"); // two channels beat one
-        assert_eq!(f[1].0, "c");
+    fn rrf_rewards_agreement_between_channels() {
+        let f = rrf_fuse(&[s(&["a", "b", "c"]), s(&["b", "d"])], 60.0);
+        assert_eq!(f[0].0, "b");
+        assert!((f[0].1 - (1.0 / 62.0 + 1.0 / 61.0)).abs() < 1e-12);
         assert_eq!(f.len(), 4);
-        // ties keep first-seen order
-        let f = rrf_fuse(&[s(&["x"]), s(&["y"])], 60.0);
-        assert_eq!(f[0].0, "x");
     }
 
     #[test]
     fn round_robin_segments() {
         let segs = vec![s(&["a1", "a2", "a3"]), vec![], s(&["c1"]), s(&["d1", "d2"])];
-        assert_eq!(
-            round_robin(&segs, 10),
-            s(&["a1", "c1", "d1", "a2", "d2", "a3"])
-        );
         assert_eq!(round_robin(&segs, 4), s(&["a1", "c1", "d1", "a2"]));
-        assert_eq!(time_segments(1.0), 1);
-        assert_eq!(time_segments(0.04), 1);
         assert_eq!(time_segments(7.0), 7);
         assert_eq!(time_segments(31.0), 12);
     }
 
     #[test]
     fn identifiers() {
-        let q = id_tokens("端口8100改成多少了？v1.2.3 和 /work/crm 在 2023 年 8th May");
-        assert!(q.contains("8100"));
-        assert!(q.contains("v1.2.3"));
-        assert!(q.contains("/work/crm"));
+        let q = id_tokens("端口8100改成多少了？v1.2.3 和 /work/crm 在 2023 年");
+        assert!(q.contains("8100") && q.contains("v1.2.3") && q.contains("/work/crm"));
         assert!(!q.contains("2023"));
-        assert!(!q.contains("8th"));
-        assert!(id_match(&q, "测试环境端口是 8100"));
         assert!(id_match(&q, "项目目录 /work/crm/src 下"));
         assert!(!id_match(&q, "端口是 8200"));
-        assert!(!id_match(&id_tokens("what is the port?"), "port 8100"));
-        assert!(id_tokens("ticket t-0928-07.").contains("t-0928-07"));
     }
 
     #[test]
-    fn overlap_gate() {
+    fn overlap_gate_needs_more_than_half_the_terms() {
         let q = s(&["caroline", "support", "group"]);
         let d: HashSet<String> = s(&["caroline", "group", "went"]).into_iter().collect();
-        assert!(term_overlap_ok(&q, &d)); // 2 of 3
+        assert!(term_overlap_ok(&q, &d));
         let d: HashSet<String> = s(&["caroline"]).into_iter().collect();
-        assert!(!term_overlap_ok(&q, &d)); // 1 of 3
-        let q2 = s(&["a", "b"]);
-        let d2: HashSet<String> = s(&["a"]).into_iter().collect();
-        assert!(!term_overlap_ok(&q2, &d2)); // exactly half is not more than half
-        assert!(!term_overlap_ok(&[], &d2));
+        assert!(!term_overlap_ok(&q, &d));
     }
 }

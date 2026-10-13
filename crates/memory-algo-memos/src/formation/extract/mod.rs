@@ -18,13 +18,9 @@ mod validate;
 
 pub use context::{conversation, recall};
 pub use llm_io::call_logged;
-#[cfg(feature = "selftest")]
-pub(super) use llm_io::facts_from_flat_object;
-pub(super) use llm_io::{fact_source_contract, validate_fact_source_contract};
+use llm_io::{fact_source_contract, validate_fact_source_contract};
 pub use memory_engine::retrieval::visibility::visible;
 pub(super) use validate::validate;
-#[cfg(feature = "selftest")]
-pub(super) use validate::RawRelation;
 
 use context::headers;
 use llm_io::call_logged_contract;

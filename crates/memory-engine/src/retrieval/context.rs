@@ -108,6 +108,7 @@ pub(crate) async fn assemble_context(
     let cap = |limit: usize, used: usize| limit.min(content_budget.saturating_sub(used));
     let vis = Vis::new(&scope, &c.platform);
     let cur_project = vis.current_project().map(str::to_string);
+    let origins = eng.algorithm().context_origins();
 
     // Direct scoped lookup: explicit instructions bypass similarity ranking and never consume
     // ordinary fact slots. The same token budget covers every emitted section.
@@ -132,7 +133,7 @@ pub(crate) async fn assemble_context(
         content_used += util::est_tokens(&profile.text);
     }
 
-    // 2. project notes (fallback: newest current facts of the project)
+    // 2. project notes (fallback: newest current facts of the project from context origins)
     let notes = match cur_project.as_deref() {
         Some(p) => latest_profile(t, Some(p)).await?,
         None => None,
@@ -150,9 +151,9 @@ pub(crate) async fn assemble_context(
             let facts = t
                 .store
                 .find_memories(
-                    "type = 'fact' AND status = 'current' AND scope.kind = 'project' AND scope.project = $p \
-                     ORDER BY recordedTs DESC LIMIT 100",
-                    vec![("p", json!(p))],
+                    "type = 'fact' AND status = 'current' AND source.origin IN $origins AND \
+                     scope.kind = 'project' AND scope.project = $p ORDER BY recordedTs DESC LIMIT 100",
+                    vec![("p", json!(p)), ("origins", json!(origins))],
                 )
                 .await?;
             let costs: Vec<usize> = facts
@@ -165,7 +166,7 @@ pub(crate) async fn assemble_context(
         }
     }
 
-    // 3. recent changes: global + current-project facts recorded after the two profiles, explicit/user only,
+    // 3. recent changes: global + current-project facts recorded after the two profiles,
     //    conflicts side by side, no candidates
     let ut = user_profile
         .as_ref()
@@ -178,11 +179,16 @@ pub(crate) async fn assemble_context(
     let recent = t
         .store
         .find_memories(
-            "type = 'fact' AND status IN ['current','conflict'] AND source.origin IN ['explicit','user'] AND \
+            "type = 'fact' AND status IN ['current','conflict'] AND source.origin IN $origins AND \
              ((scope.kind = 'global' AND recordedTs > $ut) OR \
               (scope.kind = 'project' AND scope.project = $p AND recordedTs > $pt)) \
              ORDER BY recordedTs DESC LIMIT 200",
-            vec![("ut", json!(ut)), ("pt", json!(pt)), ("p", json!(cur_project.clone().unwrap_or_default()))],
+            vec![
+                ("ut", json!(ut)),
+                ("pt", json!(pt)),
+                ("p", json!(cur_project.clone().unwrap_or_default())),
+                ("origins", json!(origins)),
+            ],
         )
         .await?;
     let shown: HashSet<String> = project_facts.iter().map(|m| m.id.clone()).collect();
@@ -206,7 +212,7 @@ pub(crate) async fn assemble_context(
                     if p.status == S_CONFLICT
                         && p.mtype == T_FACT
                         && recent_scope
-                        && [ORIGIN_EXPLICIT, ORIGIN_USER].contains(&p.source.origin.as_str())
+                        && origins.contains(&p.source.origin.as_str())
                     {
                         consumed.insert(p.id.clone());
                         others.push(p);

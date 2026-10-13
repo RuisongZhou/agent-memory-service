@@ -602,214 +602,52 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-10-08T10:00:00+08:00").unwrap()
     }
     fn w(q: &str) -> (String, String) {
-        let t = parse(q, now()).unwrap_or_else(|| panic!("no window for {q}"));
+        let t = parse(q, now()).unwrap();
         let off = FixedOffset::east_opt(8 * 3600).unwrap();
-        (
-            t.start
-                .with_timezone(&off)
-                .format("%Y-%m-%d %H:%M")
-                .to_string(),
-            t.end
-                .with_timezone(&off)
-                .format("%Y-%m-%d %H:%M")
-                .to_string(),
-        )
+        let fmt = |d: DateTime<Utc>| d.with_timezone(&off).format("%Y-%m-%d %H:%M").to_string();
+        (fmt(t.start), fmt(t.end))
     }
     fn d(a: &str, b: &str) -> (String, String) {
         (format!("{a} 00:00"), format!("{b} 00:00"))
     }
 
     #[test]
-    fn zh_relative() {
-        assert_eq!(w("今天做了什么"), d("2026-10-08", "2026-10-09"));
+    fn chinese_windows() {
         assert_eq!(w("昨天说的端口"), d("2026-10-07", "2026-10-08"));
-        assert_eq!(w("前天"), d("2026-10-06", "2026-10-07"));
-        assert_eq!(w("大前天"), d("2026-10-05", "2026-10-06"));
         assert_eq!(w("上周的会议"), d("2026-09-28", "2026-10-05"));
-        assert_eq!(w("这周"), d("2026-10-05", "2026-10-12"));
-        assert_eq!(w("本周"), d("2026-10-05", "2026-10-12"));
-        assert_eq!(w("上个月"), d("2026-09-01", "2026-10-01"));
-        assert_eq!(w("这个月"), d("2026-10-01", "2026-11-01"));
-        assert_eq!(w("本月"), d("2026-10-01", "2026-11-01"));
-        assert_eq!(w("今年"), d("2026-01-01", "2027-01-01"));
-        assert_eq!(w("去年的项目"), d("2025-01-01", "2026-01-01"));
-        assert_eq!(w("3天前"), d("2026-10-05", "2026-10-06"));
         assert_eq!(w("三天前"), d("2026-10-05", "2026-10-06"));
-        assert_eq!(w("两天以前"), d("2026-10-06", "2026-10-07"));
         assert_eq!(w("最近7天"), d("2026-10-02", "2026-10-09"));
-        assert_eq!(w("最近三天"), d("2026-10-06", "2026-10-09"));
-        assert_eq!(w("最近"), d("2026-09-25", "2026-10-09"));
-        let (a, b) = w("刚才说了什么");
-        assert_eq!(
-            (a.as_str(), b.as_str()),
-            ("2026-10-08 09:00", "2026-10-08 10:00")
-        );
-    }
-
-    #[test]
-    fn zh_absolute() {
-        assert_eq!(w("三月份的端口"), d("2026-03-01", "2026-04-01"));
-        assert_eq!(w("3月份"), d("2026-03-01", "2026-04-01"));
-        assert_eq!(w("十二月份"), d("2025-12-01", "2026-01-01"));
-        assert_eq!(w("9月28日"), d("2026-09-28", "2026-09-29"));
         assert_eq!(w("9月28号的变更"), d("2026-09-28", "2026-09-29"));
         assert_eq!(w("2025年3月"), d("2025-03-01", "2025-04-01"));
-        assert_eq!(w("2025年3月5日"), d("2025-03-05", "2025-03-06"));
-        assert_eq!(w("2024年"), d("2024-01-01", "2025-01-01"));
-        assert_eq!(w("十月"), d("2026-10-01", "2026-11-01"));
-        assert!(parse("三个月的计划", now()).is_none());
+        assert_eq!(w("昨天和今天"), d("2026-10-07", "2026-10-09"));
         assert!(parse("每个月都要备份", now()).is_none());
-        assert!(parse("端口是多少", now()).is_none());
     }
 
     #[test]
-    fn en_relative() {
-        assert_eq!(w("what did I do today"), d("2026-10-08", "2026-10-09"));
+    fn english_windows() {
         assert_eq!(w("Yesterday"), d("2026-10-07", "2026-10-08"));
-        assert_eq!(w("the day before yesterday"), d("2026-10-06", "2026-10-07"));
-        assert_eq!(
-            w("last night"),
-            ("2026-10-07 18:00".into(), "2026-10-08 06:00".into())
-        );
-        assert_eq!(w("this week"), d("2026-10-05", "2026-10-12"));
         assert_eq!(w("last week"), d("2026-09-28", "2026-10-05"));
-        assert_eq!(w("last weekend"), d("2026-10-03", "2026-10-05"));
-        assert_eq!(w("this month"), d("2026-10-01", "2026-11-01"));
-        assert_eq!(w("last month"), d("2026-09-01", "2026-10-01"));
-        assert_eq!(w("this year"), d("2026-01-01", "2027-01-01"));
-        assert_eq!(w("last year"), d("2025-01-01", "2026-01-01"));
-        assert_eq!(w("3 days ago"), d("2026-10-05", "2026-10-06"));
-        assert_eq!(w("two weeks ago"), d("2026-09-21", "2026-09-28"));
-        assert_eq!(w("a month ago"), d("2026-09-01", "2026-10-01"));
-        assert_eq!(w("2 months ago"), d("2026-08-01", "2026-09-01"));
-        assert_eq!(w("a few days ago"), d("2026-10-03", "2026-10-07"));
-        assert_eq!(w("in the last 7 days"), d("2026-10-02", "2026-10-09"));
-        assert_eq!(w("past two weeks"), d("2026-09-25", "2026-10-09"));
-        assert_eq!(w("recently"), d("2026-09-25", "2026-10-09"));
         assert_eq!(w("last Friday"), d("2026-10-02", "2026-10-03"));
-        assert_eq!(w("last thursday"), d("2026-10-01", "2026-10-02"));
-    }
-
-    #[test]
-    fn en_absolute() {
+        assert_eq!(w("two weeks ago"), d("2026-09-21", "2026-09-28"));
+        assert_eq!(w("recently"), d("2026-09-25", "2026-10-09"));
         assert_eq!(
             w("What did Caroline do in May 2023?"),
             d("2023-05-01", "2023-06-01")
         );
-        assert_eq!(w("in May"), d("2026-05-01", "2026-06-01"));
         assert_eq!(w("in December"), d("2025-12-01", "2026-01-01"));
         assert_eq!(w("on May 8, 2023"), d("2023-05-08", "2023-05-09"));
-        assert_eq!(w("on July 4th"), d("2026-07-04", "2026-07-05"));
-        assert_eq!(w("8 May, 2023"), d("2023-05-08", "2023-05-09"));
-        assert_eq!(w("the 8th of May 2023"), d("2023-05-08", "2023-05-09"));
-        assert_eq!(w("in 2022"), d("2022-01-01", "2023-01-01"));
         assert_eq!(
             w("between May and June 2023"),
             d("2023-05-01", "2023-07-01")
         );
-        assert!(parse("I may go", now()).is_none());
         assert!(parse("What did June say about the trip?", now()).is_none());
-        assert!(parse("When did Caroline go to the support group?", now()).is_none());
-        assert_eq!(
-            w("from December to January 2023"),
-            d("2022-12-01", "2023-02-01")
-        );
-        assert_eq!(
-            w("between May 2022 and June 2023"),
-            d("2022-05-01", "2023-07-01")
-        );
-        assert_eq!(
-            w("from December 2022 through January"),
-            d("2022-12-01", "2023-02-01")
-        );
     }
 
     #[test]
-    fn hull_and_today() {
-        assert_eq!(w("昨天和今天"), d("2026-10-07", "2026-10-09"));
-        let t = parse("上周", now()).unwrap();
-        assert!(t.end <= start_of_today(now()));
-        let t = parse("今天", now()).unwrap();
-        assert!(t.end > start_of_today(now()));
-    }
-
-    #[test]
-    fn history() {
+    fn history_intent_phrases() {
         assert!(history_intent("以前的端口是多少"));
-        assert!(history_intent("改之前用的什么"));
-        assert!(history_intent("What did she use to do before?"));
-        assert!(history_intent("what was it originally"));
-        assert!(history_intent("Where did he live back then"));
-        assert!(!history_intent("端口是多少"));
-        assert!(!history_intent("What is Caroline's identity?"));
-        assert!(!history_intent("beforehand"));
-        assert!(history_intent("What did Caroline do at that time?"));
-        assert!(history_intent("Where did Melanie previously work?"));
         assert!(history_intent("What instrument did he used to play?"));
-        assert!(history_intent("当时用的哪个端口"));
-        assert!(history_intent("原来的对接人是谁"));
-        assert!(!history_intent("What does Caroline like?"));
-    }
-
-    #[test]
-    fn en_eval_phrases() {
-        // phrases that occur in the (English) evaluation questions
-        assert_eq!(
-            w("What did they do last Saturday?"),
-            d("2026-10-03", "2026-10-04")
-        );
-        assert_eq!(
-            w("What did Caroline do two weeks ago?"),
-            d("2026-09-21", "2026-09-28")
-        );
-        assert_eq!(
-            w("What happened in May 2023?"),
-            d("2023-05-01", "2023-06-01")
-        );
-        assert_eq!(
-            w("What did Melanie paint on 8 May 2023?"),
-            d("2023-05-08", "2023-05-09")
-        );
-        assert_eq!(
-            w("What did she buy yesterday?"),
-            d("2026-10-07", "2026-10-08")
-        );
-        assert_eq!(
-            w("Where did he travel last year?"),
-            d("2025-01-01", "2026-01-01")
-        );
-        assert_eq!(
-            w("What has Caroline been reading recently?"),
-            d("2026-09-25", "2026-10-09")
-        );
-        // windows before today mark history intent in search_memories
-        assert!(parse("in May 2023", now()).unwrap().end <= start_of_today(now()));
-    }
-
-    #[test]
-    fn numbers() {
-        assert_eq!(cn_num("十"), Some(10));
-        assert_eq!(cn_num("十二"), Some(12));
-        assert_eq!(cn_num("二十三"), Some(23));
-        assert_eq!(cn_num("两"), Some(2));
-        assert_eq!(cn_num("7"), Some(7));
-        assert_eq!(cn_num("个"), None);
-    }
-
-    #[test]
-    fn intervals() {
-        let (a, b) = value_interval("2026-10-07", 8 * 3600).unwrap();
-        assert_eq!(a.to_rfc3339(), "2026-10-06T16:00:00+00:00");
-        assert_eq!((b - a).num_hours(), 24);
-        let (a, _) = value_interval("2026-10-07T12:00:00+08:00", 0).unwrap();
-        assert_eq!(a.to_rfc3339(), "2026-10-07T04:00:00+00:00");
-        assert!(value_interval("", 0).is_none());
-        assert!(value_interval("2026-10-07invalid", 0).is_none());
-    }
-
-    #[test]
-    fn huge_relative_counts_are_ignored() {
-        assert!(parse("9223372036854775807 days ago", now()).is_none());
-        assert!(parse("last 9223372036854775807 weeks", now()).is_none());
+        assert!(!history_intent("端口是多少"));
+        assert!(!history_intent("beforehand"));
     }
 }

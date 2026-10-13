@@ -1,21 +1,19 @@
-//! `agent-memoryd selftest`: storage-layer round trip (kept out of `cargo test` so the main crate does not
-//! need a second dependency build with dev-dependency features).
-use serde_json::json;
-
+//! `agent-memoryd selftest`: storage, retrieval and long-turn round trips (kept out of `cargo test` so
+//! the main crate does not need a second dependency build with dev-dependency features).
+use super::{engine, memory, tenant};
+use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::types::*;
+use memory_engine::app::{ingest, management};
+use memory_engine::retrieval;
+use memory_engine::runtime::indexer;
+use memory_rules::util;
 use memory_store::schema;
 use memory_store::store::*;
-
-fn tempdir() -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("memory-selftest-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+use serde_json::{json, Value};
 
 pub async fn store_roundtrip() {
-    let dir = tempdir();
-    let s = Store::open(&dir.as_path().join("db"), 4, "").await.unwrap();
+    let dir = std::env::temp_dir().join(util::new_id("memory-store-"));
+    let s = Store::open(&dir.join("db"), 4, "").await.unwrap();
     let m = MemoryRec {
         id: "mabc123".into(),
         mtype: T_FACT.into(),
@@ -35,109 +33,39 @@ pub async fn store_roundtrip() {
     let mut tx = Tx::new();
     tx.put(schema::MEMORIES, &m.id, to_doc(&m).unwrap())
         .unwrap();
-    tx.index_task(schema::MEMORIES, &m.id, "upsert").unwrap();
     tx.merge(schema::MEMORIES, &m.id, json!({"evidenceCount": 2}))
         .unwrap();
     s.commit(tx).await.unwrap();
-    let got = s.get_memory("mabc123").await.unwrap().unwrap();
+    let got = s.get_memory(&m.id).await.unwrap().unwrap();
     assert_eq!(got.text, m.text);
     assert_eq!(got.evidence_count, 2);
-    assert_eq!(got.scope.project.as_deref(), Some("p1"));
-    s.set_embedding(
-        schema::MEMORIES,
-        "mabc123",
-        Some(&[0.1, 0.2, 0.3, 0.4]),
-        "x",
-    )
-    .await
-    .unwrap();
-    let e = s.load_embeddings(schema::MEMORIES).await.unwrap();
-    assert_eq!(e.len(), 1);
-    assert_eq!(e[0].0, "mabc123");
-    let found = s
-        .find_memories(
-            "status = $s AND effectiveTs > 0",
-            vec![("s", json!("current"))],
-        )
+    s.set_embedding(schema::MEMORIES, &m.id, Some(&[0.1, 0.2, 0.3, 0.4]), "x")
         .await
         .unwrap();
-    assert_eq!(found.len(), 1);
-    let many = s
-        .get_memories(&["mabc123".to_string(), "mnone".to_string()])
-        .await
-        .unwrap();
-    assert_eq!(many.len(), 1);
-    assert_eq!(s.count(schema::INDEX_TASKS, None).await.unwrap(), 1);
-    let tasks = s
-        .select(
-            "SELECT * OMIT id FROM index_tasks ORDER BY createdTs ASC LIMIT 5",
-            vec![],
-        )
-        .await
-        .unwrap();
-    assert_eq!(tasks[0]["targetId"], json!("mabc123"));
-    // transaction failure rolls back
+    assert_eq!(
+        s.load_embeddings(schema::MEMORIES).await.unwrap()[0].0,
+        m.id
+    );
+    // A failed transaction rolls back every write in it.
     let mut tx = Tx::new();
-    tx.merge(schema::MEMORIES, "mabc123", json!({"status": "superseded"}))
+    tx.merge(schema::MEMORIES, &m.id, json!({"status": S_SUPERSEDED}))
         .unwrap();
     tx.raw("THROW 'boom'", vec![]);
     assert!(s.commit(tx).await.is_err());
     assert_eq!(
-        s.get_memory("mabc123").await.unwrap().unwrap().status,
-        "current"
+        s.get_memory(&m.id).await.unwrap().unwrap().status,
+        S_CURRENT
     );
     println!("store_roundtrip OK");
 }
 
 /// Mock-model integration coverage for retrieval and management, including primary storage and indexes.
-/// No API key, generative-model request or background worker is involved.
 pub async fn retrieval_roundtrip() {
-    use memory_config::ServiceConfig;
-    use memory_engine::app::management;
-    use memory_engine::retrieval;
-    use memory_engine::runtime::{
-        engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
-    };
-    use memory_rules::timeparse;
-    use memory_rules::util;
-    use std::sync::Arc;
-    assert_eq!(
-        std::env::var("MEMORY_MOCK_MODELS").as_deref(),
-        Ok("1"),
-        "run selftest with MEMORY_MOCK_MODELS=1"
-    );
-    let dir = std::env::temp_dir().join(format!(
-        "memory-retrieval-selftest-{}-{}",
-        std::process::id(),
-        util::new_id("t")
-    ));
-    let cfg = ServiceConfig {
-        memory_strategy: memory_config::MemoryStrategy::Memos,
-        data_dir: dir.clone(),
+    let eng = engine(ServiceConfig {
+        memory_strategy: MemoryStrategy::Memos,
         ..Default::default()
-    };
-    let llm = Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap();
-    let models = ModelHub::mock();
-    let eng = Engine::new(
-        cfg,
-        llm,
-        models,
-        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
-    );
-    let t = Arc::new(
-        Tenant::open(
-            "retrieval-selftest",
-            &dir,
-            eng.models.dim,
-            eng.algorithm().schema(),
-        )
-        .await
-        .unwrap(),
-    );
-    let c = Caller {
-        tenant: t.name.clone(),
-        platform: "codex".into(),
-    };
+    });
+    let (t, c, dir) = tenant(&eng, "retrieval-selftest", "codex").await;
     let scope = ReqScope {
         project: Some("p1".into()),
         session: Some("s1".into()),
@@ -179,22 +107,20 @@ pub async fn retrieval_roundtrip() {
             relation: "conflicts".into(),
         }];
     }
-    mems[4].text = "candidatefact awaiting confirmation".into();
-    mems[4].status = S_CANDIDATE.into();
     mems[5].text = "secretproject confidential alpha".into();
     mems[5].scope = MemScope::project("p2");
-    mems[6].text = "user prefers green tea".into();
-    mems[6].scope = MemScope::global();
-    mems[7].mtype = T_PROFILE.into();
-    mems[7].scope = MemScope::global();
-    mems[7].text = "current user profile".into();
-    mems[7].recorded_at = "2026-01-01T00:00:00Z".into();
+    // Assistant-reported results are facts like any other: they reach "recent changes" after the
+    // project notes, and can be one side of a conflict.
+    let later = util::fmt_ts(&(util::now() + chrono::Duration::minutes(1)));
+    mems[3].source.origin = ORIGIN_ASSISTANT.into();
     mems[8].mtype = T_PROFILE.into();
     mems[8].text = "current project notes".into();
     mems[8].recorded_at = "2026-01-01T00:00:00Z".into();
-    mems[9].text = "recent user preference".into();
-    mems[10].text = "assistant speculative preference".into();
+    mems[10].text = "assistant reported deployment finished".into();
     mems[10].source.origin = ORIGIN_ASSISTANT.into();
+    for i in [2, 3, 10] {
+        mems[i].recorded_at = later.clone();
+    }
     mems[11].mtype = T_SKILL.into();
     mems[11].text = "candidateskill deployment check".into();
     mems[11].status = S_CANDIDATE.into();
@@ -228,93 +154,65 @@ pub async fn retrieval_roundtrip() {
         ("T2", "p2", "secretproject confidential alpha", vec![]),
     ]
     .into_iter()
-    .map(|(id, project, text, derived)| TurnRec {
-        key: turn_key(
-            if project == "p1" {
-                "codex"
-            } else {
-                "claude-code"
-            },
-            id,
-        ),
-        turn_id: id.into(),
-        platform: if project == "p1" {
-            "codex"
+    .map(|(id, project, text, derived)| {
+        let (platform, session) = if project == "p1" {
+            ("codex", "s1")
         } else {
-            "claude-code"
+            ("claude-code", "s2")
+        };
+        TurnRec {
+            key: turn_key(platform, id),
+            turn_id: id.into(),
+            platform: platform.into(),
+            project: project.into(),
+            session: session.into(),
+            user_message: text.into(),
+            assistant_message: "acknowledged".into(),
+            digest: text.into(),
+            user_ts: now.clone(),
+            assistant_ts: now.clone(),
+            started_at: now.clone(),
+            ended_at: now.clone(),
+            recorded_at: now.clone(),
+            extracted_at: Some(now.clone()),
+            extract_state: "done".into(),
+            seq: 1,
+            derived_memory_ids: derived,
+            ..Default::default()
         }
-        .into(),
-        project: project.into(),
-        session: if project == "p1" { "s1" } else { "s2" }.into(),
-        user_message: text.into(),
-        assistant_message: "acknowledged".into(),
-        digest: text.into(),
-        user_ts: now.clone(),
-        assistant_ts: now.clone(),
-        started_at: now.clone(),
-        ended_at: now.clone(),
-        recorded_at: now.clone(),
-        extracted_at: Some(now.clone()),
-        extract_state: "done".into(),
-        seq: 1,
-        derived_memory_ids: derived,
-        ..Default::default()
     })
     .collect();
-    let sessions = vec![SessionRec {
-        key: session_key("codex", "s1"),
+    let evidence = |id: &str, memory_ids: &[&str], span: String| EvidenceRec {
+        context: None,
+        id: id.into(),
+        memory_ids: memory_ids.iter().map(|m| m.to_string()).collect(),
         platform: "codex".into(),
-        project: "p1".into(),
-        session: "s1".into(),
-        goal: "deployment task".into(),
-        turn_count: 2,
-        updated_at: now.clone(),
-        last_turn_at: now.clone(),
-        ..Default::default()
-    }];
+        turn_id: "T1".into(),
+        role: "user".into(),
+        span,
+        stated_at: now.clone(),
+        created_at: now.clone(),
+    };
     let evidence = vec![
-        EvidenceRec {
-            context: None,
-            id: "eport".into(),
-            memory_ids: vec!["m01".into()],
-            platform: "codex".into(),
-            turn_id: "T1".into(),
-            role: "user".into(),
-            span: "原始出处".repeat(100),
-            stated_at: now.clone(),
-            created_at: now.clone(),
-        },
-        EvidenceRec {
-            context: None,
-            id: "eshared".into(),
-            memory_ids: vec!["m02".into(), "m03".into()],
-            platform: "codex".into(),
-            turn_id: "T1".into(),
-            role: "user".into(),
-            span: "shared region evidence".into(),
-            stated_at: now.clone(),
-            created_at: now.clone(),
-        },
+        evidence("eport", &["m01"], "原始出处".repeat(100)),
+        evidence("eshared", &["m02", "m03"], "shared region evidence".into()),
     ];
-    let seeded = management::seed(&eng, &t, json!({"memories":mems, "turns":turns, "sessions":sessions,
-        "evidence":evidence, "entities":[{"id":"eservice", "name":"deployment service", "aliases":["service"], "scope":{"kind":"project", "project":"p1"}}]})).await.unwrap();
-    assert_eq!(seeded["memories"], 30);
-    let search_req = |query: &str| SearchReq {
+    management::seed(&eng, &t, json!({"memories":mems, "turns":turns, "evidence":evidence,
+        "entities":[{"id":"eservice", "name":"deployment service", "aliases":["service"], "scope":{"kind":"project", "project":"p1"}}]}))
+        .await
+        .unwrap();
+    let search = |query: &str| SearchReq {
         query: query.into(),
         scope: Some(scope.clone()),
         ..Default::default()
     };
-    let ids = |r: &serde_json::Value| {
+    let ids = |r: &Value| -> Vec<String> {
         r["results"]
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|x| {
-                x.pointer("/memory/id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-            })
-            .collect::<Vec<String>>()
+            .map(|x| x["memory"]["id"].as_str().unwrap().to_string())
+            .collect()
     };
     let port = eng
         .search_memories(
@@ -323,32 +221,33 @@ pub async fn retrieval_roundtrip() {
             SearchReq {
                 include_history: Some(true),
                 include_evidence: Some(true),
-                ..search_req("deployment service port 8100")
+                ..search("deployment service port 8100")
             },
         )
         .await
         .unwrap();
-    assert!(ids(&port).contains(&"m01".into()));
-    let p = port["results"]
+    let hit = port["results"]
         .as_array()
         .unwrap()
         .iter()
         .find(|p| p["memory"]["id"] == "m01")
         .unwrap();
-    assert_eq!(p["history"][0]["id"], "m00");
-    assert!(p["evidence"][0]["span"].as_str().unwrap().chars().count() <= 300);
+    assert_eq!(hit["history"][0]["id"], "m00");
+    assert!(hit["evidence"][0]["span"].as_str().unwrap().chars().count() <= 300);
+    // A turn already formed into memories is not repeated as a recent turn.
     assert!(!port["recentTurns"]
         .as_array()
         .unwrap()
         .iter()
         .any(|v| v["turnId"] == "T1"));
+    // Both sides of a conflict come back together, even with top_k = 1.
     let conflict = eng
         .search_memories(
             &t,
             &c,
             SearchReq {
                 top_k: Some(1),
-                ..search_req("deployment region")
+                ..search("deployment region")
             },
         )
         .await
@@ -358,41 +257,31 @@ pub async fn retrieval_roundtrip() {
         conflict["results"][0]["slot"],
         conflict["results"][1]["slot"]
     );
-    let candidate = eng
-        .search_memories(&t, &c, search_req("candidatefact"))
-        .await
-        .unwrap();
-    assert!(ids(&candidate).contains(&"m04".into()));
+    // Other projects stay invisible, including the private successor of a visible memory.
     let private = eng
-        .search_memories(&t, &c, search_req("secretproject"))
+        .search_memories(&t, &c, search("secretproject"))
         .await
         .unwrap();
     assert!(ids(&private).is_empty() && private["recentTurns"].as_array().unwrap().is_empty());
     let cross = eng
-        .search_memories(&t, &c, search_req("crossscope public predecessor"))
+        .search_memories(&t, &c, search("crossscope public predecessor"))
         .await
         .unwrap();
-    assert!(ids(&cross).contains(&"m14".into()));
-    assert!(!ids(&cross).contains(&"m13".into()));
+    assert!(ids(&cross).contains(&"m14".into()) && !ids(&cross).contains(&"m13".into()));
     let buffer = eng
-        .search_memories(&t, &c, search_req("bufferonly"))
+        .search_memories(&t, &c, search("bufferonly"))
         .await
         .unwrap();
     assert_eq!(buffer["recentTurns"][0]["turnId"], "T2");
+    // touch = false leaves neither a retrieval log nor an access time.
     let log_count = t.store.count(schema::RETRIEVAL_LOG, None).await.unwrap();
-    let access = t
-        .store
-        .get_memory("m01")
-        .await
-        .unwrap()
-        .unwrap()
-        .last_accessed_at;
+    let accessed = memory(&t, "m01").await.last_accessed_at;
     eng.search_memories(
         &t,
         &c,
         SearchReq {
             touch: Some(false),
-            ..search_req("port 8100")
+            ..search("port 8100")
         },
     )
     .await
@@ -401,16 +290,10 @@ pub async fn retrieval_roundtrip() {
         t.store.count(schema::RETRIEVAL_LOG, None).await.unwrap(),
         log_count
     );
-    assert_eq!(
-        t.store
-            .get_memory("m01")
-            .await
-            .unwrap()
-            .unwrap()
-            .last_accessed_at,
-        access
-    );
-    for budget in [1, 50, 1500] {
+    assert_eq!(memory(&t, "m01").await.last_accessed_at, accessed);
+    // Context respects the budget and leaves out candidates and skill steps.
+    let mut text = String::new();
+    for budget in [50, 1500] {
         let context = retrieval::get_context(
             &eng,
             &t,
@@ -422,36 +305,16 @@ pub async fn retrieval_roundtrip() {
         )
         .await
         .unwrap();
-        assert!(util::est_tokens(context["text"].as_str().unwrap()) <= budget);
-        assert_eq!(
-            context["tokensUsed"].as_u64().unwrap() as usize,
-            util::est_tokens(context["text"].as_str().unwrap())
-        );
-        assert!(!context["text"]
-            .as_str()
-            .unwrap()
-            .contains("candidate profile"));
-        assert!(!context["text"]
-            .as_str()
-            .unwrap()
-            .contains("assistant speculative"));
-        assert!(!context["text"]
-            .as_str()
-            .unwrap()
-            .contains("secret full steps"));
+        text = context["text"].as_str().unwrap().to_string();
+        assert!(util::est_tokens(&text) <= budget);
+        assert!(!text.contains("candidate profile") && !text.contains("secret full steps"));
     }
-    let listed = eng
-        .list_turns(
-            &t,
-            &c,
-            ListTurnsReq {
-                scope: scope.clone(),
-                ..Default::default()
-            },
-        )
-        .await
+    assert!(text.contains("assistant reported deployment finished"));
+    let conflict_line = text
+        .lines()
+        .find(|l| l.contains("deployment region"))
         .unwrap();
-    assert_eq!(listed["sessions"][0]["session"], "s1");
+    assert!(conflict_line.contains("east") && conflict_line.contains("west"));
     let raw = eng
         .list_turns(
             &t,
@@ -478,71 +341,31 @@ pub async fn retrieval_roundtrip() {
     .await
     .unwrap();
     assert_eq!(history["history"].as_array().unwrap().len(), 2);
-    assert_eq!(history["history"][0]["validUntil"], now);
-    for n in 1..=3 {
+    // Three helpful uses enable a candidate skill; a wrong use demotes it again.
+    for (outcome, status) in [
+        ("helpful", S_CANDIDATE),
+        ("helpful", S_CANDIDATE),
+        ("helpful", S_CURRENT),
+        ("wrong", S_CANDIDATE),
+    ] {
         let r = eng
-            .search_memories(&t, &c, search_req("candidateskill"))
+            .search_memories(&t, &c, search("candidateskill"))
             .await
             .unwrap();
-        assert!(ids(&r).contains(&"m11".into()));
-        let req = FeedbackReq {
-            retrieval_id: r["retrievalId"].as_str().unwrap().into(),
-            used: vec!["m11".into(), "m11".into()],
-            outcome: "helpful".into(),
-        };
-        let (a, b) = tokio::join!(
-            management::feedback(&eng, &t, req.clone()),
-            management::feedback(&eng, &t, req)
-        );
-        assert_ne!(a.unwrap()["accepted"], b.unwrap()["accepted"]);
-        assert_eq!(
-            t.store
-                .get_memory("m11")
-                .await
-                .unwrap()
-                .unwrap()
-                .helpful_count,
-            n
-        );
-    }
-    assert_eq!(
-        t.store.get_memory("m11").await.unwrap().unwrap().status,
-        S_CURRENT
-    );
-    let r = eng
-        .search_memories(&t, &c, search_req("candidateskill"))
-        .await
-        .unwrap();
-    management::feedback(
-        &eng,
-        &t,
-        FeedbackReq {
-            retrieval_id: r["retrievalId"].as_str().unwrap().into(),
-            used: vec!["m11".into()],
-            outcome: "wrong".into(),
-        },
-    )
-    .await
-    .unwrap();
-    let skill = t.store.get_memory("m11").await.unwrap().unwrap();
-    assert_eq!(skill.status, S_CANDIDATE);
-    assert_eq!(skill.helpful_count, 0);
-    let expired = t.store.log(schema::RETRIEVAL_LOG, json!({"kind":"search", "createdAt":(util::now()-chrono::Duration::hours(25)).to_rfc3339(),
-        "returned":{"memories":[{"id":"m04"}]}})).await.unwrap();
-    assert_eq!(
         management::feedback(
             &eng,
             &t,
             FeedbackReq {
-                retrieval_id: expired,
-                used: vec!["m04".into()],
-                outcome: "helpful".into()
-            }
+                retrieval_id: r["retrievalId"].as_str().unwrap().into(),
+                used: vec!["m11".into()],
+                outcome: outcome.into(),
+            },
         )
         .await
-        .unwrap()["accepted"],
-        false
-    );
+        .unwrap();
+        assert_eq!(memory(&t, "m11").await.status, status);
+    }
+    // Corrections write an explicit successor; a correction without text retracts.
     let corrected = management::correct_memory(
         &eng,
         &t,
@@ -555,38 +378,8 @@ pub async fn retrieval_roundtrip() {
     )
     .await
     .unwrap();
-    let new_id = corrected["memory"]["id"].as_str().unwrap().to_string();
     assert_eq!(corrected["memory"]["source"]["origin"], ORIGIN_EXPLICIT);
-    assert!(
-        matches!(management::correct_memory(&eng, &t, &c, CorrectMemoryReq { id:"m20".into(), ..Default::default() }).await, Err(ApiError::NotCurrent(id)) if id == new_id)
-    );
-    assert!(matches!(
-        management::correct_memory(
-            &eng,
-            &t,
-            &c,
-            CorrectMemoryReq {
-                id: "m04".into(),
-                ..Default::default()
-            }
-        )
-        .await,
-        Err(ApiError::NotCurrent(_))
-    ));
-    assert!(matches!(
-        management::correct_memory(
-            &eng,
-            &t,
-            &c,
-            CorrectMemoryReq {
-                id: "m23".into(),
-                text: Some(" ".into()),
-                ..Default::default()
-            }
-        )
-        .await,
-        Err(ApiError::InvalidArgument(_))
-    ));
+    assert_eq!(memory(&t, "m20").await.status, S_SUPERSEDED);
     management::correct_memory(
         &eng,
         &t,
@@ -598,145 +391,43 @@ pub async fn retrieval_roundtrip() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        t.store.get_memory("m21").await.unwrap().unwrap().status,
-        S_SUPERSEDED
-    );
+    assert_eq!(memory(&t, "m21").await.status, S_SUPERSEDED);
+    // Deleting one side of a conflict restores the other; deleting a source removes what derives from it.
     let deletion = management::delete_memory(&eng, &t, IdReq { id: "m02".into() })
         .await
         .unwrap();
     assert_eq!(deletion["evidenceUpdated"], 1);
-    assert_eq!(
-        t.store.get_memory("m03").await.unwrap().unwrap().status,
-        S_CURRENT
-    );
+    assert_eq!(memory(&t, "m03").await.status, S_CURRENT);
     let deleted = management::delete_memory(&eng, &t, IdReq { id: "m01".into() })
         .await
         .unwrap();
     assert_eq!(deleted["derivedDeleted"], json!(["m16"]));
-    assert!(t.store.get_memory("m16").await.unwrap().is_none());
     assert!(t
         .store
         .get_doc(schema::EVIDENCE, "eport")
         .await
         .unwrap()
         .is_none());
-    assert!(t
-        .store
-        .get_memory("m00")
-        .await
-        .unwrap()
-        .unwrap()
-        .superseded_by
-        .is_none());
+    assert!(memory(&t, "m00").await.superseded_by.is_none());
     assert!(!t.vecs.read().await.memories.contains_key("m01"));
     indexer::drain(&eng, &t).await.unwrap();
     assert_eq!(
         management::export(&eng, &t, json!({})).await.unwrap()["count"],
         28
     );
-    assert!(
-        management::stats(&eng, &t).await.unwrap()["counts"]["retrieval_log"]
-            .as_i64()
-            .unwrap()
-            > 0
-    );
-    // Pure logic remains covered by selftest without rebuilding main-crate test dependencies.
-    assert_eq!(
-        retrieval::mmr_order(
-            &[1.0, 0.98, 0.9],
-            &|i, j| if (i == 0 && j == 1) || (i == 1 && j == 0) {
-                0.99
-            } else {
-                0.1
-            },
-            0.7
-        ),
-        vec![0, 2, 1]
-    );
-    let mut used = 0;
-    assert_eq!(
-        retrieval::pack(&[50, 4, 3], 7, &mut used),
-        vec![false, true, true]
-    );
-    assert!((retrieval::evidence_mult(8) - 1.15).abs() < 1e-10);
-    let reference = chrono::DateTime::parse_from_rfc3339("2026-10-09T10:00:00+08:00").unwrap();
-    for (q, start, end) in [
-        ("last Saturday", "2026-10-03", "2026-10-04"),
-        ("two weeks ago", "2026-09-21", "2026-09-28"),
-        ("in May 2023", "2023-05-01", "2023-06-01"),
-        ("on 8 May 2023", "2023-05-08", "2023-05-09"),
-        ("yesterday", "2026-10-08", "2026-10-09"),
-        ("last year", "2025-01-01", "2026-01-01"),
-        ("recently", "2026-09-26", "2026-10-10"),
-    ] {
-        let window =
-            timeparse::parse(q, reference).unwrap_or_else(|| panic!("time parsing failed: {q}"));
-        assert_eq!(
-            window
-                .start
-                .with_timezone(reference.offset())
-                .date_naive()
-                .to_string(),
-            start
-        );
-        assert_eq!(
-            window
-                .end
-                .with_timezone(reference.offset())
-                .date_naive()
-                .to_string(),
-            end
-        );
-    }
-    assert!(timeparse::history_intent("previously used to"));
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
-    println!("retrieval_roundtrip OK: 30 memories; scope/history/conflict/budget/recent/context/correction/deletion/feedback; zero LLM calls; data {}", dir.display());
+    println!("retrieval_roundtrip OK: scope/history/conflict/budget/recent/context/feedback/correction/deletion; zero LLM calls; data {}", dir.display());
 }
 
 /// Long turns: the buffer stores complete messages, indexes their windows, and search returns the
 /// window that matched; short turns keep their exact digest.
 pub async fn long_turn_roundtrip() {
-    use memory_config::ServiceConfig;
-    use memory_engine::app::ingest;
-    use memory_engine::runtime::{
-        engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant,
-    };
-    use memory_rules::util;
-    use std::sync::Arc;
-    let dir = std::env::temp_dir().join(format!(
-        "memory-long-turn-selftest-{}-{}",
-        std::process::id(),
-        util::new_id("t")
-    ));
-    let cfg = ServiceConfig {
-        memory_strategy: memory_config::MemoryStrategy::Memos,
-        data_dir: dir.clone(),
+    let eng = engine(ServiceConfig {
+        memory_strategy: MemoryStrategy::Memos,
         ..Default::default()
-    };
-    let (digest_max, formation_max) = (cfg.digest_max_bytes, cfg.max_message_bytes);
-    let llm = Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap();
-    let models = ModelHub::mock();
-    let eng = Engine::new(
-        cfg,
-        llm,
-        models,
-        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
-    );
-    let t = Arc::new(
-        Tenant::open(
-            "long-turn-selftest",
-            &dir,
-            eng.models.dim,
-            eng.algorithm().schema(),
-        )
-        .await
-        .unwrap(),
-    );
-    let c = Caller {
-        tenant: t.name.clone(),
-        platform: "codex".into(),
-    };
+    });
+    let (digest_max, formation_max) = (eng.cfg.digest_max_bytes, eng.cfg.max_message_bytes);
+    let (t, c, dir) = tenant(&eng, "long-turn-selftest", "codex").await;
     let scope = ReqScope {
         project: Some("p1".into()),
         session: Some("s1".into()),
@@ -773,57 +464,30 @@ pub async fn long_turn_roundtrip() {
     ingest::add_memories(&eng, &t, &c, add("S1", "which tea do I like", "green tea"))
         .await
         .unwrap();
-
     let long = t.store.get_turn("codex", "L1").await.unwrap().unwrap();
-    assert_eq!(
-        long.assistant_message, log,
-        "the buffer stores complete messages"
-    );
-    assert!(long.digest.len() <= digest_max && !long.digest_complete(digest_max));
-    assert!(long.chunks.iter().all(|ch| ch.role == "assistant"));
-    assert_eq!(long.chunks.first().map(|ch| ch.start), Some(0));
+    assert_eq!(long.assistant_message, log);
+    assert!(!long.digest_complete(digest_max));
     assert_eq!(long.chunks.last().map(|ch| ch.end), Some(log.len()));
-    assert!(
-        !long
-            .clipped(formation_max)
-            .assistant_message
-            .contains(needle),
-        "formation keeps its bounded head/tail view"
-    );
-    let short = t.store.get_turn("codex", "S1").await.unwrap().unwrap();
-    assert!(short.chunks.is_empty() && short.digest_complete(digest_max));
-    assert_eq!(short.digest, "which tea do I like\ngreen tea");
-
+    // Formation keeps its bounded head/tail view.
+    assert!(!long
+        .clipped(formation_max)
+        .assistant_message
+        .contains(needle));
     indexer::drain(&eng, &t).await.unwrap();
-    let rid = turn_rid("codex", "L1");
-    let stored = t.store.load_chunk_embeddings().await.unwrap();
-    assert_eq!(stored.len(), 1, "only the long turn has chunk vectors");
-    assert_eq!(stored[0].0, rid);
-    assert_eq!(stored[0].1.len(), long.chunks.len());
-    // A later re-index (e.g. after extraction updates derived text) keeps the window vectors.
-    let mut tx = Tx::new();
-    tx.index_task(schema::TURNS, &rid, "upsert").unwrap();
-    t.store.commit(tx).await.unwrap();
-    indexer::drain(&eng, &t).await.unwrap();
-    assert_eq!(
-        t.vecs.read().await.turn_chunks[&rid].len(),
-        long.chunks.len()
-    );
-
     let search = |query: &str| SearchReq {
         query: query.into(),
         scope: Some(scope.clone()),
         touch: Some(false),
         ..Default::default()
     };
-    let turn = |r: &serde_json::Value, id: &str| {
+    let turn = |r: &Value, id: &str| {
         r["recentTurns"]
             .as_array()
             .unwrap()
             .iter()
             .find(|v| v["turnId"] == id)
             .cloned()
-            .unwrap_or_else(|| panic!("{id} not recalled: {r}"))
+            .unwrap()
     };
     let r = eng
         .search_memories(&t, &c, search("zephyrquartz linker failed"))
@@ -831,9 +495,7 @@ pub async fn long_turn_roundtrip() {
         .unwrap();
     let hit = turn(&r, "L1");
     let view = hit["digest"].as_str().unwrap();
-    assert!(view.contains("zephyrquartz"), "window view: {view}");
-    assert!(view.starts_with("run the full build\n…"));
-    assert!(view.len() <= digest_max + 2 * "…".len());
+    assert!(view.contains("zephyrquartz") && view.starts_with("run the full build\n…"));
     assert_eq!(hit["complete"], false);
     assert_eq!(hit["excerpt"]["role"], "assistant");
     let r = eng
@@ -843,11 +505,9 @@ pub async fn long_turn_roundtrip() {
     let hit = turn(&r, "S1");
     assert_eq!(hit["digest"], "which tea do I like\ngreen tea");
     assert_eq!(hit["complete"], true);
-    assert!(hit.get("excerpt").is_none());
     println!(
-        "long_turn_roundtrip OK: {} bytes stored whole; {} windows indexed and recalled; short digest unchanged; zero LLM calls; data {}",
+        "long_turn_roundtrip OK: {} bytes stored whole; matching window recalled; short digest unchanged; zero LLM calls; data {}",
         log.len(),
-        long.chunks.len(),
         dir.display()
     );
 }

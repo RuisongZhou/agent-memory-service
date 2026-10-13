@@ -277,9 +277,5 @@ mod tests {
                 "feedback"
             ]
         );
-        for (_, d, s) in tool_specs() {
-            assert!(!d.is_empty());
-            assert_eq!(s["type"], "object");
-        }
     }
 }

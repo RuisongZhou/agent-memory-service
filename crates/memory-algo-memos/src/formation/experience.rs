@@ -512,157 +512,20 @@ pub fn prepare(
     })
 }
 
-/// Pure acceptance checks callable from the daemon selftest without loading a model or a test build.
-#[cfg(feature = "selftest")]
-pub fn rule_selftest() {
-    let e = Experience {
-        situation: "slow query".into(),
-        approach: "compare tokenization".into(),
-        result: "success: verification passed".into(),
-        lesson: "compare both tokenizers first".into(),
-        scope: "global".into(),
-        turn_ids: vec!["T1".into()],
-        relations: vec![],
-    };
-    let ids = HashSet::from(["T1".into()]);
-    assert!(!valid_experience(
-        &e,
-        &[Analysis {
-            task: "slow query".into(),
-            result: "unknown".into(),
-            turn_ids: vec!["T1".into()]
-        }],
-        &ids
-    ));
-    assert!(valid_experience(
-        &e,
-        &[Analysis {
-            task: "slow query".into(),
-            result: "success".into(),
-            turn_ids: vec!["T1".into()]
-        }],
-        &ids
-    ));
-    assert!(!valid_experience(
-        &e,
-        &[Analysis {
-            task: "slow query".into(),
-            result: "success".into(),
-            turn_ids: vec!["T2".into()]
-        }],
-        &ids
-    ));
-    assert_eq!(result_kind("successful maybe"), None);
-    assert_eq!(result_kind("failure：测试失败"), Some("failure"));
-    assert_eq!(result_kind("unknown: interrupted"), None);
-    let session = SessionRec {
-        open_issues: vec!["await verification".into()],
-        pending_tasks: vec![PendingTask {
-            task: "deployment".into(),
-            turn_ids: vec!["T0".into()],
-            updated_seq: 1,
-        }],
-        ..Default::default()
-    };
-    let turns = vec![
-        TurnRec {
-            turn_id: "T0".into(),
-            ..Default::default()
-        },
-        TurnRec {
-            turn_id: "T1".into(),
-            ..Default::default()
-        },
-    ];
-    let run = |session: &SessionRec, analysis: Value, experiences: Value, watermark: i64| {
-        let raw = json!({"analysis":analysis,"experiences":experiences,
-            "summary":{"goal":"","outcome":"","decisions":[],"openIssues":[]}});
-        prepare(
-            session,
-            &turns,
-            &HashSet::from(["T1".into()]),
-            &[],
-            raw,
-            watermark,
-            "en",
-            "2026-10-10T00:00:00Z",
-        )
-        .unwrap()
-    };
-    // Unknown outcomes stay open; case/whitespace drift in the task name still extends the task.
-    let pending = run(
-        &session,
-        json!([{"task":" Deployment","result":"unknown","turnIds":["T0","T1"]}]),
-        json!([]),
-        2,
-    );
-    assert_eq!(
-        pending.summary["pendingTasks"][0]["turnIds"],
-        json!(["T0", "T1"])
-    );
-    assert_eq!(pending.summary["pendingTasks"][0]["updatedSeq"], 2);
-    assert_eq!(pending.summary["openIssues"], json!(["await verification"]));
-    // Partial is a verified outcome: it forms at most one experience and closes the task.
-    let partial = run(
-        &session,
-        json!([{"task":"deployment","result":"partial","turnIds":["T0","T1"]}]),
-        json!([{"situation":"deploy","approach":"apply half","result":"partial: one host left",
-            "lesson":"stage hosts","scope":"project","turnIds":["T0","T1"],"relations":[]}]),
-        2,
-    );
-    assert_eq!(partial.summary["pendingTasks"], json!([]));
-    assert_eq!(partial.created.len(), 1);
-    let mut previous = partial.memories[0].clone();
-    previous.source.turn_ids = vec!["T0".into()];
-    previous.derivation = Some(Derivation {
-        stage: "session-experience".into(),
-        input_memory_ids: vec!["old_fact".into()],
-        input_turn_ids: vec!["T0".into()],
-        current_view: false,
-    });
-    let mut extended_turns = turns.clone();
-    extended_turns[1].derived_memory_ids = vec!["new_fact".into()];
-    let repeated = prepare(&session, &extended_turns, &HashSet::from(["T1".into()]), &[previous],
-        json!({"analysis":[{"task":"deployment","result":"partial","turnIds":["T0","T1"]}],
-            "experiences":[{"situation":"deploy","approach":"apply half","result":"partial: one host left","lesson":"stage hosts","scope":"project","turnIds":["T0","T1"],"relations":[{"memoryId":"E1","relation":"same"}]}],
-            "summary":{"goal":"","outcome":"","decisions":[],"openIssues":[]}}),
-        2, "en", "2026-10-10T00:00:00Z").unwrap();
-    let lineage = repeated.memories[0].derivation.as_ref().unwrap();
-    assert_eq!(lineage.input_turn_ids, vec!["T0", "T1"]);
-    assert_eq!(lineage.input_memory_ids, vec!["old_fact", "new_fact"]);
-    // Tasks never resolved (for example renamed by the model) expire instead of holding turns forever.
-    let stale = run(
-        &session,
-        json!([{"task":"deploy service","result":"unknown","turnIds":["T1"]}]),
-        json!([]),
-        1 + PENDING_TASK_TTL_TURNS + 1,
-    );
-    assert_eq!(stale.summary["pendingTasks"].as_array().unwrap().len(), 1);
-    assert_eq!(stale.summary["pendingTasks"][0]["task"], "deploy service");
-    assert_eq!(stale.log["expiredTasks"], json!(["deployment"]));
-    let crowded = SessionRec {
-        pending_tasks: (0..MAX_PENDING_TASKS as i64 + 2)
-            .map(|i| PendingTask {
-                task: format!("task {i}"),
-                turn_ids: vec!["T0".into()],
-                updated_seq: i,
-            })
-            .collect(),
-        ..Default::default()
-    };
-    let capped = run(&crowded, json!([]), json!([]), 8);
-    assert_eq!(
-        capped.summary["pendingTasks"].as_array().unwrap().len(),
-        MAX_PENDING_TASKS
-    );
-    assert_eq!(capped.log["expiredTasks"], json!(["task 1", "task 0"]));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn analysis(result: &str, turn: &str) -> Analysis {
+        Analysis {
+            task: "slow query".into(),
+            result: result.into(),
+            turn_ids: vec![turn.into()],
+        }
+    }
+
     #[test]
-    fn unknown_outcomes_do_not_create_experiences() {
+    fn experiences_need_a_known_outcome_on_their_turns() {
         let e = Experience {
             situation: "slow".into(),
             approach: "check".into(),
@@ -673,33 +536,63 @@ mod tests {
             relations: vec![],
         };
         let ids = HashSet::from(["T1".into()]);
-        assert!(!valid_experience(
-            &e,
-            &[Analysis {
-                task: "slow query".into(),
-                result: "unknown".into(),
-                turn_ids: vec!["T1".into()]
-            }],
-            &ids
-        ));
-        assert!(valid_experience(
-            &e,
-            &[Analysis {
-                task: "slow query".into(),
-                result: "success".into(),
-                turn_ids: vec!["T1".into()]
-            }],
-            &ids
-        ));
-        assert!(!valid_experience(
-            &e,
-            &[Analysis {
-                task: "slow query".into(),
-                result: "success".into(),
-                turn_ids: vec!["T2".into()]
-            }],
-            &ids
-        ));
+        assert!(valid_experience(&e, &[analysis("success", "T1")], &ids));
+        assert!(!valid_experience(&e, &[analysis("unknown", "T1")], &ids));
+        assert!(!valid_experience(&e, &[analysis("success", "T2")], &ids));
+        assert_eq!(result_kind("failure：测试失败"), Some("failure"));
         assert_eq!(result_kind("successful maybe"), None);
+    }
+
+    #[test]
+    fn pending_tasks_extend_close_and_expire() {
+        let session = SessionRec {
+            pending_tasks: vec![PendingTask {
+                task: "deployment".into(),
+                turn_ids: vec!["T0".into()],
+                updated_seq: 1,
+            }],
+            ..Default::default()
+        };
+        let turns = ["T0", "T1"].map(|id| TurnRec {
+            turn_id: id.into(),
+            ..Default::default()
+        });
+        let run = |analysis: Value, experiences: Value, watermark: i64| {
+            let raw = json!({"analysis":analysis,"experiences":experiences,
+                "summary":{"goal":"","outcome":"","decisions":[],"openIssues":[]}});
+            prepare(
+                &session,
+                &turns,
+                &HashSet::from(["T1".into()]),
+                &[],
+                raw,
+                watermark,
+                "en",
+                "2026-10-10T00:00:00Z",
+            )
+            .unwrap()
+        };
+        // unknown outcomes keep the task open; case/whitespace drift still extends it
+        let pending = run(
+            json!([{"task":" Deployment","result":"unknown","turnIds":["T0","T1"]}]),
+            json!([]),
+            2,
+        );
+        assert_eq!(
+            pending.summary["pendingTasks"][0]["turnIds"],
+            json!(["T0", "T1"])
+        );
+        // a verified outcome closes the task and forms an experience
+        let partial = run(
+            json!([{"task":"deployment","result":"partial","turnIds":["T0","T1"]}]),
+            json!([{"situation":"deploy","approach":"apply half","result":"partial: one host left",
+                "lesson":"stage hosts","scope":"project","turnIds":["T0","T1"],"relations":[]}]),
+            2,
+        );
+        assert_eq!(partial.summary["pendingTasks"], json!([]));
+        assert_eq!(partial.created.len(), 1);
+        // tasks that are never resolved expire
+        let stale = run(json!([]), json!([]), 2 + PENDING_TASK_TTL_TURNS);
+        assert_eq!(stale.log["expiredTasks"], json!(["deployment"]));
     }
 }

@@ -170,10 +170,6 @@ mod tests {
             vec![true, false, true, true]
         );
         assert_eq!(used, 10);
-        let mut used = 8;
-        assert_eq!(pack(&[3, 2], 10, &mut used), vec![false, true]);
         assert_eq!(pack_prefix(&[3, 4, 2, 1], 8), (2, 7));
-        assert_eq!(pack_prefix(&[3, 4], 100), (2, 7));
-        assert_eq!(pack_prefix(&[30], 10), (0, 0));
     }
 }

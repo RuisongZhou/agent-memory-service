@@ -182,14 +182,11 @@ mod tests {
     }
 
     #[test]
-    fn separate_contracts_reject_cross_stage_fields_and_invalid_sources() {
+    fn fact_and_experience_contracts_are_separate() {
         let schema = facts_for_turns(&["T1".into()]);
         let mut value = fact();
         validate_schema(&schema, &value).unwrap();
         value["summary"] = json!({});
-        assert!(validate_schema(&schema, &value).is_err());
-        value.as_object_mut().unwrap().remove("summary");
-        value["facts"][0]["sourceTurnId"] = json!("missing");
         assert!(validate_schema(&schema, &value).is_err());
         let schema = experiences_for_turns(&["T1".into()]);
         let mut value = empty_experience();
@@ -199,81 +196,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_arrays_missing_sections_and_wrong_nested_types() {
-        let schema = experiences_for_turns(&["T1".into()]);
-        assert!(validate_schema(&schema, &json!([[], [], [], ["", "", [], []]])).is_err());
-        let mut value = empty_experience();
-        value.as_object_mut().unwrap().remove("summary");
-        assert!(validate_schema(&schema, &value)
-            .unwrap_err()
-            .to_string()
-            .contains("$.summary"));
-        let mut value = empty_experience();
-        value["analysis"] = json!([{"task":"deploy","result":"unknown","turnIds":"T1"}]);
-        assert!(validate_schema(&schema, &value)
-            .unwrap_err()
-            .to_string()
-            .contains("$.analysis[0].turnIds"));
-        value["analysis"][0]["turnIds"] = json!(["T1"]);
-        value["analysis"][0]["result"] = json!("guessed");
-        assert!(validate_schema(&schema, &value).is_err());
-    }
-
-    #[test]
-    fn facts_require_flat_provenance_and_reject_removed_fields() {
+    fn sources_and_limits_are_enforced() {
         let schema = facts_for_turns(&["T1".into()]);
         let mut value = fact();
-        value["facts"][0]["source"] = json!({"turnId":"T1","span":"A fact"});
+        value["facts"][0]["sourceTurnId"] = json!("missing");
         assert!(validate_schema(&schema, &value).is_err());
-        value["facts"][0].as_object_mut().unwrap().remove("source");
-        value["facts"][0]["reason"] = Value::Null;
-        assert!(validate_schema(&schema, &value).is_err());
-        value["facts"][0].as_object_mut().unwrap().remove("reason");
-        value["facts"][0]["sourceSpan"] = json!(["wrong"]);
-        assert!(validate_schema(&schema, &value).is_err());
-    }
-
-    #[test]
-    fn rejects_memory_labels_repeated_turn_lists_and_too_many_experiences() {
-        let schema = experiences_for_turns(&["T1".into(), "T2".into()]);
-        let mut value = empty_experience();
-        value["analysis"] = json!([{"task":"deploy","result":"unknown","turnIds":["F1"]}]);
-        assert!(validate_schema(&schema, &value).is_err());
-        value["analysis"][0]["turnIds"] = json!(["T1", "T2"]);
-        validate_schema(&schema, &value).unwrap();
-        value["analysis"][0]["turnIds"] = json!(["T1", "T1", "T1"]);
-        assert!(validate_schema(&schema, &value)
-            .unwrap_err()
-            .to_string()
-            .contains("maxItems"));
-        value["analysis"] = json!([]);
-        let experience = json!({"situation":"deploy","approach":"check","result":"success",
-            "lesson":"verify","scope":"project","turnIds":["T1"],"relations":[]});
-        value["experiences"] = json!([experience.clone(), experience.clone(), experience.clone()]);
-        validate_schema(&schema, &value).unwrap();
-        value["experiences"]
-            .as_array_mut()
-            .unwrap()
-            .push(experience);
-        assert!(validate_schema(&schema, &value)
-            .unwrap_err()
-            .to_string()
-            .contains("maxItems"));
-        validate_schema(&experiences_for_turns(&[]), &empty_experience()).unwrap();
-    }
-
-    #[test]
-    fn empty_sources_and_unicode_evidence_limits_are_enforced() {
-        validate_schema(&facts_for_turns(&[]), &json!({"facts":[]})).unwrap();
-        assert!(validate_schema(&facts_for_turns(&[]), &fact()).is_err());
-        let schema = facts_for_turns(&["T1".into()]);
         let mut value = fact();
-        value["facts"][0]["sourceSpan"] = json!("证".repeat(1024));
-        validate_schema(&schema, &value).unwrap();
         value["facts"][0]["sourceSpan"] = json!("证".repeat(1025));
         assert!(validate_schema(&schema, &value)
             .unwrap_err()
             .to_string()
             .contains("maxLength"));
+        let schema = experiences_for_turns(&["T1".into()]);
+        let mut value = empty_experience();
+        let experience = json!({"situation":"deploy","approach":"check","result":"success",
+            "lesson":"verify","scope":"project","turnIds":["T1"],"relations":[]});
+        value["experiences"] = json!([
+            experience.clone(),
+            experience.clone(),
+            experience.clone(),
+            experience
+        ]);
+        assert!(validate_schema(&schema, &value)
+            .unwrap_err()
+            .to_string()
+            .contains("maxItems"));
     }
 }

@@ -23,6 +23,12 @@ impl MemoryAlgorithm for Memos {
         MemoryStrategy::Memos
     }
 
+    /// P1 keeps only results the assistant reported as completed, verbatim from its reply; unconfirmed
+    /// suggestions are never extracted.
+    fn context_origins(&self) -> &'static [&'static str] {
+        &[ORIGIN_EXPLICIT, ORIGIN_USER, ORIGIN_ASSISTANT]
+    }
+
     fn validate_config(&self, cfg: &ServiceConfig) -> anyhow::Result<()> {
         anyhow::ensure!(
             cfg.default_top_k <= cfg.max_top_k,

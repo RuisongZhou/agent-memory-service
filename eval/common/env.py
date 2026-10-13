@@ -17,6 +17,8 @@ STORES_DIR = EVAL_DIR / "stores"
 CACHE_DIR = EVAL_DIR / ".cache"
 DATA_PATH = EVAL_DIR / "data" / "locomo10.json"
 DOTENV_PATH = ROOT_DIR / ".env"
+# Name of the checkout that produced pre-migration runs; independent of this clone's directory name.
+HISTORICAL_REPO_NAME = "agent-memory-service"
 
 
 def resolve_historical_result_path(path: str | Path) -> Path:
@@ -35,7 +37,7 @@ def resolve_historical_result_path(path: str | Path) -> Path:
             return RESULTS_DIR.joinpath(*parts[2:])
     else:
         for i in range(len(parts) - 1):
-            if parts[i:i + 2] == (ROOT_DIR.name, "results"):
+            if parts[i:i + 2] == (HISTORICAL_REPO_NAME, "results"):
                 return RESULTS_DIR.joinpath(*parts[i + 2:])
     return value
 

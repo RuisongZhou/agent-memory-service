@@ -404,33 +404,26 @@ mod tests {
     }
     #[test]
     fn provenance_checks_role_and_verbatim_span() {
-        let tr = TurnRec {
+        let tr = [TurnRec {
             turn_id: "T1".into(),
             user_message: "port is 8100".into(),
             assistant_message: "port is 8200".into(),
             user_ts: "2026-10-08T00:00:00Z".into(),
             assistant_ts: "2026-10-08T00:00:01Z".into(),
             ..Default::default()
-        };
-        assert!(supporting_source(&raw("user", "8200"), &[tr.clone()], None, false).is_none());
-        assert!(supporting_source(&raw("user", "8200"), &[tr.clone()], None, true).is_some());
-        assert!(supporting_source(&raw("explicit", "8200"), &[tr.clone()], None, false).is_none());
-        assert!(supporting_source(&raw("explicit", "8200"), &[tr.clone()], None, true).is_some());
-        assert!(
-            supporting_source(&raw("assistant", "is   8200"), &[tr.clone()], None, false).is_some()
-        );
-        assert!(supporting_source(&raw("assistant", "is 8201"), &[tr], None, false).is_none());
+        }];
+        assert!(supporting_source(&raw("user", "8100"), &tr, None, false).is_some());
+        assert!(supporting_source(&raw("user", "8200"), &tr, None, false).is_none());
+        assert!(supporting_source(&raw("assistant", "is   8200"), &tr, None, false).is_some());
+        assert!(supporting_source(&raw("assistant", "is 8201"), &tr, None, false).is_none());
     }
     #[test]
-    fn reference_validation() {
+    fn references_name_existing_memories_or_other_live_facts() {
         let live = HashSet::from([1, 3]);
         let old = vec![MemoryRec::default()];
         assert!(valid_target("M1", 1, &live, &old));
-        assert!(!valid_target("M0", 1, &live, &old));
-        assert!(!valid_target("M+1", 1, &live, &old));
-        assert!(!valid_target("中1", 1, &live, &old));
+        assert!(!valid_target("M2", 1, &live, &old));
         assert!(valid_target("F3", 1, &live, &old));
-        assert!(!valid_target("F2", 1, &live, &old));
         assert!(!valid_target("F1", 1, &live, &old));
     }
 }

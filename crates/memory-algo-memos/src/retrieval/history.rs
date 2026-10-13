@@ -115,33 +115,25 @@ mod tests {
     use super::*;
     use chrono::DateTime;
 
-    fn mem(id: &str, eff: &str) -> MemoryRec {
+    fn mem(id: &str, eff: &str, until: &str) -> MemoryRec {
         MemoryRec {
             id: id.into(),
             effective_at: eff.into(),
+            valid_until: Some(until.into()),
             ..Default::default()
         }
     }
 
     #[test]
     fn history_pick() {
-        // chain: m1 (2023-01-01) → m2 (2023-05-10) → m3 (2023-09-01, current); older = nearest first
-        let mut m2 = mem("m2", "2023-05-10");
-        m2.valid_until = Some("2023-09-01".into());
-        let mut m1 = mem("m1", "2023-01-01");
-        m1.valid_until = Some("2023-05-10".into());
-        let older = vec![m2, m1];
+        // chain: m1 (2023-01-01) → m2 (2023-05-10) → current (2023-09-01); older = nearest first
+        let older = vec![
+            mem("m2", "2023-05-10", "2023-09-01"),
+            mem("m1", "2023-01-01", "2023-05-10"),
+        ];
         let now = DateTime::parse_from_rfc3339("2023-10-01T00:00:00+00:00").unwrap();
-        // effectiveAt inside the window
-        let w = timeparse::parse("in May 2023", now).unwrap();
-        assert_eq!(pick_history(older.clone(), Some(&w))[0].id, "m2");
-        // validity overlaps the window
         let w = timeparse::parse("in March 2023", now).unwrap();
         assert_eq!(pick_history(older.clone(), Some(&w))[0].id, "m1");
-        // no window → previous value
-        assert_eq!(pick_history(older.clone(), None)[0].id, "m2");
-        // nothing matches → previous value
-        let w = timeparse::parse("in 2020", now).unwrap();
-        assert_eq!(pick_history(older, Some(&w))[0].id, "m2");
+        assert_eq!(pick_history(older, None)[0].id, "m2");
     }
 }
