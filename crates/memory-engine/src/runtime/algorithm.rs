@@ -25,6 +25,13 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     /// DDL for the private tables, appended to the shared schema.
     fn schema(&self) -> &'static str;
 
+    /// Fact origins `get_context` presents as established. Only user statements and explicit
+    /// requests by default: an algorithm adds `assistant` when its assistant facts are verified results
+    /// rather than suggestions.
+    fn context_origins(&self) -> &'static [&'static str] {
+        &[ORIGIN_EXPLICIT, ORIGIN_USER]
+    }
+
     /// Unfinished work left in this data directory by a different algorithm.
     fn foreign_unfinished_jobs<'a>(&'a self, t: &'a Tenant) -> BoxFuture<'a, anyhow::Result<i64>>;
 

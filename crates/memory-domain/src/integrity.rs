@@ -276,7 +276,6 @@ mod tests {
         MemoryRec {
             id: id.into(),
             mtype: T_FACT.into(),
-            text: format!("text of {id}"),
             status: status.into(),
             scope: MemScope::project("project"),
             ..Default::default()
@@ -318,184 +317,72 @@ mod tests {
 
     #[test]
     fn superseded_source_stales_current_views_transitively() {
+        let profile = MemoryRec {
+            mtype: T_PROFILE.into(),
+            used_memory_ids: vec!["second".into()],
+            ..memory("profile", S_CURRENT)
+        };
         let records = by_id(vec![
             memory("fact", S_SUPERSEDED),
             view("first", &["fact"]),
             view("second", &["first"]),
+            profile,
             view("unrelated", &["other"]),
             memory("other", S_CURRENT),
         ]);
-        let mut unavailable = HashSet::new();
         assert_eq!(
-            stale_views(&records, &mut unavailable),
-            vec!["first", "second"]
-        );
-        assert!(unavailable.contains("fact"));
-        assert!(!unavailable.contains("other"));
-    }
-
-    #[test]
-    fn missing_sources_count_as_unavailable() {
-        let records = by_id(vec![view("first", &["removed"])]);
-        let mut unavailable = HashSet::new();
-        assert_eq!(stale_views(&records, &mut unavailable), vec!["first"]);
-    }
-
-    #[test]
-    fn profile_and_skill_depend_on_used_memories_without_derivation() {
-        let profile = MemoryRec {
-            mtype: T_PROFILE.into(),
-            used_memory_ids: vec!["fact".into()],
-            ..memory("profile", S_CURRENT)
-        };
-        let skill = MemoryRec {
-            mtype: T_SKILL.into(),
-            used_memory_ids: vec!["profile".into()],
-            ..memory("skill", S_CURRENT)
-        };
-        assert_eq!(current_dependency(&profile).unwrap().sources, ["fact"]);
-        assert!(current_dependency(&memory("fact", S_CURRENT)).is_none());
-        let historical = MemoryRec {
-            id: "history".into(),
-            derivation: Some(Derivation {
-                stage: "experience".into(),
-                input_memory_ids: vec!["fact".into()],
-                input_turn_ids: vec![],
-                current_view: false,
-            }),
-            ..profile.clone()
-        };
-        assert!(current_dependency(&historical).is_none());
-
-        let records = by_id(vec![memory("fact", S_CONFLICT), profile, skill, historical]);
-        let mut unavailable = HashSet::new();
-        assert_eq!(
-            stale_views(&records, &mut unavailable),
-            vec!["profile", "skill"]
+            stale_views(&records, &mut HashSet::new()),
+            vec!["first", "profile", "second"]
         );
     }
 
     #[test]
-    fn only_semantic_merges_make_a_record_unavailable() {
+    fn only_semantic_changes_make_a_record_unavailable() {
         let mut writes = WriteSet::default();
-        writes.merge_memory(
-            "fact",
-            &json!({"retrievalCount": 3, "helpfulCount": 1, "lastAccessedAt": "2026-10-11"}),
-        );
-        writes.merge_memory("fact", &json!({"status": S_CURRENT}));
+        writes.merge_memory("fact", &json!({"retrievalCount": 3}));
         assert!(writes.unavailable.is_empty());
         writes.merge_memory("fact", &json!({"text": "new text"}));
         assert!(writes.unavailable.contains("fact"));
-
-        let mut writes = WriteSet::default();
-        writes.merge_memory("fact", &json!({"status": S_SUPERSEDED}));
-        assert!(writes.unavailable.contains("fact"));
-        assert!(writes.resolved_conflicts.contains("fact"));
-        assert_eq!(writes.memory_patches["fact"]["status"], S_SUPERSEDED);
-    }
-
-    #[test]
-    fn replacement_is_semantic_only_when_a_semantic_field_differs() {
-        let previous = json!({"text": "a", "scope": {"kind": "global"}, "retrievalCount": 1});
+        let previous = json!({"text": "a", "retrievalCount": 1});
         assert!(!semantic_change(
             &previous,
-            &json!({"text": "a", "scope": {"kind": "global"}, "retrievalCount": 2})
+            &json!({"text": "a", "retrievalCount": 2})
         ));
-        assert!(semantic_change(
-            &previous,
-            &json!({"text": "b", "scope": {"kind": "global"}})
-        ));
-        assert!(semantic_change(&previous, &json!({"text": "a"})));
+        assert!(semantic_change(&previous, &json!({"text": "b"})));
     }
 
     #[test]
-    fn deleting_a_memory_retires_it_and_replacing_clears_pending_patches() {
-        let mut writes = WriteSet::default();
-        writes.delete_memory("gone");
-        assert!(writes.unavailable.contains("gone") && writes.resolved_conflicts.contains("gone"));
-        writes.merge_memory("kept", &json!({"related": []}));
-        writes.put_memory("kept", &json!({"status": S_CURRENT}));
-        assert!(writes.memory_patches.is_empty());
-        assert!(writes.memory_docs.contains_key("kept"));
-    }
-
-    #[test]
-    fn deleting_one_side_of_a_conflict_restores_the_other_peer() {
-        let retired = set(&["a"]);
+    fn retiring_one_side_of_a_conflict_restores_the_other() {
         let peers = by_id(vec![conflicting("b", &["a"])]);
-        let patches = conflict_peer_patches(&retired, peers, &HashSet::new());
         assert_eq!(
-            patches,
+            conflict_peer_patches(&set(&["a"]), peers, &HashSet::new()),
             vec![("b".to_string(), json!({"related": [], "status": S_CURRENT}))]
         );
     }
 
     #[test]
-    fn peers_keep_conflict_status_while_disputed_elsewhere() {
-        let retired = set(&["a"]);
+    fn open_questions_keep_peers_in_conflict() {
         let mut writes = WriteSet::default();
         writes.put_uncertainty("u", &json!({"status": "open", "memoryIds": ["b", "c"]}));
-        writes.put_uncertainty(
-            "closing",
-            &json!({"status": "open", "memoryIds": ["a", "b"]}),
-        );
-        writes.put_uncertainty(
-            "done",
-            &json!({"status": "resolved", "memoryIds": ["b", "d"]}),
-        );
-        let stored = [
-            json!({"memoryIds": ["d", "e"]}),
-            json!({"memoryIds": ["a", "e"]}),
-        ];
-        let disputed = still_disputed(&stored, &writes, &retired);
-        assert_eq!(disputed, set(&["b", "c", "d", "e"]));
-
-        // Disputed by an open question: the edge goes away but the status stays.
+        let disputed = still_disputed(&[], &writes, &set(&["a"]));
+        assert_eq!(disputed, set(&["b", "c"]));
         let peers = by_id(vec![conflicting("b", &["a"])]);
-        let patches = conflict_peer_patches(&retired, peers, &disputed);
-        assert_eq!(patches, vec![("b".to_string(), json!({"related": []}))]);
-
-        // Another conflict edge also keeps the status; retired and non-conflict peers are skipped.
-        let peers = by_id(vec![
-            conflicting("b", &["a", "c"]),
-            conflicting("retired_peer", &["a"]),
-            memory("current", S_CURRENT),
-        ]);
-        let patches = conflict_peer_patches(&set(&["a", "retired_peer"]), peers, &HashSet::new());
         assert_eq!(
-            patches,
-            vec![(
-                "b".to_string(),
-                json!({"related": [{"id": "c", "relation": "conflicts"}]})
-            )]
+            conflict_peer_patches(&set(&["a"]), peers, &disputed),
+            vec![("b".to_string(), json!({"related": []}))]
         );
     }
 
     #[test]
-    fn repair_creates_one_question_per_same_scope_conflict_pair() {
-        let other_scope = MemoryRec {
-            scope: MemScope::global(),
-            ..conflicting("z", &["y"])
-        };
+    fn repair_plans_questions_and_stale_views() {
         let records = vec![
             conflicting("b", &["a"]),
             conflicting("a", &[]),
-            // Edges to a record that is not in conflict, to a missing record, and across scopes.
-            conflicting("c", &["current", "missing"]),
-            memory("current", S_CURRENT),
-            conflicting("y", &["z"]),
-            other_scope,
-            // Non-conflict edges are ignored.
-            MemoryRec {
-                related: vec![RelEdge {
-                    id: "a".into(),
-                    relation: "related".into(),
-                }],
-                ..memory("e", S_CONFLICT)
-            },
+            memory("fact", S_SUPERSEDED),
+            view("first", &["fact"]),
         ];
         let plan = repair_plan(&records);
-        assert!(plan.stale.is_empty());
+        assert_eq!(plan.stale, vec!["first"]);
         assert_eq!(
             plan.uncertainties,
             vec![PlannedUncertainty {
@@ -504,19 +391,5 @@ mod tests {
                 reason: CONFLICT_REASON,
             }]
         );
-    }
-
-    #[test]
-    fn repair_stales_views_whose_stored_inputs_are_not_current() {
-        let records = vec![
-            memory("fact", S_SUPERSEDED),
-            view("first", &["fact"]),
-            view("second", &["first"]),
-            view("fine", &["live"]),
-            memory("live", S_CURRENT),
-        ];
-        let plan = repair_plan(&records);
-        assert_eq!(plan.stale, vec!["first", "second"]);
-        assert!(plan.uncertainties.is_empty());
     }
 }

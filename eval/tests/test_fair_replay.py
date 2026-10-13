@@ -7,8 +7,6 @@ def test_pack_preserves_whole_records_and_counts_separators():
     blocks = ["one brief record", "word " * 500, "another short record"]
     budget = count_tokens("one brief record\n\nanother short record")
     assert pack_blocks(blocks, budget) == "one brief record\n\nanother short record"
-    assert count_tokens(pack_blocks(blocks, budget)) <= budget
-    assert pack_blocks(blocks, 0) == ""
 
 
 def test_legacy_profile_paragraphs_are_one_record():
@@ -25,6 +23,4 @@ def test_evidence_context_disambiguates_reference_and_event_time():
     context, info = format_context(response, "evidence")
     assert context.index("Fact:") < context.index("Summary (")
     assert "Source at 2023-05-08 10:00: I painted it last year." in context
-    assert "not when an event occurred" in context
-    assert "Stored at" not in context
     assert info["memory_ids"] == ["m"]

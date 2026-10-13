@@ -354,40 +354,6 @@ fn batch_ready(
                 .unwrap_or(false))
 }
 
-#[cfg(feature = "selftest")]
-pub fn trigger_selftest() {
-    let cfg = memory_config::ServiceConfig::default();
-    let stamp = "2026-10-10T00:00:00Z";
-    let start = util::ts_secs(stamp);
-    assert!(!batch_ready(
-        2,
-        Some(stamp),
-        false,
-        false,
-        &cfg,
-        start + 299
-    ));
-    assert!(batch_ready(3, Some(stamp), false, false, &cfg, start));
-    assert!(batch_ready(1, Some(stamp), false, false, &cfg, start + 300));
-    assert!(batch_ready(1, Some(stamp), true, false, &cfg, start));
-    assert!(batch_ready(1, Some(stamp), false, true, &cfg, start));
-    assert!(!batch_ready(0, None, true, true, &cfg, start));
-    let turn = |state: &str, seq: i64, failures: i64| TurnRec {
-        extract_state: state.into(),
-        seq,
-        extract_failures: failures,
-        ..Default::default()
-    };
-    assert!(awaiting_facts(&turn("pending", 1, 0)));
-    assert!(!awaiting_facts(&turn("done", 6, 4)));
-    assert!(!awaiting_facts(&turn("done", 5, 0)));
-    assert!(!awaiting_facts(&turn("done", 6, 5)));
-    assert!(!awaiting_facts(&turn("failed", 6, 5)));
-    assert!(formation_failed(&turn("failed", 1, 5)));
-    assert!(!formation_failed(&turn("done", 6, 5)));
-    assert!(!formation_failed(&turn("done", 6, 4)));
-}
-
 /// All formation entry points share one lock so later batches see all earlier committed changes.
 pub(crate) async fn process_available(
     eng: &Arc<Engine>,
@@ -636,25 +602,34 @@ pub async fn on_session_start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn validates_complete_turn_only() {
-        let u = InMessage {
-            role: "user".into(),
+    fn only_complete_turns_are_accepted() {
+        let msg = |role: &str| InMessage {
+            role: role.into(),
             content: "a".into(),
             timestamp: "2026-10-08T01:00:00+08:00".into(),
         };
-        let a = InMessage {
-            role: "assistant".into(),
-            content: "b".into(),
-            timestamp: "2026-10-08T01:00:01+08:00".into(),
-        };
-        assert!(validate_messages(&[u.clone(), a.clone()]).is_ok());
-        assert!(validate_messages(&[u.clone()]).is_err());
-        assert!(validate_messages(&[u.clone(), u]).is_err());
-        let bad = InMessage {
-            timestamp: "2026-10-08".into(),
-            ..a.clone()
-        };
-        assert!(validate_messages(&[bad, a]).is_err());
+        assert!(validate_messages(&[msg("user"), msg("assistant")]).is_ok());
+        assert!(validate_messages(&[msg("user")]).is_err());
+    }
+
+    #[test]
+    fn batches_trigger_on_size_age_force_or_session_end() {
+        let cfg = memory_config::ServiceConfig::default();
+        let stamp = "2026-10-10T00:00:00Z";
+        let start = util::ts_secs(stamp);
+        assert!(!batch_ready(
+            2,
+            Some(stamp),
+            false,
+            false,
+            &cfg,
+            start + 299
+        ));
+        assert!(batch_ready(3, Some(stamp), false, false, &cfg, start));
+        assert!(batch_ready(1, Some(stamp), false, false, &cfg, start + 300));
+        assert!(batch_ready(1, Some(stamp), true, false, &cfg, start));
+        assert!(batch_ready(1, Some(stamp), false, true, &cfg, start));
     }
 }

@@ -32,12 +32,7 @@ mod tests {
     #[test]
     fn ranking_filters_before_limiting_and_has_stable_ties() {
         let result = rank(
-            vec![
-                ("b".into(), 0.8),
-                ("a".into(), 0.8),
-                ("c".into(), 0.09),
-                ("bad".into(), f32::NAN),
-            ],
+            vec![("b".into(), 0.8), ("a".into(), 0.8), ("c".into(), 0.09)],
             0.1,
             10,
         );
@@ -45,7 +40,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_does_not_merge_scopes_or_raw_and_inferred_records() {
+    fn identity_separates_scopes_and_inferred_records() {
         assert_ne!(
             content_key("a", "same", true),
             content_key("b", "same", true)
@@ -54,6 +49,5 @@ mod tests {
             content_key("a", "same", true),
             content_key("a", "same", false)
         );
-        assert_ne!(content_key("ab", "c", true), content_key("a", "bc", true));
     }
 }

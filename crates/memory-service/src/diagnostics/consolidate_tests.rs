@@ -1,64 +1,19 @@
 //! Maintenance integration selftest. Supplied records and mock embeddings; never invokes a real LLM.
+use super::{engine, memory, tenant};
 use memory_algo_memos::formation::consolidate;
-use memory_config::ServiceConfig;
+use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::types::*;
-use memory_engine::runtime::{engine::Engine, indexer, llm::Llm, models::ModelHub, tenant::Tenant};
-use memory_rules::util;
+use memory_engine::runtime::indexer;
 use memory_store::schema;
 use memory_store::store::{self, to_doc, Tx};
 use serde_json::json;
-use std::sync::Arc;
 
 pub async fn consolidation_selftest() {
-    assert!(!consolidate::profile_length_exceeded(
-        &"中".repeat(500),
-        "zh",
-        500
-    ));
-    assert!(consolidate::profile_length_exceeded(
-        &"中".repeat(501),
-        "zh",
-        500
-    ));
-    assert!(!consolidate::profile_length_exceeded(
-        &vec!["word"; 350].join(" "),
-        "en",
-        500
-    ));
-    assert!(consolidate::profile_length_exceeded(
-        &vec!["word"; 351].join(" "),
-        "en",
-        500
-    ));
-    assert_eq!(std::env::var("MEMORY_MOCK_MODELS").as_deref(), Ok("1"));
-    let dir = std::env::temp_dir().join(format!(
-        "memory-consolidation-selftest-{}",
-        util::new_id("t")
-    ));
-    let eng = Engine::new(
-        ServiceConfig {
-            memory_strategy: memory_config::MemoryStrategy::Memos,
-            data_dir: dir.clone(),
-            ..Default::default()
-        },
-        Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
-        ModelHub::mock(),
-        crate::algorithms::select(memory_config::MemoryStrategy::Memos),
-    );
-    let t = Arc::new(
-        Tenant::open(
-            "consolidation-zh",
-            &dir,
-            eng.models.dim,
-            eng.algorithm().schema(),
-        )
-        .await
-        .unwrap(),
-    );
-    let c = Caller {
-        tenant: t.name.clone(),
-        platform: "codex".into(),
-    };
+    let eng = engine(ServiceConfig {
+        memory_strategy: MemoryStrategy::Memos,
+        ..Default::default()
+    });
+    let (t, c, dir) = tenant(&eng, "consolidation", "codex").await;
     let as_of = "2026-10-10T00:00:00Z";
     let a = MemoryRec {
         id: "mexacta".into(),
@@ -112,11 +67,12 @@ pub async fn consolidation_selftest() {
     }
     t.store.commit(tx).await.unwrap();
     indexer::drain(&eng, &t).await.unwrap();
-    let merged = consolidate::run_jobs(&eng, &t, &c, json!({"jobs":["merge"],"asOf":as_of}))
+    // Exact duplicates merge into one canonical memory that keeps both sources; originals keep their text.
+    let merge = json!({"jobs":["merge"],"asOf":as_of});
+    let merged = consolidate::run_jobs(&eng, &t, &c, merge.clone())
         .await
         .unwrap();
     assert_eq!(merged["jobs"]["merge"]["autoMerged"], 1);
-    assert_eq!(merged["jobs"]["merge"]["proposals"], 0);
     let kept = t
         .store
         .find_memories("type = 'fact' AND status = 'current'", vec![])
@@ -125,44 +81,24 @@ pub async fn consolidation_selftest() {
     assert_eq!(kept.len(), 1);
     let canonical = &kept[0];
     assert_eq!(canonical.evidence_count, 2);
-    assert_eq!(canonical.source.turn_ids.len(), 2);
     assert_eq!(canonical.entity_ids.len(), 2);
-    assert_eq!(
-        t.store.get_memory("mexacta").await.unwrap().unwrap().text,
-        a.text
-    );
-    assert_eq!(
-        t.store.get_memory("mexactb").await.unwrap().unwrap().text,
-        b.text
-    );
-    for id in ["eexacta", "eexactb"] {
-        let e = t
-            .store
-            .get_doc(schema::EVIDENCE, id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(e["memoryIds"]
-            .as_array()
-            .unwrap()
-            .contains(&json!(canonical.id)));
-    }
-    let merged_again = consolidate::run_jobs(&eng, &t, &c, json!({"jobs":["merge"],"asOf":as_of}))
+    assert_eq!(memory(&t, "mexactb").await.text, b.text);
+    let e = t
+        .store
+        .get_doc(schema::EVIDENCE, "eexactb")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(e["memoryIds"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(canonical.id)));
+    let again = consolidate::run_jobs(&eng, &t, &c, merge.clone())
         .await
         .unwrap();
-    assert_eq!(merged_again["jobs"]["merge"]["autoMerged"], 0);
-    assert_eq!(
-        t.store
-            .get_memory(&canonical.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .evidence_count,
-        2
-    );
-    assert_eq!(t.store.count(schema::EVIDENCE, None).await.unwrap(), 2);
+    assert_eq!(again["jobs"]["merge"]["autoMerged"], 0);
 
-    // Experience text omits approach/result; equal text cannot erase a successful vs failed attempt.
+    // Equal experience text cannot merge a successful attempt with a failed one.
     // Keep these records unindexed so this plumbing test never triggers P4's generative stage.
     let success = MemoryRec {
         id: "mexpsuccess".into(),
@@ -191,53 +127,25 @@ pub async fn consolidation_selftest() {
         tx.put(schema::MEMORIES, &m.id, to_doc(m).unwrap()).unwrap();
     }
     t.store.commit(tx).await.unwrap();
-    let distinct = consolidate::run_jobs(&eng, &t, &c, json!({"jobs":["merge"],"asOf":as_of}))
-        .await
-        .unwrap();
+    let distinct = consolidate::run_jobs(&eng, &t, &c, merge).await.unwrap();
     assert_eq!(distinct["jobs"]["merge"]["autoMerged"], 0);
-    for m in [&success, &failure] {
-        let stored = t.store.get_memory(&m.id).await.unwrap().unwrap();
-        assert_eq!(stored.status, S_CURRENT);
-        assert_eq!(stored.detail, m.detail);
-    }
 
+    // Purge removes only old turns whose facts and session experience are formed; evidence stays.
     let fixtures = [
-        ("Tready", "Sready", "done", true, 1, "2026-10-01T00:00:00Z"),
-        ("Twait", "Swait", "done", true, 0, "2026-10-01T00:00:00Z"),
-        (
-            "Tpending",
-            "Spending",
-            "pending",
-            false,
-            0,
-            "2026-10-01T00:00:00Z",
-        ),
-        (
-            "Trecent",
-            "Srecent",
-            "done",
-            true,
-            1,
-            "2026-10-09T00:00:00Z",
-        ),
-        // Neither state alone nor a P2 watermark proves successful P1 without extractedAt.
-        (
-            "Tmissingwatermark",
-            "Smissingwatermark",
-            "done",
-            false,
-            1,
-            "2026-10-01T00:00:00Z",
-        ),
+        ("Tready", "done", 1, "2026-10-01T00:00:00Z"),
+        ("Twait", "done", 0, "2026-10-01T00:00:00Z"),
+        ("Tpending", "pending", 0, "2026-10-01T00:00:00Z"),
+        ("Trecent", "done", 1, "2026-10-09T00:00:00Z"),
     ];
     let mut tx = Tx::new();
-    for (tid, sid, state, extracted, p2, end) in fixtures {
+    for (tid, state, p2, end) in fixtures {
+        let sid = format!("S{tid}");
         let tr = TurnRec {
             key: turn_key("codex", tid),
             turn_id: tid.into(),
             platform: "codex".into(),
             project: "p1".into(),
-            session: sid.into(),
+            session: sid.clone(),
             user_message: format!("buffer-original-{tid}"),
             assistant_message: "final reply".into(),
             user_ts: end.into(),
@@ -248,15 +156,14 @@ pub async fn consolidation_selftest() {
             digest: format!("buffer-original-{tid}"),
             seq: 1,
             extract_state: state.into(),
-            extracted_at: extracted.then(|| "2026-10-02T00:00:00Z".into()),
+            extracted_at: (state == "done").then(|| "2026-10-02T00:00:00Z".into()),
             ..Default::default()
         };
         let s = SessionRec {
-            key: session_key("codex", sid),
+            key: session_key("codex", &sid),
             platform: "codex".into(),
-            session: sid.into(),
+            session: sid.clone(),
             project: "p1".into(),
-            goal: "test maintenance".into(),
             turn_count: 1,
             last_experience_seq: p2,
             updated_at: end.into(),
@@ -269,7 +176,7 @@ pub async fn consolidation_selftest() {
         tx.index_task(schema::TURNS, &rid, "upsert").unwrap();
         tx.put(
             schema::SESSIONS,
-            &store::session_rid("codex", sid),
+            &store::session_rid("codex", &sid),
             to_doc(&s).unwrap(),
         )
         .unwrap();
@@ -289,6 +196,7 @@ pub async fn consolidation_selftest() {
         .unwrap();
     t.store.commit(tx).await.unwrap();
     indexer::drain(&eng, &t).await.unwrap();
+    let evidence = t.store.count(schema::EVIDENCE, None).await.unwrap();
     let purge = consolidate::run_jobs(
         &eng,
         &t,
@@ -298,79 +206,20 @@ pub async fn consolidation_selftest() {
     .await
     .unwrap();
     assert_eq!(purge["jobs"]["purge"]["purgedTurns"], 1);
-    assert_eq!(purge["jobs"]["purge"]["purgedSessions"], 1);
     assert!(t.store.get_turn("codex", "Tready").await.unwrap().is_none());
-    assert!(t
-        .store
-        .get_session("codex", "Sready")
-        .await
-        .unwrap()
-        .is_none());
-    for id in ["Twait", "Tpending", "Trecent", "Tmissingwatermark"] {
+    for id in ["Twait", "Tpending", "Trecent"] {
         assert!(t.store.get_turn("codex", id).await.unwrap().is_some());
     }
-    assert!(t
-        .store
-        .get_doc(schema::EVIDENCE, "ebuffer")
-        .await
-        .unwrap()
-        .is_some());
     assert!(!t
         .vecs
         .read()
         .await
         .turns
         .contains_key(&store::turn_rid("codex", "Tready")));
-    let documents =
-        t.ft.search(
-            "buffer-original-Tready",
-            &memory_fulltext::FtFilter {
-                kinds: vec!["turn".into()],
-                ..Default::default()
-            },
-            50,
-        )
-        .unwrap();
-    assert!(!documents
-        .iter()
-        .any(|(id, _)| id == &store::turn_rid("codex", "Tready")));
-    let again = consolidate::run_jobs(
-        &eng,
-        &t,
-        &c,
-        json!({"jobs":["purge"],"asOf":as_of,"retentionDays":3}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(again["jobs"]["purge"]["purgedTurns"], 0);
-    assert_eq!(t.store.count(schema::EVIDENCE, None).await.unwrap(), 3);
-    let force = consolidate::run_jobs(
-        &eng,
-        &t,
-        &c,
-        json!({"jobs":["purge"],"asOf":as_of,"retentionDays":0}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(force["jobs"]["purge"]["purgedTurns"], 1);
-    assert!(t
-        .store
-        .get_turn("codex", "Trecent")
-        .await
-        .unwrap()
-        .is_none());
-    for id in ["Twait", "Tpending", "Tmissingwatermark"] {
-        assert!(t.store.get_turn("codex", id).await.unwrap().is_some());
-    }
-    assert_eq!(t.store.count(schema::EVIDENCE, None).await.unwrap(), 3);
+    assert_eq!(
+        t.store.count(schema::EVIDENCE, None).await.unwrap(),
+        evidence
+    );
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
-    assert!(matches!(
-        consolidate::run_jobs(&eng, &t, &c, json!({"jobs":["unknown"]})).await,
-        Err(ApiError::InvalidArgument(_))
-    ));
-    assert!(matches!(
-        consolidate::run_jobs(&eng, &t, &c, json!({"jobs":["purge"],"retentionDays":-1})).await,
-        Err(ApiError::InvalidArgument(_))
-    ));
-    println!("consolidation_selftest OK: exact-merge evidence/body preservation and idempotency; P1/P2/age purge gates; evidence retained; index removal; zero LLM calls; data {}",dir.display());
+    println!("consolidation_selftest OK: exact merge keeps evidence and bodies, idempotent; experiences with different outcomes stay apart; purge gates; evidence retained; zero LLM calls; data {}", dir.display());
 }

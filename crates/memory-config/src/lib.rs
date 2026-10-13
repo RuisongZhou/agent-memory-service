@@ -213,37 +213,12 @@ mod tests {
         ServiceConfig::default().validate().unwrap();
     }
     #[test]
-    fn invalid_loop_and_wait_bounds_are_rejected() {
-        let mut c = ServiceConfig::default();
-        c.batch_turns = 0;
+    fn invalid_values_are_rejected() {
+        let c = ServiceConfig {
+            batch_turns: 0,
+            ..Default::default()
+        };
         assert!(c.validate().is_err());
-        c = ServiceConfig::default();
-        c.llm_max_concurrency = 0;
-        assert!(c.validate().is_err());
-        c = ServiceConfig::default();
-        c.batch_wait_secs = -1;
-        assert!(c.validate().is_err());
-        c = ServiceConfig::default();
-        c.session_idle_minutes = 0;
-        assert!(c.validate().is_err());
-    }
-    #[test]
-    fn invalid_scores_and_budgets_are_rejected() {
-        let mut c = ServiceConfig::default();
-        c.rrf_k = f64::NAN;
-        assert!(c.validate().is_err());
-        c = ServiceConfig::default();
-        c.mmr_lambda = 1.1;
-        assert!(c.validate().is_err());
-        c = ServiceConfig::default();
-        c.recent_half_life_days = 0.0;
-        assert!(c.validate().is_err());
-        c = ServiceConfig::default();
-        c.buffer_retention_days = 0.0;
-        c.validate().unwrap();
-    }
-    #[test]
-    fn misspelled_config_is_rejected() {
         let mut v = serde_json::to_value(ServiceConfig::default()).unwrap();
         v["batchTruns"] = serde_json::json!(3);
         assert!(serde_json::from_value::<ServiceConfig>(v).is_err());

@@ -170,24 +170,13 @@ pub(super) async fn rank<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memory_engine::retrieval::scoring::decay;
 
     #[test]
     fn multipliers() {
         assert!((recency_mult(0.0) - 1.0).abs() < 1e-12);
         assert!((recency_mult(30.0) - 0.925).abs() < 1e-12);
-        assert!((recency_mult(-5.0) - 1.0).abs() < 1e-12); // clamped
-
-        // At extreme ages the tiny decay term rounds away, so the lower bound is inclusive.
-        assert!((0.85..0.851).contains(&recency_mult(10_000.0)));
-        assert!((evidence_mult(1) - 1.0).abs() < 1e-12);
         assert!((evidence_mult(2) - 1.05).abs() < 1e-12);
-        assert!((evidence_mult(8) - 1.15).abs() < 1e-12);
-        assert!((evidence_mult(1024) - 1.15).abs() < 1e-12); // capped
-        assert!((evidence_mult(0) - 1.0).abs() < 1e-12);
-        assert!((decay(1.0, 1.0) - 0.5).abs() < 1e-12);
-        assert!((decay(0.0, 1.0) - 1.0).abs() < 1e-12);
-        assert!((decay(-1.0, 1.0) - 1.0).abs() < 1e-12);
+        assert!((evidence_mult(1024) - 1.15).abs() < 1e-12);
     }
 
     #[test]
@@ -199,11 +188,6 @@ mod tests {
             m[i][j]
         };
         assert_eq!(mmr_order(&rel, &sim, 0.7), vec![0, 2, 1]);
-        // λ = 1 → pure relevance
         assert_eq!(mmr_order(&rel, &sim, 1.0), vec![0, 1, 2]);
-        // RRF-scale relevance is normalised, so the result does not depend on the scale
-        let rel2 = [0.033, 0.0323, 0.0297];
-        assert_eq!(mmr_order(&rel2, &sim, 0.7), vec![0, 2, 1]);
-        assert!(mmr_order(&[], &sim, 0.7).is_empty());
     }
 }

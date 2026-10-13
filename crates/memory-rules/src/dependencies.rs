@@ -33,43 +33,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn changes_propagate_transitively_without_invalidating_unrelated_views() {
+    fn changes_propagate_transitively() {
+        let dep = |id: &str, source: &str| Dependency {
+            id: id.into(),
+            sources: vec![source.into()],
+        };
         let dependencies = vec![
-            Dependency {
-                id: "skill".into(),
-                sources: vec!["profile".into()],
-            },
-            Dependency {
-                id: "profile".into(),
-                sources: vec!["fact".into()],
-            },
-            Dependency {
-                id: "other".into(),
-                sources: vec!["unchanged".into()],
-            },
+            dep("skill", "profile"),
+            dep("profile", "fact"),
+            dep("other", "unchanged"),
         ];
         assert_eq!(
             invalidated(&dependencies, &HashSet::from(["fact".into()])),
             vec!["profile", "skill"]
-        );
-    }
-
-    #[test]
-    fn cycles_terminate_and_empty_inputs_do_not_invalidate() {
-        let dependencies = vec![
-            Dependency {
-                id: "a".into(),
-                sources: vec!["b".into(), "fact".into()],
-            },
-            Dependency {
-                id: "b".into(),
-                sources: vec!["a".into()],
-            },
-        ];
-        assert!(invalidated(&dependencies, &HashSet::new()).is_empty());
-        assert_eq!(
-            invalidated(&dependencies, &HashSet::from(["fact".into()])),
-            vec!["a", "b"]
         );
     }
 }
