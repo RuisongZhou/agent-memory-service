@@ -12,6 +12,8 @@ Run commands from the repository root.
 | `llama_servers.sh` | Start, stop or inspect the local retrieval model servers | None |
 | `http_smoke.py` | Offline daemon and MCP integration checks, including the Memos lifecycle | Local deterministic stub only |
 | `mem0_http_smoke.py` | Offline checks of the service's default Mem0 algorithm | Local deterministic stub only; does not import the Mem0 SDK |
+| `mem0_history_http_smoke.py` | Mem0 message windows, session/raw/failure isolation and restart checks | Local deterministic stub only; includes exhausted job retries |
+| `mem0_hybrid_http_smoke.py` | Entity persistence, correction/delete repair, scope and restart checks | Local deterministic stub only |
 | `llama_http_smoke.py` | Service integration with already running real local retrieval models | Local deterministic generation stub only |
 | `check_architecture.py` | Enforce Rust boundaries and separation between service and evaluation files | None |
 | `check_public.py` | Check the Git index for weights, secrets and generated state | None |

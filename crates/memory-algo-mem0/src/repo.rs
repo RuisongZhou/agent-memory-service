@@ -67,15 +67,19 @@ pub async fn foreign_unfinished_job_count(t: &Tenant) -> Result<i64> {
             .await?)
 }
 
-/// The ten latest non-empty inputs of the same platform and project before `seq`, newest first.
+/// Up to ten latest non-empty, durably formed inferred batches in the same conversation.
+/// Missing `infer` retains the legacy formation default of true. `formed` is committed
+/// with primary memories and sources, including successful extraction of zero memories.
+/// Index publication need not finish before a batch supplies extraction context.
 pub async fn previous_inputs(
     t: &Tenant,
     platform: &str,
     project: &str,
+    session: &str,
     seq: Value,
 ) -> Result<Vec<Value>> {
-    t.store.select("SELECT inputMessages, inputSeq FROM requests WHERE kind = 'mem0' AND platform = $p AND project = $r AND array::len(inputMessages) > 0 AND inputSeq < $seq ORDER BY inputSeq DESC LIMIT 10",
-        vec![("p",json!(platform)),("r",json!(project)),("seq",seq)]).await
+    t.store.select("SELECT inputMessages, inputSeq FROM requests WHERE kind = 'mem0' AND platform = $p AND project = $r AND session = $s AND (infer = NONE OR infer != false) AND formed = true AND status IN ['indexing', 'completed'] AND array::len(inputMessages) > 0 AND inputSeq < $seq ORDER BY inputSeq DESC LIMIT 10",
+        vec![("p",json!(platform)),("r",json!(project)),("s",json!(session)),("seq",seq)]).await
 }
 
 /// Raw input jobs matching `filter`, in input order.
@@ -100,4 +104,64 @@ pub async fn list_inputs(t: &Tenant, filter: InputFilter<'_>) -> Result<Vec<Valu
     }
     sql.push_str(" ORDER BY inputSeq ASC");
     t.store.select(&sql, binds).await
+}
+
+/// Primary facts used to reconcile the rebuildable entity projection. This deliberately
+/// reads the authoritative table rather than eventual vector/full-text indexes.
+pub async fn entity_memory_inputs(t: &Tenant) -> Result<Vec<Value>> {
+    t.store.select("SELECT mid, text, type, scope, status, ingestionMode, supersedes, recordedAt, formationPosition FROM memories WHERE type = 'fact' AND status IN ['current','conflict'] ORDER BY mid ASC", vec![]).await
+}
+
+pub async fn entity_rows(t: &Tenant) -> Result<Vec<Value>> {
+    t.store
+        .select(
+            "SELECT * OMIT id FROM mem0_entities ORDER BY mid ASC",
+            vec![],
+        )
+        .await
+}
+
+/// Extraction intermediates are rebuildable; a stored text/version must match the
+/// authoritative fact before its extracted entities are reused.
+pub async fn entity_extractions(t: &Tenant) -> Result<Vec<Value>> {
+    t.store
+        .select("SELECT * OMIT id FROM mem0_entity_inputs", vec![])
+        .await
+}
+
+pub async fn entity_memory_inputs_by_id(
+    t: &Tenant,
+    ids: &std::collections::BTreeSet<String>,
+) -> Result<Vec<Value>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let records = ids
+        .iter()
+        .map(|id| Ok(format!("memories:{}", memory_store::store::safe_id(id)?)))
+        .collect::<Result<Vec<_>>>()?
+        .join(",");
+    t.store.select(&format!("SELECT mid, text, type, scope, status, ingestionMode, supersedes, recordedAt, formationPosition FROM {records} WHERE type = 'fact' AND status IN ['current','conflict'] ORDER BY mid ASC"), vec![]).await
+}
+
+#[cfg(test)]
+pub async fn reject_entity_manifest(t: &Tenant, reject: bool) -> Result<()> {
+    if reject {
+        t.store
+            .query(
+                "DEFINE FIELD version ON mem0_entity_state TYPE string ASSERT $value = 'reject'",
+                vec![],
+            )
+            .await?;
+    } else {
+        t.store
+            .query("REMOVE FIELD version ON mem0_entity_state", vec![])
+            .await?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn purge_entity_projection(tx: &mut memory_store::store::Tx) {
+    tx.raw("DELETE mem0_entities RETURN NONE", vec![]);
 }

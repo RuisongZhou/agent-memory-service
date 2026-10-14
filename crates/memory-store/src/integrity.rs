@@ -23,7 +23,7 @@ pub(crate) async fn prepare(store: &Store, tx: &mut Tx) -> Result<()> {
             .cloned()
             .collect::<Vec<_>>();
         ids.sort();
-        tx.raw("UPDATE uncertainties SET status = 'resolved', resolvedAt = $now WHERE status = 'open' AND memoryIds CONTAINSANY $ids RETURN NONE",
+        tx.raw_table(schema::UNCERTAINTIES, "UPDATE uncertainties SET status = 'resolved', resolvedAt = $now WHERE status = 'open' AND memoryIds CONTAINSANY $ids RETURN NONE",
             vec![("now", json!(util::now_str())), ("ids", json!(ids))]);
     }
     Ok(())
@@ -64,7 +64,9 @@ async fn invalidate_views(store: &Store, tx: &mut Tx) -> Result<()> {
             &id,
             rules::stale_patch(rules::STALE_INPUT_REASON),
         )?;
-        tx.raw(
+        tx.raw_record(
+            schema::MEMORIES,
+            &id,
             &format!(
                 "UPDATE memories:{} SET embedding = NONE RETURN NONE",
                 safe_id(&id)?

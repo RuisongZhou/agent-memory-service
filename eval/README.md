@@ -60,11 +60,65 @@ These entry points have different stages: ingestion and answer/judge stages can 
 paid requests. Never use a paid experiment or the full dataset as an automatic check.
 Use fresh isolated stores and preserve the protocol before seeing scores.
 
+### Node SDK 3.3.1 offline comparison
+
+The historical Python baseline remains pinned to `mem0ai==2.2.1`; its version is independent
+of the Node SDK. Install the Node comparison in an ignored evaluation cache:
+
+```sh
+npm install --prefix eval/.cache/mem0-sdk331 --legacy-peer-deps --save-exact mem0ai@3.3.1 better-sqlite3@12.6.2
+.venv/bin/python eval/mem0_sdk331_compare.py --sdk-root eval/.cache/mem0-sdk331 \
+  --output-dir eval/results/mem0-sdk331-new-run
+```
+
+This deliberately selects the SDK-supported built-in entity/stemming fallback, without
+optional `compromise` or `natural`. The runner loads the actual SDK with SQLite stores,
+uses the daemon's mock embedding endpoint for both arms, and substitutes only generation
+responses. Node is an evaluation dependency, not a service runtime dependency. The output
+directory must be new; preserve preliminary failures and final protocol fingerprints.
+
+### Explicit real-model SDK 3.3.1 pilot
+
+`mem0_sdk331_real.py` compares the real service and actual Node SDK on the first four
+Conv-26 sessions (76 utterances, 35 evidence-covered questions). Preparation is offline;
+ingestion and evaluation make paid calls and require explicit authorization. Both arms
+use the same generation model, real embedding endpoint, historical observation date,
+and 2,000-token whole-record context budget. Use a fresh result directory:
+
+```sh
+.venv/bin/python eval/mem0_sdk331_real.py --sdk-root eval/.cache/mem0-sdk331 \
+  --root eval/results/mem0-sdk331-real-new --stage prepare
+# After explicit authorization and starting the configured real embedding server:
+.venv/bin/python eval/mem0_sdk331_real.py --sdk-root eval/.cache/mem0-sdk331 \
+  --root eval/results/mem0-sdk331-real-new --stage all
+```
+
+The runner freezes source/binary hashes, keeps independent stores and raw provider
+responses, and runs three retrieval passes. SDK corpus export uses `getAll(topK=10000)`
+with a collection-count check; all retrieved IDs must exist in the exported corpus.
+`mem0_sdk331_judge_audit.py` is a separate, explicit post-run consistency audit and may
+make additional paid judge calls. Preserve original labels and disclose any amendment.
+The local 2026-10-14 run's final report is
+`results/mem0-sdk331-real-20261014/comparison.md`; its export correction and original
+incomplete snapshots remain alongside the final results.
+
+`mem0_sdk331_optimization.py` compares two service binaries (`before` and `after`)
+on that same fixed cohort. `--mode replay` serves captured extraction responses
+locally and asserts identical formed facts, retrieval scores and contexts;
+`--mode live` makes explicitly authorized real-model calls. It freezes both binary
+hashes, alternates ingestion order, uses isolated stores, and shares the answer or
+judge result for identical requests. Pass `--original` pointing to the original
+SDK pilot, `--before` and `--after` to frozen binaries, and a fresh `--root`.
+Preparation is the default; `--stage all` executes the selected mode. The actual
+SDK compatibility check remains the separate offline comparison above.
+
 ## Experiments and diagnostics
 
 | Entry point | Purpose |
 |---|---|
 | `extraction_compare.py` | Explicit real-model extraction comparisons in isolated service/SDK stores |
+| `mem0_v3_context.py` | Offline fixed-input comparison of V3 message handling, prompt boundaries and persistence; model doubles, not an accuracy benchmark |
+| `mem0_sdk331_compare.py` | Actual Node SDK 3.3.1 comparison of prompts, entities and hybrid scores with the same local mock embeddings |
 | `real_extraction_example.py` | Explicit real-model Chinese formation example with request/response evidence |
 | `locomo_trace_example.py` | Explicit source-to-formation/retrieval trace example |
 | `extraction_audit.py` | Count-only audit of saved formation logs or already opened daemon tenants; no generation |

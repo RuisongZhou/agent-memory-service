@@ -1,4 +1,4 @@
-//! Semantic-only search. No generative calls, broad summaries or implicit cross-encoder.
+//! Node SDK 3.3.1 semantic candidate recall with keyword and entity score fusion.
 use super::config::Mem0Config;
 use super::repo::{self, InputFilter};
 use anyhow::{anyhow, Result};
@@ -8,7 +8,11 @@ use memory_engine::runtime::{engine::Engine, tenant::Tenant};
 use memory_rules::util;
 use memory_store::schema;
 use serde_json::{json, Value};
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 
 /// Shared vector recall for formation and query retrieval. Scores are normalized cosine.
 pub async fn dense(
@@ -146,49 +150,96 @@ pub async fn search(
     let q = eng.models.embed_one(query).await?;
     let embed_ms = tick.elapsed().as_secs_f64() * 1000.0;
     let tick = Instant::now();
-    let mut candidates = dense_with_vector(
+    let candidates = dense_with_vector(
         t,
         &q,
         project,
         platform,
         &types,
-        mem0.threshold,
+        f32::NEG_INFINITY,
         (k * 4).max(60),
         eng.cfg.brute_force_limit,
     )
     .await?;
+    // Keyword hits contribute scores only; they never expand the semantic pool.
+    let documents = keyword_documents(t, project, platform, &types).await?;
+    let query_lemmatized = memory_rules::mem0_hybrid::lemmatize(query);
+    let bm25 =
+        memory_rules::mem0_hybrid::bm25_scores(&documents, &query_lemmatized, (k * 4).max(60));
+    let entity = super::entities::boosts(eng, t, query, project, platform).await?;
+    let ranked = memory_rules::mem0_hybrid::score_and_rank(
+        candidates
+            .iter()
+            .map(|(m, score)| (m.id.clone(), *score))
+            .collect(),
+        &bm25,
+        &entity,
+        mem0.threshold,
+        k,
+    );
+    let records: std::collections::HashMap<_, _> = candidates
+        .into_iter()
+        .map(|(m, _)| (m.id.clone(), m))
+        .collect();
+    let mut candidates: Vec<_> = ranked
+        .into_iter()
+        .filter_map(|(id, score)| records.get(&id).cloned().map(|m| (m, score)))
+        .collect();
     let recall_ms = tick.elapsed().as_secs_f64() * 1000.0;
     let tick = Instant::now();
+    // SDK reranking runs after hybrid topK selection.
     let rerank = req.rerank.unwrap_or(mem0.rerank);
-    if rerank && !candidates.is_empty() {
-        if !eng.models.has_reranker() {
-            return Err(ApiError::InvalidArgument(
-                "rerank needs mem0Rerank=true at startup".into(),
-            ));
-        }
+    let mut rerank_scores = std::collections::HashMap::new();
+    if rerank && eng.models.has_reranker() && !candidates.is_empty() {
         let docs = candidates
             .iter()
             .map(|(m, _)| m.text.clone())
             .collect::<Vec<_>>();
-        if let Some(scores) = eng.models.rerank(query, &docs).await? {
-            for (item, score) in candidates.iter_mut().zip(scores) {
-                item.1 = score;
+        // SDK degrades to hybrid ordering if the optional reranker fails.
+        if let Ok(Some(scores)) = eng.models.rerank(query, &docs).await {
+            if scores.len() == candidates.len() && scores.iter().all(|score| score.is_finite()) {
+                for ((m, _), score) in candidates.iter().zip(scores) {
+                    rerank_scores.insert(m.id.clone(), score);
+                }
+                candidates
+                    .sort_by(|a, b| rerank_scores[&b.0.id].total_cmp(&rerank_scores[&a.0.id]));
             }
-            candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
         }
     }
     let rerank_ms = tick.elapsed().as_secs_f64() * 1000.0;
     candidates.truncate(k);
     let tick = Instant::now();
+    // Read authoritative state as one batch after optional model work. Keep the
+    // selected order and scores; concurrent corrections/deletions are filtered
+    // by current primary records rather than trusting the earlier recall snapshot.
+    let selected_ids: Vec<_> = candidates.iter().map(|(m, _)| m.id.clone()).collect();
+    let mut authoritative: HashMap<_, _> = t
+        .store
+        .get_memories(&selected_ids)
+        .await?
+        .into_iter()
+        .map(|m| (m.id.clone(), m))
+        .collect();
     let mut used = 0;
     let mut results = Vec::new();
-    for (m, score) in candidates {
+    for (selected, score) in candidates {
+        let Some(m) = authoritative.remove(&selected.id) else {
+            continue;
+        };
+        if !matches!(m.status.as_str(), S_CURRENT | S_CONFLICT)
+            || !visible(&m.scope, project, platform)
+        {
+            continue;
+        }
         let cost = util::est_tokens(&m.text) + 8;
         if used + cost > budget {
             continue;
         }
         used += cost;
         let mut item = json!({"memory":m.public(), "score":score, "slot":results.len()});
+        if let Some(score) = rerank_scores.get(&m.id) {
+            item["rerankScore"] = json!(score);
+        }
         if req.include_evidence.unwrap_or(false) {
             // A batch reference is explicitly distinguished from a verified verbatim claim span.
             let provenance = t.store.get_doc(super::SOURCES, &m.id).await?;
@@ -225,6 +276,47 @@ pub async fn search(
         json!({"retrievalId":retrieval_id,"strategy":"mem0","results":results,"profiles":[],
         "recentTurns":[],"uncertainties":[],"gap":results.is_empty(),"tokensUsed":used,"latencyMs":lat}),
     )
+}
+
+/// Default SQLite SDK keyword search scans every filtered record. Its corpus
+/// statistics must not be restricted to the semantic over-fetch pool.
+async fn keyword_documents(
+    t: &Arc<Tenant>,
+    project: &str,
+    platform: &str,
+    types: &[String],
+) -> Result<Vec<(String, String)>> {
+    let meta = t.store.active_memory_meta().await?;
+    let mut ids = Vec::new();
+    for row in meta.iter() {
+        let scope: MemScope = serde_json::from_value(row["scope"].clone())?;
+        if visible(&scope, project, platform)
+            && matches!(row["status"].as_str(), Some(S_CURRENT | S_CONFLICT))
+            && types.iter().any(|kind| row["type"] == kind.as_str())
+        {
+            if let Some(id) = row["mid"].as_str() {
+                ids.push(id.to_owned());
+            }
+        }
+    }
+    ids.sort();
+    let records = t.store.get_memories(&ids).await?;
+    Ok(records
+        .into_iter()
+        .filter(|m| {
+            matches!(m.status.as_str(), S_CURRENT | S_CONFLICT)
+                && visible(&m.scope, project, platform)
+        })
+        .map(|m| {
+            let normalized = memory_rules::mem0_hybrid::lemmatize(&m.text);
+            let text = if normalized.is_empty() {
+                m.text
+            } else {
+                normalized
+            };
+            (m.id, text)
+        })
+        .collect())
 }
 
 fn visible(scope: &MemScope, project: &str, platform: &str) -> bool {

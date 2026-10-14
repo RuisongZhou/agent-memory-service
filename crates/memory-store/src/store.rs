@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use surrealdb::engine::local::{Db, SurrealKv};
@@ -33,6 +34,7 @@ DEFINE TABLE IF NOT EXISTS entities SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS index_tasks SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS index_tasks_created ON index_tasks FIELDS createdTs;
 DEFINE TABLE IF NOT EXISTS index_meta SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS store_revisions SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS requests SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS retrieval_log SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS extract_log SCHEMALESS;
@@ -47,6 +49,15 @@ pub struct Store {
     pub db: Surreal<Db>,
     write_lock: Mutex<()>,
     active_meta: RwLock<Option<Arc<Vec<Value>>>>,
+    revisions: std::sync::Mutex<Revisions>,
+}
+
+const CHANGE_HISTORY: usize = 256;
+#[derive(Default)]
+struct Revisions {
+    generation: u64,
+    tables: BTreeMap<String, u64>,
+    journal: VecDeque<(u64, BTreeMap<String, Option<BTreeSet<String>>>)>,
 }
 
 /// Validate an id before inlining it into SurrealQL as `table:id`.
@@ -81,11 +92,21 @@ pub struct Tx {
     stmts: Vec<String>,
     binds: Vec<(String, Value)>,
     changed_memories: bool,
+    changes: BTreeMap<String, Option<BTreeSet<String>>>,
     /// Integrity bookkeeping for the memory and uncertainty writes (see `domain::integrity`).
     pub(crate) writes: WriteSet,
 }
 
 impl Tx {
+    fn changed(&mut self, table: &str, id: &str) {
+        if let Some(ids) = self
+            .changes
+            .entry(table.into())
+            .or_insert_with(|| Some(BTreeSet::new()))
+        {
+            ids.insert(id.into());
+        }
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -97,6 +118,7 @@ impl Tx {
     /// Full replace of a document.
     pub fn put(&mut self, table: &str, id: &str, mut doc: Value) -> Result<&mut Self> {
         let r = rid(table, id)?;
+        self.changed(table, id);
         if table == schema::MEMORIES {
             self.changed_memories = true;
             self.writes.put_memory(id, &doc);
@@ -116,6 +138,7 @@ impl Tx {
     /// Merge fields into a document (creates it if missing).
     pub fn merge(&mut self, table: &str, id: &str, patch: Value) -> Result<&mut Self> {
         let r = rid(table, id)?;
+        self.changed(table, id);
         if table == schema::MEMORIES {
             self.changed_memories = true;
             self.writes.merge_memory(id, &patch);
@@ -128,6 +151,7 @@ impl Tx {
     }
     pub fn delete(&mut self, table: &str, id: &str) -> Result<&mut Self> {
         let r = rid(table, id)?;
+        self.changed(table, id);
         if table == schema::MEMORIES {
             self.changed_memories = true;
             self.writes.delete_memory(id);
@@ -138,6 +162,7 @@ impl Tx {
     /// Remove fields from a document: `UPDATE table:id SET f = NONE, ...`.
     pub fn clear_fields(&mut self, table: &str, id: &str, fields: &[&str]) -> Result<&mut Self> {
         let r = rid(table, id)?;
+        self.changed(table, id);
         if table == schema::MEMORIES {
             self.changed_memories = true;
         }
@@ -150,10 +175,39 @@ impl Tx {
         Ok(self)
     }
     pub fn raw(&mut self, sql: &str, binds: Vec<(&str, Value)>) -> &mut Self {
-        // Raw statements are the escape hatch: conservatively drop the metadata snapshot.
-        if sql.contains("memories") {
-            self.changed_memories = true;
-        }
+        // The public escape hatch is opaque, so invalidate every projection and the
+        // authoritative metadata snapshot even for dynamic/upper-case SQL.
+        self.changed_memories = true;
+        self.changes.insert("*".into(), None);
+        self.raw_statement(sql, binds)
+    }
+
+    // Store-owned SQL planners know the exact write target without parsing SQL. These
+    // are crate-private: external callers cannot accidentally omit invalidation.
+    pub(crate) fn raw_table(
+        &mut self,
+        table: &str,
+        sql: &str,
+        binds: Vec<(&str, Value)>,
+    ) -> &mut Self {
+        self.changed_memories |= table == schema::MEMORIES;
+        self.changes.insert(table.into(), None);
+        self.raw_statement(sql, binds)
+    }
+
+    pub(crate) fn raw_record(
+        &mut self,
+        table: &str,
+        id: &str,
+        sql: &str,
+        binds: Vec<(&str, Value)>,
+    ) -> &mut Self {
+        self.changed_memories |= table == schema::MEMORIES;
+        self.changed(table, id);
+        self.raw_statement(sql, binds)
+    }
+
+    fn raw_statement(&mut self, sql: &str, binds: Vec<(&str, Value)>) -> &mut Self {
         let mut s = sql.to_string();
         for (k, v) in binds {
             let name = self.var(v);
@@ -199,11 +253,18 @@ impl Store {
             .await?
             .check()
             .context("schema")?;
-        Ok(Self {
+        let store = Self {
             db,
             write_lock: Mutex::new(()),
             active_meta: RwLock::new(None),
-        })
+            revisions: std::sync::Mutex::new(Revisions::default()),
+        };
+        if let Some(state) = store.get_doc(schema::STORE_REVISIONS, "committed").await? {
+            let mut revisions = store.revisions.lock().expect("revisions poisoned");
+            revisions.generation = state["generation"].as_u64().unwrap_or(0);
+            revisions.tables = serde_json::from_value(state["tables"].clone()).unwrap_or_default();
+        }
+        Ok(store)
     }
 
     /// Run a query; returns one Vec<Value> per statement.
@@ -247,12 +308,63 @@ impl Store {
             .collect()
     }
 
-    pub async fn commit(&self, mut tx: Tx) -> Result<()> {
-        if tx.stmts.is_empty() {
-            return Ok(());
-        }
+    pub async fn commit(&self, tx: Tx) -> Result<()> {
+        self.commit_inner(tx, None).await?;
+        Ok(())
+    }
+
+    /// Optimistic publication for a rebuildable projection. The dependency check and
+    /// commit share the write lock; None asks the consumer to refresh and retry.
+    /// The returned revision belongs to this commit, never to a later concurrent write.
+    pub async fn commit_if_revision(
+        &self,
+        tx: Tx,
+        tables: &[&str],
+        expected: u64,
+    ) -> Result<Option<u64>> {
+        self.commit_inner(tx, Some((tables, expected))).await
+    }
+
+    async fn commit_inner(
+        &self,
+        mut tx: Tx,
+        expected: Option<(&[&str], u64)>,
+    ) -> Result<Option<u64>> {
         let _guard = self.write_lock.lock().await;
+        if let Some((tables, revision)) = expected {
+            if self.document_revision(tables) != revision {
+                return Ok(None);
+            }
+        }
+        if tx.stmts.is_empty() {
+            return Ok(Some(
+                self.revisions
+                    .lock()
+                    .expect("revisions poisoned")
+                    .generation,
+            ));
+        }
         integrity::prepare(self, &mut tx).await?;
+        let (generation, tables) = {
+            let revisions = self.revisions.lock().expect("revisions poisoned");
+            let generation = revisions
+                .generation
+                .checked_add(1)
+                .context("store revision exhausted")?;
+            let mut tables = revisions.tables.clone();
+            for table in tx.changes.keys() {
+                tables.insert(table.clone(), generation);
+            }
+            (generation, tables)
+        };
+        // The durable generation changes in the very same transaction as its writes.
+        // A process crash before publishing the journal therefore requires recovery,
+        // rather than accepting a stale projection on reopening the store.
+        tx.put(
+            schema::STORE_REVISIONS,
+            "committed",
+            json!({"generation":generation,"tables":tables}),
+        )?;
         if tx.changed_memories {
             // Clear before the write; a snapshot miss waits on write_lock until the commit finishes.
             *self.active_meta.write().await = None;
@@ -268,7 +380,80 @@ impl Store {
             q = q.bind((k, v));
         }
         q.await?.check().context("transaction")?;
-        Ok(())
+        let mut revisions = self.revisions.lock().expect("revisions poisoned");
+        revisions.generation = generation;
+        revisions.tables = tables;
+        revisions.journal.push_back((generation, tx.changes));
+        while revisions.journal.len() > CHANGE_HISTORY {
+            revisions.journal.pop_front();
+        }
+        Ok(Some(generation))
+    }
+
+    /// Last successful commit affecting any requested table; no database reads.
+    pub fn document_revision(&self, tables: &[&str]) -> u64 {
+        let revisions = self.revisions.lock().expect("revisions poisoned");
+        tables
+            .iter()
+            .chain(std::iter::once(&"*"))
+            .filter_map(|t| revisions.tables.get(*t))
+            .copied()
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn memory_revision(&self) -> u64 {
+        self.document_revision(&[schema::MEMORIES])
+    }
+
+    /// Committed changed IDs since a consumer snapshot. None means restart, bounded
+    /// journal eviction or an opaque write, and requires an authoritative recovery.
+    pub fn document_changes_since(
+        &self,
+        revision: u64,
+        tables: &[&str],
+    ) -> Option<BTreeMap<String, BTreeSet<String>>> {
+        let revisions = self.revisions.lock().expect("revisions poisoned");
+        if tables
+            .iter()
+            .chain(std::iter::once(&"*"))
+            .all(|t| revisions.tables.get(*t).copied().unwrap_or(0) <= revision)
+        {
+            return Some(BTreeMap::new());
+        }
+        if revisions
+            .journal
+            .front()
+            .is_none_or(|(first, _)| *first > revision.saturating_add(1))
+        {
+            return None;
+        }
+        let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (_, changes) in revisions
+            .journal
+            .iter()
+            .filter(|(generation, _)| *generation > revision)
+        {
+            if changes.contains_key("*") {
+                return None;
+            }
+            for table in tables {
+                if let Some(ids) = changes.get(*table) {
+                    out.entry((*table).to_owned())
+                        .or_default()
+                        .extend(ids.as_ref()?.iter().cloned());
+                }
+            }
+        }
+        Some(out)
+    }
+
+    pub fn memory_changes_since(&self, revision: u64) -> Option<BTreeSet<String>> {
+        Some(
+            self.document_changes_since(revision, &[schema::MEMORIES])?
+                .remove(schema::MEMORIES)
+                .unwrap_or_default(),
+        )
     }
 
     /// Read-through metadata snapshot. All memory mutations invalidate it; failed writes cannot
@@ -466,24 +651,22 @@ impl Store {
         emb: Option<&[f32]>,
         model: &str,
     ) -> Result<()> {
-        let r = rid(table, id)?;
+        let record = rid(table, id)?;
+        let mut tx = Tx::new();
         match emb {
             Some(e) => {
-                self.query(
-                    &format!("UPDATE {r} SET embedding = $e, embeddingModel = $m RETURN NONE"),
+                tx.raw_record(
+                    table,
+                    id,
+                    &format!("UPDATE {record} SET embedding = $e, embeddingModel = $m RETURN NONE"),
                     vec![("e", json!(e)), ("m", json!(model))],
-                )
-                .await?;
+                );
             }
             None => {
-                self.query(
-                    &format!("UPDATE {r} SET embedding = NONE RETURN NONE"),
-                    vec![],
-                )
-                .await?;
+                tx.clear_fields(table, id, &["embedding"])?;
             }
         }
-        Ok(())
+        self.commit(tx).await
     }
 
     // ------------------------------------------------------------ logs
@@ -574,4 +757,134 @@ pub fn from_doc<T: DeserializeOwned>(v: Value) -> Result<T> {
         }
     }
     serde_json::from_value(v).context("decode record")
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn revisions_publish_only_successful_commits_and_survive_reopen() -> Result<()> {
+        let dir = std::env::temp_dir().join(util::new_id("store_revision_test"));
+        let store = Store::open(&dir, 2, "DEFINE TABLE projection_test SCHEMALESS;").await?;
+        let mut tx = Tx::new();
+        tx.put("projection_test", "one", json!({"value":1}))?;
+        store.commit(tx).await?;
+        let revision = store.document_revision(&["projection_test"]);
+        assert!(revision > 0);
+        assert_eq!(
+            store
+                .document_changes_since(0, &["projection_test"])
+                .unwrap()["projection_test"],
+            BTreeSet::from(["one".into()])
+        );
+        let mut failed = Tx::new();
+        failed.put("projection_test", "two", json!({"value":2}))?;
+        failed.raw("THROW 'deliberate rollback'", vec![]);
+        assert!(store.commit(failed).await.is_err());
+        assert_eq!(store.document_revision(&["projection_test"]), revision);
+        assert!(store.get_doc("projection_test", "two").await?.is_none());
+        assert!(store
+            .document_changes_since(revision, &["projection_test"])
+            .unwrap()
+            .is_empty());
+        let mut stale = Tx::new();
+        stale.put("projection_test", "two", json!({"value":2}))?;
+        assert!(store
+            .commit_if_revision(stale, &["projection_test"], 0)
+            .await?
+            .is_none());
+        assert!(store.get_doc("projection_test", "two").await?.is_none());
+        let mut opaque = Tx::new();
+        opaque.raw("DELETE projection_test RETURN NONE", vec![]);
+        store.commit(opaque).await?;
+        let opaque_revision = store.document_revision(&["projection_test"]);
+        assert!(opaque_revision > revision);
+        assert!(store
+            .document_changes_since(revision, &["projection_test"])
+            .is_none());
+        // Even a projection depending on another table must recover after opaque SQL.
+        assert_eq!(
+            store.document_revision(&[schema::MEMORIES]),
+            opaque_revision
+        );
+        drop(store);
+        let mut reopened = None;
+        for _ in 0..40 {
+            match Store::open(&dir, 2, "").await {
+                Ok(store) => {
+                    reopened = Some(store);
+                    break;
+                }
+                Err(error) if error.to_string() == "open surrealkv" => {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let reopened = reopened.expect("SurrealKV release after dropping store");
+        assert_eq!(
+            reopened.document_revision(&["projection_test"]),
+            opaque_revision
+        );
+        assert!(reopened
+            .document_changes_since(revision, &["projection_test"])
+            .is_none());
+        drop(reopened);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_mutation_variants_journal_their_ids() -> Result<()> {
+        let dir = std::env::temp_dir().join(util::new_id("store_memory_revision_test"));
+        let store = Store::open(&dir, 2, "").await?;
+        let doc = to_doc(&MemoryRec {
+            id: "memory1".into(),
+            mtype: T_FACT.into(),
+            text: "Alice likes tea".into(),
+            scope: MemScope::global(),
+            status: S_CURRENT.into(),
+            ..Default::default()
+        })?;
+        store.put_doc(schema::MEMORIES, "memory1", &doc).await?;
+        let revision = store.memory_revision();
+        store
+            .merge_doc(
+                schema::MEMORIES,
+                "memory1",
+                json!({"text":"Alice likes coffee"}),
+            )
+            .await?;
+        assert_eq!(
+            store.memory_changes_since(revision).unwrap(),
+            BTreeSet::from(["memory1".into()])
+        );
+        let revision = store.memory_revision();
+        store
+            .set_embedding(schema::MEMORIES, "memory1", Some(&[1.0, 0.0]), "mock")
+            .await?;
+        assert_eq!(
+            store.memory_changes_since(revision).unwrap(),
+            BTreeSet::from(["memory1".into()])
+        );
+        let revision = store.memory_revision();
+        store
+            .set_embedding(schema::MEMORIES, "memory1", None, "mock")
+            .await?;
+        assert_eq!(
+            store.memory_changes_since(revision).unwrap(),
+            BTreeSet::from(["memory1".into()])
+        );
+        let revision = store.memory_revision();
+        assert_eq!(store.active_memory_meta().await?.len(), 1);
+        let mut tx = Tx::new();
+        tx.raw("delete memories RETURN NONE", vec![]);
+        store.commit(tx).await?;
+        assert!(store.memory_changes_since(revision).is_none());
+        assert!(store.active_memory_meta().await?.is_empty());
+        drop(store);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
 }

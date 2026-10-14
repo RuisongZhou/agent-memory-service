@@ -1,4 +1,5 @@
-Mem0 additive extraction prompt, mem0ai 2.2.1.
-Source: https://github.com/mem0ai/mem0/tree/v2.2.1
+Mem0 additive extraction prompt, mem0ai npm 3.3.1 (Node/TypeScript OSS).
+Source: https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem0-ts/src/oss/src/prompts/index.ts
 Copyright Mem0 contributors. Licensed under Apache License 2.0 (see LICENSE).
-The prompt is copied unchanged; Rust orchestration and validation are original.
+The runtime template value of ADDITIVE_EXTRACTION_PROMPT is copied unchanged;
+Rust orchestration, strict validation and safe UTF-16 clipping are original.

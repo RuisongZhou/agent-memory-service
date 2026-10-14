@@ -77,6 +77,7 @@ pub async fn export(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResul
                 | schema::PROPOSALS
                 | schema::UNCERTAINTIES
                 | schema::REQUESTS
+                | schema::STORE_REVISIONS
         ) || eng.algorithm().owned_tables().contains(&table))
         {
             return Err(ApiError::InvalidArgument("unsupported export table".into()));

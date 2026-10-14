@@ -9,6 +9,7 @@ use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::tenant::Tenant;
 
 pub mod config;
+pub mod entities;
 pub mod formation;
 pub mod repo;
 pub mod retrieval;
@@ -18,12 +19,25 @@ pub mod runtime;
 pub const HASHES: &str = "mem0_hashes";
 pub const SOURCES: &str = "mem0_sources";
 pub const HISTORY: &str = "mem0_history";
-pub const OWNED_TABLES: &[&str] = &[HASHES, SOURCES, HISTORY];
+pub const ENTITIES: &str = "mem0_entities";
+pub const ENTITY_STATE: &str = "mem0_entity_state";
+pub const ENTITY_INPUTS: &str = "mem0_entity_inputs";
+pub const OWNED_TABLES: &[&str] = &[
+    HASHES,
+    SOURCES,
+    HISTORY,
+    ENTITIES,
+    ENTITY_STATE,
+    ENTITY_INPUTS,
+];
 
 const SCHEMA: &str = r#"
 DEFINE TABLE IF NOT EXISTS mem0_hashes SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS mem0_sources SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS mem0_history SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS mem0_entities SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS mem0_entity_state SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS mem0_entity_inputs SCHEMALESS;
 "#;
 
 pub struct Mem0;
