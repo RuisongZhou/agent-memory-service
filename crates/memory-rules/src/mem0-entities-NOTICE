@@ -1,0 +1,4 @@
+Mem0 Node SDK 3.3.1 regex entity extraction fallback.
+Source: https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem0-ts/src/oss/src/utils/entity_extraction.ts
+Copyright Mem0 contributors. Apache License 2.0 (see mem0-entities-LICENSE).
+Rust port preserves fallback patterns, lists, cleanup and ordering; optional compromise NLP is not enabled.

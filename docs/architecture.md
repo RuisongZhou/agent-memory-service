@@ -95,7 +95,7 @@ For the complete Chinese design report, request lifecycle diagrams, code-reading
 
 The default `mem0` strategy selects paired formation/retrieval modules. `memory-algo-mem0/src/formation.rs` owns durable
 ordered inputs, the pinned one-call additive extraction contract, scoped content identity and batch
-vector admission. `memory-algo-mem0/src/retrieval.rs` owns semantic search and explicitly enabled reranking. Pure ranking
+vector admission. `memory-algo-mem0/src/retrieval.rs` owns the Node SDK 3.3.1 semantic/BM25/entity scoring pipeline and optional reranking. Pure ranking
 and content identity live in `memory-rules::mem0`; generic transactions and vector reads remain in storage.
 The Memos algorithm remains selectable as `memos`, with its numeric defaults unchanged.
 
@@ -105,6 +105,12 @@ checkpoint republishes saved vectors without extraction. The lexical worker reco
 admission tasks, while ordinary correction/rebuild tasks still regenerate vectors. No read forms memories.
 
 Mem0-mode jobs retain full raw input in `requests`; `mem0_sources` explicitly declares batch provenance.
+Current extraction messages remain complete. Historical prompt context uses the last ten messages
+from durably formed inferred requests in the same platform/project/session, with a 300-UTF-16-unit
+view per message. Failed/raw requests remain auditable but do not enter that conversation history;
+project memory visibility is unchanged. Rebuildable `mem0_entities` and `mem0_entity_state` track entity
+vectors/links and projection versions. Formation publishes them after the primary commit; search repairs
+stale projections under the formation lock before entity scoring. See [SDK 3.3.1 alignment](design/mem0-sdk-3.3.1-alignment.md).
 The model cannot assign visibility scopes or database IDs, and inferred text is not called a verified quote.
 Automatic P2 and periodic LLM maintenance do not run in this strategy. Legacy source/formation records are
 never silently reinterpreted. A small startup check rejects data directories containing unfinished jobs from the other algorithm.

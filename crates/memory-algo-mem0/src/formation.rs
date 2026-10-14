@@ -1,4 +1,4 @@
-//! Durable Mem0 2.2.1 additive formation. Raw inputs precede generation; vectors and receipts
+//! Durable Mem0 Node SDK 3.3.1 additive formation. Raw inputs precede generation; vectors and receipts
 //! commit together. Batch provenance is never presented as a verified per-claim quotation.
 use super::config::Mem0Config;
 use super::repo;
@@ -139,6 +139,14 @@ pub async fn enqueue(
             }
             previous = Some(timestamp);
         }
+        if messages
+            .iter()
+            .all(|message| message.content.trim().is_empty())
+        {
+            return Err(ApiError::InvalidArgument(
+                "messages must contain nonblank content".into(),
+            ));
+        }
         if req.turn_id.as_deref().is_none_or(|id| id.is_empty()) {
             return Err(ApiError::InvalidArgument("turnId required".into()));
         }
@@ -217,7 +225,7 @@ async fn process_until(eng: &Arc<Engine>, t: &Arc<Tenant>, stop: Option<&str>) -
             .as_str()
             .ok_or_else(|| anyhow!("missing requestId"))?;
         if job["status"] == "indexing" {
-            publish_committed(t, &job).await?;
+            publish_committed(eng, t, &job).await?;
             if stop == Some(id) {
                 break;
             }
@@ -294,10 +302,11 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
             .collect()
     } else {
         let tick = Instant::now();
-        let query = messages
-            .iter()
-            .map(|m| format!("{}: {}\n", m.role, m.content))
-            .collect::<String>();
+        let query = memory_rules::mem0::format_new_messages(
+            messages
+                .iter()
+                .map(|m| (m.role.as_str(), m.content.as_str())),
+        );
         let old = super::retrieval::dense(
             eng,
             t,
@@ -314,35 +323,35 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
             .enumerate()
             .map(|(i, (m, _))| json!({"id":i.to_string(),"text":m.text}))
             .collect::<Vec<_>>();
-        let previous = repo::previous_inputs(t, platform, project, job["inputSeq"].clone()).await?;
+        let previous = repo::previous_inputs(
+            t,
+            platform,
+            project,
+            job["session"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing session"))?,
+            job["inputSeq"].clone(),
+        )
+        .await?;
         let parsed = previous
             .into_iter()
             .rev()
             .map(|p| serde_json::from_value::<Vec<InMessage>>(p["inputMessages"].clone()))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut history: Vec<InMessage> = parsed.into_iter().flatten().collect();
-        if history.len() > 10 {
-            history.drain(..history.len() - 10);
-        }
-        let history = history
-            .iter()
-            .map(|m| {
-                let clipped = m.content.chars().take(300).collect::<String>();
-                let suffix = if m.content.chars().count() > 300 {
-                    "..."
-                } else {
-                    ""
-                };
-                format!("{}: {}{}\n", m.role, clipped, suffix)
-            })
-            .collect::<String>();
-        // Match the SDK prompt builder's sections and string message representation.
+        let history_messages: Vec<InMessage> = parsed.into_iter().flatten().collect();
+        let history = memory_rules::mem0::format_history_messages(
+            history_messages
+                .iter()
+                .map(|m| (m.role.as_str(), m.content.as_str())),
+        );
+        // Match the Node SDK prompt builder's sections and string message representation.
+        // Node SDK 3.3.1 uses JSON.stringify: compact JSON, with id before text.
         let old_json = format!(
             "[{}]",
             old.iter()
-                .map(|m| format!("{{\"id\": {}, \"text\": {}}}", m["id"], m["text"]))
+                .map(|m| format!("{{\"id\":{},\"text\":{}}}", m["id"], m["text"]))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(",")
         );
         let mut sections = vec![
             "## Summary\n".to_string(),
@@ -350,6 +359,8 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
             "## Recently Extracted Memories\n[]".into(),
             format!("## Existing Memories\n{old_json}"),
             format!("## New Messages\n{query}"),
+            // Service adaptation: preserve the actual timestamp of historical inputs;
+            // Node SDK's default observation date is today's UTC date.
             format!("## Observation Date\n{}", &observed[..10]),
             format!("## Current Date\n{}", util::now().date_naive()),
         ];
@@ -436,7 +447,9 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
     for (mid, inputs) in repeated_sources {
         tx.merge(super::SOURCES, &mid, json!({"inputRequestIds":inputs}))?;
     }
-    for ((hash, candidate), vector) in fresh.into_iter().zip(vectors) {
+    for (formation_position, ((hash, candidate), vector)) in
+        fresh.into_iter().zip(vectors).enumerate()
+    {
         let mid = util::new_id("m");
         let attributed = candidate.attributed_to.clone();
         let record = MemoryRec {
@@ -467,6 +480,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
         let mut doc = store::to_doc(&record)?;
         doc["embedding"] = json!(vector);
         doc["formationVersion"] = json!(FORMAT);
+        doc["formationPosition"] = json!(formation_position);
         doc["contentHash"] = json!(hash);
         doc["ingestionMode"] = json!(if inferred { "inferred" } else { "raw" });
         tx.put(schema::MEMORIES, &mid, doc)?;
@@ -502,6 +516,9 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
     }
     drop(vectors);
     t.wake_indexer();
+    // Primary input formation is durable already. Entity publication is a rebuildable
+    // projection; failure leaves the request indexing and resumes without generation.
+    super::entities::reconcile_locked(eng, t).await?;
     t.store.merge_doc(schema::REQUESTS,id,json!({"status":"completed","searchable":true,"latencyMs":{"recall":recall_ms,"model":model_ms,
         "embed":embed_ms,"persist":tick.elapsed().as_secs_f64()*1000.0,
         "total":started.elapsed().as_secs_f64()*1000.0}})).await?;
@@ -509,7 +526,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
 }
 
 /// Resume after a crash between primary/vector commit and cache publication, without generation.
-async fn publish_committed(t: &Arc<Tenant>, job: &Value) -> Result<()> {
+async fn publish_committed(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
     let id = job["requestId"]
         .as_str()
         .ok_or_else(|| anyhow!("missing requestId"))?;
@@ -527,6 +544,7 @@ async fn publish_committed(t: &Arc<Tenant>, job: &Value) -> Result<()> {
         ensure!(!vector.is_empty(), "committed vector missing");
         t.vecs.write().await.memories.insert(mid, Arc::new(vector));
     }
+    super::entities::reconcile_locked(eng, t).await?;
     t.store.merge_doc(schema::REQUESTS,id,json!({"status":"completed","searchable":true,"error":null,"updatedAt":util::now_str()})).await
 }
 

@@ -19,6 +19,9 @@ selftest:
 	MEMORY_MOCK_MODELS=1 target/fast/agent-memoryd selftest
 smoke:
 	$(PYTHON) scripts/http_smoke.py --bin target/fast/agent-memoryd --output results/http-smoke.json
+	$(PYTHON) scripts/mem0_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-http-smoke.json
+	$(PYTHON) scripts/mem0_history_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-history-http-smoke.json
+	$(PYTHON) scripts/mem0_hybrid_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-hybrid-http-smoke.json
 fmt:
 	$(CARGO) fmt --all -- --check
 check-public:

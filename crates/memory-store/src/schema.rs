@@ -6,6 +6,7 @@ pub const EVIDENCE: &str = "evidence";
 pub const ENTITIES: &str = "entities";
 pub const INDEX_TASKS: &str = "index_tasks";
 pub const INDEX_META: &str = "index_meta";
+pub const STORE_REVISIONS: &str = "store_revisions";
 pub const REQUESTS: &str = "requests";
 pub const UNCERTAINTIES: &str = "uncertainties";
 pub const RETRIEVAL_LOG: &str = "retrieval_log";
@@ -24,6 +25,7 @@ pub const SHARED_TABLES: &[&str] = &[
     ENTITIES,
     INDEX_TASKS,
     INDEX_META,
+    STORE_REVISIONS,
     REQUESTS,
     RETRIEVAL_LOG,
     EXTRACT_LOG,

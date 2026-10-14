@@ -50,7 +50,7 @@ curl -s http://127.0.0.1:8765/v1/search_memories \
 
 The core schemas are in `crates/memory-domain/src/types.rs`; examples live in `examples/`.
 
-## Recent-turn buffer
+## Memos recent-turn buffer
 
 `add_memories` stores both messages of a turn verbatim; only the HTTP body limit (axum's default, 2 MB) bounds them. Each turn also has a digest, the user and assistant heads within `digestMaxBytes` (default 2048 bytes). A message longer than its share of the digest is also split into overlapping windows of `digestMaxBytes / 2` bytes, and every window is embedded next to the digest vector. Short turns are stored and indexed exactly as before.
 
@@ -59,6 +59,16 @@ The core schemas are in `crates/memory-domain/src/types.rs`; examples live in `e
 Formation keeps its bounded view of each message: over `maxMessageBytes` (default 8 KB), prompts, source-span checks and P2 evidence use the head and tail 4 KB.
 
 ## Memory strategy
+
+Mem0 preserves the full current `messages` batch for inference. Only the historical prompt view is
+limited to the latest ten messages and 300 UTF-16 units per message, preserving whole characters. History is restricted to
+the same tenant/platform/project/session and successfully formed inferred requests; raw writes and
+failed formation requests are excluded. Successful zero-memory extraction still contributes context.
+Long-term project facts remain available across sessions. The Memos `maxMessageBytes` setting above
+does not clip Mem0 current messages. See [the Node SDK 3.3.1 design](design/mem0-sdk-3.3.1-alignment.md).
+
+`list_turns` returns complete batches that fit its `tokenBudget`; it can skip a long batch rather than
+truncate it. Increase the inspection budget or inspect the stored request when auditing long inputs.
 
 ### Prompt families
 
@@ -130,10 +140,20 @@ complete durable input requests, not a model-selected verified quote. Event date
 memory text; an unknown `effectiveAt` is empty. Observation and ingestion times are distinct.
 Existing verified evidence and historical records remain intact.
 
-Search defaults to semantic similarity, `mem0TopK:20` (`topK` overrides per request), `mem0Threshold:0.1`, and the configured token budget.
+Search follows Node SDK 3.3.1's semantic candidate pool plus BM25 and entity scoring, using its built-in
+NLP fallback without optional natural/compromise. Defaults remain `mem0TopK:20` (`topK` overrides per request),
+`mem0Threshold:0.1` (the semantic gate before fusion), and the configured token budget.
 It returns whole memory records in score order, without profiles or recent messages. Retrieval makes
 no generative call. `mem0Rerank:false` avoids even loading the reranker. To configure it, use
-`mem0Rerank:true`; requests may override with `rerank:false/true`. Evidence reads are explicit.
+`mem0Rerank:true`; requests may override with `rerank:false/true`. Reranking applies after hybrid topK;
+`score` remains the hybrid score and `rerankScore` is added when available. A missing or failed optional
+reranker leaves hybrid ordering intact. Evidence reads are explicit.
+
+Entity projection is built after inferred formation and repaired before search when primary memories
+change. Correction/deletion can leave projection rows pending until the next search, which reconciles
+them before scoring and rechecks authoritative memory state before returning results. Old Mem0 stores
+are backfilled from verified inferred provenance; raw writes do not create entities. These paths use
+local embeddings but no generative calls. Projection tables are inspectable through admin export.
 `mem0MaxTokens` defaults to the SDK's 2,000 output tokens; `mem0CustomInstructions` supplies domain-specific
 formation guidance. Projects remain explicit visibility namespaces; a search with project `"*"`
 selects all visible project records in the single-user store. Caller headers remain routing metadata,

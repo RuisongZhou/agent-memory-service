@@ -2,6 +2,7 @@
 //! each LoCoMo conversation in its own store inside one daemon process (models are loaded once).
 use anyhow::Result;
 use memory_fulltext::{EntityDict, FullText};
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -35,6 +36,7 @@ pub struct Tenant {
     index_notify: Notify,
     index_lock: Mutex<()>,
     pending_jobs: AtomicI64,
+    algorithm_states: std::sync::Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Tenant {
@@ -61,7 +63,23 @@ impl Tenant {
             index_notify: Notify::new(),
             index_lock: Mutex::new(()),
             pending_jobs: AtomicI64::new(0),
+            algorithm_states: std::sync::Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Algorithm-owned typed state follows this tenant/store instance's lifetime. The
+    /// shared runtime neither names algorithm types nor retains tenants globally.
+    pub fn algorithm_state<T: Default + Send + Sync + 'static>(&self) -> Arc<T> {
+        let mut states = self
+            .algorithm_states
+            .lock()
+            .expect("algorithm states poisoned");
+        states
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Arc::new(T::default()))
+            .clone()
+            .downcast::<T>()
+            .expect("algorithm state type")
     }
 
     /// Serialises the formation pipeline (mem0 jobs; memos P1/P1-b/P2/relations) and every administrative

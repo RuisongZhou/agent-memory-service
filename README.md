@@ -37,7 +37,7 @@ Choose the formation/retrieval strategy before starting the daemon:
 
 | Strategy | Formation and retrieval | Reranker |
 |---|---|---|
-| `mem0` (default) | Ordered additive fact formation based on the Mem0 OSS 2.2.1 prompt; semantic search; complete submitted message batches remain readable | Disabled by default; enable with `mem0Rerank:true` in JSON configuration |
+| `mem0` (default) | Ordered additive formation based on Node SDK 3.3.1; entity projection and semantic/BM25/entity scoring using its built-in NLP fallback; complete input batches remain readable | Disabled by default; enable with `mem0Rerank:true` in JSON configuration |
 | `memos` | Recent-turn buffer, asynchronous fact formation, session-end experiences and summaries, hybrid retrieval | Enabled by default; the daemon supports `--no-reranker` |
 
 One process uses one strategy for all tenants. HTTP/MCP requests cannot change it. Use separate data directories when trying the two strategies; startup rejects unfinished jobs belonging to the other algorithm. Detailed lifecycle and provenance differences are in [API and configuration](docs/api.md#memory-strategy).
