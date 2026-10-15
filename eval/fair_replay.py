@@ -70,7 +70,7 @@ def main() -> None:
 
         (target / "health.json").write_text(json.dumps(client.get("/health").json(), indent=2))
         if args.system != 'mem0' and health.json().get('memoryStrategy', 'memos') not in ('memos', 'current'):
-            raise ValueError('archived service replay requires MEMORY_STRATEGY=memos')
+            raise ValueError('archived service replay requires a Memos daemon from codex/mem0-memos or its frozen binary')
         stores = None
         if args.system == "mem0":
             if not args.mem0_stores:

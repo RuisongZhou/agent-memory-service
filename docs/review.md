@@ -1,5 +1,7 @@
 # 实现 Review 和公开发布整理
 
+> 历史发布整理记录。文中的 P1–P5、旧配置和双策略行为属于 [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos)；当前 main 仅保留 Mem0，见 [当前架构](architecture.md)。
+
 本轮保留已实现的形成、证据、更新链、混合检索语义，整理成独立 Cargo workspace。embedding 与重排模型改由外部 llama-server（Q8_0 GGUF）提供，服务通过 HTTP 调用，不再内置推理框架。评测仍停留在已完成的 conv-26；没有重新跑付费答题，也没有启动剩余九段。
 
 ## 已修复问题

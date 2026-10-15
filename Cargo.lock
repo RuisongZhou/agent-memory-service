@@ -2560,25 +2560,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memory-algo-memos"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "chrono",
- "memory-config",
- "memory-domain",
- "memory-engine",
- "memory-fulltext",
- "memory-rules",
- "memory-store",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "memory-config"
 version = "0.1.0"
 dependencies = [
@@ -2649,7 +2630,6 @@ dependencies = [
  "chrono",
  "clap",
  "memory-algo-mem0",
- "memory-algo-memos",
  "memory-config",
  "memory-domain",
  "memory-engine",

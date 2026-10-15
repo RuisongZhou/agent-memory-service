@@ -60,7 +60,7 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
         "index": {"fulltextDocs": t.ft.num_docs(), "memoryVectors": vm, "turnVectors": vt, "turnChunkVectors": vc,
                   "pendingTasks": indexer::pending(t).await?},
         "retrieval": {"gapSearches": gap_searches},
-        "jobs": indexer::stats_json(t),
+        "jobs": {"pendingJobs": t.store.count(schema::REQUESTS, Some("status IN ['queued','running','indexing']")).await?},
     }))
 }
 

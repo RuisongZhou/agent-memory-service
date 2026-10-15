@@ -110,7 +110,6 @@ async fn admin(
     let res: ApiResult<Value> = async {
         let t = eng.tenant(&c.tenant).await?;
         match name.as_str() {
-            "run_jobs" => eng.run_jobs(&t, &c, body).await,
             "wait_idle" => ingest::wait_idle(&eng, &t).await,
             "stats" => management::stats(&eng, &t).await,
             "export" => management::export(&eng, &t, body).await,

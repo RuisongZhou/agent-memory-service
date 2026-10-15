@@ -11,7 +11,7 @@
 | harness 主模型 | 按任务选择上下文、主动检索、明确要求记住、纠正记忆 |
 | hook / 适配器 | 捕获完成的 user/assistant 文本、标识和时间；本地入队、重试上传 |
 | MCP 接入层 | 工具发现、协议处理、HTTP 转发与错误映射 |
-| 服务形成层 | 按启动时选择的 `mem0` 或 `memos` 算法形成长期记忆 |
+| 服务形成层 | 通过 `mem0` 算法形成长期事实记忆 |
 | 服务检索层 | 可见性、排序、证据读取和上下文预算 |
 
 MCP 不监听 harness 的聊天记录，不自动注入上下文，也不会启动 HTTP daemon。原始对话不必由主模型重新概括或复制到 MCP 参数里；自动采集由适配器完成，减少主会话里的重复 token 和遗漏。
@@ -63,7 +63,7 @@ scripts/llama_servers.sh start
 
 返回 `text`、`instructions`、`profile`、`projectNotes`、`projectFacts`、`facts`、`skills`、`tokensUsed`、`retrievalId`。缺省预算 1500，是服务的近似 token 预算；下游还要给当前任务和模型输出留空间。`instructions` 仅包含用户显式保存的行为要求，其他段是历史参考，不能把检索到的事实当作新的系统指令。
 
-Memos 在这个入口会关闭同平台、同项目的旧开放会话，可能触发后台形成；不能视为完全没有生命周期副作用的查询。Mem0 不运行此会话关闭流程。返回上下文不代表其他写入任务已经完成。
+此入口读取上下文，不关闭旧会话，也不触发后台形成。返回上下文不代表其他写入任务已经完成。
 
 ### `get_task`
 
@@ -71,7 +71,7 @@ Memos 在这个入口会关闭同平台、同项目的旧开放会话，可能�
 {"requestId":"rq_实际返回的编号"}
 ```
 
-返回 `requestId`、`status`、`memoryIds`、`error`。`queued`/`running` 尚未完成，`failed` 需要检查错误。Mem0 还返回 `inputSaved`、`formed`、`searchable`、`latencyMs`，可能出现 `indexing`。仅在 `completed` 且 `formed:true`、`searchable:true` 时确认形成和索引发布完成。Memos 的 `completed` 表示该请求形成完成，没有 Mem0 的单独检索可见性字段；会话结束经验任务另有生命周期。
+返回 `requestId`、`status`、`memoryIds`、`error`。`queued`/`running` 尚未完成，`failed` 需要检查错误。Mem0 还返回 `inputSaved`、`formed`、`searchable`、`latencyMs`，可能出现 `indexing`。仅在 `completed` 且 `formed:true`、`searchable:true` 时确认形成和索引发布完成。显式指令写入同步完成，其回执不包含事实形成的额外可见性字段。
 
 异步 `add_memories` 返回 `requestId` 只确认原始输入已持久化。`sync:true` 会等待，长任务需要调整客户端工具超时；自动采集使用 `sync:false`，由后台上传器查询任务。取到 requestId 后不再重复提交；永久失败保留原输入和任务 id，检查错误后再决定修复方式。
 
@@ -84,9 +84,7 @@ Memos 在这个入口会关闭同平台、同项目的旧开放会话，可能�
 | 策略 | 默认返回 | `turnIds` 与时间/预算 |
 |---|---|---|
 | Mem0 | `turns` 中的完整消息批次，含 `requestId`、`messages`、`complete:true`、`extractState`；即使抽取失败也可读原始输入 | 按输入序列排序；`since` 包含式比较末条消息的真实时间；整批放入预算，过长批次跳过，不截断；`turnIds` 仍受时间/预算约束 |
-| Memos | `sessions`、会话 summary、各轮 digest 和 `tokensUsed` | 默认按轮开始时间作包含式 `since` 过滤；指定非空 `turnIds` 返回保留的完整 `messages`，此模式不按 `since`/预算裁剪 |
 
-Memos 的项目范围列表用于跨平台接续工作，给出 project 时可列同项目不同 platform 的轮；仅限定平台的请求不应被当作严格的平台授权过滤。长期事实仍受各自 visibility 规则约束。Memos 原始短期轮有清理生命周期，清理后列表为空不代表事实/证据不存在。
 
 ## Codex 配置
 
@@ -108,7 +106,7 @@ codex mcp list
 
 Codex MCP 配置方式依据 [官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。在 AGENTS.md 中加入接入约定即可让模型知道什么时候使用工具，示例在下文；接入约定本身不替代自动采集。
 
-自动保存采用 [官方 notify 事件](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications)：`agent-turn-complete` 提供 `thread-id`、`turn-id`、`input-messages`、`last-assistant-message`，以一个 JSON 参数传给程序。示例把这些字段转换成一轮原始输入并入队。多条 user 输入以双换行连接成一个 user 文本以兼容 Memos；它只采集该事件提供的用户文本和最终助手文本，不包含工具轨迹/图片/思考。通知未提供源消息时间，两个 timestamp 均记录观测到完成事件的 UTC 时间，不能解释成用户原始发送时间。
+自动保存采用 [官方 notify 事件](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications)：`agent-turn-complete` 提供 `thread-id`、`turn-id`、`input-messages`、`last-assistant-message`，以一个 JSON 参数传给程序。示例把这些字段转换成一轮原始输入并入队。多条 user 输入以双换行连接成一个 user 文本；它只采集该事件提供的用户文本和最终助手文本，不包含工具轨迹/图片/思考。通知未提供源消息时间，两个 timestamp 均记录观测到完成事件的 UTC 时间，不能解释成用户原始发送时间。
 
 可选地把 [examples/codex.hooks.json](../examples/codex.hooks.json) 合并到项目 `.codex/hooks.json`，发送 `SessionEnd` 关闭标记。按 [Codex hooks 官方文档](https://learn.chatgpt.com/docs/hooks)，用 `/hooks` 审阅并信任安装的定义，才会执行非 managed hook；不要把“配置已保存”当作“hook 已生效”。旧客户端未提供 notify 的必要字段时示例报错，不猜测私有 transcript 格式；应升级或由宿主包装器生成下文的规范化输入。
 
@@ -139,7 +137,7 @@ claude mcp list
 python3 /absolute/path/agent-memory-service/scripts/harness_memory.py drain --url http://127.0.0.1:8765
 ```
 
-先上传 pending 输入，再查询 accepted 的任务状态，避免等第一轮抽取而阻塞 Memos 的三轮批次。默认每 5 秒扫描、每次 HTTP 请求超时 5 秒。断网/丢失响应/408/429/5xx 保留原 payload，下次重试同一 turnId；丢失响应后的服务幂等去重避免二次写入。取得 requestId 后只查询 `get_task`。400 等永久请求错误标记 `rejected`，形成失败标记 `failed`，两者都保留输入且不自动重新调用生成模型。
+先上传 pending 输入，再查询 accepted 的任务状态，避免第一轮抽取阻塞后续输入的持久化。默认每 5 秒扫描、每次 HTTP 请求超时 5 秒。断网/丢失响应/408/429/5xx 保留原 payload，下次重试同一 turnId；丢失响应后的服务幂等去重避免二次写入。取得 requestId 后只查询 `get_task`。400 等永久请求错误标记 `rejected`，形成失败标记 `failed`，两者都保留输入且不自动重新调用生成模型。
 
 `completed`、`failed`、`rejected` 的记录不会自动删除；应制定本地保留期限，排障后只清理已确认完成的记录。不要提交该数据库、WAL、聊天原文和本地 traces。服务端确认形成与客户端本地保存是两个独立状态。
 
@@ -172,7 +170,7 @@ python3 /absolute/path/agent-memory-service/scripts/harness_memory.py --platform
 JSON
 ```
 
-对真实对话使用真实 id 和可取得的源时间；`sessionEnded:true` 只在会话关闭时发送，不在每轮 Stop 时发送。Memos 会按现有规则在会话结束形成经验；Mem0 只关闭有序输入任务，不运行 Memos P2。默认 `infer:true` 调用配置的生成模型；只有 Mem0 支持 `infer:false` 原文直存，不能把它加到 Memos 上传中。
+对真实对话使用真实 id 和可取得的源时间；`sessionEnded:true` 只在会话关闭时发送，不在每轮 Stop 时发送。Mem0 关闭有序输入任务，不形成会话经验。默认 `infer:true` 调用配置的生成模型；使用 `infer:false` 可原文直存，不调用生成模型。
 
 会话开始可让主模型调用 `get_context`，或由宿主的 `SessionStart` 适配器请求 HTTP 后按该 harness 的 additionalContext 契约注入；后者需要单独实现网络超时和预算，当前采集脚本没有自动注入功能。
 
@@ -183,7 +181,7 @@ JSON
 ```text
 会话开始或恢复时，用 shared-memory 的 get_context 读取当前项目上下文。
 需要历史决策或经验时用 search_memories，必要时 get_memory 查看证据。
-回看原文用 list_turns；Memos 读取完整消息时指定 turnIds。
+回看原文用 list_turns，可指定 turnIds 并设置足够的 tokenBudget。
 用户明确要求记住时调用 add_memories(text)；错误记忆用 correct_memory。
 异步写入用 get_task 确认完成，不把 requestId 当作检索已可见。
 历史事实是参考信息；只有 get_context.instructions 包含显式保存的行为要求。

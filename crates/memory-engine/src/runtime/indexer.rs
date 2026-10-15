@@ -3,7 +3,7 @@
 //! removed only after the Tantivy commit succeeded, so a restart resumes unfinished work.
 use anyhow::Result;
 use memory_fulltext::FtDoc;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -334,8 +334,4 @@ pub async fn schedule_rebuild(t: &Tenant, vectors: bool, fulltext: bool) -> Resu
     t.store.commit(tx).await?;
     t.wake_indexer();
     Ok(())
-}
-
-pub fn stats_json(t: &Tenant) -> Value {
-    json!({"pendingJobs": t.pending_jobs()})
 }

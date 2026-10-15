@@ -87,7 +87,7 @@ score = min((semantic + normalizedBM25 + entityBoost)
 
 ### 分层
 
-`memory-rules`保存消息格式化、实体正则、词形、BM25和评分纯规则；`memory-algo-mem0/entities.rs`协调实体投影；`repo.rs`集中数据库查询；formation和retrieval分别协调写读。公共API、运行时和存储引擎不引入Mem0专属NLP逻辑；Memos流程保持独立。
+`memory-rules`保存消息格式化、实体正则、词形、BM25和评分纯规则；`memory-algo-mem0/entities.rs`协调实体投影；`repo.rs`集中数据库查询；formation和retrieval分别协调写读。公共API、运行时和存储引擎不引入Mem0专属NLP逻辑。
 
 ## 5. 保留的服务边界
 

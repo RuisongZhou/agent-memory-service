@@ -5,7 +5,6 @@ members = [
     "crates/memory-config",
     "crates/memory-engine",
     "crates/memory-algo-mem0",
-    "crates/memory-algo-memos",
     "crates/memory-domain",
     "crates/memory-store",
     "crates/memory-fulltext",
@@ -45,9 +44,6 @@ opt-level = 1
 opt-level = 1
 
 [profile.fast.package.memory-algo-mem0]
-opt-level = 1
-
-[profile.fast.package.memory-algo-memos]
 opt-level = 1
 
 [profile.fast.package.memory-domain]

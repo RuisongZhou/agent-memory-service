@@ -33,16 +33,18 @@ Start the model servers and daemon before connecting agent clients. MCP registra
 
 The daemon exposes ordinary JSON HTTP endpoints, **not an HTTP MCP endpoint**. Configure clients with a stdio command, not an MCP `url` pointing to port 8765. There is no `/mcp`, SSE, or Streamable HTTP MCP endpoint in this repository.
 
-Choose the formation/retrieval strategy before starting the daemon:
+The main branch supports the Mem0 strategy:
 
 | Strategy | Formation and retrieval | Reranker |
 |---|---|---|
 | `mem0` (default) | Ordered additive formation based on Node SDK 3.3.1; entity projection and semantic/BM25/entity scoring using its built-in NLP fallback; complete input batches remain readable | Disabled by default; enable with `mem0Rerank:true` in JSON configuration |
-| `memos` | Recent-turn buffer, asynchronous fact formation, session-end experiences and summaries, hybrid retrieval | Enabled by default; the daemon supports `--no-reranker` |
 
-One process uses one strategy for all tenants. HTTP/MCP requests cannot change it. Use separate data directories when trying the two strategies; startup rejects unfinished jobs belonging to the other algorithm. Detailed lifecycle and provenance differences are in [API and configuration](docs/api.md#memory-strategy).
-
-Memos prompt names such as P1, P2 and P3 identify processing stages; each stage has `zh` and `en` conversation adapters. See the [prompt reference](docs/api.md#prompt-families) for the active files, their triggers and the distinction between service skill memories and agent-platform skills.
+`--memory-strategy mem0` remains accepted for existing launchers. Other strategy values and retired
+buffer/maintenance settings are rejected before models or stores are opened. The previous combined
+Mem0 + Memos implementation is preserved on [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos) at the split point
+`971ac13`. Use that branch and a separate data directory to run the historical strategy.
+Main rejects stores containing unfinished legacy formation jobs; finish them with the preserved
+version first. Switching branches does not migrate a data directory. See [API and configuration](docs/api.md#memory-strategy).
 
 ## Install and deploy
 
@@ -150,7 +152,7 @@ llama-server -m models/gguf/bge-reranker-v2-m3-Q8_0.gguf \
   -c 8192 -np 4 -ub 2048 -b 2048 -ngl 0 --alias bge-reranker-v2-m3 --no-webui
 ```
 
-Change `-ngl 0` to the offload setting appropriate for your llama.cpp build. Default Mem0 only needs the embedding server; starting both makes the same setup usable for Memos or explicitly enabled Mem0 reranking.
+Change `-ngl 0` to the offload setting appropriate for your llama.cpp build. Default Mem0 only needs the embedding server; start the reranker only when explicitly enabling Mem0 reranking.
 
 The script also accepts `LLAMA_EMBED_MODEL`, `LLAMA_RERANK_MODEL`, `LLAMA_EMBED_PORT`, `LLAMA_RERANK_PORT`, `LLAMA_CTX`, `LLAMA_PARALLEL`, and `LLAMA_RUN_DIR`. If you change ports, supply matching `--embed-url`/`--rerank-url` to the Python launcher. Keep the model endpoints on loopback.
 
@@ -169,18 +171,7 @@ python3 scripts/serve.py \
 
 This runs in the foreground. Keep the terminal open or use the [process-manager setup](#keep-services-running). An explicit data path avoids the launcher's relative `daemon-data` default and the direct binary's different `./memory-data` default.
 
-For Memos, stop the first daemon and start a separate store:
-
-```sh
-mkdir -p "$HOME/.local/share/agent-memory-service/memos"
-chmod 700 "$HOME/.local/share/agent-memory-service/memos"
-python3 scripts/serve.py \
-  --memory-strategy memos \
-  --data-dir "$HOME/.local/share/agent-memory-service/memos" \
-  --max-calls 60
-```
-
-The launcher defaults to one concurrent generation request. Use `--llm-concurrency` to change it. `--max-calls 60` limits process-local generation attempts, including retries; it is a soft guard that resets on restart, not a persistent spending limit. Long-running installations must choose an appropriate guard and provider-side budget. `--max-calls 0` removes the launcher's guard. Dialogue formation, explicit fact extraction, and Memos maintenance can use generation; search uses local retrieval models and makes no generative call.
+The launcher defaults to one concurrent generation request. Use `--llm-concurrency` to change it. `--max-calls 60` limits process-local generation attempts, including retries; it is a soft guard that resets on restart, not a persistent spending limit. Long-running installations must choose an appropriate guard and provider-side budget. `--max-calls 0` removes the launcher's guard. Dialogue formation and explicit fact extraction can use generation; search uses local retrieval models and makes no generative call.
 
 Additional launcher options include `--port`, `--embed-url`, `--rerank-url`, `--config`, and `--bin`. A release build can be selected with `--bin target/release/agent-memoryd` after `cargo build --locked -p memory-service --bin agent-memoryd --release`. To use daemon-only flags such as `--prompt-variant en` or `--no-reranker`, run the binary directly with the required environment variables exported; consult `serve --help`.
 
@@ -282,12 +273,12 @@ Use the same daemon, tenant, and stable project ID across clients. Give each cli
 | Tenant | `default` | Storage namespace; MCP selects it with `MEMORY_TENANT` |
 | Project | `my-project` | Shared logical project ID, independent of machine paths |
 | Platform | `codex` or `claude-code` | Caller identity set by the bridge's `--platform` |
-| Session | Native thread/session ID | Groups dialogue and drives Memos session lifecycle |
+| Session | Native thread/session ID | Groups the ordered input history for formation |
 | Turn ID | `my-project/session-id/native-turn-id` | Stable retry key; the adapter URL-encodes each component |
 
 Tenant and platform headers are routing metadata, **not authentication**. Global memories and matching project memories are shared across platforms; platform-scoped memories are normally visible only to their originating platform. Mem0 raw-input reads default to the calling platform; use `scope.platform:"*"` when intentionally reading inputs from all platforms.
 
-In Memos, `get_context` can close a previous open session in the same platform/project and schedule background formation. Mem0 does not use that session-close path. Supply the actual current session ID when starting or resuming work.
+`get_context` reads context without closing sessions or triggering formation. Supply the actual current session ID when starting or resuming work.
 
 Merge an instruction such as this into the target project's `AGENTS.md` or `CLAUDE.md`, replacing the project ID:
 
@@ -295,8 +286,8 @@ Merge an instruction such as this into the target project's `AGENTS.md` or `CLAU
 Use shared-memory with project "my-project" and the actual current session ID.
 At session start or resume, call get_context with a modest tokenBudget.
 Search for relevant past decisions before repeating investigation; inspect sources
-with get_memory when a decision depends on them. Use list_turns for original input;
-in Memos, provide turnIds to read retained complete messages.
+with get_memory when a decision depends on them. Use list_turns for original input,
+optionally filtered by turnIds within the requested token budget.
 When the user explicitly asks to remember a fact, use add_memories with text.
 For an explicit behavior requirement, use memoryType:"instruction" with text.
 Use correct_memory to correct or retract an earlier record.
@@ -314,7 +305,7 @@ The MCP server exposes eight tools:
 | `search_memories` | Retrieve relevant memories within a scope and token budget |
 | `get_context` | Build project/session context, including explicit instructions |
 | `get_task` | Poll a durable write request |
-| `list_turns` | Read submitted inputs or Memos session summaries/digests |
+| `list_turns` | Read complete submitted message batches |
 | `get_memory` | Inspect a record, its history, and evidence |
 | `correct_memory` | Append a correction or retraction |
 | `feedback` | Record which retrieved memories were used and the outcome |
@@ -389,9 +380,9 @@ Status output includes identifiers, receipts, and errors without dumping chat te
 
 Transient connection errors, lost responses, HTTP 408/429, and 5xx retry the same payload and turn ID. The service deduplicates by `platform + turnId` within a tenant; retries preserve the first input and timestamps. After acceptance, the uploader polls instead of resubmitting. Failed/rejected records are not automatically resubmitted, and terminal records are not automatically deleted.
 
-For Mem0, completion requires `status:"completed"`, `formed:true`, and `searchable:true`; `queued`, `running`, or `indexing` is unfinished. Memos fact receipt completion does not provide Mem0's separate index-visibility fields. Its default three-turn/300-second batching can leave a fresh turn queued; experiences require session end, and fact completion does not imply experience completion. See [lifecycle details](docs/api.md#memory-strategy).
+For Mem0, completion requires `status:"completed"`, `formed:true`, and `searchable:true`; `queued`, `running`, or `indexing` is unfinished. See [lifecycle details](docs/api.md#memory-strategy).
 
-`sessionEnded:true` is a session-close signal, not an end-of-every-turn flag. In Memos it triggers session-end work; Mem0 does not run that experience pipeline. The collector also does not inject startup context. Use `get_context` through the agent, or implement a separate bounded SessionStart adapter.
+`sessionEnded:true` is a session-close signal, not an end-of-every-turn flag. It closes an ordered input job; no experience pipeline runs. The collector also does not inject startup context. Use `get_context` through the agent, or implement a separate bounded SessionStart adapter.
 
 ### Other agent platforms
 
@@ -411,7 +402,7 @@ python3 /absolute/path/agent-memory-service/scripts/harness_memory.py \
 JSON
 ```
 
-Supply actual IDs and available source timestamps for real input. Mem0 accepts 1–128 ordered user/assistant messages per batch; Memos expects one completed user/assistant pair. Normal capture uses inference and can invoke the configured generation provider. Only Mem0 supports `infer:false` for verbatim storage without generation. See the [adapter guide](docs/mcp-harness.md) for retry and scope rules.
+Supply actual IDs and available source timestamps for real input. Mem0 accepts 1–128 ordered user/assistant messages per batch. Normal capture uses inference and can invoke the configured generation provider. Use `infer:false` for verbatim storage without generation. See the [adapter guide](docs/mcp-harness.md) for retry and scope rules.
 
 ## Keep services running
 
@@ -533,7 +524,7 @@ UMask=0077
 WantedBy=default.target
 ```
 
-The launcher reads the checkout's `.env`; no key belongs in the unit file. It connects and probes the required model servers before opening the HTTP listener, so process start order is followed by an application readiness check. For Memos, change both the strategy and data directory in the daemon unit. Default Mem0 can omit the reranker unit and its dependency.
+The launcher reads the checkout's `.env`; no key belongs in the unit file. It connects and probes the required model servers before opening the HTTP listener, so process start order is followed by an application readiness check. Default Mem0 can omit the reranker unit and its dependency.
 
 Create `~/.config/systemd/user/agent-memory-uploader.service` if using capture:
 
@@ -602,7 +593,7 @@ With the LaunchAgent setup, use `launchctl bootout` for the selected service lab
 | Session-end hook is skipped | Review/trust Codex hooks with `/hooks`; restart the client after edits |
 | Claude Stop pairing fails | Start a new turn with capture hooks installed; verify required event fields and the matching project/platform |
 | Outbox stays `pending` | Ensure one uploader is running and can reach the daemon; inspect `status` errors |
-| Outbox stays `accepted` | Query `get_task`; account for Memos batching, provider failures, and unfinished index publication |
+| Outbox stays `accepted` | Query `get_task`; inspect provider failures and unfinished index publication |
 | Uploader reports a lock error | Another uploader holds the same outbox lock; keep one worker per queue |
 | Cross-agent recall is empty | Check the same daemon, tenant/project IDs, record scope, completion state, token budget, and explicit cross-platform raw-input scope |
 | Wrong strategy jobs at startup | Use the matching strategy/data root or a new isolated directory |
@@ -638,7 +629,6 @@ crates/
   memory-service/   Daemon, HTTP/MCP transports, algorithm selection and selftests
   memory-engine/    Shared tenants, workers, model clients and application use cases
   memory-algo-mem0/ Ordered additive formation and semantic retrieval
-  memory-algo-memos/ Recent buffers, fact/experience formation and hybrid retrieval
   memory-config/    Startup configuration and tunables
   memory-domain/    Records, API types, errors and integrity planning
   memory-store/     Embedded SurrealDB persistence, schema and repositories

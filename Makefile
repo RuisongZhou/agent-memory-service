@@ -14,7 +14,7 @@ test:
 test-rust:
 	$(CARGO) test --locked -p memory-rules -p memory-fulltext -p memory-config --profile fast $(JFLAG)
 test-service:
-	$(CARGO) test --locked -p memory-domain -p memory-store -p memory-engine -p memory-algo-mem0 -p memory-algo-memos -p memory-service --lib --profile fast $(JFLAG)
+	$(CARGO) test --locked -p memory-domain -p memory-store -p memory-engine -p memory-algo-mem0 -p memory-service --lib --profile fast $(JFLAG)
 selftest:
 	MEMORY_MOCK_MODELS=1 target/fast/agent-memoryd selftest
 smoke:

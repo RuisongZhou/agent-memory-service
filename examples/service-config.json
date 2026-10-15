@@ -1,10 +1,5 @@
 {
-  "batchTurns": 3,
-  "rerankThreshold": 0.3,
-  "mmrLambda": 0.7,
-  "defaultTopK": 10,
   "defaultTokenBudget": 2000,
-  "bufferRetentionDays": 3.0,
   "memoryStrategy": "mem0",
   "mem0Threshold": 0.1,
   "mem0Rerank": false,

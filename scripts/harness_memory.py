@@ -195,8 +195,8 @@ def drain_once(db, base, timeout=5, send=post):
             status = task.get('status')
             if status not in {'queued', 'running', 'indexing', 'completed', 'failed'}:
                 raise ValueError('unknown task status')
-            # Only Mem0 receipts expose these fields. A completed Memos receipt is
-            # formation completion, not a separate index-visibility guarantee.
+            # Fact receipts expose formation and index visibility; explicit instruction
+            # receipts complete synchronously without these extra fields.
             complete = status == 'completed' and all(task.get(k, True) is True for k in ('formed', 'searchable'))
             with db:
                 db.execute('UPDATE jobs SET status=?,error=? WHERE seq=?',

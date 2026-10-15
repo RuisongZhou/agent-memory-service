@@ -50,16 +50,7 @@ pub const ORIGIN_USER: &str = "user";
 pub const ORIGIN_ASSISTANT: &str = "assistant";
 pub const ORIGIN_INFERRED: &str = "inferred";
 
-/// 来源优先级: 用户明确要求 > 用户原话 > 助手回复 > 智能体推断 (4.3).
-pub fn origin_priority(o: &str) -> i32 {
-    match o {
-        ORIGIN_EXPLICIT => 3,
-        ORIGIN_USER => 2,
-        ORIGIN_ASSISTANT => 1,
-        _ => 0,
-    }
-}
-
+/// Durable attribution attached to a stored memory.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Source {
@@ -262,40 +253,6 @@ impl TurnRec {
         s
     }
 
-    /// Byte shares of the user and assistant heads; together with the separator they fill `digest_max`.
-    pub fn digest_limits(digest_max: usize) -> (usize, usize) {
-        let half = digest_max / 2;
-        (half.saturating_sub(1), half)
-    }
-
-    /// The digest (both message heads) and the chunk windows of every message longer than its share.
-    pub fn views(user: &str, assistant: &str, digest_max: usize) -> (String, Vec<TurnChunk>) {
-        let (user_max, assistant_max) = Self::digest_limits(digest_max);
-        let digest = format!(
-            "{}\n{}",
-            memory_rules::util::truncate_bytes(user, user_max),
-            memory_rules::util::truncate_bytes(assistant, assistant_max)
-        );
-        let mut chunks = Vec::new();
-        for (role, text, max) in [
-            ("user", user, user_max),
-            ("assistant", assistant, assistant_max),
-        ] {
-            if text.len() > max {
-                chunks.extend(
-                    memory_rules::util::text_chunks(text, assistant_max)
-                        .into_iter()
-                        .map(|(start, end)| TurnChunk {
-                            role: role.into(),
-                            start,
-                            end,
-                        }),
-                );
-            }
-        }
-        (digest, chunks)
-    }
-
     pub fn message(&self, role: &str) -> &str {
         if role == "user" {
             &self.user_message
@@ -307,39 +264,6 @@ impl TurnRec {
     pub fn chunk_text(&self, i: usize) -> Option<&str> {
         let c = self.chunks.get(i)?;
         self.message(&c.role).get(c.start..c.end)
-    }
-
-    /// Whether the digest holds both messages in full.
-    pub fn digest_complete(&self, digest_max: usize) -> bool {
-        let (user_max, assistant_max) = Self::digest_limits(digest_max);
-        self.user_message.len() <= user_max && self.assistant_message.len() <= assistant_max
-    }
-
-    /// The digest with the head of the message containing chunk `i` replaced by that window.
-    pub fn chunk_view(&self, i: usize, digest_max: usize) -> Option<String> {
-        let c = self.chunks.get(i)?;
-        let (user_max, assistant_max) = Self::digest_limits(digest_max);
-        let window = memory_rules::util::excerpt(self.message(&c.role), c.start, c.end)?;
-        Some(if c.role == "user" {
-            format!(
-                "{window}\n{}",
-                memory_rules::util::truncate_bytes(&self.assistant_message, assistant_max)
-            )
-        } else {
-            format!(
-                "{}\n{window}",
-                memory_rules::util::truncate_bytes(&self.user_message, user_max)
-            )
-        })
-    }
-
-    /// The bounded view formation reads: a message over `max_bytes` keeps its head and tail halves.
-    pub fn clipped(&self, max_bytes: usize) -> TurnRec {
-        let mut tr = self.clone();
-        tr.user_message = memory_rules::util::clip_message(&self.user_message, max_bytes);
-        tr.assistant_message = memory_rules::util::clip_message(&self.assistant_message, max_bytes);
-        tr.chunks.clear(); // offsets refer to the stored messages
-        tr
     }
 }
 

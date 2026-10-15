@@ -1,5 +1,7 @@
 # Agent Memory Service 新方案设计与实现说明
 
+> 历史设计记录：文中的双策略代码及 Memos 对照属于 [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos)（拆分点 `971ac13`）。当前 main 仅支持 Mem0；部署和 API 以 [当前配置参考](../api.md) 为准。历史实验数字与协议未改写。
+
 版本说明：本文主体与LoCoMo数字记录2026-10-12的Python OSS 2.2.1方案。2026-10-14已按用户指定改为Node SDK 3.3.1的消息、实体索引与混合检索流程，当前代码以[新设计说明](mem0-sdk-3.3.1-alignment.md)为准；本文历史分数未重跑。
 
 版本日期：2026 年 10 月 12 日。本文以当前工作区代码为准，说明默认 `mem0` 策略；保留的旧实现通过 `memos` 策略选择。报告中的运行数据来自已完成的完整 LoCoMo 实验，本次撰写没有重新调用付费模型或重跑数据集。

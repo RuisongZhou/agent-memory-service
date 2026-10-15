@@ -163,7 +163,7 @@ class Runner:
     def validate_prompt_health(self, health: dict) -> None:
         # Historical control daemons may still report the original current algorithm label.
         if health.get("memoryStrategy", "memos") not in ("memos", "current"):
-            raise DaemonError("legacy evaluation requires MEMORY_STRATEGY=memos")
+            raise DaemonError("legacy evaluation requires a Memos daemon from codex/mem0-memos or its frozen binary")
         if getattr(self.a, "actual_model_runtime", None) is not None:
             try:
                 model_metadata.assert_same(self.a.actual_model_runtime, health)

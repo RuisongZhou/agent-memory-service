@@ -5,7 +5,6 @@ use memory_fulltext::{EntityDict, FullText};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use tokio::sync::futures::Notified;
 use tokio::sync::{Mutex, MutexGuard, Notify, RwLock};
@@ -35,7 +34,6 @@ pub struct Tenant {
     extract_notify: Notify,
     index_notify: Notify,
     index_lock: Mutex<()>,
-    pending_jobs: AtomicI64,
     algorithm_states: std::sync::Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
 }
 
@@ -62,7 +60,6 @@ impl Tenant {
             extract_notify: Notify::new(),
             index_notify: Notify::new(),
             index_lock: Mutex::new(()),
-            pending_jobs: AtomicI64::new(0),
             algorithm_states: std::sync::Mutex::new(HashMap::new()),
         })
     }
@@ -82,12 +79,11 @@ impl Tenant {
             .expect("algorithm state type")
     }
 
-    /// Serialises the formation pipeline (mem0 jobs; memos P1/P1-b/P2/relations) and every administrative
-    /// mutation of memory records (correct, delete, feedback, resolve-uncertainty, seed, maintenance jobs),
+    /// Serialises the formation pipeline and every administrative
+    /// mutation of memory records (correct, delete, feedback, resolve-uncertainty, seed),
     /// so each batch sees earlier memories.
     ///
-    /// Lock order: this lock may be held while taking `lock_ingest` (memos P2 commit and session-end
-    /// acknowledgement) and `lock_index` (index drains); never take it while holding either of those.
+    /// Lock order: this lock may be held while taking `lock_ingest` (request bookkeeping) and `lock_index` (index drains); never take it while holding either of those.
     pub async fn lock_formation(&self) -> MutexGuard<'_, ()> {
         self.extract_lock.lock().await
     }
@@ -115,7 +111,7 @@ impl Tenant {
         self.index_lock.lock().await
     }
 
-    /// Wakes the per-tenant formation worker (mem0 and memos), `notify_one` semantics (a permit is stored if
+    /// Wakes the per-tenant formation worker, `notify_one` semantics (a permit is stored if
     /// the worker is not currently waiting).
     pub fn wake_formation(&self) {
         self.extract_notify.notify_one();
@@ -134,27 +130,6 @@ impl Tenant {
     /// Future that completes on the next [`Tenant::wake_indexer`]; awaited by the index worker loop.
     pub fn indexer_signal(&self) -> Notified<'_> {
         self.index_notify.notified()
-    }
-
-    /// Marks one formation batch as queued or running until the returned guard is dropped (for
-    /// /admin/wait_idle). Only memos formation counts its batches.
-    pub fn begin_job(&self) -> ActiveJob<'_> {
-        self.pending_jobs.fetch_add(1, Ordering::Relaxed);
-        ActiveJob(&self.pending_jobs)
-    }
-
-    /// Number of formation batches currently queued or running (see [`Tenant::begin_job`]).
-    pub fn pending_jobs(&self) -> i64 {
-        self.pending_jobs.load(Ordering::Relaxed)
-    }
-}
-
-/// Counts one pending formation batch; decrements the tenant's counter on drop.
-pub struct ActiveJob<'a>(&'a AtomicI64);
-
-impl Drop for ActiveJob<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

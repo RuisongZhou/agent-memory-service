@@ -91,69 +91,6 @@ pub fn truncate_bytes(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
-/// Keep the last `max` bytes on a char boundary.
-pub fn tail_bytes(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let mut start = s.len() - max;
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
-    &s[start..]
-}
-
-/// 单条消息超过 8 KB 时，只保留开头和结尾各 4 KB (3.1).
-pub fn clip_message(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let half = max_bytes / 2;
-    format!("{}\n…\n{}", truncate_bytes(s, half), tail_bytes(s, half))
-}
-
-/// Byte ranges of at most `max_bytes` covering all of `s`, on char boundaries. A window ends after
-/// the last whitespace or CJK sentence mark in its second half when there is one; consecutive windows
-/// overlap by an eighth of `max_bytes` so a phrase cut at one edge is whole in the neighbour.
-pub fn text_chunks(s: &str, max_bytes: usize) -> Vec<(usize, usize)> {
-    let max_bytes = max_bytes.max(8); // any char fits
-    let overlap = max_bytes / 8;
-    let mut out = Vec::new();
-    let mut start = 0;
-    while start < s.len() {
-        let mut end = start + truncate_bytes(&s[start..], max_bytes).len();
-        if end < s.len() {
-            let window = &s[start..end];
-            let cut = window
-                .char_indices()
-                .rev()
-                .find(|(_, c)| c.is_whitespace() || matches!(c, '。' | '！' | '？' | '；'))
-                .map(|(i, c)| start + i + c.len_utf8());
-            if let Some(cut) = cut.filter(|cut| cut - start >= max_bytes / 2) {
-                end = cut;
-            }
-        }
-        out.push((start, end));
-        if end >= s.len() {
-            break;
-        }
-        let mut next = (end - overlap).max(start + 1);
-        while !s.is_char_boundary(next) {
-            next += 1;
-        }
-        start = next;
-    }
-    out
-}
-
-/// `s[start..end]`, with "…" marking omitted text on either side; `None` for an invalid range.
-pub fn excerpt(s: &str, start: usize, end: usize) -> Option<String> {
-    let part = s.get(start..end)?;
-    let before = if start > 0 { "…" } else { "" };
-    let after = if end < s.len() { "…" } else { "" };
-    Some(format!("{before}{part}{after}"))
-}
-
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     // embeddings are L2-normalised; still guard against unnormalised vectors
     let mut dot = 0f32;
@@ -184,23 +121,5 @@ mod tests {
         assert_eq!(est_tokens("abcde"), 2);
         assert_eq!(date_of("2026-10-08T23:30:00+08:00"), "2026-10-08");
         assert!(!is_valid_date("2026-02-30"));
-    }
-    #[test]
-    fn chunks_cover_text_with_overlap() {
-        let s = "alpha beta gamma delta ".repeat(40);
-        let chunks = text_chunks(&s, 64);
-        assert_eq!(chunks[0].0, 0);
-        assert_eq!(chunks.last().unwrap().1, s.len());
-        for w in chunks.windows(2) {
-            assert!(w[0].0 < w[1].0 && w[1].0 <= w[0].1);
-            assert!(w[0].1 - w[0].0 <= 64);
-        }
-    }
-    #[test]
-    fn excerpts_mark_omissions() {
-        let s = "head middle tail";
-        assert_eq!(excerpt(s, 0, 4).unwrap(), "head…");
-        assert_eq!(excerpt(s, 5, 11).unwrap(), "…middle…");
-        assert_eq!(excerpt(s, 0, 16).unwrap(), s);
     }
 }

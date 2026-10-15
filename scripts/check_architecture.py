@@ -22,14 +22,9 @@ EVAL_IMPORTS = {'common', 'mem0', 'qdrant_client', 'nltk', 'tiktoken', 'fastembe
 ALGORITHM_REF = re.compile(r'algorithms::|\bmem0_(?:sources|hashes|history)\b')
 # The algorithm crates, the memory-service composition root (algorithms.rs, lib.rs facade) and its binary
 # and diagnostics may name algorithms.
-ALGORITHM_CRATES = ('memory-algo-mem0/src/', 'memory-algo-memos/src/')
+ALGORITHM_CRATES = ('memory-algo-mem0/src/',)
 ALGORITHM_EXEMPT = ALGORITHM_CRATES + ('memory-service/src/bin/', 'memory-service/src/diagnostics/')
 ALGORITHM_EXEMPT_FILES = ('memory-service/src/lib.rs', 'memory-service/src/algorithms.rs')
-# One algorithm must not reach into the other.
-CROSS_ALGORITHM = {
-    'memory-algo-mem0/src/': re.compile(r'\bmemory_algo_memos\b|\bmemos::'),
-    'memory-algo-memos/src/': re.compile(r'\bmemory_algo_mem0\b|\bmem0::'),
-}
 # Raw SurrealQL belongs to the memory-store crate and to each algorithm crate's own repo persistence module;
 # test-only selftest modules may inspect tables directly.
 RAW_SQL = re.compile(r'"(?:SELECT|UPDATE|DELETE|INSERT|CREATE|DEFINE|BEGIN) |\b(?:SELECT|UPDATE|DELETE) [a-z*]')
@@ -51,7 +46,6 @@ LAYERS = {
     'memory-store': {'memory-domain', 'memory-rules'},
     'memory-engine': ENGINE_DEPS,
     'memory-algo-mem0': ENGINE_DEPS | {'memory-engine'},
-    'memory-algo-memos': ENGINE_DEPS | {'memory-engine'},
     'memory-service': None,  # composition root: anything
 }
 
@@ -75,9 +69,6 @@ def rust_violations():
         text = path.read_text(encoding='utf-8')
         if not rel.startswith(ALGORITHM_EXEMPT) and rel not in ALGORITHM_EXEMPT_FILES and ALGORITHM_REF.search(text):
             found.add(('algorithm-ref', rel))
-        for prefix, pattern in CROSS_ALGORITHM.items():
-            if rel.startswith(prefix) and pattern.search(text):
-                found.add(('cross-algorithm', rel))
         if not is_sql_exempt(rel) and RAW_SQL.search(text):
             found.add(('raw-sql', rel))
         if PATH_ATTR.search(text):

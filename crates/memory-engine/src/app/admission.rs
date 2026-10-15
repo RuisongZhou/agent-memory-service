@@ -1,4 +1,4 @@
-//! Scope validation shared by explicit writes and both memory algorithms.
+//! Scope validation shared by explicit writes and Mem0 formation.
 use memory_domain::types::*;
 
 pub fn required_scope(req: &AddMemoriesReq) -> ApiResult<(&str, &str)> {

@@ -83,27 +83,6 @@ impl Engine {
         self.algorithm.wait_idle(self, t).await
     }
 
-    pub async fn on_session_start(
-        self: &Arc<Self>,
-        t: &Arc<Tenant>,
-        platform: &str,
-        project: &str,
-        session: &str,
-    ) {
-        self.algorithm
-            .on_session_start(self, t, platform, project, session)
-            .await
-    }
-
-    pub async fn run_jobs(
-        self: &Arc<Self>,
-        t: &Arc<Tenant>,
-        c: &Caller,
-        body: Value,
-    ) -> ApiResult<Value> {
-        self.algorithm.run_jobs(self, t, c, body).await
-    }
-
     /// Shared language selection; each algorithm owns its actual prompt contract.
     pub fn prompt_variant_for<'a>(&'a self, tenant: &Tenant) -> &'a str {
         if tenant.name.ends_with("-en") {
