@@ -119,9 +119,9 @@ def main():
                 if self.headers.get("Authorization") != "Bearer localhost-stub-placeholder":
                     raise AssertionError("daemon did not use the explicit local placeholder credential")
                 messages = body["messages"]
-                if len(messages) != 1 or messages[0]["role"] != "user":
-                    raise AssertionError("expected one Mem0 additive prompt")
-                prompt = messages[0]["content"]
+                if [message["role"] for message in messages] != ["system", "user"]:
+                    raise AssertionError("expected the Mem0 system prompt and user context")
+                prompt = messages[1]["content"]
                 with stub_lock:
                     index = len(stub_calls)
                 if index >= len(FACT_TEXTS) or FACT_TEXTS[index] not in prompt:
