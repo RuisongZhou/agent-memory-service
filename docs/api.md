@@ -1,146 +1,195 @@
 # API and configuration
 
-All service calls are JSON `POST /v1/<interface>` requests. `X-Memory-Platform` identifies the calling adapter; `X-Memory-Tenant` defaults to `default` and is primarily for evaluation isolation. Never expose these headers as authorization claims.
+This is the current Mem0 request, response and configuration reference. Use
+[deployment](deployment.md) for installation, [MCP integration](mcp-harness.md) for client setup,
+and [architecture](architecture.md) for implementation and scoring rules.
 
-| Interface | Purpose |
+## Interfaces
+
+Requests use camelCase JSON with `POST /v1/<name>`. The [Rust request types](../crates/memory-domain/src/types.rs)
+and [HTTP dispatcher](../crates/memory-service/src/api/http.rs) define the accepted payloads.
+
+| Interface | Main arguments | MCP | Purpose |
+|---|---|---|---|
+| `add_memories` | `scope`, `messages`/`text`, `turnId`, `sync`, `infer`, `memoryType`, `memoryScope`, `sessionEnded` | yes | Submit facts, raw input or explicit instructions |
+| `get_task` | `requestId` | yes | Inspect a durable write request |
+| `search_memories` | `query`, `scope`, `topK`, `tokenBudget`, `types`, `rerank`, `includeEvidence`, `touch` | yes | Retrieve bounded memories; facts by default |
+| `get_context` | `scope`, `tokenBudget` | yes | Assemble project/session context and explicit instructions |
+| `list_turns` | `scope`, `turnIds`, `since`, `tokenBudget` | yes | Inspect complete submitted message batches |
+| `get_memory` | `id`, `includeHistory`, `includeEvidence` | yes | Read one record and optional history/provenance |
+| `correct_memory` | `id`, optional `text`, `effectiveAt`, `reason` | yes | Append a correction; omission of text retracts |
+| `feedback` | `retrievalId`, `used`, `outcome` | yes | Record use of actual retrieved memories |
+| `delete_memory` | `id` | no | Delete a record and repair references/indexes |
+| `resolve_uncertainty` | `id`, `keepMemoryId`, `reason` | no | Explicitly resolve a legacy competing assertion |
+
+The stdio bridge forwards the eight marked tools to HTTP. Success content is JSON text;
+HTTP errors become MCP `isError:true` results. There is no HTTP MCP, SSE or `/mcp` endpoint.
+
+## Scope and idempotency
+
+| Field | Meaning |
 |---|---|
-| `add_memories` | Write an ordered message batch or explicit text; receive a durable request id |
-| `get_task` | Poll request status before treating extraction as complete |
-| `search_memories` | Return bounded fact memories |
-| `get_context` | Compose current context for a project/session |
-| `list_turns` | Inspect complete submitted message batches |
-| `get_memory` | Read a memory with optional history and evidence |
-| `correct_memory` | Append a correction to a current record |
-| `delete_memory` | Delete a record and repair references/indexes |
-| `feedback` | Record deduplicated feedback for an actual retrieval |
+| `X-Memory-Tenant` | Independent store; defaults to `default`. MCP sets it through `MEMORY_TENANT` |
+| `X-Memory-Platform` | Calling adapter; MCP sets it through `--platform`, not a model-selected identity |
+| `scope.project` | Stable shared project ID, independent of machine paths |
+| `scope.session` | Actual native session ID; use a stable device prefix if IDs can collide |
+| `turnId` | Retry identity within the tenant and calling platform |
 
-`GET /health` reports backend, actual device, dtype, loaded tenants and LLM usage. Admin actions under `/admin/` include stats, read-only exports, index rebuild and wait-idle. `POST /admin/export` accepts `table` values `llm_usage`, `extract_log`, `retrieval_log`, and `proposals`, all scoped to the calling tenant. Seed is enabled only in `MEMORY_MOCK_MODELS=1` mode.
+Writes require nonempty project/session. The idempotency key is `platform + turnId`, without
+project/session. Adapters encode `project/session/nativeTurnId` component by component and retain the
+first payload and timestamps on retries. A new turn ID is a new event even if the text repeats.
 
-`POST /v1/embeddings` accepts a string or a nonempty array of at most 128 strings. Non-string array elements are rejected; token usage is an approximation, not provider billing.
+Global and matching project memories are visible across clients; platform-scoped records default to
+the caller's platform. Search defaults to all visible projects when project is omitted or `"*"`.
+Raw input reads default to the caller's platform; explicit `scope.platform:"*"` reads across platforms.
+Use the same daemon, tenant and project to share memory. These labels route requests and do not authenticate users.
 
-## MCP and harness integration
+## Writes
 
-The stdio bridge exposes `add_memories`, `search_memories`, `get_context`, `get_task`, `list_turns`,
-`get_memory`, `correct_memory`, and `feedback`, forwarding their JSON arguments to the matching HTTP
-endpoint. Launch it with `agent-memoryd mcp --url http://127.0.0.1:8765 --platform <harness>` after
-starting the daemon. HTTP failures become MCP tool results with `isError:true`; success content is
-JSON text. There is no Streamable HTTP MCP endpoint.
+`messages` and `text` are mutually exclusive. A message batch requires `turnId` and 1–128 ordered
+user/assistant messages with RFC3339 timestamps. An all-whitespace batch is rejected. Current messages
+remain complete; the HTTP body limit still applies. Explicit `text` has a 4 KB limit.
 
-See [MCP/harness integration](mcp-harness.md) for parameter/result examples, the Mem0
-`list_turns` shape, Codex/Claude Code configuration and automatic dialogue capture through a durable
-local outbox. MCP registration alone does not capture conversations or inject bootstrap context.
-
-## Startup
-
-Use `agent-memoryd serve --help` for paths, model selection, host/port, LLM and concurrency settings. `--config examples/service-config.json` overrides algorithm tunables. CLI/environment settings override config-file paths, prompt variant and LLM connection settings. Unknown JSON fields and invalid score/concurrency values are rejected before model servers are contacted or stores load. Startup waits up to 60 s for the embedding endpoint and any enabled reranker and fails if either is unreachable (the reranker is skipped with `--no-reranker`). Inputs are truncated to 512 tokens and rerank logits are mapped to 0..1 with a sigmoid. Stored vectors are tagged with the embedding model id (`<alias>-<GGUF type>`); a different model or quantisation triggers re-embedding on the next start.
-
-Configuration environment variables include `MEMORY_DATA_DIR`, `MEMORY_EMBED_URL` (default `http://127.0.0.1:8081`), `MEMORY_RERANK_URL` (default `http://127.0.0.1:8082`), `MEMORY_PROMPT_VARIANT`, `MEMORY_TENANT` (MCP), and `MEMORY_LLM_MAX_CALLS`. `QWEN_API_KEY` is supplied separately; the Python launcher reads this key from `.env` and supplies command flags for other settings.
-
-Strategy selection follows explicit `--memory-strategy`, then `MEMORY_STRATEGY`, then the config file's `memoryStrategy`, then the default `mem0`. The Python launcher preserves this order; omitting a CLI strategy does not override the config file.
-
-`agent-memoryd reindex --all` or `--vector`/`--fulltext` selects work explicitly. HTTP errors produce a nonzero CLI exit status.
-
-## Minimal search
-
-```sh
-curl -s http://127.0.0.1:8765/v1/search_memories \
-  -H 'Content-Type: application/json' -H 'X-Memory-Platform: demo' \
-  -d '{"query":"current project decisions","scope":{"project":"demo"},"touch":false}'
+```json
+{
+  "scope": {"project": "my-project", "session": "session-123"},
+  "turnId": "my-project/session-123/turn-456",
+  "messages": [
+    {"role": "user", "content": "The service port is 8765.", "timestamp": "2026-10-15T00:00:00Z"}
+  ],
+  "sync": false
+}
 ```
 
-The core schemas are in `crates/memory-domain/src/types.rs`; examples live in `examples/`.
+Inference is the default and can call the configured generation provider. `infer:false` stores nonempty
+message text verbatim without generation. `messages` is asynchronous by default; `text` waits by default.
+`sync:true` waits for retrieval visibility. A session-close signal uses `sessionEnded:true`; it closes an
+ordered input job and does not form experiences. It should not be sent as an end-of-every-turn flag.
 
-## Memory strategy
+For an explicit behavior requirement, use `memoryType:"instruction"` with `text`. This is synchronous,
+verbatim and generation-free; it rejects messages/session-end, empty text, over 4 KB or over 1024 Unicode
+characters. Optional `memoryScope` selects global, the current project or the caller's platform; project
+is the default. It is rejected for fact writes. An optional turn ID makes instruction writes idempotent.
 
-Mem0 preserves the full current `messages` batch for inference. Only the historical prompt view is
-limited to the latest ten messages and 300 UTF-16 units per message, preserving whole characters. History is restricted to
-the same tenant/platform/project/session and successfully formed inferred requests; raw writes and
-failed formation requests are excluded. Successful zero-memory extraction still contributes context.
-Long-term project facts remain available across sessions. Current messages are not clipped by a formation byte limit. See [the Node SDK 3.3.1 design](design/mem0-sdk-3.3.1-alignment.md).
+## Tasks and completion
 
-`list_turns` returns complete batches that fit its `tokenBudget`; it can skip a long batch rather than
-truncate it. Increase the inspection budget or inspect the stored request when auditing long inputs.
+`get_task` accepts `{"requestId":"<returned ID>"}` and returns `requestId`, `status`, `memoryIds` and `error`.
+Fact tasks additionally return `inputSaved`, `formed`, `searchable` and `latencyMs`.
 
-### Prompt families
+| Status | Meaning |
+|---|---|
+| `queued` / `running` | Input is durable; formation is incomplete |
+| `indexing` | Primary facts/vectors are committed; publication/recovery is incomplete |
+| `completed` with `formed:true`, `searchable:true` | Fact formation and retrieval visibility are complete |
+| `failed` | Inspect the error; raw input and request identity remain available |
 
-The service loads `crates/memory-algo-mem0/src/prompts/additive.txt`, with its Apache license and NOTICE.
-`--prompt-variant zh` appends a Simplified Chinese output instruction; `en` uses the original prompt language.
-The copied assets under `eval/third_party/mem0_evaluation/` belong to SDK evaluation and are not loaded by the daemon.
+A request ID alone is not completion. Explicit instruction receipts complete synchronously and omit
+the extra fact-formation visibility fields. After acceptance, poll the task rather than resubmitting.
+Raw model responses, including failures and repair attempts, are available through admin export.
 
-Only `memoryStrategy:"mem0"` is accepted. The engine fixes its algorithm at startup for all tenants.
-The previous dual-strategy code and its P1–P5 prompts live on
-[`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos).
-Retired buffer, batching and maintenance configuration fields are rejected as unknown fields.
-Existing Mem0 stores keep their records and schema. Unfinished legacy jobs cause startup to fail;
-complete those jobs with the preserved branch before changing binaries, or use a fresh store.
-The schema retains historical record types for reading, correction and integrity repair; it does not
-run the retired formation pipeline. `/admin/run_jobs` has been removed and returns HTTP 404.
+## Reads and provenance
 
-In Mem0 mode each submitted request is a durable ordered job. `messages` accepts 1–128 user/assistant
-messages in timestamp order; `turnId` remains required. `text` has the existing 4 KB bound. `infer:false`
-stores nonempty messages verbatim without a model call. Input messages and idempotency keys survive
-failures. An extraction uses the Apache-licensed Mem0 2.2.1 additive prompt, ten preceding messages
-within the project/adapter and ten semantically relevant existing facts. New facts are appended; only
-explicit correction/deletion changes old assertions. Exact same-scope deduplication preserves the first
-record. Raw and inferred content use separate identities. Model output has one strict `memory` array;
-malformed responses receive bounded corrective retries and remain in `llm_responses`.
+`search_memories` returns complete records in score order within the token budget, with `retrievalId`,
+`results`, `gap`, `tokensUsed` and latency. It defaults to facts and returns empty `profiles`,
+`recentTurns` and `uncertainties` compatibility arrays. Instructions are selected through `get_context`.
+`topK` and `tokenBudget` must be positive; `topK` cannot exceed `maxTopK`. Search makes no generation call.
 
-Vectors are generated as a batch and committed with the primary facts and an `indexing` receipt.
-After cache publication the receipt becomes `completed`, `formed:true`, `searchable:true`.
-Interrupted publication resumes from durable vectors without another model call. `sync:true` waits
-for this visibility; an asynchronous `requestId` confirms input persistence only. `get_task` reports
-these phases. `list_turns` returns complete submitted message batches. `sessionEnded` closes an ordered
-input job. Automatic profile, experience, merge and skill maintenance is not part of this service.
+Optional reranking runs after hybrid topK selection. `score` remains the hybrid score and `rerankScore`
+is added when available. Request `rerank:true` cannot load a server omitted at startup; absence or failure
+keeps hybrid ordering. `touch:false` avoids access-time updates; retrieval logging still occurs.
 
-For Mem0 `list_turns`, `since` is an inclusive RFC3339 cutoff against the batch's final message. It compares actual instants across UTC offsets, rejects invalid timestamps, and returns complete matching batches.
+`includeEvidence:true` on search exposes `sourceBatch`, with `level:"batch"` and
+`verifiedClaimSpan:false`: complete source input is not a verified quote for every inferred claim.
+Use `get_memory` for record history and evidence. Unknown effective dates remain empty; observation,
+event and ingestion times are distinct. Existing verified historical evidence remains readable.
 
-New provenance is labelled `sourceBatch`, `level:"batch"`, `verifiedClaimSpan:false`; it references
-complete durable input requests, not a model-selected verified quote. Event dates are retained in
-memory text; an unknown `effectiveAt` is empty. Observation and ingestion times are distinct.
-Existing verified evidence and historical records remain intact.
+`get_context` accepts `{"scope":{"project":"my-project","session":"session-123"},"tokenBudget":1500}`.
+It returns text plus `instructions`, `profile`, `projectNotes`, `projectFacts`, `facts`, `skills`,
+`tokensUsed` and `retrievalId`. Only explicitly stored instructions are behavior requirements; other
+sections are historical reference. Reads do not close sessions, generate memory or await unrelated writes.
 
-Search follows Node SDK 3.3.1's semantic candidate pool plus BM25 and entity scoring, using its built-in
-NLP fallback without optional natural/compromise. Defaults remain `mem0TopK:20` (`topK` overrides per request),
-`mem0Threshold:0.1` (the semantic gate before fusion), and the configured token budget.
-It returns whole memory records in score order, without profiles or recent messages. Retrieval makes
-no generative call. `mem0Rerank:false` avoids even loading the reranker. To configure it, use
-`mem0Rerank:true`; requests may override with `rerank:false/true`. Reranking applies after hybrid topK;
-`score` remains the hybrid score and `rerankScore` is added when available. A missing or failed optional
-reranker leaves hybrid ordering intact. Evidence reads are explicit.
+`list_turns` returns ordered complete batches containing `requestId`, `messages`, `complete:true` and
+`extractState`, even when formation failed. `since` is an inclusive RFC3339 cutoff against the final
+message's actual instant. `turnIds` still obeys time and budget filters. A batch that exceeds the budget
+is skipped rather than truncated; increase the budget or inspect the stored request for long-input audits.
 
-Entity projection is built after inferred formation and repaired before search when primary memories
-change. Correction/deletion can leave projection rows pending until the next search, which reconciles
-them before scoring and rechecks authoritative memory state before returning results. Old Mem0 stores
-are backfilled from verified inferred provenance; raw writes do not create entities. These paths use
-local embeddings but no generative calls. Projection tables are inspectable through admin export.
-`mem0MaxTokens` defaults to the SDK's 2,000 output tokens; `mem0CustomInstructions` supplies domain-specific
-formation guidance. Projects remain explicit visibility namespaces; a search with project `"*"`
-selects all visible project records in the single-user store. Caller headers remain routing metadata,
-not authentication.
+## Health and administration
 
-The extraction prompt is vendored unchanged with its Apache 2.0 license and NOTICE in
-`crates/memory-algo-mem0/src/prompts/`. Strict parsing, scoped hash deduplication,
-atomic primary/vector storage and batch provenance are application adaptations, not SDK guarantees.
+`GET /health` reports strategy, backend/model identity, device/dtype, loaded tenants and process LLM usage.
+It confirms readiness, not provider-key validity or completion of queued writes.
 
-## Explicit instructions
+| Endpoint | Behavior |
+|---|---|
+| `POST /v1/embeddings` | OpenAI-compatible local embeddings; `input` is a string or a nonempty array of at most 128 strings |
+| `POST /admin/wait_idle` | Drain formation/index work and report remaining or failed requests |
+| `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs |
+| `POST /admin/export` | Read memories or selected audit tables in the current tenant; not a full backup |
+| `POST /admin/reindex` | Queue vector/full-text rebuild; CLI requires `--all`, `--vector` or `--fulltext` |
+| `POST /admin/seed` | Direct fixture admission, available only with mock models |
 
-`add_memories` accepts `memoryType:"instruction"` with `text` and the usual project/session scope. This path copies text into a separate instruction record and evidence, completes its receipt synchronously and makes no generative-model call. It rejects `messages`, `sessionEnded`, empty text, more than 4 KB or more than 1024 Unicode characters. `memoryScope` optionally selects global, current project or caller platform; otherwise the instruction is project-scoped. An optional `turnId` provides a platform-specific idempotency key. A retry preserves the first payload and scope. `memoryType:"fact"` or omission retains existing fact extraction; `memoryScope` is rejected on that path.
+Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `requests`,
+`store_revisions`, `uncertainties`, `proposals` and [Mem0 private tables](architecture.md#entity-projection-and-storage).
+Embedding token usage is approximate, not provider billing. Reindex HTTP errors produce a nonzero CLI exit.
 
-`get_context` returns `instructions` and renders only visible, current, explicitly written instructions in a separate section. The section shares the context token budget. Generic search does not mix instructions into its fact/experience/skill result slots. Update or retract an instruction using `correct_memory`; deletion uses the existing `delete_memory` lifecycle.
+## Configuration
 
-### Uncertainty and derivation
+Use [.env.example](../.env.example), [examples/service-config.json](../examples/service-config.json)
+and `agent-memoryd serve --help`. JSON keys use camelCase; unknown fields and invalid tunables fail
+before model connections or stores open. [ServiceConfig](../crates/memory-config/src/lib.rs) defines the fields.
 
-Legacy conflicting records remain inspectable and repairable. The Mem0 additive extractor does not infer new conflicts. For existing `uncertainties` records, administrative inspection uses `POST /admin/export {"table":"uncertainties"}`. Explicit confirmation uses `POST /v1/resolve_uncertainty` with `{id, keepMemoryId, reason}`. The chosen record must belong to the question, and both competing records must still be conflicting in the same scope. Confirmation preserves original evidence, expires the rejected assertion and records the resolution. Other surviving questions keep the selected assertion conflicting until they are resolved too.
+The Python launcher reads only `QWEN_API_KEY`, `QWEN_BASE_URL`, `LLM_MODEL` and `MEMORY_STRATEGY` from `.env`;
+nonempty exported values take precedence. It parses data, never shell code. Direct daemon launches do
+not load `.env`; export all needed variables explicitly. The provider must support the service's
+OpenAI-compatible chat-completions/JSON contract and `enable_thinking:false`.
 
-Retiring an assertion also closes questions involving it and removes obsolete conflict edges in the same transaction. A surviving assertion returns to `current` when its final dispute closes; any remaining open question keeps it `conflict`.
+| Startup value | CLI / environment | Direct-daemon default |
+|---|---|---|
+| Data root | `--data-dir` / `MEMORY_DATA_DIR` | `./memory-data`; Python launcher defaults to checkout `daemon-data` |
+| Embedding endpoint | `--embed-url` / `MEMORY_EMBED_URL` | `http://127.0.0.1:8081` |
+| Reranking endpoint | `--rerank-url` / `MEMORY_RERANK_URL` | `http://127.0.0.1:8082` |
+| Formation/context language | `--prompt-variant` / `MEMORY_PROMPT_VARIANT` | `zh`; `en` is also accepted |
+| Generation endpoint | `--llm-base-url` / `QWEN_BASE_URL` | `https://maas.qianwenaiapi.com/compatible-mode/v1` |
+| Generation model | `--llm-model` / `LLM_MODEL` | `qwen3.8-flash` |
+| Concurrency | `--llm-concurrency` / `LLM_MAX_CONCURRENCY` | 24; Python launcher defaults to 1 |
+| Algorithm | `--memory-strategy` / `MEMORY_STRATEGY` | `mem0` only |
 
-Derived records expose application-built `derivation: {stage,inputMemoryIds,inputTurnIds,currentView}`. Profiles and skills are current views; if a source is superseded, disputed, edited or deleted, they and their transitive dependents become `stale`. Their originals remain inspectable with `staleReason`; retrieval excludes them before index updates finish. Legacy current views are checked at startup. Historical experiences keep their lineage and remain observations of the original event. No read automatically regenerates a stale profile.
+For the algorithm, precedence is explicit CLI, environment, JSON `memoryStrategy`, then default.
+Other startup fields in the table are assigned from the CLI/environment parser after JSON merging,
+including parser defaults. Set them through flags/environment rather than relying on their JSON values.
 
-## Configuration reference
+| JSON tunable | Default | Meaning |
+|---|---|---|
+| `mem0Threshold` | 0.1 | Semantic threshold before hybrid fusion; range 0–1 |
+| `mem0TopK` | 20 | Default search result count, bounded by `maxTopK` |
+| `mem0Rerank` | false | Connect/use the optional reranker |
+| `mem0MaxTokens` | 2000 | Formation output-token limit |
+| `mem0CustomInstructions` | empty | Additional formation guidance |
+| `maxTopK` | 50 | Maximum request topK |
+| `defaultTokenBudget` | 2000 | Search/input-list budget |
+| `contextTokenBudget` | 1500 | Bootstrap context budget |
+| `bruteForceLimit` | 20000 | Exact/ANN selection boundary; zero forces ANN |
+| `useReranker` | true | Global gate; `--no-reranker` disables it |
+| `llmTimeoutSecs` | 180 | Generation request timeout |
 
-The shipped [configuration template](../examples/service-config.json) contains only supported settings.
-Additional service tunables are `maxTopK`, `defaultTokenBudget`, `contextTokenBudget`, `bruteForceLimit`
-and `useReranker`. A zero `bruteForceLimit` forces the ANN path. `promptVariant` controls formation language
-and context presentation. Connection paths, endpoints, model, concurrency and timeout are declared in
-`ServiceConfig`; daemon CLI/environment values override the corresponding startup options.
-There are no batch-size, recent-buffer, P2–P5, RRF or MMR settings in this version.
+`zh` adds a formation instruction to match the new messages' language/script and selects Chinese context
+labels; it does not unconditionally translate facts to Simplified Chinese. `en` uses the base prompt.
+Embedding/reranking inputs are capped at 512 tokens by the model adapter; stored messages remain complete.
+Startup waits for required model servers; a model identity/quantization change schedules re-embedding.
+
+`MEMORY_LLM_MAX_CALLS` guards process-local generation attempts, including retries. The Python launcher's
+`--max-calls` defaults to 60; zero removes the guard. Restart resets the counter, so it is not a durable
+spending budget. `MEMORY_MOCK_MODELS=1` selects mock retrieval, not a generation stub. `MEMORY_TENANT`
+sets the MCP store. Deployment commands and process-manager templates live in [deployment](deployment.md).
+
+## Compatibility
+
+Only Mem0 is available on main. The previous dual-strategy implementation is preserved on
+[`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos),
+starting at `971ac13`. Retired strategies and buffer/batch/maintenance tunables are rejected;
+`/admin/run_jobs` has been removed and returns HTTP 404.
+
+Existing Mem0 stores retain their schema and historical records. Startup rejects unfinished legacy
+formation work; finish it with the matching preserved binary or use a fresh store. Switching branches
+does not migrate or clear a database. Historical profiles/skills and conflict records remain readable
+and repairable, but main does not generate them. See [storage integrity](architecture.md#entity-projection-and-storage)
+for dependency invalidation and recovery behavior.

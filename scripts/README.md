@@ -18,8 +18,8 @@ Run commands from the repository root.
 | `check_architecture.py` | Enforce Rust boundaries and separation between service and evaluation files | None |
 | `check_public.py` | Check the Git index for weights, secrets and generated state | None |
 
-See [deployment instructions](../README.md#install-and-deploy) for startup and
-[offline verification](../README.md#offline-verification) for the mock/stub checks.
+See [deployment instructions](../docs/deployment.md#install-and-deploy) for startup and
+[offline verification](../CONTRIBUTING.md#checks) for the mock/stub checks.
 The real-model smoke is optional and is not an accuracy benchmark.
 Service logs and check artifacts belong under the root `results/`; the real-model
 smoke defaults to `results/service-smoke/llama-http-smoke.json`. Evaluation runs,
