@@ -68,33 +68,6 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
         t: &'a Arc<Tenant>,
     ) -> BoxFuture<'a, ApiResult<Value>>;
 
-    /// Session bootstrap hook; no-op by default.
-    fn on_session_start<'a>(
-        &'a self,
-        _eng: &'a Arc<Engine>,
-        _t: &'a Arc<Tenant>,
-        _platform: &'a str,
-        _project: &'a str,
-        _session: &'a str,
-    ) -> BoxFuture<'a, ()> {
-        Box::pin(async {})
-    }
-
-    /// Explicit maintenance jobs; unsupported by default.
-    fn run_jobs<'a>(
-        &'a self,
-        _eng: &'a Arc<Engine>,
-        _t: &'a Arc<Tenant>,
-        _c: &'a Caller,
-        _body: Value,
-    ) -> BoxFuture<'a, ApiResult<Value>> {
-        Box::pin(async {
-            Err(ApiError::InvalidArgument(
-                "maintenance jobs require memoryStrategy=memos (Memos algorithm)".into(),
-            ))
-        })
-    }
-
     /// Algorithm-specific provenance attached to `get_memory` when evidence is requested.
     fn source_batch<'a>(
         &'a self,

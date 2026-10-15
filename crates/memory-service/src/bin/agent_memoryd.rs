@@ -59,7 +59,7 @@ enum Cmd {
         /// Optional JSON file overriding ServiceConfig fields (camelCase)
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Select matched formation/retrieval: mem0 (default) or memos (short-term buffers and asynchronous formation).
+        /// Memory algorithm; only mem0 is supported.
         #[arg(long, env = "MEMORY_STRATEGY")]
         memory_strategy: Option<String>,
         #[arg(long, env = "LOG_LEVEL", default_value = "info")]
@@ -159,8 +159,7 @@ fn main() -> anyhow::Result<()> {
                 )?;
                 let models = ModelHub::connect(
                     &cfg.embed_url,
-                    (cfg.use_reranker && (cfg.memory_strategy == memory_service::config::MemoryStrategy::Memos
-                        || cfg.mem0_rerank)).then_some(cfg.rerank_url.as_str()),
+                    (cfg.use_reranker && cfg.mem0_rerank).then_some(cfg.rerank_url.as_str()),
                 )
                 .await?;
                 let algorithm = memory_service::algorithms::select(cfg.memory_strategy);
@@ -177,11 +176,6 @@ fn main() -> anyhow::Result<()> {
                 memory_service::selftest::store_roundtrip().await;
                 memory_service::integrity_tests::selftest().await;
                 memory_service::mem0_tests::selftest().await;
-                memory_service::algorithm_isolation::selftest().await;
-                memory_service::selftest::retrieval_roundtrip().await;
-                memory_service::selftest::long_turn_roundtrip().await;
-                memory_service::algorithms::memos::formation::selftest::formation_selftest().await;
-                memory_service::consolidate_tests::consolidation_selftest().await;
             }
             Cmd::Mcp { url, platform } => {
                 memory_service::mcp::run_stdio(&url, &platform).await?;

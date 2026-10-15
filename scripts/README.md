@@ -10,7 +10,7 @@ Run commands from the repository root.
 | `harness_memory.py` | Collect completed agent dialogue into an outbox, upload inputs and poll receipts | Capture is local only; uploaded dialogue can trigger service formation |
 | `llama_models.sh` | Download the service's embedding/reranking GGUF files | None |
 | `llama_servers.sh` | Start, stop or inspect the local retrieval model servers | None |
-| `http_smoke.py` | Offline daemon and MCP integration checks, including the Memos lifecycle | Local deterministic stub only |
+| `http_smoke.py` | Offline daemon and MCP integration checks, including raw Mem0 writes and restart | None |
 | `mem0_http_smoke.py` | Offline checks of the service's default Mem0 algorithm | Local deterministic stub only; does not import the Mem0 SDK |
 | `mem0_history_http_smoke.py` | Mem0 message windows, session/raw/failure isolation and restart checks | Local deterministic stub only; includes exhausted job retries |
 | `mem0_hybrid_http_smoke.py` | Entity persistence, correction/delete repair, scope and restart checks | Local deterministic stub only |

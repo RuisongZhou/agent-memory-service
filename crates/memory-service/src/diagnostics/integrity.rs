@@ -1,20 +1,15 @@
 //! Persistent integrity and instruction tests. No generation or external model calls.
 use super::{engine, memory, tenant};
-use memory_algo_memos::formation::relations::{self, plan, FactSource, NewFact, WriteCtx};
-use memory_config::{MemoryStrategy, ServiceConfig};
+use memory_config::ServiceConfig;
 use memory_domain::types::*;
 use memory_engine::app::{ingest, management};
 use memory_engine::retrieval;
-use memory_rules::util;
 use memory_store::schema;
 use memory_store::store::{to_doc, Tx};
 use serde_json::json;
 
 pub async fn selftest() {
-    let eng = engine(ServiceConfig {
-        memory_strategy: MemoryStrategy::Memos,
-        ..Default::default()
-    });
+    let eng = engine(ServiceConfig::default());
     let (t, caller, dir) = tenant(&eng, "integrity", "agent").await;
     let fact = MemoryRec {
         id: "fact".into(),
@@ -116,50 +111,33 @@ pub async fn selftest() {
         .unwrap();
     assert!(other["instructions"].as_array().unwrap().is_empty());
 
-    // A conflicting fact opens a question; resolving it keeps the chosen memory.
+    // Legacy competing assertions remain repairable without the retired formation strategy.
     let port = MemoryRec {
         id: "port".into(),
         text: "Port is 8200".into(),
+        status: S_CONFLICT.into(),
+        related: vec![RelEdge {
+            id: "newport".into(),
+            relation: "conflicts".into(),
+        }],
         ..fact.clone()
     };
-    t.store
-        .put_doc(schema::MEMORIES, &port.id, &port)
-        .await
-        .unwrap();
-    let applied = relations::apply(
-        &eng,
-        &t,
-        vec![NewFact {
-            fidx: 1,
-            text: "Port is 8100".into(),
-            scope: port.scope.clone(),
-            entity_ids: vec![],
-            effective_at: "2026-10-11".into(),
-            origin: ORIGIN_USER.into(),
-            sources: vec![FactSource {
-                turn_id: "T1".into(),
-                span: "Port is 8100".into(),
-                role: "user".into(),
-                stated_at: "2026-10-11T00:00:00Z".into(),
-                stated: (1, 0),
-            }],
-            relations: vec![plan::Rel {
-                target: plan::Target::Old(port.id.clone()),
-                relation: "conflicts".into(),
-            }],
-            reason: None,
+    let new_port = MemoryRec {
+        id: "newport".into(),
+        text: "Port is 8100".into(),
+        related: vec![RelEdge {
+            id: "port".into(),
+            relation: "conflicts".into(),
         }],
-        WriteCtx {
-            platform: caller.platform.clone(),
-            now: util::now_str(),
-            turns: vec![],
-            text_request: None,
-            text_turn_id: None,
-            new_entities: vec![],
-        },
-    )
-    .await
-    .unwrap();
+        ..port.clone()
+    };
+    let mut tx = Tx::new();
+    for rec in [&port, &new_port] {
+        tx.put(schema::MEMORIES, &rec.id, to_doc(rec).unwrap())
+            .unwrap();
+    }
+    t.store.commit(tx).await.unwrap();
+    t.store.repair_integrity().await.unwrap();
     let open: Vec<UncertaintyRec> = t
         .store
         .select_as(
@@ -169,7 +147,7 @@ pub async fn selftest() {
         .await
         .unwrap();
     assert_eq!(open.len(), 1);
-    let chosen = &applied.created[0];
+    let chosen = &new_port.id;
     management::resolve_uncertainty(
         &t,
         &caller,

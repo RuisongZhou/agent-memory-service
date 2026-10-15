@@ -6,6 +6,13 @@ vendored extraction prompt are service implementation and remain under `crates/`
 See [the evaluation protocol](docs/evaluation.md) before running an experiment.
 Commands below run from the repository root.
 
+Main runs only Mem0. Historical clients (`memory_run.py`, `fair_replay.py`, `integrity_benchmark.py`)
+retain the original protocol and require a matching frozen binary or the
+[`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos) checkout. Their guards reject a Mem0 daemon.
+Source-dependent legacy extraction examples, comparisons and recovery scripts remain on that branch,
+along with the Rust `replay_facts` example. Current Mem0/SDK comparison tools remain here.
+No frozen protocol, raw evidence or local result/store is rewritten by the branch split.
+
 ## Setup and offline checks
 
 ```sh
@@ -41,11 +48,11 @@ eval/
   .cache/       Ignored tokenizer and SDK caches
 ```
 
-## Current entry points
+## Entry points and historical replay clients
 
 | Entry point | Purpose |
 |---|---|
-| `memory_run.py` | Memos service ingest, jobs, buffer search, purge and main search |
+| `memory_run.py` | Historical dual-strategy client; requires the preserved daemon, not main |
 | `mem0_run.py` | Two-perspective Mem0 SDK ingest/search using the daemon's BGE-M3 endpoint |
 | `mem0_migration.py` | Explicit fresh-store strategy comparison |
 | `locomo_full.py` | Explicit full LoCoMo comparison with frozen manifests |
@@ -116,16 +123,12 @@ SDK compatibility check remains the separate offline comparison above.
 
 | Entry point | Purpose |
 |---|---|
-| `extraction_compare.py` | Explicit real-model extraction comparisons in isolated service/SDK stores |
 | `mem0_v3_context.py` | Offline fixed-input comparison of V3 message handling, prompt boundaries and persistence; model doubles, not an accuracy benchmark |
 | `mem0_sdk331_compare.py` | Actual Node SDK 3.3.1 comparison of prompts, entities and hybrid scores with the same local mock embeddings |
-| `real_extraction_example.py` | Explicit real-model Chinese formation example with request/response evidence |
-| `locomo_trace_example.py` | Explicit source-to-formation/retrieval trace example |
 | `extraction_audit.py` | Count-only audit of saved formation logs or already opened daemon tenants; no generation |
 | `longterm_context_ablation.py` | Remove the recent-turn section from saved contexts without purging sources |
 | `diagnose_replay.py` | Inspect historical QA, source, formation and retrieval chains |
 | `fair_replay.py` | Replay saved corpora with a shared whole-record context budget |
-| `recover_failed_batches.py` | Explicitly retry historical failed source batches |
 | `integrity_benchmark.py` | Fixed retained-snapshot replay and compatible-cohort reports |
 
 Historical and new runs live under `eval/results/`, including `legacy-demo/`,

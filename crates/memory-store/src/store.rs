@@ -554,22 +554,6 @@ impl Store {
         v.into_iter().next().map(from_doc).transpose()
     }
 
-    pub async fn session_turns(&self, platform: &str, session: &str) -> Result<Vec<TurnRec>> {
-        self.select_as(
-            "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE platform = $p AND session = $s ORDER BY seq ASC",
-            vec![("p", json!(platform)), ("s", json!(session))],
-        )
-        .await
-    }
-
-    pub async fn get_session(&self, platform: &str, session: &str) -> Result<Option<SessionRec>> {
-        let id = session_rid(platform, session);
-        match self.get_doc(schema::SESSIONS, &id).await? {
-            Some(v) => Ok(Some(from_doc(v)?)),
-            None => Ok(None),
-        }
-    }
-
     // ------------------------------------------------------------ embeddings
 
     pub async fn load_embeddings(&self, table: &str) -> Result<Vec<(String, Vec<f32>)>> {

@@ -1,5 +1,7 @@
 # Evaluation protocol
 
+> Historical dual-strategy protocol. Memos commands and source references in this document require [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos) or the recorded frozen binary. Main supports only Mem0. See [current entry points](../README.md). Frozen protocols and results are preserved unchanged.
+
 The evaluation runs locally using Python runners, the Rust daemon, mem0 OSS 2.2.1 and an official Qwen endpoint. LoCoMo supplies data; there is no hosted benchmark platform in this workflow.
 
 ## Fixed mapping

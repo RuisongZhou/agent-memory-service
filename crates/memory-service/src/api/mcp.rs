@@ -34,7 +34,7 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
                     "scope": write_scope,
                     "turnId": {"type": "string", "description": "轮编号，幂等键（随 messages）"},
                     "messages": {"type": "array", "minItems": 1, "maxItems": 128,
-                        "description": "按时间排序的消息；mem0 接受 1–128 条，memos 要求用户与助手各 1 条",
+                        "description": "按时间排序的消息；接受 1–128 条用户或助手消息",
                         "items": {"type": "object", "properties": {
                             "role": {"type": "string", "enum": ["user", "assistant"]},
                             "content": {"type": "string"},
@@ -43,7 +43,7 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
                     "text": {"type": "string", "description": "要记住的内容，≤ 4 KB"},
                     "memoryType": {"type":"string", "enum":["fact","instruction"], "description":"明确行为要求用 instruction；只接受 text，不调用生成模型"},
                     "memoryScope": {"type":"object","properties":{"kind":{"type":"string","enum":["global","project","platform"]},"project":{"type":"string"},"platform":{"type":"string"}}},
-                    "sessionEnded": {"type": "boolean", "description": "结束会话；不是每轮结束。memos 会触发会话经验形成"},
+                    "sessionEnded": {"type": "boolean", "description": "结束会话；关闭有序输入任务，不触发经验形成"},
                     "sync": {"type": "boolean", "description": "等待本次写入完成；异步 requestId 仅确认原始输入已持久化，请用 get_task 查询"},
                     "infer": {"type":"boolean", "description":"mem0 策略：false 按原文保存，不调用生成模型"}
                 },
@@ -52,7 +52,7 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "search_memories",
-            "按问题检索记忆。mem0 默认返回事实；memos 可返回经验、画像与近期轮。gap 为 true 表示信息不足，不要自行编造。",
+            "按问题检索事实记忆。gap 为 true 表示信息不足，不要自行编造。",
             json!({
                 "type": "object",
                 "properties": {
@@ -71,7 +71,7 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "get_context",
-            "会话开始或恢复时读取项目上下文，返回 text、instructions、projectFacts 等。显式 instructions 是用户保存的行为要求，其他记忆是历史参考。memos 可关闭同平台同项目的旧会话并触发后台形成。",
+            "会话开始或恢复时读取项目上下文，返回 text、instructions、projectFacts 等。显式 instructions 是用户保存的行为要求，其他记忆是历史参考。此查询不触发后台形成。",
             json!({
                 "type": "object",
                 "properties": {
@@ -93,13 +93,13 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "list_turns",
-            "读取已提交的对话。mem0 返回预算内完整消息批次；memos 默认返回会话摘要和轮 digest，传 turnIds 才读取保留的完整消息。跨平台原始输入在 mem0 中需 scope.platform=*。",
+            "读取已提交的对话，返回预算内完整消息批次。跨平台原始输入需 scope.platform=*。",
             json!({
                 "type": "object",
                 "properties": {
                     "scope": scope,
-                    "since": {"type": "string", "format": "date-time", "description": "RFC3339 包含式截止时间；mem0 比较批次末条消息，memos 默认列表比较轮开始时间"},
-                    "turnIds": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "description": "精确读取的 turnId；memos 此模式不按 since/tokenBudget 裁剪"},
+                    "since": {"type": "string", "format": "date-time", "description": "RFC3339 包含式截止时间；比较批次末条消息"},
+                    "turnIds": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "description": "精确读取的 turnId；仍遵循 since 和 tokenBudget"},
                     "tokenBudget": {"type": "integer", "minimum": 1, "description": "近似 token 预算，默认 2000；mem0 不截断消息，过长批次跳过"}
                 }
             }),

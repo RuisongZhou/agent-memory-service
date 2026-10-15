@@ -1,5 +1,7 @@
 # Mem0 V3 消息处理与存储边界修正
 
+> 历史设计记录：文中的双策略代码及 Memos 对照属于 [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos)（拆分点 `971ac13`）。当前 main 仅支持 Mem0；部署和 API 以 [当前配置参考](../api.md) 为准。历史实验数字与协议未改写。
+
 历史记录：本文是第一轮Python OSS 2.2.1对照。用户随后明确目标为Node SDK 3.3.1，并要求实体索引和混合检索一起对齐；当前实现以[3.3.1设计与实现](mem0-sdk-3.3.1-alignment.md)为准。本文的Unicode字符计数、纯语义检索及评测数字不代表新版本。
 
 日期：2026-10-14。对照范围：Python OSS `mem0ai==2.2.1` 内的 V3 ADD-only 管线、默认 `infer=True`。V3 是处理管线名称，不等于 Python 包的主版本号。本文不推断 Mem0 托管平台的内部实现。

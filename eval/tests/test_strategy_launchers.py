@@ -18,8 +18,8 @@ def script(name):
 
 @pytest.mark.parametrize('cli,environment,dotenv,config', [
     (None, None, '', None),
-    (None, None, 'MEMORY_STRATEGY=memos\n', 'mem0'),
-    ('memos', 'mem0', '', 'mem0'),
+    (None, None, 'MEMORY_STRATEGY=mem0\n', 'mem0'),
+    ('mem0', 'mem0', '', 'mem0'),
 ])
 def test_wrapper_preserves_strategy_precedence(monkeypatch, tmp_path, cli, environment, dotenv, config):
     import json
@@ -50,37 +50,17 @@ def test_wrapper_preserves_strategy_precedence(monkeypatch, tmp_path, cli, envir
         assert command[command.index('--memory-strategy') + 1] == cli
     else:
         assert '--memory-strategy' not in command
-    assert emitted['env'].get('MEMORY_STRATEGY') == (environment or ('memos' if dotenv else None))
+    assert emitted['env'].get('MEMORY_STRATEGY') == (environment or ('mem0' if dotenv else None))
     if config:
         assert command[command.index('--config') + 1] == str(cfg)
 
 
-def test_legacy_launcher_overrides_inherited_mem0(monkeypatch, tmp_path):
-    import extraction_compare as module
-    monkeypatch.setenv('MEMORY_STRATEGY', 'mem0')
-    monkeypatch.setattr(module, 'api_key', lambda: 'offline')
-    monkeypatch.setattr(module, 'set_ledger_path', lambda _: None)
-    monkeypatch.setattr(sys, 'argv', ['extraction_compare', '--output-dir', str(tmp_path / 'output')])
-    class Captured(Exception):
-        pass
-    emitted = {}
-    def launch(command, *, env, **kwargs):
-        emitted.update(command=command, env=env)
-        raise Captured
-    monkeypatch.setattr(module.subprocess, 'Popen', launch)
-    with pytest.raises(Captured):
-        module.main()
-    assert emitted['env']['MEMORY_STRATEGY'] == 'memos'
-    # Environment selection also works with older frozen binaries lacking the new CLI option.
-    assert '--memory-strategy' not in emitted['command']
-
-
-def test_llama_smoke_environment_pins_memos_without_inheriting_provider_settings(monkeypatch):
+def test_llama_smoke_environment_pins_mem0_without_inheriting_provider_settings(monkeypatch):
     module = script('llama_http_smoke')
     monkeypatch.setenv('MEMORY_STRATEGY', 'mem0')
     monkeypatch.setenv('QWEN_API_KEY', 'must-not-be-inherited')
     environment = module.sanitized_environment()
-    assert environment['MEMORY_STRATEGY'] == 'memos'
+    assert environment['MEMORY_STRATEGY'] == 'mem0'
     assert environment['QWEN_API_KEY'] == 'localhost-stub-placeholder'
 
 
@@ -97,3 +77,11 @@ def test_migration_control_overrides_inherited_strategy(monkeypatch, tmp_path, a
     with pytest.raises(Captured):
         with migration.daemon(tmp_path, arm):
             pytest.fail('must stop before any HTTP requests')
+
+
+def test_wrapper_rejects_retired_strategy(monkeypatch):
+    module = script('serve')
+    monkeypatch.setattr(sys, 'argv', ['serve.py', '--memory-strategy', 'memos'])
+    with pytest.raises(SystemExit) as result:
+        module.main()
+    assert result.value.code == 2

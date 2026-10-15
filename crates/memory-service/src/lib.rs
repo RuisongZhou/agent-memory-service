@@ -1,4 +1,4 @@
-//! Two independent memory algorithms over shared API, runtime, storage and retrieval components.
+//! Mem0 memory service with separate API, runtime, storage and retrieval components.
 pub mod algorithms;
 pub mod api;
 #[cfg(feature = "selftest")]
@@ -21,10 +21,5 @@ pub use runtime::{engine, indexer, llm, models, reference_time, tenant};
 
 // Stable Rust facade for existing clients and diagnostics; implementations live with their algorithm.
 pub use algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
-pub use algorithms::memos::formation::schema as formation_schema;
-pub use algorithms::memos::formation::{consolidate, experience, extract, prompts, relations};
 #[cfg(feature = "selftest")]
-pub use diagnostics::{
-    algorithm_isolation, consolidate_tests, integrity as integrity_tests, mem0 as mem0_tests,
-    selftest,
-};
+pub use diagnostics::{integrity as integrity_tests, mem0 as mem0_tests, selftest};

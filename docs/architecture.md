@@ -1,93 +1,57 @@
 # Module architecture
 
-The Cargo workspace contains nine crates:
+Main contains eight crates and one memory algorithm, Mem0. The previous dual-strategy implementation
+is preserved on [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos),
+starting at `971ac13`. Historical evaluation protocols and raw evidence keep their original meaning.
 
 | Crate | Responsibility | Workspace dependencies |
 |---|---|---|
-| `memory-rules` | Deterministic temporal, identifier and revision rules, with no storage dependencies | none |
+| `memory-rules` | Pure temporal, identity, ranking and integrity rules | none |
 | `memory-fulltext` | Lexical and entity indexing | none |
 | `memory-config` | Startup configuration and tunables | none |
-| `memory-domain` | Shared records, request types, errors and pure integrity planners, with no I/O | `memory-rules` |
-| `memory-store` | SurrealDB persistence on top of the domain types | `memory-domain`, `memory-rules` |
-| `memory-engine` | Shared engine: tenant registry, workers, model/LLM clients, shared retrieval components and use cases; algorithms plug in through `runtime::algorithm::MemoryAlgorithm` | `memory-config`, `memory-domain`, `memory-store`, `memory-rules`, `memory-fulltext` |
-| `memory-algo-mem0` | The mem0 algorithm | the engine's dependencies and `memory-engine` |
-| `memory-algo-memos` | The memos algorithm and its selftests (feature `selftest`) | the engine's dependencies and `memory-engine` |
-| `memory-service` | HTTP/MCP transports, algorithm selection, selftests and the `agent-memoryd` binary; calls embedding/rerank models served by external llama-server processes | any |
+| `memory-domain` | Records, request types, errors and pure integrity planners | `memory-rules` |
+| `memory-store` | SurrealDB persistence and transaction integrity | `memory-domain`, `memory-rules` |
+| `memory-engine` | Tenants, workers, model clients, context and application operations | config, domain, store, rules, fulltext |
+| `memory-algo-mem0` | Ordered additive formation, hybrid retrieval, entity projection and its worker | engine and its dependencies |
+| `memory-service` | HTTP/MCP, composition, diagnostics and `agent-memoryd` | service layers |
 
-Dependencies point one way: `memory-rules` <- `memory-domain` <- `memory-store` <- `memory-engine` <- `memory-algo-mem0` / `memory-algo-memos` <- `memory-service`; `memory-config` and `memory-fulltext` are leaves used by the engine and the algorithms. The two algorithm crates never depend on each other. `scripts/check_architecture.py` (`make check-arch`) parses each `Cargo.toml` and enforces this graph.
+The engine retains the `MemoryAlgorithm` interface to separate runtime and application code from
+formation and retrieval. Only the service composition root names the concrete Mem0 implementation.
+`scripts/check_architecture.py` enforces the dependency graph, storage boundaries and evaluation layout.
+The single-value strategy setting preserves existing Mem0 launcher compatibility; unknown strategies fail early.
 
-The demo chooses one complete algorithm at startup using `--memory-strategy` or the existing configuration.
-`Engine::new` fixes that selection for the process lifetime. Every tenant in that process uses the same
-algorithm. The engine holds an `Arc<dyn MemoryAlgorithm>` (`memory-engine/src/runtime/algorithm.rs`) and never names a concrete
-algorithm; `memory-service`'s `algorithms::select` is the composition-time factory. The trait covers formation, retrieval, worker
-startup, private tables and DDL, and optional session/maintenance/provenance hooks.
-The configuration value `memos` selects short-term buffering with asynchronous long-term formation; `mem0` remains the default.
+Tenant startup launches the durable index worker and one ordered Mem0 formation worker.
+`get_context` reads current context without closing sessions or scheduling formation. Explicit instructions,
+record reads, correction, deletion, feedback and reindexing remain application operations.
+There is no session-experience scheduler, periodic maintenance worker or `/admin/run_jobs` endpoint.
 
-| Algorithm | Formation and lifecycle | Retrieval | Code ownership |
-|---|---|---|---|
-| `mem0` | Durable ordered inputs, additive extraction, scoped exact deduplication and atomic vector admission | Semantic search with explicitly enabled reranking; raw submitted batches | `memory-algo-mem0/src/{formation.rs,retrieval.rs,runtime.rs,prompts/}` |
-| Memos | Complete short-term turns, asynchronous P1 facts, session-end P2 experiences and P3/P4/P5 maintenance | Vector/BM25/entity/time fusion, recent-turn recall and update-chain history | `memory-algo-memos/src/{formation/,retrieval/,runtime.rs}` |
+## Storage compatibility and integrity
 
-Neither algorithm calls the other algorithm's formation, retrieval or maintenance implementation.
-Their prompt contracts, batching rules, provenance, ranking and existing numeric settings remain distinct.
-The Memos pipeline is a supported algorithm and benchmark control, not unused Mem0 scaffolding.
+Existing Mem0 stores retain their schema. Shared historical records, source evidence and integrity rules
+remain readable so corrections and deletions can repair references instead of orphaning old data.
+Profiles and skills already in a store are current views: source changes invalidate their dependents
+transitively. Historical experiences retain their lineage. Main does not generate these record types.
+Startup repairs missing/non-current dependencies and rejects unfinished legacy formation work.
+Switching a Git branch does not migrate or clear a database.
 
-Shared components retain their layer boundaries:
+Storage commits source changes, invalidations, uncertainty closure and index tasks atomically. Pure planners
+live in `memory-domain`; `memory-store` loads their inputs and applies the plan. Cached metadata is cleared
+before a memory commit, and failed transactions never publish a new snapshot. Explicit instruction writes
+remain synchronous, scoped and idempotent, and make no generative call.
 
-| Layer | Responsibility |
-|---|---|
-| `api/` (`memory-service`) | HTTP and MCP transport only |
-| `app/` (`memory-engine`) | Use cases shared by every algorithm: admission checks, request inspection, explicit instruction writes, corrections, deletion, feedback and administration |
-| `retrieval/` (`memory-engine`) | Entry points, scope primitives, scoring helpers, ANN access, authoritative records/evidence/history and context assembly |
-| `runtime/` (`memory-engine`) | Engine, reference time, tenant registry, model clients and the shared index worker; configuration lives in `memory-config` |
-| `memory-store` crate | SurrealKV schema, transactions, integrity constraints and durable index tasks (`crates/memory-store`); re-exported by `memory-service` as `storage` |
-| `memory-domain` crate | Shared records, request schemas, errors and pure integrity planners, with no I/O (`crates/memory-domain`); re-exported by `memory-service` as `domain` |
-| `diagnostics/` (`memory-service`) | Offline database, algorithm-isolation and end-to-end selftests |
+Model servers, vector/full-text indexes and entity projections remain separate from primary records.
+Indexes can be rebuilt; raw inputs and source evidence remain durable. This release supports one local user;
+tenant/platform headers route requests and do not authenticate identity. The daemon binds only to loopback.
 
-Root Rust module names for moved stages are retained as compatibility reexports. Algorithm implementations
-use their own stage modules and shared components directly. `memory-rules` owns deterministic planners
-and Mem0 identity/ranking rules; `memory-fulltext` owns lexical/entity indexing.
+## Verification
 
-Tenant startup launches the shared index worker and calls only the selected algorithm's `start_workers`.
-Mem0 starts one ordered formation worker. Memos starts its fact/session formation worker and periodic
-maintenance worker. Only Memos context bootstrap closes earlier open sessions. `/admin/run_jobs`
-is Memos maintenance and returns an argument error in Mem0 mode.
-Explicit instructions, record reads/corrections/deletion, context assembly and reindexing remain shared.
-
-The preserved `memos` strategy commits raw turns, idempotency receipts and index tasks before returning. Background workers form facts on the batching schedule, then generate experiences and the summary only after session end. These stages use independent transactions and typed records in the same store. Sources remain retained until session-end processing succeeds, then eligible buffers can be purged. Index queues and usage records survive process restart.
-
-The `memos` retrieval strategy combines vector, BM25, entity and time channels; it checks visibility and update chains against stored records, reranks candidates locally, then assembles bounded context. Profiles and recent turns are handled separately. Corrections append records; exact deduplication preserves both source bodies and evidence.
-
-This release supports one local user. Evaluation tenants route isolated stores; HTTP caller headers do not authenticate identity. The daemon therefore accepts only loopback bindings.
-
-## Integrity and retrieval improvements
-
-The current design remains a text-memory service. The following changes adapt SurrealDB Agent Memory's separation of instructions, uncertainty and derived knowledge without replacing formation with an entity/attribute graph.
-
-| Problem | Implementation | Verification |
-|---|---|---|
-| Behavioural requirements depend on factual similarity retrieval | Explicit `memoryType:instruction` text writes are stored verbatim, with evidence and optional global/project/platform scope. `get_context` selects them directly in a separately labelled, budgeted section. Ordinary extracted facts cannot become instructions. | Scope, malformed input, idempotency and zero-generation checks |
-| A corrected fact can leave a current profile or skill referring to an obsolete value | Application-built `derivation` tracks input memory/turn IDs and whether the output is a current view. The storage transaction computes transitive invalidation with pure rules and marks affected views `stale`, queues index removal, and preserves their evidence. | Multi-hop invalidation, cycles, transaction rollback, deletion and restart repair |
-| A conflict status does not describe the outstanding question or its resolution | Same-scope conflicts create stable `uncertainties` records referring to both assertions. Search returns visible open questions; explicit confirmation resolves a question and retires the rejected assertion atomically. | Materialisation, explicit two-assertion confirmation and repeated-resolution rejection |
-| Repeated queries re-read unchanged active metadata and re-tokenise recurring passages | A per-store metadata snapshot is cleared before every memory commit. A bounded model-server-specific token cache preserves the exact token IDs and truncation algorithm. Neither cache stores ranked answers or changes scores/thresholds. | Snapshot reuse/invalidation, exact retrieval-context comparison, sequential real-model latency replay |
-
-`profile` and `skill` are current views. Session experiences are historical observations: their lineage remains queryable when later facts change. Treating every historical experience as a current factual assertion would erase useful history. Legacy profiles/skills use `usedMemoryIds` as their dependencies; startup repairs missing or non-current inputs before warming indexes. Stale views are excluded immediately through primary-record eligibility, including while an asynchronous index still contains them. Rebuilding a view is explicit P3/P5 work; a read never triggers paid synthesis.
-
-Storage serialises integrity decisions and related writes per store. A source change, transitive invalidation, uncertainty closure and index tasks commit as one transaction. Failed transactions do not publish a new metadata snapshot. The invalidation and conflict-repair rules are pure planners in `memory-domain/src/integrity.rs` with no database, network or model dependencies; `memory-store/src/integrity.rs` only loads their inputs and appends their plans to the transaction. This adds O(N) metadata inspection to a source-retirement transaction; it removes repeated scans from stable retrieval but does not claim to be a large-scale graph implementation.
-
-The tokenizer cache holds at most 2048 entries and only caches entries of up to 4096 tokens. Keys include the model server and exact input text. Models remain fixed for a connected runtime; reconnect/restart replaces the cache. Model IDs and quantisation continue to govern stored-vector rebuilds.
-
-### Evaluation contract
-
-Use the first eight original-index questions in each LoCoMo category 1–4 from conv-26, chosen before score inspection. Copy the same historical primary-store snapshot for both the preserved pre-change binary and the new binary. Rebuild only vector indexes for the current local BGE Q8_0 runtime, then perform sequential retrieval with unchanged topK=10, tokenBudget=2000, full query, thresholds and reference date. Record one cold and two warm passes separately; never mix cache-hit timing with cold timing.
-
-This is a retained-snapshot retrieval experiment, not a new end-to-end formation benchmark and not a physically cleared-buffer main setting. The source snapshot was saved after the historical retention attempt, so historical buffer QA is a labelled reference rather than an identical corpus control. Historical Mem0 answers are compared on the same question IDs. Reuse an existing paid answer only if the complete rendered answer prompt fingerprint matches. Preserve per-query responses, corpus hashes, models, source/binary fingerprints and usage in ignored local results. LoCoMo QA cannot establish instruction handling or correction propagation; those behaviours need separate offline integration checks.
-
-Build changes with `make build` (`--profile fast`), then run `make test-rust test-service selftest test smoke`. No automatic verification performs paid calls or downloads/evaluates the full dataset. The requested 32-question answer/judge experiment is separate from verification.
-
-### Evidence-led recall
-
-Search reranks assertions together with a bounded verbatim evidence excerpt and, when recorded by the human-human adapter, its source question. A low cross-encoder score alone no longer erases a candidate supported by the existing vector/term gate; numeric defaults remain unchanged. The most relevant topK records are selected before MMR reorders them, so diversity cannot introduce a low-relevance record at the expense of supporting evidence. Query-specific facts and requested evidence use the token budget before broad profiles; `get_context` retains its bootstrap purpose. Evidence responses separate source timestamps from storage/effective timestamps. The evaluation formatter preserves that distinction, emits facts and source quotes before summaries, and counts complete context records with one shared tokenizer.
+Use `make fmt test-rust test-service test build selftest smoke check-arch check-public`.
+Pure Rust and Python tests are offline; selftest uses mock retrieval models. HTTP checks use local stubs
+or verbatim writes, and verify all eight MCP tools, persistence, correction/deletion, strict configuration,
+source boundaries and recovery. The optional `llama_http_smoke.py` checks already running local retrieval
+models with deterministic generation. No automatic check invokes a paid model or runs the full dataset.
+Frozen benchmark manifests and local evidence stay under `eval/`; historical replay clients require the
+matching preserved binary. See [evaluation tools](../eval/README.md).
 
 ## Additive strategy
 
@@ -97,7 +61,6 @@ The default `mem0` strategy selects paired formation/retrieval modules. `memory-
 ordered inputs, the pinned one-call additive extraction contract, scoped content identity and batch
 vector admission. `memory-algo-mem0/src/retrieval.rs` owns the Node SDK 3.3.1 semantic/BM25/entity scoring pipeline and optional reranking. Pure ranking
 and content identity live in `memory-rules::mem0`; generic transactions and vector reads remain in storage.
-The Memos algorithm remains selectable as `memos`, with its numeric defaults unchanged.
 
 Primary memories, embeddings, batch provenance, history, index tasks and the `indexing` checkpoint
 commit atomically. Vector-cache publication precedes `completed/searchable` status. A crash at the
@@ -112,6 +75,4 @@ project memory visibility is unchanged. Rebuildable `mem0_entities` and `mem0_en
 vectors/links and projection versions. Formation publishes them after the primary commit; search repairs
 stale projections under the formation lock before entity scoring. See [SDK 3.3.1 alignment](design/mem0-sdk-3.3.1-alignment.md).
 The model cannot assign visibility scopes or database IDs, and inferred text is not called a verified quote.
-Automatic P2 and periodic LLM maintenance do not run in this strategy. Legacy source/formation records are
-never silently reinterpreted. A small startup check rejects data directories containing unfinished jobs from the other algorithm.
-Demo runs use a separate data directory for each algorithm.
+Legacy source/formation records are never silently reinterpreted. Startup rejects data directories containing unfinished legacy jobs. Use the preserved branch to finish those jobs or a fresh Mem0 store.

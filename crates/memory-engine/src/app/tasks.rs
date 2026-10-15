@@ -1,4 +1,4 @@
-//! Durable receipt inspection shared by both memory algorithms.
+//! Durable receipt inspection for facts and explicit instructions.
 use crate::runtime::{engine::Engine, tenant::Tenant};
 use memory_domain::types::*;
 use memory_store::schema::{self, request_kind};

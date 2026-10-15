@@ -29,8 +29,7 @@ impl From<&ServiceConfig> for Mem0Config {
     }
 }
 
-/// Well-formedness of the mem0 section. The file carries it under every strategy, so it is checked even
-/// when another algorithm is selected; the bound against `maxTopK` belongs to `Mem0::validate_config`.
+/// Validate Mem0 tunables; the cross-field bound against `maxTopK` belongs to `Mem0::validate_config`.
 pub fn validate_section(cfg: &ServiceConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
         cfg.mem0_threshold.is_finite() && (0.0..=1.0).contains(&cfg.mem0_threshold),

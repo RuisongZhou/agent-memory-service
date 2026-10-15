@@ -54,7 +54,7 @@ pub async fn failed_job_count(t: &Tenant) -> Result<i64> {
         .await
 }
 
-/// Unfinished work that belongs to the other algorithm (pending extraction turns, memos requests).
+/// Unfinished legacy work: reject these stores rather than silently abandoning their jobs.
 pub async fn foreign_unfinished_job_count(t: &Tenant) -> Result<i64> {
     Ok(t.store
         .count(schema::TURNS, Some("extractState = 'pending'"))

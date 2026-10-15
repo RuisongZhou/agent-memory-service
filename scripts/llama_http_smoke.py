@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the complete daemon with the two real BGE llama-server models and a localhost-only P1/P2 stub.
+"""Exercise the complete daemon with the two real BGE llama-server models and a localhost-only Mem0 stub.
 
 No .env is loaded, no provider key is inherited, and no external generative service is
 contacted. Both llama-server processes must already run (scripts/llama_servers.sh start).
@@ -18,7 +18,6 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import socket
 import subprocess
 import tempfile
@@ -33,7 +32,6 @@ FACT_TEXTS = [
     "The demo uses BAAI bge-m3 embeddings.",
     "The demo uses BAAI bge-reranker-v2-m3 for relevance reranking.",
 ]
-FACT_ENTITIES = [["demo API service"], ["BAAI", "bge-m3"], ["BAAI", "bge-reranker-v2-m3"]]
 EXPECTED_DEVICE = {"modelBackend": "llama-server"}
 
 
@@ -75,8 +73,8 @@ def sanitized_environment():
     allowed = {"PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"}
     result = {key: value for key, value in os.environ.items() if key in allowed}
     result.update({"QWEN_API_KEY": "localhost-stub-placeholder",
-                   "MEMORY_STRATEGY": "memos",
-                   "MEMORY_LLM_MAX_CALLS": "2",
+                   "MEMORY_STRATEGY": "mem0",
+                   "MEMORY_LLM_MAX_CALLS": "3",
                    "PYTHONDONTWRITEBYTECODE": "1"})
     return result
 
@@ -120,33 +118,16 @@ def main():
                     raise AssertionError("daemon must request non-streaming output")
                 if self.headers.get("Authorization") != "Bearer localhost-stub-placeholder":
                     raise AssertionError("daemon did not use the explicit local placeholder credential")
-                system, user = [message["content"] for message in body["messages"][:2]]
-                if "<current batch>" in user:
-                    stage = "P1"
-                    if body.get("response_format") != {"type":"json_object"} or "facts-object-v2" not in system:
-                        raise AssertionError("P1 must request JSON object output")
-                    batch = re.search(r"<current batch>\n(.*?)\n</current batch>", user, re.S).group(1)
-                    chunks = re.findall(r"\[([^|\]\n]+)\s*\|\s*([^\]\n]+)\]\n(.*?)(?=\n\n\[|\Z)", batch, re.S)
-                    if len(chunks) != 3:
-                        raise AssertionError("P1 must receive one batch containing exactly three turns")
-                    facts = []
-                    for index, (turn_id, timestamp, messages) in enumerate(chunks):
-                        span = messages.splitlines()[0]
-                        if span != FACT_TEXTS[index]:
-                            raise AssertionError("stub source text differs from the actual batch")
-                        facts.append([span, "project", FACT_ENTITIES[index], timestamp.strip()[:10],
-                                      "user", turn_id.strip(), span, [], None])
-                    output = {"facts":[{"text":r[0],"scope":r[1],"entities":r[2],"effectiveAt":r[3],"origin":r[4],"sourceTurnId":r[5],"sourceSpan":r[6],"relations":[]} for r in facts]}
-                elif "experience extractor" in system:
-                    stage = "P2"
-                    if body.get("response_format") != {"type": "json_object"}:
-                        raise AssertionError("P2 must retain JSON object mode")
-                    output = {"analysis": [], "experiences": [], "summary": {
-                        "goal": "Remember the demo service and BGE model configuration",
-                        "outcome": "The three configuration facts were recorded",
-                        "decisions": [], "openIssues": []}}
-                else:
-                    raise AssertionError("unexpected extra model stage in the smoke check")
+                messages = body["messages"]
+                if len(messages) != 1 or messages[0]["role"] != "user":
+                    raise AssertionError("expected one Mem0 additive prompt")
+                prompt = messages[0]["content"]
+                with stub_lock:
+                    index = len(stub_calls)
+                if index >= len(FACT_TEXTS) or FACT_TEXTS[index] not in prompt:
+                    raise AssertionError("unexpected Mem0 source batch or retry")
+                stage = "mem0"
+                output = {"memory": [{"id": "0", "text": FACT_TEXTS[index], "attributed_to": "user"}]}
                 with stub_lock:
                     stub_calls.append(stage)
                 payload = json.dumps({"choices": [{"message": {"content": json.dumps(output)}, "finish_reason": "stop"}],
@@ -195,9 +176,11 @@ def main():
             with log_path.open("w", encoding="utf-8") as logfile:
                 try:
                     start = time.perf_counter()
+                    config = temp / "config.json"
+                    config.write_text(json.dumps({"mem0Rerank": True}))
                     process = subprocess.Popen([str(binary), "serve", "--data-dir", str(temp / "data"),
                         "--embed-url", embed_url, "--rerank-url", rerank_url, "--port", str(port),
-                        "--prompt-variant", "en",
+                        "--prompt-variant", "en", "--config", str(config),
                         "--llm-base-url", f"http://127.0.0.1:{stub.server_port}", "--llm-concurrency", "1", "--log-level", "warn"],
                         env=sanitized_environment(), stdout=logfile, stderr=logfile)
                     while time.perf_counter() - start < args.startup_timeout:
@@ -228,13 +211,13 @@ def main():
                     receipts = []
                     for index, text in enumerate(FACT_TEXTS):
                         stamp = now + timedelta(seconds=index * 2)
-                        receipts.append(request(base, "/v1/add_memories", {"scope": scope, "turnId": f"T{index + 1}",
+                        receipts.append(request(base, "/v1/add_memories", {"scope": scope, "turnId": f"T{index + 1}", "sync": True,
                             "messages": [{"role": "user", "content": text, "timestamp": stamp.isoformat()},
                                          {"role": "assistant", "content": "Confirmed the stated configuration.", "timestamp": (stamp + timedelta(seconds=1)).isoformat()}]}))
                     request(base, "/v1/add_memories", {"scope": scope, "sessionEnded": True})
                     idle = timed("formationAndIndexDrain", lambda: request(base, "/admin/wait_idle", {}))
                     report["idle"] = idle
-                    zero_fields = ["failedTurns", "failedRequests", "failedExperiences", "pendingTurns", "pendingJobs", "indexTasks"]
+                    zero_fields = ["failedRequests", "pendingRequests", "indexTasks"]
                     if idle.get("status") != "idle" or any(idle.get(key) != 0 for key in zero_fields):
                         raise AssertionError("wait_idle did not confirm zero failures, pending jobs and index tasks")
                     tasks = [request(base, "/v1/get_task", {"requestId": receipt["requestId"]}) for receipt in receipts]
@@ -245,14 +228,12 @@ def main():
                     report["statsAfterIngest"] = stats
                     if stats["counts"]["index_tasks"] != 0 or stats["index"]["pendingTasks"] != 0 or stats["jobs"]["pendingJobs"] != 0:
                         raise AssertionError("real model indexing is still pending")
-                    if stats["index"]["memoryVectors"] != 3 or stats["index"]["turnVectors"] != 3 or stats["index"]["fulltextDocs"] != 6:
+                    if stats["index"]["memoryVectors"] != 3 or stats["index"]["turnVectors"] != 0 or stats["index"]["fulltextDocs"] != 3:
                         raise AssertionError("real vector/full-text indexes have unexpected counts")
-                    if stats["counts"]["entities"] < 3:
-                        raise AssertionError("formation did not register the model/service entities")
                     exported = request(base, "/admin/export", {})["memories"]
-                    if sorted(memory["text"] for memory in exported) != sorted(FACT_TEXTS) or any(not memory.get("entityIds") for memory in exported):
-                        raise AssertionError("the exact three facts and their entity links were not persisted")
-                    report["checks"].update({"formationTasksCompleted": True, "allIndexTasksDrained": True, "registeredEntityLinks": True})
+                    if sorted(memory["text"] for memory in exported) != sorted(FACT_TEXTS):
+                        raise AssertionError("the exact three facts were not persisted")
+                    report["checks"].update({"formationTasksCompleted": True, "allIndexTasksDrained": True})
                     embedded = timed("embeddingTwoFreshTexts", lambda: request(base, "/v1/embeddings", {
                         "model": "bge-m3", "input": ["A service listens on port 8200.", "Dense embeddings encode semantic similarity."]}))
                     report["embeddingCheck"] = validate_vectors(embedded, 2)
@@ -276,16 +257,16 @@ def main():
                     report["healthAfter"] = request(base, "/health")
                     with stub_lock:
                         calls = list(stub_calls)
-                    if Counter(calls) != {"P1": 1, "P2": 1} or stub_errors:
-                        raise AssertionError("expected a fact call and a separate session-end experience call")
-                    if report["healthAfter"]["llm"]["calls"] != 2 or report["healthAfter"]["llm"]["attempts"] != 2:
+                    if Counter(calls) != {"mem0": 3} or stub_errors:
+                        raise AssertionError("expected exactly three additive extraction calls")
+                    if report["healthAfter"]["llm"]["calls"] != 3 or report["healthAfter"]["llm"]["attempts"] != 3:
                         raise AssertionError("unexpected generative stage retry or extra daemon model request")
                     for key, expected in EXPECTED_DEVICE.items():
                         if report["healthAfter"].get(key) != expected:
                             raise AssertionError("device metadata changed during concurrent model calls")
                     if any(report["healthAfter"].get(key) != health[key] for key in ["modelDevice", "modelDtype"]):
                         raise AssertionError("the model server or quantisation changed during the run")
-                    report["checks"]["separateFactAndSessionEndCallsNoRealGenerativeCalls"] = True
+                    report["checks"]["additiveFormationNoRealGenerativeCalls"] = True
                     report["status"] = "passed"
                 finally:
                     if process is not None:

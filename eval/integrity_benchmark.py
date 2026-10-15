@@ -83,7 +83,7 @@ def collect(args) -> None:
 
         health = client.get('/health').json()
         if health.get('memoryStrategy', 'memos') not in ('memos', 'current'):
-            raise ValueError('retained-snapshot replay requires MEMORY_STRATEGY=memos')
+            raise ValueError('retained-snapshot replay requires a Memos daemon from codex/mem0-memos or its frozen binary')
         # Warm/open the store and finish only rebuildable indexes. Do not invoke wait_idle:
         # legacy formation receipts do not describe the current session-end contract.
         before = post("/admin/export", {})["memories"]

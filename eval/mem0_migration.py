@@ -23,7 +23,7 @@ from common.migration import daemon, export, relay, sdk_stores, service_blocks
 from common.protocol import guard
 
 # Archived protocol arm names and the frozen current binary retain their original labels.
-# The live short-term/long-term algorithm is now named memos.
+# Historical short-term/long-term controls live on codex/mem0-memos; keep recorded arm labels.
 ARMS = ('current', 'mem0-strategy', 'mem0-sdk')
 
 

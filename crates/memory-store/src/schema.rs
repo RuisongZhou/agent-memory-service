@@ -36,9 +36,6 @@ pub const SHARED_TABLES: &[&str] = &[
 
 /// Values of the `kind` field of a `requests` document.
 pub mod request_kind {
-    pub const TURN: &str = "turn";
-    pub const TEXT: &str = "text";
-    pub const SESSION_END: &str = "session_end";
     pub const MEM0: &str = "mem0";
     pub const INSTRUCTION: &str = "instruction";
 }

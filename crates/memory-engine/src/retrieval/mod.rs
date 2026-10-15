@@ -19,9 +19,6 @@ pub async fn get_context(
     req: GetContextReq,
 ) -> ApiResult<Value> {
     let start = std::time::Instant::now();
-    let project = req.scope.project.as_deref().unwrap_or_default();
-    let session = req.scope.session.as_deref().unwrap_or_default();
-    eng.on_session_start(t, &c.platform, project, session).await;
     context::assemble_context(eng, t, c, req, start).await
 }
 pub use records::get_memory;
