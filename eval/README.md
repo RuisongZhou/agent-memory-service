@@ -148,6 +148,7 @@ an existing manifest to resume with different code. Use the recorded source snap
 for that run, or a fresh result directory for a new experiment.
 
 Runtime results, stores, downloaded data and caches stay ignored. Only curated
-historical aggregates belong in [docs/benchmarks/](docs/benchmarks/).
+historical aggregates belong in [docs/benchmarks/](docs/benchmarks/), including the
+[2026-10-12 additive comparison](docs/benchmarks/mem0-additive-20261012.md).
 Copied code and dataset terms remain in [licenses/](licenses/), with provenance listed
 in [THIRD_PARTY](../THIRD_PARTY.md).
