@@ -5,6 +5,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -30,6 +31,16 @@ PORT = {'id': 'm2', 'text': 'The service port is 8765.', 'status': 'conflict', '
 CONTEXT = {'text': '[Explicit instructions]\n- Cite sources.\n[Current project notes]\n- Deploys go through the staging gate.',
            'instructions': [{'id': 'i1'}], 'projectFacts': [GATE], 'facts': [], 'skills': [],
            'profile': None, 'projectNotes': None}
+
+
+@pytest.fixture(autouse=True)
+def process_state():
+    """main() sets the umask and a SIGALRM handler as a hook process; restore them for other tests."""
+    umask, handler = os.umask(0o022), signal.getsignal(signal.SIGALRM)
+    os.umask(umask)
+    yield
+    os.umask(umask)
+    signal.signal(signal.SIGALRM, handler)
 
 
 @pytest.fixture

@@ -6,9 +6,10 @@ install flow. Standard library only (Python 3.11+). Each agent host is one modul
 Entry point: `scripts/install.sh --host <id>`.
 
 The installer registers the stdio MCP bridge, the dialogue collector and,
-with --recall, the automatic recall hooks in a host's own configuration. It never stores keys, never starts or installs the
-daemon, model servers or uploader, and verifies everything against a temporary
-mock daemon before writing (checks.py).
+with --recall, the automatic recall hooks in a host's own configuration. It
+never stores keys, never starts or installs the daemon, model servers or
+uploader, and verifies everything against a temporary mock daemon before
+writing (checks.py).
 """
 
 import argparse

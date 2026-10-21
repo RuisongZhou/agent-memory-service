@@ -348,8 +348,10 @@ Supply actual IDs and available source timestamps for real input. Mem0 accepts 1
 `scripts/harness_recall.py` injects shared memory through the hooks of Codex, Claude Code and WorkBuddy.
 The installer adds it with `--recall`, as its own hook groups next to the collector's. Capture is
 unchanged and recall works without it. DeepSeek Harness gets MCP tools only, and the installer refuses
-`--recall` there. Each hook makes one request to the daemon and prints the result
-as `hookSpecificOutput.additionalContext`:
+`--recall` there. Recall is a separate script, not a collector subcommand, because its failure contract
+is the reverse: the collector exits 1 so faults surface, while recall always exits 0 so even a broken
+command cannot block a prompt. It also needs neither the outbox nor a non-loopback path.
+Each hook makes one request to the daemon and prints the result as `hookSpecificOutput.additionalContext`:
 
 | Event | Request | Injected |
 |---|---|---|
