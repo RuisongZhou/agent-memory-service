@@ -4,11 +4,17 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 /// The only keys read; anything else in the file is ignored.
-pub const KEYS: [&str; 4] = [
+pub const KEYS: [&str; 10] = [
     "QWEN_API_KEY",
     "QWEN_BASE_URL",
     "LLM_MODEL",
     "MEMORY_STRATEGY",
+    "MEMORY_MODEL_PROVIDER",
+    "MEMORY_MODEL_API_KEY",
+    "MEMORY_EMBED_URL",
+    "MEMORY_RERANK_URL",
+    "MEMORY_EMBED_MODEL",
+    "MEMORY_RERANK_MODEL",
 ];
 
 /// (key, value) settings in `text`: the first non-empty value of each key, else its last empty one.
@@ -59,13 +65,15 @@ mod tests {
     #[test]
     fn reads_known_keys_as_data_like_serve_py() {
         let text = "# comment\nexport QWEN_API_KEY=\"sk-test\"\nQWEN_BASE_URL = 'http://127.0.0.1:9/v1'\n\
-                    LLM_MODEL=\nLLM_MODEL=qwen\nLLM_MODEL=later\nOTHER=$(rm -rf /)\nMEMORY_STRATEGY\n";
+                    LLM_MODEL=\nLLM_MODEL=qwen\nLLM_MODEL=later\nOTHER=$(rm -rf /)\nMEMORY_STRATEGY\n\
+                    MEMORY_MODEL_PROVIDER=self-hosted\n";
         assert_eq!(
             parse(text),
             [
                 ("QWEN_API_KEY", "sk-test".to_string()),
                 ("QWEN_BASE_URL", "http://127.0.0.1:9/v1".to_string()),
                 ("LLM_MODEL", "qwen".to_string()),
+                ("MEMORY_MODEL_PROVIDER", "self-hosted".to_string()),
             ]
         );
     }

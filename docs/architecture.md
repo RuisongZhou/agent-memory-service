@@ -126,7 +126,7 @@ reuse tenant-owned typed entity caches. Ordinary changes point-read affected fac
 canonical entity merges still replay cached history in memory, so this is not an O(new records) graph
 update. Restart, an expired journal, opaque writes or projection changes trigger authoritative recovery.
 Malformed intermediate caches are rebuilt. Correction/deletion removes obsolete links and extraction
-cache entries; maintenance may call local embeddings but never generation.
+cache entries; maintenance may call the embedding model but never generation.
 
 Older Mem0 records are backfilled only when formed source provenance or a correction predecessor proves
 inferred eligibility. Unverified records remain available to semantic/BM25 retrieval without being

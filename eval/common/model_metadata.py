@@ -20,6 +20,12 @@ def capture(health: dict) -> dict:
             raise ValueError("llama-server backend must report its GGUF file type")
         if not isinstance(device, str) or not device.startswith(("http://", "https://")):
             raise ValueError("llama-server backend must report its embedding server URL")
+    elif backend == "api":
+        # Hosted model API; device is the embedding base URL and the weights' type is not visible.
+        if not isinstance(device, str) or not device.startswith(("http://", "https://")):
+            raise ValueError("api backend must report its embedding base URL")
+        if dtype != "hosted":
+            raise ValueError("api backend must report the hosted dtype")
     elif backend == "mock":
         if device != "mock":
             raise ValueError("mock backend must report the mock device")

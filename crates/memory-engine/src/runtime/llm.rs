@@ -30,6 +30,25 @@ pub struct JsonContract {
     pub echo_invalid_response: bool,
 }
 
+/// HTTP client for hosted model APIs. Trusts an extra CA bundle when one is configured
+/// (TLS-intercepting egress proxies).
+pub(crate) fn client_builder(timeout: Duration) -> reqwest::ClientBuilder {
+    let mut builder = reqwest::Client::builder().timeout(timeout);
+    for var in ["MEMORY_CA_BUNDLE", "SSL_CERT_FILE"] {
+        if let Ok(path) = std::env::var(var) {
+            if let Ok(pem) = std::fs::read(&path) {
+                if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&pem) {
+                    for c in certs {
+                        builder = builder.add_root_certificate(c);
+                    }
+                }
+            }
+            break;
+        }
+    }
+    builder
+}
+
 pub struct Llm {
     client: reqwest::Client,
     base_url: String,
@@ -54,22 +73,8 @@ impl Llm {
         max_concurrency: usize,
         timeout_secs: u64,
     ) -> Result<Self> {
-        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(timeout_secs));
-        // Trust an extra CA bundle when one is configured (TLS-intercepting egress proxies).
-        for var in ["MEMORY_CA_BUNDLE", "SSL_CERT_FILE"] {
-            if let Ok(path) = std::env::var(var) {
-                if let Ok(pem) = std::fs::read(&path) {
-                    if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&pem) {
-                        for c in certs {
-                            builder = builder.add_root_certificate(c);
-                        }
-                    }
-                }
-                break;
-            }
-        }
         Ok(Self {
-            client: builder.build()?,
+            client: client_builder(Duration::from_secs(timeout_secs)).build()?,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             model: model.to_string(),

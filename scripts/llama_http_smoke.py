@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise the complete daemon with the two real BGE llama-server models and a localhost-only Mem0 stub.
+"""Exercise the self-hosted model provider: the daemon with two real BGE llama-server models and a localhost-only Mem0 stub.
 
 No .env is loaded, no provider key is inherited, and no external generative service is
-contacted. Both llama-server processes must already run (scripts/llama_servers.sh start).
+contacted. Both llama-server processes must already run (scripts/self_hosted_models.sh start).
 Temporary storage never replaces production stores. This verifies llama-server integration
 and HTTP/storage/index plumbing;
 it does not measure real generative extraction quality or LoCoMo effectiveness.
@@ -97,7 +97,7 @@ def main():
         try:
             build_opener(ProxyHandler({})).open(url + "/health", timeout=5).read()
         except OSError:
-            parser.error(f"llama-server is not ready at {url}; run scripts/llama_servers.sh start")
+            parser.error(f"llama-server is not ready at {url}; run scripts/self_hosted_models.sh start")
     stub_calls, stub_errors = [], []
     stub_lock = threading.Lock()
 
@@ -179,7 +179,7 @@ def main():
                     config = temp / "config.json"
                     config.write_text(json.dumps({"mem0Rerank": True}))
                     process = subprocess.Popen([str(binary), "serve", "--data-dir", str(temp / "data"),
-                        "--embed-url", embed_url, "--rerank-url", rerank_url, "--port", str(port),
+                        "--model-provider", "self-hosted", "--embed-url", embed_url, "--rerank-url", rerank_url, "--port", str(port),
                         "--prompt-variant", "en", "--config", str(config),
                         "--llm-base-url", f"http://127.0.0.1:{stub.server_port}", "--llm-concurrency", "1", "--log-level", "warn"],
                         env=sanitized_environment(), stdout=logfile, stderr=logfile)

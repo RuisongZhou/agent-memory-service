@@ -95,7 +95,7 @@ Raw model responses, including failures and repair attempts, are available throu
 `topK` and `tokenBudget` must be positive; `topK` cannot exceed `maxTopK`. Search makes no generation call.
 
 Optional reranking runs after hybrid topK selection. `score` remains the hybrid score and `rerankScore`
-is added when available. Request `rerank:true` cannot load a server omitted at startup; absence or failure
+is added when available. Request `rerank:true` cannot connect a reranker omitted at startup (`mem0Rerank:false`); absence or failure
 keeps hybrid ordering. `touch:false` avoids access-time updates; retrieval logging still occurs.
 
 `includeEvidence:true` on search exposes `sourceBatch`, with `level:"batch"` and
@@ -120,7 +120,7 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 
 | Endpoint | Behavior |
 |---|---|
-| `POST /v1/embeddings` | OpenAI-compatible local embeddings; `input` is a string or a nonempty array of at most 128 strings |
+| `POST /v1/embeddings` | OpenAI-compatible embeddings from the daemon's configured model; `input` is a string or a nonempty array of at most 128 strings |
 | `POST /admin/wait_idle` | Drain formation/index work and report remaining or failed requests |
 | `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs |
 | `POST /admin/export` | Read memories or selected audit tables in the current tenant; not a full backup |
@@ -138,16 +138,21 @@ and `agent-memoryd serve --help`. JSON keys use camelCase; unknown fields and in
 before model connections or stores open. [ServiceConfig](../crates/memory-config/src/lib.rs) defines the fields.
 
 The Python launcher, and the daemon given `--env-file PATH`, read only `QWEN_API_KEY`, `QWEN_BASE_URL`,
-`LLM_MODEL` and `MEMORY_STRATEGY` from `.env`; nonempty exported values take precedence. Both parse
-data, never shell code, and the daemon logs key names only. Without `--env-file`, direct daemon launches
-do not load `.env`; export all needed variables explicitly. The provider must support the service's
+`LLM_MODEL`, `MEMORY_STRATEGY` and the `MEMORY_MODEL_*`, `MEMORY_EMBED_*` and `MEMORY_RERANK_*` variables
+below from `.env`; nonempty exported values take precedence. Both parse data, never shell code, and the
+daemon logs key names only. Without `--env-file`, direct daemon launches do not load `.env`; export all
+needed variables explicitly. The provider must support the service's
 OpenAI-compatible chat-completions/JSON contract and `enable_thinking:false`.
 
 | Startup value | CLI / environment | Direct-daemon default |
 |---|---|---|
 | Data root | `--data-dir` / `MEMORY_DATA_DIR` | `./memory-data`; Python launcher defaults to checkout `daemon-data` |
-| Embedding endpoint | `--embed-url` / `MEMORY_EMBED_URL` | `http://127.0.0.1:8081` |
-| Reranking endpoint | `--rerank-url` / `MEMORY_RERANK_URL` | `http://127.0.0.1:8082` |
+| Retrieval-model provider | `--model-provider` / `MEMORY_MODEL_PROVIDER` | `api`; `self-hosted` uses [your own llama-server](self-hosted-models.md) |
+| Retrieval-model API key | `MEMORY_MODEL_API_KEY` (environment only) | Falls back to `QWEN_API_KEY`; required for `api` |
+| Embedding base URL | `--embed-url` / `MEMORY_EMBED_URL` | `api`: `https://maas.qianwenaiapi.com/compatible-mode/v1` (`/embeddings`); `self-hosted`: `http://127.0.0.1:8081` |
+| Reranking base URL | `--rerank-url` / `MEMORY_RERANK_URL` | `api`: `https://maas.qianwenaiapi.com/compatible-api/v1` (`/reranks`); `self-hosted`: `http://127.0.0.1:8082` |
+| Embedding model | `--embed-model` / `MEMORY_EMBED_MODEL` | `qwen3.7-text-embedding-flash`; `api` only |
+| Reranking model | `--rerank-model` / `MEMORY_RERANK_MODEL` | `qwen3.7-text-rerank`; `api` only |
 | Formation/context language | `--prompt-variant` / `MEMORY_PROMPT_VARIANT` | `zh`; `en` is also accepted |
 | Generation endpoint | `--llm-base-url` / `QWEN_BASE_URL` | `https://maas.qianwenaiapi.com/compatible-mode/v1` |
 | Generation model | `--llm-model` / `LLM_MODEL` | `qwen3.8-flash` |
@@ -155,9 +160,12 @@ OpenAI-compatible chat-completions/JSON contract and `enable_thinking:false`.
 | Algorithm | `--memory-strategy` / `MEMORY_STRATEGY` | `mem0` only |
 | Dialogue upload | `--outbox [PATH]` (no environment variable) | Off; without PATH, `~/.local/share/agent-memory-service/harness-outbox.sqlite3` |
 
-For the algorithm, precedence is explicit CLI, environment, JSON `memoryStrategy`, then default.
-Other startup fields in the table are assigned from the CLI/environment parser after JSON merging,
-including parser defaults. Set them through flags/environment rather than relying on their JSON values.
+For the algorithm and the retrieval-model provider, URLs and models, precedence is explicit CLI,
+environment, JSON (`memoryStrategy`, `modelProvider`, `embedUrl`, `rerankUrl`, `embedModel`,
+`rerankModel`), then default; URL defaults follow the selected provider. Other startup fields in the
+table are assigned from the CLI/environment parser after JSON merging, including parser defaults. Set
+them through flags/environment rather than relying on their JSON values. The model API key is never
+read from JSON.
 
 | JSON tunable | Default | Meaning |
 |---|---|---|
@@ -175,8 +183,10 @@ including parser defaults. Set them through flags/environment rather than relyin
 
 `zh` adds a formation instruction to match the new messages' language/script and selects Chinese context
 labels; it does not unconditionally translate facts to Simplified Chinese. `en` uses the base prompt.
-Embedding/reranking inputs are capped at 512 tokens by the model adapter; stored messages remain complete.
-Startup waits for required model servers; a model identity/quantization change schedules re-embedding.
+Self-hosted embedding/reranking inputs are capped at 512 tokens and hosted ones at 6,000/3,000 characters
+by the model adapter; stored messages remain complete. Startup probes the retrieval models once (and waits
+for self-hosted servers to load); a provider, model or quantization change schedules re-embedding.
+Health reports `modelBackend` as `api`, `llama-server` or `mock`, with the embedding base URL as `modelDevice`.
 
 `MEMORY_LLM_MAX_CALLS` guards process-local generation attempts, including retries. The Python launcher's
 `--max-calls` defaults to 60; zero removes the guard. Restart resets the counter, so it is not a durable
@@ -184,6 +194,12 @@ spending budget. `MEMORY_MOCK_MODELS=1` selects mock retrieval, not a generation
 sets the MCP store. Deployment commands and process-manager templates live in [deployment](deployment.md).
 
 ## Compatibility
+
+The retrieval-model provider now defaults to `api`. An existing llama-server deployment must set
+`MEMORY_MODEL_PROVIDER=self-hosted` before restarting; otherwise the daemon uses the hosted models
+(with `QWEN_API_KEY` when no model key is set), sends stored text to the provider and re-embeds every
+store at the next start. The former `scripts/llama_models.sh` and `scripts/llama_servers.sh` are now
+`scripts/self_hosted_models.sh download` and `start|stop|status`.
 
 Only Mem0 is available on main. The previous dual-strategy implementation is preserved on
 [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos),

@@ -122,7 +122,9 @@ class Service:
         save(root / 'service-config.json', config)
 
     def start(self, generation=True):
-        child = dict(os.environ, QWEN_API_KEY='local-gateway', MEMORY_LLM_MAX_CALLS='128' if generation else '0')
+        # The protocol's embeddings come from the self-hosted BGE-M3 server, not the hosted default.
+        child = dict(os.environ, QWEN_API_KEY='local-gateway', MEMORY_LLM_MAX_CALLS='128' if generation else '0',
+                     MEMORY_MODEL_PROVIDER='self-hosted')
         child.pop('MEMORY_MOCK_MODELS', None)
         self.proc = subprocess.Popen([self.protocol['binary'], 'serve', '--data-dir', str(self.root / 'service-store'),
             '--port', str(self.port), '--config', str(self.root / 'service-config.json'), '--memory-strategy', 'mem0',
