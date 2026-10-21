@@ -60,7 +60,7 @@ SQL placement and the service/evaluation boundary.
 `infer:false` skips generation and entity extraction, storing nonempty message text as raw facts.
 Explicit instructions use the application path instead of this extraction pipeline. Correction and
 deletion are explicit operations; additive formation does not automatically rewrite older assertions.
-Opt-in [consolidation](#consolidation) only proposes such rewrites; nothing applies them yet.
+Opt-in [consolidation](#consolidation) proposes such rewrites and applies them only on request.
 
 ### Three distinct text views
 
@@ -142,9 +142,10 @@ regenerates them. Startup rejects unfinished legacy formation work; see [compati
 
 Mem0 formation only adds: duplicate and contradicting facts accumulate, and only `correct_memory`
 builds a supersede chain. Consolidation proposes merges, supersedes and conflicts over a project's
-facts. It deviates from the pinned Mem0 algorithm, so it is off unless the service configuration sets
-`consolidationEnabled:true`, has no scheduler, and evaluation protocols under `eval/` never enable it.
-This stage only proposes: a run writes its run record, proposals and model logs, never a memory record.
+facts, and applies a reviewed run on request. It deviates from the pinned Mem0 algorithm, so proposing
+and applying are off unless the service configuration sets `consolidationEnabled:true`, there is no
+scheduler, and evaluation protocols under `eval/` never enable it. Proposing writes the run record,
+proposals and model logs, never a memory record.
 
 ### Proposal stage
 
@@ -196,53 +197,76 @@ This stage only proposes: a run writes its run record, proposals and model logs,
 These are fixed design limits in [memory-rules](../crates/memory-rules/src/consolidation.rs), not
 configuration; none was selected from pilot or benchmark scores.
 
-### Apply and rollback (design for the next stage)
+### Apply and rollback
 
-Only `proposed` ops of a `proposed` run are applicable, and each op is rechecked first: every input still
-`current` with the content key recorded in its proposal. The snapshot revision is audit data; any write
-advances it, so apply does not compare it. Each op commits in its own transaction with its proposal
-marked `applied` and the previous values of every field it changed.
+`POST /admin/consolidation_apply {"runId":"…"}` (`agent-memoryd consolidate --apply RUN`) applies a
+`proposed` run and `POST /admin/consolidation_rollback` (`--rollback RUN`) undoes an applied one. Both hold
+the formation lock and commit one transaction per op, containing the op's record changes and its
+proposal's bookkeeping. Apply needs `consolidationEnabled`; rollback does not, because it is the recovery
+path. The record changes are pure plans in
+[domain consolidation](../crates/memory-domain/src/consolidation/apply.rs): field patches that keep the
+values they replaced. The algorithm adds its private tables.
 
-- **Logical ops only.** Every retirement is a status flip to `superseded` plus `supersededBy`, never the
-  physical `delete_memory`. Rollback is then the logical inverse of each applied op, in reverse order,
-  keeps unrelated later writes and works across any number of consolidation generations.
-- **Merge.** A new fact M stores the merged text with `derivation {stage:"consolidation",
-  input_memory_ids, input_turn_ids, current_view:false}` and `supersedes: None`; each input becomes
-  `superseded` with `supersededBy: M` and no `validUntil` (a merge is not a change of value). A
-  `current_view:true` derivation would be wrong: `current_dependency` in
-  [domain integrity](../crates/memory-domain/src/integrity.rs) stales a current view as soon as its inputs
-  are superseded, which happens in the same transaction. `supersedes` holds one predecessor, so N→1 lineage
-  lives in `derivation.input_memory_ids`. M's `mem0_sources.inputRequestIds` is the union of the inputs'
-  requests ordered by input sequence, which keeps batch provenance and the entity eligibility that
-  `entities::inferred` derives from formed inferred requests. M sets `ingestionMode:"inferred"`, its own
-  `contentHash`, an embedding of the merged text (an embedding call, not generation) and origin
-  `assistant` if any input was assistant-attributed, else `user`, so `get_context` does not present a
-  suggestion as established. `statedAt` is the latest input's.
-- **Content keys.** Mem0 deduplication reuses a `mem0_hashes` target only while it is `current` and
-  otherwise creates a new fact and overwrites the row. A merge therefore points each input's content key,
-  and M's own key, at M, so re-extracting an input's text extends M's sources instead of re-creating the
-  duplicate. Only merges redirect: a supersede, a conflict or a user retraction leaves keys alone.
-- **Supersede.** `old` becomes `superseded` with `supersededBy: new` and `validUntil` = the new value's
-  effective time; `new.supersedes` is set only when empty, since a chain cannot fork. Hash rows are kept.
-- **Conflict.** Contradictions are never auto-picked: apply opens an `uncertainties` row (sorted ids,
-  project scope, reason, run id) and sets the members to `conflict` with symmetric `related: conflicts`
-  edges, which is what the existing `resolve_uncertainty` requires to settle it.
-- **Rollback of a merge** supersedes M (it is not deleted) and restores each input whose `supersededBy`
-  is still M, re-pointing its hash row. If M was corrected, deleted or consumed by a later run, the op is
-  reported and skipped (or the later run must be rolled back first); a user decision is never undone.
-  Rolling back a supersede restores `old` only if it still points at `new`; rolling back a conflict
-  withdraws the question only while it is open.
-- **Deletion.** `delete_one` in [deletion.rs](../crates/memory-engine/src/app/management/deletion.rs)
-  relinks a single predecessor/successor, and for an input whose successor is M its `(None, Some(n))`
-  branch would clear `M.supersedes`, which a merge never sets. Deleting M leaves its inputs `superseded`
-  (as deleting a chain head revives nothing today), clears their `supersededBy`, drops hash rows that point
-  at M and marks the op so rollback skips it. Deleting an input of M deletes M transitively, as profiles and
-  skills are, because M's text contains the deleted content; the other inputs return to `current` with
-  their hash rows, since their own texts never contained it. Deletion has to follow
-  `derivation.input_memory_ids` for merges, separately from the `supersedes` chain.
+- **Recheck.** Apply processes `proposed` ops in proposal order. An op is `skipped` (with `skipReason`)
+  when an input's content key differs from the one recorded at proposal time, an input is no longer a
+  current candidate (superseded, disputed, deleted), the op no longer validates, or a supersede's `new`
+  already replaces another record. The snapshot revision is audit data: any write advances it.
+- **Logical ops only.** Every retirement is a status flip plus a link. Apply never calls the physical
+  `delete_memory`, so rollback is a logical inverse that keeps unrelated later writes and works across
+  any number of consolidation generations.
+- **Merge.** A new fact M holds the merged text with `derivation {stage:"consolidation",
+  inputMemoryIds, inputTurnIds, currentView:false}`, `supersedes` unset and `proposal {runId,
+  proposalId}`. Each input becomes `superseded` with `supersededBy: M` and no `validUntil`, since a merge
+  is not a change of value. `currentView:true` would be wrong here: `current_dependency` in
+  [domain integrity](../crates/memory-domain/src/integrity.rs) stales a current view whose inputs are
+  superseded, and they are superseded in the same transaction. `supersedes` holds one predecessor, so N→1
+  lineage lives in the derivation.
+  - Origin is `assistant` if any input is, otherwise `inferred` if any input is, otherwise `user`. This
+    keeps `get_context` from presenting a suggestion as established.
+  - `statedAt` is the latest input's. `ingestionMode` is `inferred` and `contentHash` is M's own key.
+  - The indexer embeds M (an embedding call, not generation).
+  - `mem0_sources.inputRequestIds` is the union of the inputs' requests in input order. Formation's
+    deduplication requires that row, and it keeps M eligible for the entity projection.
+- **Content keys.** Mem0 deduplication reuses a `mem0_hashes` target only while that target is
+  `current`; otherwise it forms a new fact and overwrites the row. A merge therefore points at M every
+  key that currently resolves to one of its inputs, including keys an earlier merge redirected to an
+  input. M's own key is included too, unless another current record already owns it. The proposal records
+  each key's previous target. Re-extracting an input's text then extends M's sources instead of
+  re-creating the duplicate. Only merges redirect keys: a supersede, a conflict or a user retraction
+  leaves them alone.
+- **Supersede.** `old` becomes `superseded` with `supersededBy: new`, and `validUntil` is the new value's
+  effective time, or its statement time when that is unknown, as for Mem0 facts. `new.supersedes = old`.
+- **Conflict.** A contradiction is never auto-picked. Apply opens one `uncertainties` row (sorted ids,
+  project scope, reason) and sets the members to `conflict`, which is what `resolve_uncertainty` checks.
+  It writes no `related` edges, because the startup repair opens a separate question for every
+  `conflicts` edge pair.
+- **Rollback** runs over `applied` ops, newest first. An op is undone only while every field it wrote
+  still holds the written value and no other open question names its records. M must also be current,
+  and the question must still be open (it becomes `withdrawn`, not `resolved`).
+  - Undoing a merge sets M to `superseded`, marks it `consolidationRollback`, returns the inputs to
+    `current` and points each key back at its previous target unless deduplication has moved it since.
+  - Requests deduplicated into M while it was applied stay in M's sources.
+  - An op whose result a person or a later run changed stays `applied` with `rollbackSkipReason`. That
+    covers a corrected, deleted or consumed M, a resolved question, or a moved link. The run is then
+    `partially_rolled_back`, and rollback can be retried after the later run is rolled back.
+  - A person's decision is never undone.
+- **Deletion.** A merge restates its inputs, so `delete_memory` follows `derivation.inputMemoryIds`
+  separately from the `supersedes` chain, and relinks a predecessor only through a successor whose
+  `supersedes` names the deleted record.
+  - Deleting M leaves its inputs `superseded`, clearing their `supersededBy`, just as deleting a chain
+    head revives nothing. Its rollback is then skipped.
+  - Deleting one of M's inputs deletes M as well, transitively, as profiles and skills are, because M's
+    text holds the deleted content. M's other inputs return to `current`, and their keys point back at
+    them, since their own texts never held it.
+  - Keys left pointing at a deleted M behave like any deleted fact's keys: a re-extraction forms a new fact.
 - **Integrity.** Superseding inputs stales legacy current views (profiles, skills) built on them through
-  the existing rules; M itself is a historical observation and is not staled by its own inputs.
-- **Scheduling** stays manual until apply and rollback have shipped.
+  the existing rules. M is a historical restatement and is not staled by its own inputs.
+
+Run statuses: `proposed` → `applying` → `applied` → `rolling_back` → `rolled_back` or
+`partially_rolled_back`. An interrupted apply or rollback records `error` and resumes from its op
+statuses. Op statuses: `proposed`, `rejected`, `aborted` or `failed` at proposal; `applied` or `skipped`
+at apply; `rolled_back` at rollback. History rows record each change in `mem0_history`.
+Runs are started by hand only; there is no scheduler.
 
 ## Code map and evidence
 
@@ -256,6 +280,7 @@ marked `applied` and the previous values of every field it changed.
 | How is bootstrap context assembled? | [context.rs](../crates/memory-engine/src/retrieval/context.rs) |
 | Where do transaction integrity and revision checks live? | [memory-store](../crates/memory-store/src/), [domain integrity](../crates/memory-domain/src/integrity.rs) |
 | How are consolidation proposals selected, generated and validated? | [rules](../crates/memory-rules/src/consolidation.rs), [domain](../crates/memory-domain/src/consolidation.rs), [Mem0 prompt and provenance](../crates/memory-algo-mem0/src/consolidation.rs), [run storage](../crates/memory-engine/src/app/consolidation.rs) |
+| How are runs applied, rolled back and deleted? | [domain plans](../crates/memory-domain/src/consolidation/apply.rs), [Mem0 keys and sources](../crates/memory-algo-mem0/src/consolidation/apply.rs), [run use cases](../crates/memory-engine/src/app/consolidation.rs), [deletion](../crates/memory-engine/src/app/management/deletion.rs) |
 
 The [evaluation guide](../eval/README.md) owns SDK comparison commands and evidence locations.
 Its deterministic SDK comparison tests processing/score equivalence, not real-model answer quality or

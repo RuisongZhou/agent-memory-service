@@ -495,9 +495,16 @@ pub struct ResolveUncertaintyReq {
 #[serde(rename_all = "camelCase")]
 pub struct ConsolidateReq {
     pub project: String,
-    /// Must be true: runs only propose; applying them is not implemented.
+    /// Must be true: this action only proposes; `consolidation_apply` applies a run.
     #[serde(default)]
     pub dry_run: Option<bool>,
+}
+
+/// `POST /admin/consolidation_apply` and `/admin/consolidation_rollback`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsolidationRunReq {
+    pub run_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

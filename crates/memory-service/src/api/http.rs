@@ -114,6 +114,8 @@ async fn admin(
             "stats" => management::stats(&eng, &t).await,
             "export" => management::export(&eng, &t, body).await,
             "consolidate" => consolidation::consolidate(&eng, &t, parse(body)?).await,
+            "consolidation_apply" => consolidation::apply(&eng, &t, parse(body)?).await,
+            "consolidation_rollback" => consolidation::rollback(&eng, &t, parse(body)?).await,
             "seed" if eng.models.is_mock() => management::seed(&eng, &t, body).await,
             "reindex" => {
                 let v = body.get("vector").and_then(|x| x.as_bool()).unwrap_or(true);

@@ -1,20 +1,22 @@
-//! Propose-only consolidation (`POST /admin/consolidate`). The algorithm clusters a project's eligible
-//! facts and makes one generation call per cluster; this use case gates the run, validates every op with
-//! the pure rules in `memory_domain::consolidation`, enforces the per-run retire cap and stores the run
-//! with one `proposals` row per op. No memory record is written: applying proposals is a later stage
-//! (docs/architecture.md#consolidation).
-use serde_json::{json, Value};
+//! Consolidation runs (docs/architecture.md#consolidation). `consolidate` proposes: the algorithm clusters
+//! a project's eligible facts and makes one generation call per cluster; this use case gates the run,
+//! validates every op with the pure rules in `memory_domain::consolidation`, enforces the per-run retire
+//! cap and stores the run with one `proposals` row per op, writing no memory record. `apply` and
+//! `rollback` then change records one op per transaction, under the formation lock, through the
+//! algorithm and the logical patches of `memory_domain::consolidation::apply`.
+use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
+use memory_domain::consolidation::apply::{FieldPatch, OpOutcome};
 use memory_domain::consolidation::{self as plan, ConsolidationOp};
 use memory_domain::types::*;
 use memory_rules::consolidation as limits;
 use memory_rules::util;
 use memory_store::schema;
-use memory_store::store::Tx;
+use memory_store::store::{safe_id, Tx};
 
 /// Run and proposal statuses. Only a `proposed` run's `proposed` ops may ever be applied.
 pub const PROPOSED: &str = "proposed";
@@ -23,6 +25,43 @@ pub const REJECTED: &str = "rejected";
 pub const ABORTED: &str = "aborted";
 /// A generation call failed after its bounded repair.
 pub const FAILED: &str = "failed";
+/// Run: apply started; an interrupted apply resumes from here.
+pub const APPLYING: &str = "applying";
+/// Run: every proposed op was applied or skipped. Op: its changes are in place.
+pub const APPLIED: &str = "applied";
+/// Op: rechecked at apply time and left alone (`skipReason`).
+pub const SKIPPED: &str = "skipped";
+pub const ROLLING_BACK: &str = "rolling_back";
+/// Run: every applied op was undone. Op: its changes were inverted.
+pub const ROLLED_BACK: &str = "rolled_back";
+/// Run: some ops stay applied because a person or a later run changed their results
+/// (`rollbackSkipReason`); rollback can be retried.
+pub const PARTIALLY_ROLLED_BACK: &str = "partially_rolled_back";
+
+/// Write a logical patch to a memory record and queue its reindex. Status changes go through
+/// `merge`, so the store's integrity rules see them; only absent-valued fields are cleared.
+pub fn write_patch(tx: &mut Tx, patch: &FieldPatch) -> anyhow::Result<()> {
+    let set: Map<String, Value> = patch
+        .after
+        .iter()
+        .filter(|(_, v)| !v.is_null())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let clear: Vec<&str> = patch
+        .after
+        .iter()
+        .filter(|(_, v)| v.is_null())
+        .map(|(k, _)| k.as_str())
+        .collect();
+    if !set.is_empty() {
+        tx.merge(schema::MEMORIES, &patch.id, Value::Object(set))?;
+    }
+    if !clear.is_empty() {
+        tx.clear_fields(schema::MEMORIES, &patch.id, &clear)?;
+    }
+    tx.index_task(schema::MEMORIES, &patch.id, "upsert")?;
+    Ok(())
+}
 
 pub async fn consolidate(
     eng: &Arc<Engine>,
@@ -37,7 +76,8 @@ pub async fn consolidate(
     }
     if req.dry_run != Some(true) {
         return Err(ApiError::InvalidArgument(
-            "dryRun:true is required; applying consolidation proposals is not implemented".into(),
+            "dryRun:true is required: consolidate only proposes; apply a run with consolidation_apply"
+                .into(),
         ));
     }
     let project = req.project.trim();
@@ -182,4 +222,188 @@ pub async fn consolidate(
     }
     t.store.commit(tx).await?;
     Ok(json!({"run": run, "proposals": proposals}))
+}
+
+async fn load_run(t: &Tenant, run_id: &str) -> ApiResult<Value> {
+    safe_id(run_id).map_err(|_| ApiError::InvalidArgument("invalid runId".into()))?;
+    t.store
+        .get_doc(schema::CONSOLIDATION_RUNS, run_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("consolidation run {run_id} not found")))
+}
+
+/// Record an error on the run before returning it; the run keeps its in-progress status and resumes.
+async fn interrupted(t: &Tenant, run_id: &str, error: anyhow::Error) -> ApiError {
+    let message = format!("{error:#}");
+    if let Err(e) = t
+        .store
+        .merge_doc(
+            schema::CONSOLIDATION_RUNS,
+            run_id,
+            json!({"error": message, "updatedAt": util::now_str()}),
+        )
+        .await
+    {
+        tracing::error!(run = run_id, "recording consolidation error: {e:#}");
+    }
+    ApiError::Internal(message)
+}
+
+fn count(proposals: &[Value], status: &str) -> usize {
+    proposals.iter().filter(|p| p["status"] == status).count()
+}
+
+/// Apply the `proposed` ops of a `proposed` run (or resume an interrupted apply). Each op is rechecked
+/// by the algorithm and commits in its own transaction together with its proposal, which records the
+/// values it replaced; an op whose inputs changed since the run is marked `skipped`.
+pub async fn apply(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    req: ConsolidationRunReq,
+) -> ApiResult<Value> {
+    if !eng.cfg.consolidation_enabled {
+        return Err(ApiError::InvalidArgument(
+            "consolidation is disabled; set consolidationEnabled:true in the service configuration"
+                .into(),
+        ));
+    }
+    let _guard = t.lock_formation().await;
+    let id = req.run_id.as_str();
+    let run = load_run(t, id).await?;
+    if !matches!(run["status"].as_str(), Some(PROPOSED | APPLYING)) {
+        return Err(ApiError::InvalidArgument(format!(
+            "run {id} is {}; only a proposed run can be applied",
+            run["status"]
+        )));
+    }
+    let now = util::now_str();
+    t.store
+        .merge_doc(
+            schema::CONSOLIDATION_RUNS,
+            id,
+            json!({"status": APPLYING, "applyStartedAt": now, "updatedAt": now, "error": null}),
+        )
+        .await?;
+    let algorithm = eng.algorithm();
+    for proposal in t.store.proposals_for_run(id).await? {
+        if proposal["status"] != PROPOSED {
+            continue;
+        }
+        let pid = proposal["proposalId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let mut tx = Tx::new();
+        let outcome = match algorithm
+            .consolidation_apply(eng, t, &proposal, &mut tx)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(e) => return Err(interrupted(t, id, e).await),
+        };
+        let now = util::now_str();
+        let bookkeeping = match outcome {
+            OpOutcome::Done(applied) => {
+                json!({"status": APPLIED, "applied": applied, "appliedAt": now})
+            }
+            OpOutcome::Skipped(reason) => {
+                tx = Tx::new();
+                json!({"status": SKIPPED, "skipReason": reason, "skippedAt": now})
+            }
+        };
+        let committed = match tx.merge(schema::PROPOSALS, &pid, bookkeeping) {
+            Ok(_) => t.store.commit(tx).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = committed {
+            return Err(interrupted(t, id, e).await);
+        }
+    }
+    let proposals = t.store.proposals_for_run(id).await?;
+    let now = util::now_str();
+    let summary = json!({"status": APPLIED, "appliedAt": now, "updatedAt": now,
+        "appliedOps": count(&proposals, APPLIED), "skippedOps": count(&proposals, SKIPPED)});
+    t.store
+        .merge_doc(schema::CONSOLIDATION_RUNS, id, summary)
+        .await?;
+    t.wake_indexer();
+    Ok(json!({"run": load_run(t, id).await?, "proposals": proposals}))
+}
+
+/// Undo an applied run, newest op first, as logical inverses. An op whose results a person or a later
+/// run changed stays `applied` with `rollbackSkipReason`; the run is then `partially_rolled_back` and
+/// rollback can be retried. Not gated by `consolidationEnabled`: it is the recovery path.
+pub async fn rollback(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    req: ConsolidationRunReq,
+) -> ApiResult<Value> {
+    let _guard = t.lock_formation().await;
+    let id = req.run_id.as_str();
+    let run = load_run(t, id).await?;
+    if !matches!(
+        run["status"].as_str(),
+        Some(APPLIED | APPLYING | ROLLING_BACK | PARTIALLY_ROLLED_BACK)
+    ) {
+        return Err(ApiError::InvalidArgument(format!(
+            "run {id} is {}; only an applied run can be rolled back",
+            run["status"]
+        )));
+    }
+    let now = util::now_str();
+    t.store
+        .merge_doc(
+            schema::CONSOLIDATION_RUNS,
+            id,
+            json!({"status": ROLLING_BACK, "rollbackStartedAt": now, "updatedAt": now, "error": null}),
+        )
+        .await?;
+    let algorithm = eng.algorithm();
+    let mut proposals = t.store.proposals_for_run(id).await?;
+    proposals.reverse();
+    for proposal in proposals.iter().filter(|p| p["status"] == APPLIED) {
+        let pid = proposal["proposalId"].as_str().unwrap_or_default();
+        let mut tx = Tx::new();
+        let outcome = match algorithm
+            .consolidation_rollback(eng, t, proposal, &mut tx)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(e) => return Err(interrupted(t, id, e).await),
+        };
+        let now = util::now_str();
+        let bookkeeping = match outcome {
+            OpOutcome::Done(inverse) => json!({"status": ROLLED_BACK, "rolledBack": inverse,
+                "rolledBackAt": now, "rollbackSkipReason": null}),
+            OpOutcome::Skipped(reason) => {
+                tx = Tx::new();
+                json!({"rollbackSkipReason": reason, "rollbackCheckedAt": now})
+            }
+        };
+        let committed = match tx.merge(schema::PROPOSALS, pid, bookkeeping) {
+            Ok(_) => t.store.commit(tx).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = committed {
+            return Err(interrupted(t, id, e).await);
+        }
+    }
+    let proposals = t.store.proposals_for_run(id).await?;
+    let remaining = count(&proposals, APPLIED);
+    let now = util::now_str();
+    let status = if remaining == 0 {
+        ROLLED_BACK
+    } else {
+        PARTIALLY_ROLLED_BACK
+    };
+    t.store
+        .merge_doc(
+            schema::CONSOLIDATION_RUNS,
+            id,
+            json!({"status": status, "rolledBackAt": now, "updatedAt": now,
+                "rolledBackOps": count(&proposals, ROLLED_BACK), "remainingAppliedOps": remaining}),
+        )
+        .await?;
+    t.wake_indexer();
+    Ok(json!({"run": load_run(t, id).await?, "proposals": proposals}))
 }

@@ -3,11 +3,13 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use memory_config::{MemoryStrategy, ServiceConfig};
+use memory_domain::consolidation::apply::OpOutcome;
 use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
 use memory_domain::types::*;
 use memory_engine::runtime::algorithm::{BoxFuture, MemoryAlgorithm};
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::tenant::Tenant;
+use memory_store::store::Tx;
 
 pub mod config;
 pub mod consolidation;
@@ -137,5 +139,37 @@ impl MemoryAlgorithm for Mem0 {
         cluster: &'a Cluster,
     ) -> BoxFuture<'a, anyhow::Result<GeneratedOps>> {
         Box::pin(consolidation::generate(eng, t, project, cluster))
+    }
+
+    fn consolidation_apply<'a>(
+        &'a self,
+        _eng: &'a Arc<Engine>,
+        t: &'a Arc<Tenant>,
+        proposal: &'a Value,
+        tx: &'a mut Tx,
+    ) -> BoxFuture<'a, anyhow::Result<OpOutcome>> {
+        Box::pin(consolidation::apply::apply(t, proposal, tx))
+    }
+
+    fn consolidation_rollback<'a>(
+        &'a self,
+        _eng: &'a Arc<Engine>,
+        t: &'a Arc<Tenant>,
+        proposal: &'a Value,
+        tx: &'a mut Tx,
+    ) -> BoxFuture<'a, anyhow::Result<OpOutcome>> {
+        Box::pin(consolidation::apply::rollback(t, proposal, tx))
+    }
+
+    fn consolidation_inputs_restored<'a>(
+        &'a self,
+        t: &'a Tenant,
+        merged: &'a MemoryRec,
+        restored: &'a [String],
+        tx: &'a mut Tx,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(consolidation::apply::inputs_restored(
+            t, merged, restored, tx,
+        ))
     }
 }

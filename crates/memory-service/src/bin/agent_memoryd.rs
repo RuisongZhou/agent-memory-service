@@ -6,7 +6,7 @@
 //!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
 //!   agent-memoryd service install | uninstall | status ...     (LaunchAgent / systemd user unit for serve)
 //!   agent-memoryd reindex --vector | --fulltext | --all [--url ...]
-//!   agent-memoryd consolidate --project P --dry-run [--url ...]   (propose-only; needs consolidationEnabled)
+//!   agent-memoryd consolidate --project P --dry-run | --apply RUN | --rollback RUN [--url ...]
 use clap::{error::ErrorKind, Parser, Subcommand};
 use memory_service::harness::{self, outbox::Outbox, HookCmd, OutboxCmd};
 use memory_service::service::{self, ServiceCmd};
@@ -114,16 +114,24 @@ enum Cmd {
         #[arg(long, default_value = "default")]
         tenant: String,
     },
-    /// Propose consolidation ops for one project's facts on a running daemon and print the run.
-    /// Requires `consolidationEnabled` in the daemon's configuration; nothing is applied.
+    /// Propose, apply or roll back a consolidation run on a running daemon and print it. Proposing and
+    /// applying require `consolidationEnabled` in the daemon's configuration.
+    #[command(group(clap::ArgGroup::new("action").required(true).args(["dry_run", "apply", "rollback"])))]
     Consolidate {
         #[arg(long, default_value = "http://127.0.0.1:8765")]
         url: String,
-        #[arg(long)]
-        project: String,
-        /// Required: runs only propose; applying them is not implemented.
-        #[arg(long)]
+        /// Project whose facts a dry run clusters
+        #[arg(long, requires = "dry_run")]
+        project: Option<String>,
+        /// Propose ops for --project and store the run; writes no memory
+        #[arg(long, requires = "project")]
         dry_run: bool,
+        /// Apply a proposed run's ops, one transaction per op
+        #[arg(long, value_name = "RUN")]
+        apply: Option<String>,
+        /// Undo an applied run's ops, newest first; ops changed since stay applied
+        #[arg(long, value_name = "RUN")]
+        rollback: Option<String>,
         #[arg(long, default_value = "default")]
         tenant: String,
     },
@@ -284,6 +292,7 @@ fn main() -> anyhow::Result<()> {
                 memory_service::integrity_tests::selftest().await;
                 memory_service::mem0_tests::selftest().await;
                 memory_service::consolidation_tests::selftest().await;
+                memory_service::consolidation_apply_tests::selftest().await;
             }
             Cmd::Mcp { url, platform } => {
                 memory_service::mcp::run_stdio(&url, &platform).await?;
@@ -313,17 +322,25 @@ fn main() -> anyhow::Result<()> {
             Cmd::Consolidate {
                 url,
                 project,
-                dry_run,
+                dry_run: _,
+                apply,
+                rollback,
                 tenant,
             } => {
-                anyhow::ensure!(
-                    dry_run,
-                    "--dry-run is required: applying consolidation proposals is not implemented"
-                );
+                let (action, body) = match (project, apply, rollback) {
+                    (_, Some(run), _) => ("consolidation_apply", serde_json::json!({"runId": run})),
+                    (_, _, Some(run)) => {
+                        ("consolidation_rollback", serde_json::json!({"runId": run}))
+                    }
+                    (project, _, _) => (
+                        "consolidate",
+                        serde_json::json!({"project": project, "dryRun": true}),
+                    ),
+                };
                 let resp = reqwest::Client::new()
-                    .post(format!("{}/admin/consolidate", url.trim_end_matches('/')))
+                    .post(format!("{}/admin/{action}", url.trim_end_matches('/')))
                     .header("x-memory-tenant", tenant)
-                    .json(&serde_json::json!({"project": project, "dryRun": true}))
+                    .json(&body)
                     .send()
                     .await?;
                 let status = resp.status();
