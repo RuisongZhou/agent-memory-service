@@ -111,8 +111,9 @@ def daemon(root, arm, *, paid=False, llm_url=None, max_calls=150):
         command += ['--memory-strategy', 'mem0']
     if llm_url:
         command += ['--llm-base-url', llm_url]
+    # The frozen protocol uses self-hosted BGE models; archived binaries ignore the provider variable.
     child_env = dict(os.environ, QWEN_API_KEY=api_key() if paid else '', MEMORY_LLM_MAX_CALLS=str(max_calls) if paid else '0',
-        NO_PROXY='*', no_proxy='*', MEMORY_STRATEGY='current' if arm == 'current' else 'mem0')
+        NO_PROXY='*', no_proxy='*', MEMORY_STRATEGY='current' if arm == 'current' else 'mem0', MEMORY_MODEL_PROVIDER='self-hosted')
     child_env.pop('MEMORY_MOCK_MODELS', None)
     with (target / 'service.log').open('a') as log:
         process = subprocess.Popen(command, env=child_env, stdout=log, stderr=log)

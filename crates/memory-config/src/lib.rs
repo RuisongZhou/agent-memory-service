@@ -11,6 +11,26 @@ pub enum MemoryStrategy {
     Mem0,
 }
 
+/// Where embeddings and reranking come from; fixed for the process lifetime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelProvider {
+    /// A hosted OpenAI-compatible API authenticated with an API key.
+    #[default]
+    Api,
+    /// User-run llama-server processes (`--embedding` and `--reranking`) on this host or network.
+    SelfHosted,
+}
+
+/// Hosted embedding endpoint; requests go to `{base}/embeddings`.
+pub const DEFAULT_API_EMBED_URL: &str = "https://maas.qianwenaiapi.com/compatible-mode/v1";
+/// Hosted rerank endpoint; requests go to `{base}/reranks`. The compatible-mode base has no rerank route.
+pub const DEFAULT_API_RERANK_URL: &str = "https://maas.qianwenaiapi.com/compatible-api/v1";
+pub const DEFAULT_API_EMBED_MODEL: &str = "qwen3.7-text-embedding-flash";
+pub const DEFAULT_API_RERANK_MODEL: &str = "qwen3.7-text-rerank";
+pub const DEFAULT_SELF_HOSTED_EMBED_URL: &str = "http://127.0.0.1:8081";
+pub const DEFAULT_SELF_HOSTED_RERANK_URL: &str = "http://127.0.0.1:8082";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceConfig {
@@ -27,9 +47,18 @@ pub struct ServiceConfig {
     #[serde(default = "default_mem0_top_k")]
     pub mem0_top_k: usize,
     pub data_dir: PathBuf,
-    /// llama-server base URLs for the embedding (`--embedding`) and rerank (`--reranking`) models.
-    pub embed_url: String,
-    pub rerank_url: String,
+    #[serde(default)]
+    pub model_provider: ModelProvider,
+    /// Embedding and rerank base URLs; unset selects the provider's default (see `embed_url()`).
+    #[serde(default)]
+    pub embed_url: Option<String>,
+    #[serde(default)]
+    pub rerank_url: Option<String>,
+    /// Hosted model names. A self-hosted llama-server serves one model each and reports its own name.
+    #[serde(default = "default_embed_model")]
+    pub embed_model: String,
+    #[serde(default = "default_rerank_model")]
+    pub rerank_model: String,
     /// Formation and context presentation language: "zh" or "en".
     pub prompt_variant: String,
 
@@ -56,8 +85,11 @@ impl Default for ServiceConfig {
             mem0_max_tokens: default_mem0_max_tokens(),
             mem0_top_k: default_mem0_top_k(),
             data_dir: PathBuf::from("./memory-data"),
-            embed_url: "http://127.0.0.1:8081".into(),
-            rerank_url: "http://127.0.0.1:8082".into(),
+            model_provider: ModelProvider::Api,
+            embed_url: None,
+            rerank_url: None,
+            embed_model: default_embed_model(),
+            rerank_model: default_rerank_model(),
             prompt_variant: "zh".into(),
             llm_base_url: "https://maas.qianwenaiapi.com/compatible-mode/v1".into(),
             llm_model: "qwen3.8-flash".into(),
@@ -73,6 +105,24 @@ impl Default for ServiceConfig {
 }
 
 impl ServiceConfig {
+    pub fn embed_url(&self) -> &str {
+        self.embed_url
+            .as_deref()
+            .unwrap_or(match self.model_provider {
+                ModelProvider::Api => DEFAULT_API_EMBED_URL,
+                ModelProvider::SelfHosted => DEFAULT_SELF_HOSTED_EMBED_URL,
+            })
+    }
+
+    pub fn rerank_url(&self) -> &str {
+        self.rerank_url
+            .as_deref()
+            .unwrap_or(match self.model_provider {
+                ModelProvider::Api => DEFAULT_API_RERANK_URL,
+                ModelProvider::SelfHosted => DEFAULT_SELF_HOSTED_RERANK_URL,
+            })
+    }
+
     /// Reject invalid shared tunables before opening stores or loading model weights. The selected
     /// algorithm validates its own section with `MemoryAlgorithm::validate_config`.
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -89,6 +139,21 @@ impl ServiceConfig {
             anyhow::ensure!(value > 0, "{name} must be positive");
         }
         anyhow::ensure!(self.llm_timeout_secs > 0, "LLM timeout must be positive");
+        for (name, url) in [
+            ("embedUrl", self.embed_url()),
+            ("rerankUrl", self.rerank_url()),
+        ] {
+            anyhow::ensure!(
+                url.starts_with("http://") || url.starts_with("https://"),
+                "{name} must be an http(s) URL"
+            );
+        }
+        if self.model_provider == ModelProvider::Api {
+            anyhow::ensure!(
+                !self.embed_model.trim().is_empty() && !self.rerank_model.trim().is_empty(),
+                "embedModel and rerankModel must be nonempty for the api model provider"
+            );
+        }
         Ok(())
     }
 }
@@ -99,6 +164,14 @@ fn default_mem0_threshold() -> f32 {
 
 fn default_mem0_max_tokens() -> u32 {
     2000
+}
+
+fn default_embed_model() -> String {
+    DEFAULT_API_EMBED_MODEL.into()
+}
+
+fn default_rerank_model() -> String {
+    DEFAULT_API_RERANK_MODEL.into()
 }
 
 #[cfg(test)]
@@ -127,6 +200,26 @@ mod tests {
         let mut v = serde_json::to_value(ServiceConfig::default()).unwrap();
         v["batchTurns"] = serde_json::json!(3);
         assert!(serde_json::from_value::<ServiceConfig>(v).is_err());
+        let c = ServiceConfig {
+            embed_url: Some("127.0.0.1:8081".into()),
+            ..Default::default()
+        };
+        assert!(c.validate().is_err());
+    }
+    #[test]
+    fn model_urls_default_by_provider() {
+        let api = ServiceConfig::default();
+        assert_eq!(api.model_provider, ModelProvider::Api);
+        assert_eq!(api.embed_url(), DEFAULT_API_EMBED_URL);
+        assert_eq!(api.rerank_url(), DEFAULT_API_RERANK_URL);
+        let mut v = serde_json::to_value(ServiceConfig::default()).unwrap();
+        v["modelProvider"] = serde_json::json!("self-hosted");
+        v["rerankUrl"] = serde_json::json!("http://10.0.0.5:9000");
+        let local: ServiceConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(local.embed_url(), DEFAULT_SELF_HOSTED_EMBED_URL);
+        assert_eq!(local.rerank_url(), "http://10.0.0.5:9000");
+        assert_eq!(local.embed_model, DEFAULT_API_EMBED_MODEL);
+        assert!(serde_json::from_str::<ModelProvider>("\"llama\"").is_err());
     }
 }
 

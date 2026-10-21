@@ -20,6 +20,16 @@ def test_metadata_distinguishes_llama_server_from_mock():
     assert mock["isMock"] is True
 
 
+def test_metadata_accepts_the_hosted_api_backend():
+    health = {**llama_health(), "modelBackend": "api", "modelDtype": "hosted",
+              "modelDevice": "https://maas.qianwenaiapi.com/compatible-mode/v1",
+              "embedModel": "qwen3.7-text-embedding-flash", "rerankModel": None}
+    metadata = model_metadata.capture(health)
+    assert metadata["isMock"] is False and metadata["embedModel"] == "qwen3.7-text-embedding-flash"
+    with pytest.raises(ValueError, match="base URL"):
+        model_metadata.capture({**health, "modelDevice": "mock"})
+
+
 def test_runtime_change_during_a_run_is_rejected(tmp_path):
     args = args_for(tmp_path, "http://unused")
     args.actual_model_runtime = model_metadata.capture(llama_health())

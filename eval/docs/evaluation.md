@@ -29,10 +29,12 @@ The daemon supplies BGE-M3 embeddings to both systems. Retrieval is measured seq
 
 ## Run a new pilot
 
-After building and downloading models locally, start a fresh store:
+The recorded protocols use self-hosted BGE models, not the service's hosted default. After building
+and starting them as described in [self-hosted retrieval models](../../docs/self-hosted-models.md),
+start a fresh store:
 
 ```sh
-.venv/bin/python scripts/serve.py --memory-strategy memos --data-dir eval/results/pilot/service-store --max-calls 512 --llm-concurrency 4
+.venv/bin/python scripts/serve.py --model-provider self-hosted --memory-strategy memos --data-dir eval/results/pilot/service-store --max-calls 512 --llm-concurrency 4
 .venv/bin/python eval/memory_run.py --base-url http://127.0.0.1:8765 --tag memory-en --prompt-variant en --convs conv-26 --results-dir eval/results/pilot
 .venv/bin/python eval/memory_run.py --base-url http://127.0.0.1:8765 --tag memory-zh --prompt-variant zh --convs conv-26 --results-dir eval/results/pilot
 .venv/bin/python eval/mem0_run.py --embed-url http://127.0.0.1:8765/v1 --tag mem0 --convs conv-26 --workers 2 --results-dir eval/results/pilot --stores-dir eval/results/pilot/mem0-stores

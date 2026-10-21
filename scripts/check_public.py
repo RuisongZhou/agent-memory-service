@@ -6,7 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WEIGHTS = {'.bin', '.safetensors', '.onnx', '.gguf', '.pt', '.pth', '.h5', '.ckpt', '.ot', '.tflite'}
-SECRET = re.compile(rb'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)')
+# Provider keys may contain dots (sk-ws-...), so they are part of the key alphabet.
+SECRET = re.compile(rb'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_.-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)')
 
 def main():
     paths = subprocess.check_output(['git','ls-files','--cached','-z'],cwd=ROOT).split(b'\0')

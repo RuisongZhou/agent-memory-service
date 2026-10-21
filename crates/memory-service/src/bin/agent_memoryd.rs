@@ -1,6 +1,6 @@
 //! `agent-memoryd` — 共享记忆库 daemon.
 //!
-//!   agent-memoryd serve  --data-dir D [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
+//!   agent-memoryd serve  --data-dir D [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
 //!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 8 tools)
 //!   agent-memoryd reindex --vector | --fulltext | --all [--url ...]
 use clap::{Parser, Subcommand};
@@ -30,20 +30,22 @@ enum Cmd {
         port: u16,
         #[arg(long, env = "MEMORY_PROMPT_VARIANT", default_value = "zh")]
         prompt_variant: String,
-        /// llama-server base URL serving the embedding model (`--embedding`)
-        #[arg(
-            long,
-            env = "MEMORY_EMBED_URL",
-            default_value = "http://127.0.0.1:8081"
-        )]
-        embed_url: String,
-        /// llama-server base URL serving the reranker (`--reranking`)
-        #[arg(
-            long,
-            env = "MEMORY_RERANK_URL",
-            default_value = "http://127.0.0.1:8082"
-        )]
-        rerank_url: String,
+        /// Embedding/rerank source: `api` (hosted, key in MEMORY_MODEL_API_KEY or QWEN_API_KEY; default)
+        /// or `self-hosted` (user-run llama-server processes)
+        #[arg(long, env = "MEMORY_MODEL_PROVIDER")]
+        model_provider: Option<String>,
+        /// Embedding base URL [default: hosted compatible-mode/v1, or http://127.0.0.1:8081 when self-hosted]
+        #[arg(long, env = "MEMORY_EMBED_URL")]
+        embed_url: Option<String>,
+        /// Rerank base URL [default: hosted compatible-api/v1, or http://127.0.0.1:8082 when self-hosted]
+        #[arg(long, env = "MEMORY_RERANK_URL")]
+        rerank_url: Option<String>,
+        /// Hosted embedding model (api provider) [default: qwen3.7-text-embedding-flash]
+        #[arg(long, env = "MEMORY_EMBED_MODEL")]
+        embed_model: Option<String>,
+        /// Hosted rerank model (api provider) [default: qwen3.7-text-rerank]
+        #[arg(long, env = "MEMORY_RERANK_MODEL")]
+        rerank_model: Option<String>,
         #[arg(long)]
         no_reranker: bool,
         #[arg(long, env = "LLM_MODEL", default_value = "qwen3.8-flash")]
@@ -103,8 +105,11 @@ fn main() -> anyhow::Result<()> {
                 host,
                 port,
                 prompt_variant,
+                model_provider,
                 embed_url,
                 rerank_url,
+                embed_model,
+                rerank_model,
                 no_reranker,
                 llm_model,
                 llm_base_url,
@@ -132,8 +137,23 @@ fn main() -> anyhow::Result<()> {
                     cfg = serde_json::from_value(base)?;
                 }
                 cfg.data_dir = data_dir;
-                cfg.embed_url = embed_url;
-                cfg.rerank_url = rerank_url;
+                // Empty values (an unset `.env` template line) leave the JSON/default value in place.
+                let given = |v: Option<String>| v.filter(|v| !v.trim().is_empty());
+                if let Some(provider) = given(model_provider) {
+                    cfg.model_provider = serde_json::from_value(serde_json::json!(provider))?;
+                }
+                if let Some(url) = given(embed_url) {
+                    cfg.embed_url = Some(url);
+                }
+                if let Some(url) = given(rerank_url) {
+                    cfg.rerank_url = Some(url);
+                }
+                if let Some(model) = given(embed_model) {
+                    cfg.embed_model = model;
+                }
+                if let Some(model) = given(rerank_model) {
+                    cfg.rerank_model = model;
+                }
                 cfg.prompt_variant = prompt_variant;
                 anyhow::ensure!(
                     matches!(cfg.prompt_variant.as_str(), "zh" | "en"),
@@ -157,11 +177,14 @@ fn main() -> anyhow::Result<()> {
                     llm_concurrency,
                     cfg.llm_timeout_secs,
                 )?;
-                let models = ModelHub::connect(
-                    &cfg.embed_url,
-                    (cfg.use_reranker && cfg.mem0_rerank).then_some(cfg.rerank_url.as_str()),
-                )
-                .await?;
+                // The retrieval models may use their own key; the generation key is the fallback.
+                let model_api_key = std::env::var("MEMORY_MODEL_API_KEY")
+                    .ok()
+                    .filter(|key| !key.is_empty())
+                    .unwrap_or(api_key);
+                let models =
+                    ModelHub::connect(&cfg, &model_api_key, cfg.use_reranker && cfg.mem0_rerank)
+                        .await?;
                 let algorithm = memory_service::algorithms::select(cfg.memory_strategy);
                 let eng = Engine::new(cfg, llm, models, algorithm);
                 // open the default store eagerly so its workers resume unfinished tasks

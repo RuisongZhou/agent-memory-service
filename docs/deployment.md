@@ -8,13 +8,13 @@ continue with [MCP and harness integration](mcp-harness.md) after the daemon is 
 | Component | How it runs | Default address or location |
 |---|---|---|
 | Memory daemon | One shared `agent-memoryd serve` process | `http://127.0.0.1:8765` |
-| Embedding model | `llama-server` with BGE-M3 Q8_0 GGUF | `http://127.0.0.1:8081` |
-| Reranker | Separate `llama-server` with BGE-reranker-v2-m3 Q8_0 GGUF | `http://127.0.0.1:8082` |
+| Embedding model | Hosted `qwen3.7-text-embedding-flash` through an API key (default), or your own `llama-server` | `https://maas.qianwenaiapi.com/compatible-mode/v1` |
+| Reranker (optional) | Hosted `qwen3.7-text-rerank` (default), or your own `llama-server` | `https://maas.qianwenaiapi.com/compatible-api/v1` |
 | MCP bridge | Each agent client launches `agent-memoryd mcp` as a stdio child process | Forwards tools to the daemon |
 | Optional dialogue collector | Codex notification, Claude Code or WorkBuddy hook | Writes a local SQLite outbox |
 | Optional uploader | One `harness_memory.py drain` process per outbox | Submits dialogue and polls task receipts |
 
-Start the model servers and daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) then registers a client. MCP registration makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context (the installer's `--recall` adds hooks that do).
+Configure the model key and start the daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) then registers a client. MCP registration makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context (the installer's `--recall` adds hooks that do).
 
 The daemon exposes ordinary JSON HTTP endpoints, **not an HTTP MCP endpoint**. Configure clients with a stdio command, not an MCP `url` pointing to port 8765. There is no `/mcp`, SSE, or Streamable HTTP MCP endpoint in this repository.
 
@@ -27,20 +27,20 @@ The supplied shell scripts and dialogue uploader target macOS and Linux. On Wind
 
 ### 1. Install prerequisites
 
-Install a current stable Rust toolchain with Cargo, Python **3.11 or later**, Git, Make, curl, and a native C/C++ compiler. Building llama.cpp from source also requires CMake. Allow disk space and RAM for both downloaded GGUF files and the Rust build; model weights are downloaded separately and never shipped in the repository.
+Install a current stable Rust toolchain with Cargo, Python **3.11 or later**, Git, Make, curl, and a native C/C++ compiler. The default retrieval models are hosted, so no model weights or GPU are needed. To run the models yourself instead, follow [self-hosted retrieval models](self-hosted-models.md) as well.
 
-On macOS, install the Xcode command-line tools if needed, then install llama.cpp and Python using Homebrew:
+On macOS, install the Xcode command-line tools if needed, then install Python using Homebrew:
 
 ```sh
 xcode-select --install
-brew install llama.cpp python
+brew install python
 ```
 
 On Debian/Ubuntu, the native build prerequisites can be installed with:
 
 ```sh
 sudo apt-get update
-sudo apt-get install build-essential cmake pkg-config libssl-dev python3 python3-venv git curl
+sudo apt-get install build-essential pkg-config libssl-dev python3 python3-venv git curl
 ```
 
 Install Rust using your preferred toolchain manager, and confirm the tools are on PATH:
@@ -51,19 +51,6 @@ cargo --version
 python3 --version
 ```
 
-For Linux, build llama.cpp outside this repository or install a suitable binary. For example, in a separate source directory:
-
-```sh
-git clone https://github.com/ggml-org/llama.cpp.git
-cd llama.cpp
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release --target llama-server -j 2
-export PATH="$PWD/build/bin:$PATH"
-llama-server --help
-```
-
-This is the CPU build. For CUDA, Vulkan, or another accelerator, follow the upstream [llama.cpp build instructions](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md). Return to the memory-service checkout for the following steps.
-
 ### 2. Clone and build the daemon
 
 ```sh
@@ -73,7 +60,7 @@ make build
 target/fast/agent-memoryd serve --help
 ```
 
-`make build` uses the locked Rust dependencies and the `fast` profile, producing `target/fast/agent-memoryd`. Limit compilation parallelism with `make build JOBS=2` on a machine with limited memory. The daemon's Rust build does not embed model weights or require a GPU backend; inference runs in llama.cpp.
+`make build` uses the locked Rust dependencies and the `fast` profile, producing `target/fast/agent-memoryd`. Limit compilation parallelism with `make build JOBS=2` on a machine with limited memory. The daemon's Rust build does not embed model weights or require a GPU backend; inference runs at the configured model provider.
 
 The Python launcher and dialogue adapter use only the standard library, so deployment does not require the evaluation packages or dataset. If you also want the offline regression suite, `make setup` creates `.venv`, installs [eval/requirements.txt](../eval/requirements.txt), and downloads the public research dataset and tokenizer caches. It makes no paid model requests.
 
@@ -86,40 +73,39 @@ cp -n .env.example .env
 chmod 600 .env
 ```
 
-Fill the provider connection in `.env` using the supplied template. The launcher reads it as data;
-the direct daemon does not load `.env`. For accepted variables, precedence and algorithm tunables,
+Fill the provider connection in `.env` using the supplied template: `QWEN_API_KEY` for memory formation and,
+in the next step, the retrieval-model key. The launcher reads it as data; the direct daemon does not load `.env`. For accepted variables, precedence and algorithm tunables,
 use the [configuration reference](api.md#configuration) and
 [JSON template](../examples/service-config.json). Keep keys outside version control.
 
-### 4. Download and start the retrieval models
+### 4. Configure the retrieval models
+
+Embeddings and the optional reranker come from one of two providers, selected with
+`MEMORY_MODEL_PROVIDER` (or `--model-provider`):
+
+| Provider | Models | What you configure |
+|---|---|---|
+| `api` (default) | Hosted `qwen3.7-text-embedding-flash` and `qwen3.7-text-rerank` | An API key in `MEMORY_MODEL_API_KEY` |
+| `self-hosted` | Your own `llama-server` processes, for example BGE-M3 and BGE-reranker-v2-m3 | The servers; see [self-hosted retrieval models](self-hosted-models.md) |
+
+For the default, add the key to `.env`:
 
 ```sh
-scripts/llama_models.sh
-scripts/llama_servers.sh start
-scripts/llama_servers.sh status
+MEMORY_MODEL_API_KEY=your-model-api-key
 ```
 
-The download script places `bge-m3-Q8_0.gguf` and `bge-reranker-v2-m3-Q8_0.gguf` in ignored `models/gguf/`. Downloads are resumable. `GGUF_DIR` changes the download and server model directory; `HF_ENDPOINT` changes the download host. Keep weights and caches out of Git, releases, and CI artifacts.
+When it is empty, the daemon uses `QWEN_API_KEY`, so one key is enough if it covers both generation and
+the retrieval models. Embeddings go to `https://maas.qianwenaiapi.com/compatible-mode/v1/embeddings`
+and reranking to `https://maas.qianwenaiapi.com/compatible-api/v1/reranks`; the compatible-mode base has
+no rerank route. Override the bases with `MEMORY_EMBED_URL`/`MEMORY_RERANK_URL` and the models with
+`MEMORY_EMBED_MODEL`/`MEMORY_RERANK_MODEL` for another OpenAI-compatible provider. Each startup makes one
+small embedding request to check the key and read the vector dimension, and one rerank request when
+reranking is enabled. Stored texts and queries are sent to the provider; use `self-hosted` if they must
+stay on your machines.
 
-The server script runs both models in the background, requests GPU offload with `-ngl all`, and is used for Metal on Apple Silicon. PID files and logs go to `results/llama/`. It waits for each model's `/health` endpoint. For a CPU deployment, or to supervise each process separately, run these commands in separate terminals instead:
-
-```sh
-# Embedding server
-llama-server -m models/gguf/bge-m3-Q8_0.gguf \
-  --host 127.0.0.1 --port 8081 --embedding --pooling cls \
-  -c 8192 -np 4 -ub 2048 -b 2048 -ngl 0 --alias bge-m3 --no-webui
-```
-
-```sh
-# Reranking server
-llama-server -m models/gguf/bge-reranker-v2-m3-Q8_0.gguf \
-  --host 127.0.0.1 --port 8082 --reranking \
-  -c 8192 -np 4 -ub 2048 -b 2048 -ngl 0 --alias bge-reranker-v2-m3 --no-webui
-```
-
-Change `-ngl 0` to the offload setting appropriate for your llama.cpp build. Default Mem0 only needs the embedding server; start the reranker only when explicitly enabling Mem0 reranking.
-
-The script also accepts `LLAMA_EMBED_MODEL`, `LLAMA_RERANK_MODEL`, `LLAMA_EMBED_PORT`, `LLAMA_RERANK_PORT`, `LLAMA_CTX`, `LLAMA_PARALLEL`, and `LLAMA_RUN_DIR`. If you change ports, supply matching `--embed-url`/`--rerank-url` to the Python launcher. Keep the model endpoints on loopback.
+Switching provider or embedding model on an existing data directory re-embeds its records at the next
+start. The hosted default and BGE-M3 both use 1024 dimensions; for a model with another dimension, start
+with a new data directory.
 
 ### 5. Start the shared daemon
 
@@ -136,8 +122,8 @@ python3 scripts/serve.py \
 
 This runs in the foreground. Keep the terminal open or use the [process-manager setup](#keep-services-running). An explicit data path avoids the launcher's relative `daemon-data` default and the direct binary's different `./memory-data` default.
 
-The launcher accepts `--config`, `--bin`, endpoint/port options, concurrency and a generation-attempt
-guard. Use [API configuration](api.md#configuration) for defaults and precedence. A release binary
+The launcher accepts `--config`, `--bin`, `--model-provider`, endpoint/port options, concurrency and a
+generation-attempt guard. Use [API configuration](api.md#configuration) for defaults and precedence. A release binary
 can be selected with `--bin target/release/agent-memoryd` after a release build. For daemon-only flags
 such as `--prompt-variant en` or `--no-reranker`, launch the binary directly with exported settings.
 
@@ -146,12 +132,10 @@ such as `--prompt-variant en` or `--no-reranker`, launch the binary directly wit
 In another terminal:
 
 ```sh
-curl -fsS http://127.0.0.1:8081/health
-curl -fsS http://127.0.0.1:8082/health
 curl -fsS http://127.0.0.1:8765/health
 ```
 
-Skip the port-8082 check if you intentionally run default Mem0 without a reranker. Daemon health should report `ok:true`, the selected `memoryStrategy`, `modelBackend:"llama-server"`, embedding model metadata, and LLM usage. `rerankModel:null` is expected for default Mem0. Health confirms startup and model connectivity; it does not validate the generation key or mean queued formation is complete.
+Daemon health should report `ok:true`, the selected `memoryStrategy`, `modelBackend:"api"` (or `"llama-server"` when self-hosted), the embedding model and URL, and LLM usage. `rerankModel:null` is expected for default Mem0. Health confirms startup and that the retrieval models answered; it does not validate the generation key or mean queued formation is complete.
 
 For a write/read check that makes **no generation request**, save an explicit instruction through HTTP:
 
@@ -171,13 +155,13 @@ The instruction should appear in `instructions` and the rendered context. Restar
 
 ## Keep services running
 
-For an initial deployment, separate terminals are sufficient. For regular use, keep the model processes, daemon, and optional uploader under a process manager. Use absolute executable/model/data paths and the same OS user that owns the outbox. The repository does not install background services automatically.
+For an initial deployment, separate terminals are sufficient. For regular use, keep the daemon and optional uploader under a process manager, along with any [self-hosted model servers](self-hosted-models.md#4-keep-the-servers-running). Use absolute executable/model/data paths and the same OS user that owns the outbox. The repository does not install background services automatically.
 
 Stop previously launched servers/daemon/uploader before enabling managed services to avoid port and lock conflicts. Repeat health and capture checks after switching to the process manager.
 
 ### macOS LaunchAgents
 
-Use one LaunchAgent per model, daemon, and optional uploader so each process can restart independently. Create the definition and log directories:
+Use one LaunchAgent per process (daemon, optional uploader and any self-hosted model server) so each can restart independently. Create the definition and log directories:
 
 ```sh
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/agent-memory-service"
@@ -213,61 +197,27 @@ Create the other plists from the same template, using the following labels as fi
 
 | Label | Program arguments |
 |---|---|
-| `local.agent-memory-embed` | The foreground embedding `llama-server` command in [retrieval-model setup](#4-download-and-start-the-retrieval-models), with absolute executable/model paths and `-ngl all` for Metal |
-| `local.agent-memory-rerank` | The foreground reranking command in [retrieval-model setup](#4-download-and-start-the-retrieval-models), with absolute executable/model paths and `-ngl all` for Metal |
 | `local.agent-memory-uploader` | Absolute Python executable, absolute `scripts/harness_memory.py` path, `drain`, `--url`, `http://127.0.0.1:8765` |
 
-Each command argument is a separate `<string>`; do not put a shell command or `&` into the array. The daemon launcher reads the checkout's `.env`. The uploader uses the logged-in user's default outbox. Omit the reranker for default Mem0 if desired, and omit the uploader if capture is disabled.
+Each command argument is a separate `<string>`; do not put a shell command or `&` into the array. The daemon launcher reads the checkout's `.env`. The uploader uses the logged-in user's default outbox. Omit the uploader if capture is disabled. Self-hosted model servers get their own labels with the foreground commands in [self-hosted retrieval models](self-hosted-models.md#2-download-weights-and-start-the-servers).
 
 Validate and load the selected plists in your logged-in GUI session:
 
 ```sh
 plutil -lint "$HOME/Library/LaunchAgents/local.agent-memory-daemon.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.agent-memory-embed.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.agent-memory-rerank.plist"
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.agent-memory-daemon.plist"
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.agent-memory-uploader.plist"
 launchctl print "gui/$(id -u)/local.agent-memory-daemon"
 ```
 
-Validate each additional plist before loading it. The daemon waits for its required models, and the uploader retries while the daemon is unavailable. LaunchAgents run during the user's login session. To stop the daemon, use `launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"`; apply the same command to the uploader and model labels when shutting everything down. After changing a plist, boot it out and bootstrap the updated file. See Apple's [LaunchAgent guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) and the local `man launchctl` / `man launchd.plist` references.
+Validate each additional plist before loading it. The uploader retries while the daemon is unavailable. LaunchAgents run during the user's login session. To stop the daemon, use `launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"`; apply the same command to the uploader label when shutting everything down. After changing a plist, boot it out and bootstrap the updated file. See Apple's [LaunchAgent guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) and the local `man launchctl` / `man launchd.plist` references.
 
 ### Linux user-systemd services
 
-The following example supervises all four processes. Replace every `/absolute/path` first, and choose the CPU/GPU flags for your model build.
+The following example supervises the daemon and uploader. Replace every `/absolute/path` first. For self-hosted model servers, add their units from [self-hosted retrieval models](self-hosted-models.md#4-keep-the-servers-running).
 
 ```sh
 mkdir -p "$HOME/.config/systemd/user"
-```
-
-Create `~/.config/systemd/user/agent-memory-embed.service`:
-
-```ini
-[Unit]
-Description=Agent Memory embedding model
-
-[Service]
-ExecStart=/absolute/path/to/llama-server -m /absolute/path/agent-memory-service/models/gguf/bge-m3-Q8_0.gguf --host 127.0.0.1 --port 8081 --embedding --pooling cls -c 8192 -np 4 -ub 2048 -b 2048 -ngl 0 --alias bge-m3 --no-webui
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-
-Create `~/.config/systemd/user/agent-memory-rerank.service`:
-
-```ini
-[Unit]
-Description=Agent Memory reranking model
-
-[Service]
-ExecStart=/absolute/path/to/llama-server -m /absolute/path/agent-memory-service/models/gguf/bge-reranker-v2-m3-Q8_0.gguf --host 127.0.0.1 --port 8082 --reranking -c 8192 -np 4 -ub 2048 -b 2048 -ngl 0 --alias bge-reranker-v2-m3 --no-webui
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
 ```
 
 Create `~/.config/systemd/user/agent-memory.service`:
@@ -275,8 +225,6 @@ Create `~/.config/systemd/user/agent-memory.service`:
 ```ini
 [Unit]
 Description=Agent Memory daemon
-Wants=agent-memory-embed.service agent-memory-rerank.service
-After=agent-memory-embed.service agent-memory-rerank.service
 
 [Service]
 WorkingDirectory=/absolute/path/agent-memory-service
@@ -289,7 +237,7 @@ UMask=0077
 WantedBy=default.target
 ```
 
-The launcher reads the checkout's `.env`; no key belongs in the unit file. It connects and probes the required model servers before opening the HTTP listener, so process start order is followed by an application readiness check. Default Mem0 can omit the reranker unit and its dependency.
+The launcher reads the checkout's `.env`; no key belongs in the unit file. It probes the retrieval models before opening the HTTP listener and exits if they do not answer, so a restart retries once the network or model servers are up.
 
 Create `~/.config/systemd/user/agent-memory-uploader.service` if using capture:
 
@@ -313,7 +261,7 @@ Load and start the units, then repeat the readiness and capture checks:
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now agent-memory-embed.service agent-memory-rerank.service agent-memory.service
+systemctl --user enable --now agent-memory.service
 systemctl --user enable --now agent-memory-uploader.service
 systemctl --user status agent-memory.service agent-memory-uploader.service
 journalctl --user -u agent-memory.service -u agent-memory-uploader.service -n 100
@@ -337,20 +285,22 @@ To request an index rebuild on a running daemon:
 target/fast/agent-memoryd reindex --all --url http://127.0.0.1:8765 --tenant default
 ```
 
-Use `--vector` or `--fulltext` for a specific index. Changing the embedding model alias/quantization identity causes re-embedding at the next start; expect rebuild work and verify retrieval afterwards. Review local outbox retention periodically: `completed`, `failed`, and `rejected` rows remain until deliberately cleaned up.
+Use `--vector` or `--fulltext` for a specific index. Changing the model provider, embedding model, or a self-hosted model's alias/quantization causes re-embedding at the next start; expect rebuild work and verify retrieval afterwards. Review local outbox retention periodically: `completed`, `failed`, and `rejected` rows remain until deliberately cleaned up.
 
 ### Stop and restart
 
-With the terminal/script setup, stop the uploader and foreground daemon with Ctrl-C, then stop model servers with `scripts/llama_servers.sh stop`. Restart models first, then the daemon with the same arguments/data directory, then the uploader. Accepted outbox jobs resume polling; pending ones retain their payloads for retry. Durable unfinished server jobs resume when their tenant is opened.
+With the terminal/script setup, stop the uploader and foreground daemon with Ctrl-C, then any self-hosted model servers with `scripts/self_hosted_models.sh stop`. Restart self-hosted models first, then the daemon with the same arguments/data directory, then the uploader. Accepted outbox jobs resume polling; pending ones retain their payloads for retry. Durable unfinished server jobs resume when their tenant is opened.
 
-With the LaunchAgent setup, use `launchctl bootout` for the selected service labels. With systemd, stop the uploader, daemon, and model units using `systemctl --user stop`. Use the process manager's logs instead of `results/llama/`, which belongs to the shell-script setup.
+With the LaunchAgent setup, use `launchctl bootout` for the selected service labels. With systemd, stop the uploader, daemon, and any model units using `systemctl --user stop`. Use the process manager's logs instead of `results/llama/`, which belongs to the self-hosted helper script.
 
 ### Common problems
 
 | Symptom | Check or action |
 |---|---|
-| Missing GGUF / model health fails | Run `scripts/llama_models.sh`; verify model paths, ports, llama-server flags, and `results/llama/*.log` for the script setup |
-| Daemon fails before listening | Check model readiness and `serve --help`; invalid config fields/tunables are rejected, and a required model endpoint must be reachable |
+| `model API key not configured` | Set `MEMORY_MODEL_API_KEY` (or `QWEN_API_KEY`) in `.env` or the environment, or switch to `MEMORY_MODEL_PROVIDER=self-hosted` |
+| `embedding model probe failed` with HTTP 401/403/404 | Check the model key, `MEMORY_EMBED_URL`/`MEMORY_RERANK_URL` and model names; the rerank base must offer `/reranks` |
+| Self-hosted model not ready | See [self-hosted troubleshooting](self-hosted-models.md#troubleshooting) |
+| Daemon fails before listening | Check `serve --help`; invalid config fields/tunables are rejected, and the retrieval models must answer |
 | `LLM API key not configured` or provider 401 | Check `.env`, exported overrides, and provider access; direct binary launches do not read `.env` |
 | Generation attempt guard reached | Inspect usage/errors and deliberately revise the launch guard/provider budget; restarting resets the process guard |
 | Legacy jobs at startup | Complete them with the preserved version or use a fresh store; see [compatibility](api.md#compatibility) |

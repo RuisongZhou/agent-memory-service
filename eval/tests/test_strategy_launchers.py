@@ -55,6 +55,37 @@ def test_wrapper_preserves_strategy_precedence(monkeypatch, tmp_path, cli, envir
         assert command[command.index('--config') + 1] == str(cfg)
 
 
+def run_wrapper(monkeypatch, tmp_path, dotenv, *extra):
+    module = script('serve')
+    monkeypatch.setattr(module, 'ROOT', tmp_path)
+    (tmp_path / '.env').write_text(dotenv)
+    monkeypatch.setattr(sys, 'argv', ['serve.py', *extra])
+    emitted = {}
+    def launch(command, *, env):
+        emitted.update(command=command, env=env)
+        return 0
+    monkeypatch.setattr(module.subprocess, 'call', launch)
+    with pytest.raises(SystemExit):
+        module.main()
+    return emitted['command'], emitted['env']
+
+
+def test_wrapper_passes_retrieval_model_settings(monkeypatch, tmp_path):
+    for key in ('MEMORY_MODEL_PROVIDER', 'MEMORY_MODEL_API_KEY', 'MEMORY_EMBED_MODEL', 'MEMORY_EMBED_URL'):
+        monkeypatch.delenv(key, raising=False)
+    dotenv = 'MEMORY_MODEL_API_KEY=placeholder-key\nMEMORY_EMBED_MODEL=custom-embed\n'
+    command, env = run_wrapper(monkeypatch, tmp_path, dotenv)
+    # Provider defaults belong to the daemon; the wrapper adds no endpoint of its own.
+    assert '--embed-url' not in command and '--model-provider' not in command
+    assert env['MEMORY_MODEL_API_KEY'] == 'placeholder-key' and env['MEMORY_EMBED_MODEL'] == 'custom-embed'
+    command, env = run_wrapper(monkeypatch, tmp_path, dotenv, '--model-provider', 'self-hosted',
+                               '--embed-url', 'http://127.0.0.1:9081')
+    assert command[command.index('--model-provider') + 1] == 'self-hosted'
+    assert command[command.index('--embed-url') + 1] == 'http://127.0.0.1:9081'
+    _, env = run_wrapper(monkeypatch, tmp_path, dotenv, '--mock')
+    assert 'MEMORY_MODEL_API_KEY' not in env and env['MEMORY_MOCK_MODELS'] == '1'
+
+
 def test_llama_smoke_environment_pins_mem0_without_inheriting_provider_settings(monkeypatch):
     module = script('llama_http_smoke')
     monkeypatch.setenv('MEMORY_STRATEGY', 'mem0')

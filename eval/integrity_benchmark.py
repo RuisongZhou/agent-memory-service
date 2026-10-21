@@ -218,6 +218,8 @@ def main() -> None:
     environment.pop("QWEN_API_KEY", None)
     environment.pop("MEMORY_MOCK_MODELS", None)
     environment["MEMORY_LLM_MAX_CALLS"] = "1"
+    # Both arms used the self-hosted BGE models; archived binaries ignore the provider variable.
+    environment["MEMORY_MODEL_PROVIDER"] = "self-hosted"
     # Keep the archived control binary's launch contract; the rebuilt arm uses the renamed algorithm.
     environment["MEMORY_STRATEGY"] = "current" if args.system == "current" else "memos"
     port = urlsplit(args.base_url).port
