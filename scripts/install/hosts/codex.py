@@ -27,6 +27,7 @@ PLATFORM = 'codex'
 LABEL = 'Codex'
 DESCRIPTION = ('Register the shared-memory MCP bridge, notify capture and a SessionEnd hook in Codex. '
                'Preview unless --apply is given.')
+CAPTURE = True
 EVENTS = ('SessionEnd',)
 TOOL_TIMEOUT_SEC = 180
 MANUAL = 'edit it by hand as in docs/mcp-harness.md#use-with-codex'

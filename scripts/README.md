@@ -7,7 +7,7 @@ Run commands from the repository root.
 | Script | Purpose | Generation calls |
 |---|---|---|
 | `serve.py` | Launch the daemon using local `.env` settings | Starting/recovering jobs can invoke the configured provider |
-| `install.sh`, `install/` | One-command MCP and capture registration for Codex, Claude Code and WorkBuddy, verified against a temporary mock daemon | None; a local stub forms the check's one fact |
+| `install.sh`, `install/` | One-command MCP and capture registration for Codex, Claude Code and WorkBuddy, and MCP registration for DeepSeek Harness, verified against a temporary mock daemon | None; a local stub forms the check's one fact |
 | `harness_memory.py` | Collect completed agent dialogue into an outbox, upload inputs and poll receipts | Capture is local only; uploaded dialogue can trigger service formation |
 | `llama_models.sh` | Download the service's embedding/reranking GGUF files | None |
 | `llama_servers.sh` | Start, stop or inspect the local retrieval model servers | None |

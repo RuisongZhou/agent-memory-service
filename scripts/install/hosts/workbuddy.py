@@ -16,6 +16,7 @@ PLATFORM = 'workbuddy'
 LABEL = 'WorkBuddy'
 DESCRIPTION = ('Register the shared-memory MCP bridge and dialogue-capture hooks in WorkBuddy (GUI and its bundled CLI). '
                'Preview unless --apply is given.')
+CAPTURE = True
 EVENTS = ('UserPromptSubmit', 'Stop', 'SessionEnd')
 HOOK_EXTRA = ('--turn-id-field', 'none')
 TOOL_TIMEOUT_MS = 180000

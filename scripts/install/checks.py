@@ -2,8 +2,9 @@
 
 `verify_local` runs the exact bridge and collector commands an installation
 writes against a temporary mock-retrieval daemon whose generation endpoint is a
-local deterministic stub: MCP handshake, the eight tools, a context read and,
-with capture, host-format events -> outbox -> uploader -> formation -> search.
+local deterministic stub: the version-probe fallback, MCP handshake, the eight
+tools, a context read and, with capture, host-format events -> outbox ->
+uploader -> formation -> search.
 """
 
 import fcntl
@@ -29,6 +30,11 @@ ASSISTANT = 'Noted; decisions will keep their sources.'
 FACT = 'Installer check: project decisions keep their sources.'
 SESSION = 'installer-check'
 OPENER = build_opener(ProxyHandler({}))
+# The version probe the MCP TypeScript SDK 2.2 (DeepSeek Harness 0.2.1) sends to a disposable bridge process.
+DISCOVER = {'jsonrpc': '2.0', 'id': 'server-discover-probe-1', 'method': 'server/discover', 'params': {'_meta': {
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+    'io.modelcontextprotocol/clientInfo': {'name': 'agent-memory-installer', 'version': '1'},
+    'io.modelcontextprotocol/clientCapabilities': {}}}}
 
 
 PROXIES = ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')
@@ -159,7 +165,13 @@ class Bridge:
     def request(self, method, params):
         self.ids += 1
         self.send({'jsonrpc': '2.0', 'id': self.ids, 'method': method, 'params': params})
-        deadline = time.monotonic() + 30
+        message = self.reply(self.ids, method)
+        if 'result' not in message:
+            raise InstallError(f'MCP {method} failed')
+        return message['result']
+
+    def reply(self, request_id, method, timeout=30):
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not select.select([self.process.stdout], [], [], 0.5)[0]:
                 continue
@@ -167,10 +179,8 @@ class Bridge:
             if not line:
                 break
             message = json.loads(line)
-            if message.get('id') == self.ids:
-                if 'result' not in message:
-                    raise InstallError(f'MCP {method} failed')
-                return message['result']
+            if message.get('id') == request_id:
+                return message
         raise InstallError(f'MCP {method}: no response from the bridge')
 
     def call(self, name, arguments):
@@ -188,6 +198,23 @@ class Bridge:
         except subprocess.TimeoutExpired:
             self.process.terminate()
             self.process.wait()
+
+
+def verify_discover(argv, env):
+    """A client probing the 2026-07-28 revision must be turned down at once, so it falls back to
+    `initialize`; a modern answer would lead it into result shapes the bridge does not serve."""
+    bridge = Bridge(argv, env)
+    try:
+        bridge.send(DISCOVER)
+        message = bridge.reply(DISCOVER['id'], 'server/discover', timeout=10)
+    finally:
+        bridge.close()
+    error = message.get('error')
+    data = error.get('data') if isinstance(error, dict) else None
+    supported = data.get('supported') if isinstance(data, dict) else None
+    if not error or any(str(version) >= '2026-07-28' for version in supported or ()):
+        raise InstallError('the bridge answered the server/discover probe with a 2026-07-28 session; '
+                           'clients such as DeepSeek Harness would not fall back to initialize')
 
 
 def run_capture(events, env):
@@ -224,8 +251,10 @@ def verify_local(host, ctx):
         root = Path(temporary)
         env = check_env(root)
         with generation_stub() as (generation, calls), mock_daemon(ctx.binary, root, generation) as url:
-            bridge = Bridge([str(ctx.binary), *core.bridge_args(url, ctx.platform)],
-                            dict(env, MEMORY_TENANT=ctx.tenant))
+            argv = [str(ctx.binary), *core.bridge_args(url, ctx.platform)]
+            bridge_env = dict(env, MEMORY_TENANT=ctx.tenant)
+            verify_discover(argv, bridge_env)
+            bridge = Bridge(argv, bridge_env)
             try:
                 bridge.request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {},
                                               'clientInfo': {'name': 'agent-memory-installer', 'version': '1'}})
@@ -247,7 +276,7 @@ def verify_local(host, ctx):
                 bridge.close()
         if len(calls) > 2:
             raise InstallError(f'unexpected generation calls during the check: {len(calls)}')
-    steps = 'MCP handshake, 8 tools, get_context'
+    steps = 'server/discover fallback, MCP handshake, 8 tools, get_context'
     if ctx.capture:
         steps += f', {host.LABEL} capture -> outbox -> uploader -> formation -> search'
     print(f'[check] offline mock daemon: {steps} passed')

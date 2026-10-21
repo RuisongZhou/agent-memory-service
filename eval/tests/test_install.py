@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import types
 
 import pytest
 
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts/install'))
 import checks  # noqa: E402
 import core  # noqa: E402
-from hosts import claude_code, codex, workbuddy  # noqa: E402
+from hosts import claude_code, codex, deepseek_harness, workbuddy  # noqa: E402
 
 BINARY = ROOT / 'target/fast/agent-memoryd'
 UNUSED_URL = 'http://127.0.0.1:9'  # nothing answers: daemon status stays a note
@@ -248,6 +249,158 @@ def test_codex_refuses_a_foreign_server_and_config_toml_hooks(tmp_path):
         codex.refuse_toml_hooks('[[hooks.SessionEnd]]\n[[hooks.SessionEnd.hooks]]\ntype = "command"\ncommand = "x"\n')
 
 
+# --- DeepSeek Harness cordis.patch.yml -----------------------------------------------
+
+DSH_CONFIG = {'serverName': 'shared-memory', 'transport': 'stdio', 'command': '/opt/agent-memoryd',
+              'args': ['mcp', '--url', 'http://127.0.0.1:8765', '--platform', 'deepseek-harness'],
+              'env': {'MEMORY_TENANT': 'default'}, 'toolCallTimeoutMs': 180000}
+PATCH = """# personal overrides
+- insert:
+    - id: mcp-github
+      name: '@deepseek-ai/dsh-mcp-client'
+      config: {serverName: github, transport: stdio, command: npx}  # keep this comment
+
+- id: telemetry
+  disabled: true
+"""
+
+
+@pytest.mark.parametrize('text,after_removal', [
+    (PATCH, PATCH),
+    (PATCH.replace('\n', '\r\n'), PATCH.replace('\n', '\r\n')),
+    ('[]\n', '[]\n'),                                  # `[]` gives way to the block and comes back
+    ('# header\n[]  # empty\n# footer\n', '# header\n[]\n# footer\n'),
+    ('', '[]\n'),                                       # dsh refuses an empty patch file
+    ('# only a comment\n', '# only a comment\n[]\n'),
+    ('- id: telemetry\n  disabled: true', '- id: telemetry\n  disabled: true\n'),
+])
+def test_dsh_patch_edit_keeps_every_other_byte_and_is_idempotent(text, after_removal):
+    edited = deepseek_harness.edit_patch(text, DSH_CONFIG)
+    assert edited.count(deepseek_harness.BEGIN) == 1 and edited.count('serverName: "shared-memory"') == 1
+    assert deepseek_harness.edit_patch(edited, DSH_CONFIG) == edited
+    if '\r\n' in text:
+        assert '\n' not in edited.replace('\r\n', '')
+    if '[]' not in text:
+        assert edited.startswith(text.rstrip('\n'))
+    assert deepseek_harness.edit_patch(edited, None) == after_removal
+    assert deepseek_harness.edit_patch(text, None) == text
+
+
+def test_dsh_patch_block_is_replaced_in_place():
+    edited = deepseek_harness.edit_patch(PATCH, DSH_CONFIG) + '- id: later\n  disabled: true\n'
+    moved = deepseek_harness.edit_patch(edited, dict(DSH_CONFIG, env={'MEMORY_TENANT': 'team'}))
+    assert moved.endswith('# <<< agent-memory-service <<<\n- id: later\n  disabled: true\n')
+    assert '"MEMORY_TENANT": "team"' in moved and moved.count('mcp-shared-memory') == 1
+
+
+@pytest.mark.parametrize('text,message', [
+    ('agents:\n  - x\n', 'not a plain top-level YAML list'),
+    ('---\n- id: x\n', 'not a plain top-level YAML list'),
+    ('[a, b]\n', 'not a plain top-level YAML list'),
+    ('  - id: x\n', 'indented'),
+    ('- insert:\n    - id: mine\n      config:\n        serverName: shared-memory\n', 'another MCP row'),
+    (deepseek_harness.BEGIN + '\n- id: x\n', 'markers are damaged'),
+    (deepseek_harness.END + '\n' + deepseek_harness.BEGIN + '\n', 'markers are damaged'),
+])
+def test_dsh_patch_refuses_files_it_cannot_edit(text, message):
+    with pytest.raises(core.InstallError, match=message):
+        deepseek_harness.edit_patch(text, DSH_CONFIG)
+
+
+# js-yaml output of `dsh --profile web --dump-config`: layer comments, tags, folding past 80 columns.
+DUMP = """# == @deepseek-ai/dsh-base
+- id: plugin-manager
+  name: '@deepseek-ai/dsh-plugin-manager'
+  disabled: !!js '!ctx.get(''profileContext'')'
+- id: shell
+  config:
+    desktopPlatform: !!js >-
+      ctx.get('profileContext')?.name === 'desktop' && ['darwin',
+      'win32'].includes(process.platform)
+    root: []
+# == user
+- id: mcp-shared-memory
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: shared-memory
+    transport: stdio
+    command: >-
+      /Users/someone/a very long checkout path/agent-memory-service/target/fast/agent-memoryd
+    args:
+      - mcp
+      - '--url'
+      - http://127.0.0.1:8765
+      - '--platform'
+      - deepseek-harness
+    env:
+      MEMORY_TENANT: default
+    toolCallTimeoutMs: 180000
+"""
+
+
+def test_dsh_dump_reader_finds_our_row_once():
+    rows = deepseek_harness.our_rows(DUMP)
+    assert rows == [dict(DSH_CONFIG, command='/Users/someone/a very long checkout path/agent-memory-service'
+                                             '/target/fast/agent-memoryd')]
+    assert len(deepseek_harness.our_rows(DUMP + DUMP.split('# == user\n')[1])) == 2
+
+
+def test_dsh_host_check_requires_the_row_once_and_no_new_warnings(tmp_path, monkeypatch, capsys):
+    module, args = core.arguments(['--host', 'deepseek-harness', '--home', str(tmp_path),
+                                   '--binary', '/Users/someone/a very long checkout path/agent-memory-service'
+                                   '/target/fast/agent-memoryd', '--dsh-binary', sys.executable])
+    ctx = core.context(module, args)
+    planned = {ctx.patch: b'planned'}
+    outputs = {b'planned': (0, DUMP, ['warn: a']), None: (0, '', ['warn: a'])}
+    monkeypatch.setattr(deepseek_harness, 'dump_config', lambda dsh, data: outputs[data])
+    deepseek_harness.host_check(args, ctx, planned)
+    assert '[check] dsh --dump-config composed' in capsys.readouterr().out
+    outputs[b'planned'] = (0, DUMP, ['warn: a', 'warn: b'])
+    with pytest.raises(core.InstallError, match='1 new warning'):
+        deepseek_harness.host_check(args, ctx, planned)
+    outputs[b'planned'] = (0, DUMP.replace('180000', '60000'), [])
+    with pytest.raises(core.InstallError, match='exactly once as written'):
+        deepseek_harness.host_check(args, ctx, planned)
+    outputs[b'planned'] = (1, '', ['at x', 'Error: dsh: patches must be a top-level YAML array'])
+    with pytest.raises(core.InstallError, match='top-level YAML array'):
+        deepseek_harness.host_check(args, ctx, planned)
+
+
+@pytest.mark.parametrize('reply,falls_back', [
+    ({'error': {'code': -32022, 'message': 'x', 'data': {'supported': ['2025-06-18', '2025-11-25']}}}, True),
+    ({'error': {'code': -32601, 'message': 'Method not found'}}, True),
+    ({'error': {'code': -32022, 'message': 'x', 'data': {'supported': ['2025-11-25', '2026-07-28']}}}, False),
+    ({'result': {'supportedVersions': ['2026-07-28'], 'capabilities': {}}}, False),
+    (None, False),  # exits without an answer
+])
+def test_discover_probe_must_send_clients_back_to_initialize(tmp_path, reply, falls_back):
+    bridge = tmp_path / 'bridge'
+    answer = reply and json.dumps(dict(reply, jsonrpc='2.0', id=checks.DISCOVER['id']))
+    bridge.write_text(f'#!{sys.executable}\nimport sys\nsys.stdin.readline()\n' + (f'print({answer!r})\n' if answer else ''))
+    bridge.chmod(0o755)
+    if falls_back:
+        checks.verify_discover([str(bridge)], {})
+    else:
+        with pytest.raises(core.InstallError, match='server/discover'):
+            checks.verify_discover([str(bridge)], {})
+
+
+def find_dsh():
+    module, args = core.arguments(['--host', 'deepseek-harness'])
+    return deepseek_harness.find_dsh(args, types.SimpleNamespace(home=Path.home()))
+
+
+@pytest.mark.skipif(find_dsh() is None, reason='needs the dsh CLI (PATH or the DeepSeek Harness app)')
+def test_dsh_itself_composes_the_planned_patch(tmp_path, capsys):
+    module, args = core.arguments(['--host', 'deepseek-harness', '--home', str(tmp_path), '--binary', '/opt/agent-memoryd'])
+    ctx = core.context(module, args)
+    ctx.patch.parent.mkdir()
+    ctx.patch.write_text(PATCH)
+    planned = {path: data for path, data, _ in filter(None, deepseek_harness.changes(args, ctx, False))}
+    deepseek_harness.host_check(args, ctx, planned)
+    assert '[check] dsh --dump-config composed' in capsys.readouterr().out
+
+
 # --- install flow -----------------------------------------------------------------
 
 def test_preview_writes_nothing(tmp_path, capsys, fake_binary):
@@ -373,6 +526,26 @@ def test_claude_code_rollback_undoes_the_named_workspace_only(tmp_path, capsys, 
     assert code == 1 and 'already rolled back' in output
 
 
+def test_dsh_install_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary, offline):
+    patch = tmp_path / '.dsh/cordis.patch.yml'
+    patch.parent.mkdir()
+    patch.write_text(PATCH)
+    argv = install_args('deepseek-harness', tmp_path, fake_binary, '--apply')
+    code, output = run(capsys, *argv)
+    assert code == 0 and offline == ['deepseek-harness'], output
+    assert 'MCP tools only' in output and 'uploader' not in output
+    assert patch.read_text().startswith(PATCH) and f'command: "{fake_binary}"' in patch.read_text()
+    code, output = run(capsys, *argv)
+    assert code == 0 and 'nothing written' in output
+    code, output = run(capsys, '--host', 'deepseek-harness', '--home', tmp_path, '--rollback')
+    assert code == 0 and patch.read_text() == PATCH, output
+    run(capsys, *argv)
+    code, output = run(capsys, '--host', 'deepseek-harness', '--home', tmp_path, '--uninstall')
+    assert code == 0 and patch.read_text() == PATCH, output
+    code, output = run(capsys, *install_args('deepseek-harness', tmp_path, fake_binary, '--project', 'p'))
+    assert code == 1 and 'MCP tools only' in output and patch.read_text() == PATCH
+
+
 def test_python_is_looked_up_on_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     module, args = core.arguments(['--host', 'codex', '--home', str(tmp_path), '--python', 'python3'])
@@ -413,10 +586,13 @@ def test_argument_errors(tmp_path, capsys, fake_binary):
 def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host):
     workspace = tmp_path / 'project'
     workspace.mkdir()
+    capture = core.load_host(host).CAPTURE
     extra = ['--workspace', str(workspace)] if host == 'claude-code' else []
+    extra += ['--project', 'install-test'] if capture else []
     result = subprocess.run(['bash', str(ROOT / 'scripts/install.sh'), *map(str, install_args(
-        host, tmp_path, BINARY, '--project', 'install-test', '--apply', *extra))],
+        host, tmp_path, BINARY, '--apply', *extra))],
         capture_output=True, text=True, timeout=300, env={'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable})
     assert result.returncode == 0, result.stdout + result.stderr
-    assert 'capture -> outbox -> uploader -> formation -> search passed' in result.stdout
+    assert 'server/discover fallback, MCP handshake, 8 tools, get_context' in result.stdout
+    assert ('capture -> outbox -> uploader -> formation -> search passed' in result.stdout) is capture
     assert not (tmp_path / core.OUTBOX).exists()  # verification used a temporary outbox

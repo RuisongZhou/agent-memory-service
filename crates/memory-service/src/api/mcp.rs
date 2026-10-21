@@ -7,7 +7,18 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
+
+/// Protocol revisions the bridge serves: the `initialize` era only. rmcp 3.2 and the TypeScript SDK
+/// 2.2 (DeepSeek Harness 0.2.1) disagree on 2026-07-28 result shapes (`tools/list` lacks the
+/// `ttlMs`/`cacheScope` that SDK requires), so a `server/discover` probe gets -32022 with this list
+/// and the client falls back to `initialize`. Revisit when both sides implement the same revision.
+const PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
+    ProtocolVersion::V_2024_11_05,
+    ProtocolVersion::V_2025_03_26,
+    ProtocolVersion::V_2025_06_18,
+    ProtocolVersion::V_2025_11_25,
+];
 
 /// Public memory tools: (name, description, input schema).
 fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
@@ -226,6 +237,10 @@ impl ServerHandler for Shim {
             )
     }
 
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(PROTOCOL_VERSIONS)
+    }
+
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -269,6 +284,62 @@ pub async fn run_stdio(url: &str, platform: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    /// One stdio session with a fresh bridge; returns the replies to requests that carry an id.
+    async fn session(messages: &[Value]) -> Vec<Value> {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let shim = Shim::new("http://127.0.0.1:9", "test");
+        tokio::spawn(async move {
+            if let Ok(service) = rmcp::service::serve_server(shim, tokio::io::split(server)).await {
+                let _ = service.waiting().await;
+            }
+        });
+        let (read, mut write) = tokio::io::split(client);
+        let mut lines = BufReader::new(read).lines();
+        let mut replies = Vec::new();
+        for message in messages {
+            write
+                .write_all(format!("{message}\n").as_bytes())
+                .await
+                .unwrap();
+            if message.get("id").is_some() {
+                let line =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+                        .await
+                        .expect("the bridge must answer promptly")
+                        .unwrap()
+                        .unwrap();
+                replies.push(serde_json::from_str(&line).unwrap());
+            }
+        }
+        replies
+    }
+
+    #[tokio::test]
+    async fn discover_probe_falls_back_to_initialize() {
+        // The probe DeepSeek Harness 0.2.1 (MCP TypeScript SDK 2.2) sends to a disposable process.
+        let probe = json!({"jsonrpc": "2.0", "id": "server-discover-probe-1", "method": "server/discover",
+            "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {"name": "dsh-mcp-client", "version": "0.0.1"},
+                "io.modelcontextprotocol/clientCapabilities": {}}}});
+        let reply = &session(&[probe]).await[0];
+        assert_eq!(reply["error"]["code"], -32022, "{reply}");
+        assert_eq!(
+            reply["error"]["data"]["supported"],
+            json!(["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"])
+        );
+        let replies = session(&[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25",
+                "capabilities": {}, "clientInfo": {"name": "dsh-mcp-client", "version": "0.0.1"}}}),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+        ])
+        .await;
+        assert_eq!(replies[0]["result"]["protocolVersion"], "2025-11-25");
+        assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 8);
+    }
+
     #[test]
     fn public_memory_tools() {
         let names: Vec<&str> = tool_specs().iter().map(|t| t.0).collect();

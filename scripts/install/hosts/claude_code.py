@@ -13,6 +13,7 @@ PLATFORM = 'claude-code'
 LABEL = 'Claude Code'
 DESCRIPTION = ('Register the shared-memory MCP bridge and dialogue-capture hooks in Claude Code. '
                'Preview unless --apply is given.')
+CAPTURE = True
 EVENTS = ('UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd')
 
 
