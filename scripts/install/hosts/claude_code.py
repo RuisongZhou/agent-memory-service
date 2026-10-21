@@ -14,6 +14,7 @@ LABEL = 'Claude Code'
 DESCRIPTION = ('Register the shared-memory MCP bridge and dialogue-capture hooks in Claude Code. '
                'Preview unless --apply is given.')
 CAPTURE = True
+RECALL = True
 EVENTS = ('UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd')
 
 
@@ -110,6 +111,7 @@ def changes(args, ctx, uninstall):
     events = EVENTS if ctx.capture and not uninstall else ()
     settings = core.merge_hooks(core.read_json(ctx.settings), events, lambda _: core.hook_handler(ctx),
                                 str(ctx.settings))
+    settings = core.merge_recall_hooks(settings, ctx, uninstall, str(ctx.settings))
     rejected = settings.get('disabledMcpjsonServers')
     if ctx.scope == 'project' and not uninstall and rejected is not None:
         # An earlier "no" to the project server would hide the entry written now.
@@ -129,6 +131,14 @@ def capture_events(ctx, outbox):
                    last_assistant_message=checks.ASSISTANT),
               dict(base, hook_event_name='SessionEnd', reason='other')]
     return [(command, json.dumps(event), True) for event in events], 2
+
+
+def recall_event(ctx, name, session, prompt=None):
+    base = {'session_id': session, 'transcript_path': '', 'cwd': str(ctx.home),
+            'permission_mode': 'default', 'hook_event_name': name}
+    if name == 'SessionStart':
+        return dict(base, source='startup', model='installer')
+    return dict(base, prompt=prompt, prompt_id='installer-recall')
 
 
 def host_check(args, ctx, planned):
@@ -170,6 +180,8 @@ def post_install(args, ctx):
     if ctx.capture:
         lines += [f'         Capture hooks file completed turns under project "{ctx.project}"; start a new turn',
                   '         after restarting (a Stop without its captured prompt cannot be paired).']
+    if ctx.recall:
+        lines += [f'         Recall hooks inject project "{ctx.project}" memory at session start and with each prompt.']
     lines += [f'[next] add the shared memory workflow for project "{ctx.project or "<id>"}" to CLAUDE.md:',
               '       docs/mcp-harness.md#shared-memory-workflow']
     return lines

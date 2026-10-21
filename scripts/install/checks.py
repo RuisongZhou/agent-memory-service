@@ -4,7 +4,9 @@
 writes against a temporary mock-retrieval daemon whose generation endpoint is a
 local deterministic stub: the version-probe fallback, MCP handshake, the eight
 tools, a context read and, with capture, host-format events -> outbox ->
-uploader -> formation -> search.
+uploader -> formation -> search. With recall, host-format SessionStart /
+UserPromptSubmit events run through the installed recall command and must
+inject the formed fact exactly once per session.
 """
 
 import fcntl
@@ -246,6 +248,54 @@ def drain(ctx, outbox, url, env, expected):
     raise InstallError(f'captured turns did not complete: {statuses}')
 
 
+def seed(bridge, ctx):
+    """Form FACT without the collector (recall installed with --no-capture)."""
+    stamp = '2026-01-01T00:00:00Z'
+    bridge.call('add_memories', {
+        'scope': {'project': ctx.project, 'session': SESSION}, 'turnId': f'{ctx.project}/{SESSION}/recall-check',
+        'sync': True, 'messages': [{'role': 'user', 'content': USER, 'timestamp': stamp},
+                                   {'role': 'assistant', 'content': ASSISTANT, 'timestamp': stamp}]})
+
+
+def recall_context(host, ctx, name, session, url, state, env, prompt=None):
+    """additionalContext the installed recall command prints for a host-format event ('' for none)."""
+    event = host.recall_event(ctx, name, session, prompt)
+    result = subprocess.run(core.recall_command(ctx, url, state), input=json.dumps(event), shell=True,
+                            env=env, text=True, capture_output=True, timeout=30)
+    try:
+        output = json.loads(result.stdout)
+    except ValueError:
+        output = None
+    if result.returncode or not isinstance(output, dict):
+        raise InstallError(f'recall must exit 0 with one JSON object for {name}: {result.stderr.strip()[:200]}')
+    if output == {}:
+        return ''
+    # Codex accepts no fields beyond its schema; Claude Code and WorkBuddy read the same shape.
+    specific = output.get('hookSpecificOutput')
+    if (set(output) != {'hookSpecificOutput'} or not isinstance(specific, dict)
+            or set(specific) != {'hookEventName', 'additionalContext'} or specific['hookEventName'] != name):
+        raise InstallError(f'recall printed an unexpected {name} output')
+    return specific['additionalContext']
+
+
+def check_recall(host, ctx, root, url, env):
+    state = root / 'recall-state.sqlite3'
+    context = lambda name, session, prompt=None, daemon=url: recall_context(
+        host, ctx, name, session, daemon, state, env, prompt)
+    # The prompt repeats FACT: this checks the wiring, not retrieval quality under mock models.
+    if FACT not in context('SessionStart', 'recall-1'):
+        raise InstallError('recall: SessionStart context lacks the formed fact')
+    if FACT not in context('UserPromptSubmit', 'recall-2', FACT):
+        raise InstallError('recall: UserPromptSubmit context lacks the formed fact')
+    if context('UserPromptSubmit', 'recall-1', FACT):
+        raise InstallError('recall: a prompt repeated what SessionStart already injected')
+    started = time.monotonic()
+    if context('UserPromptSubmit', 'recall-3', FACT, daemon=f'http://127.0.0.1:{free_port()}'):
+        raise InstallError('recall: injected context without a daemon')
+    if time.monotonic() - started > core.RECALL_TIMEOUT:
+        raise InstallError('recall: an unreachable daemon outlasted the hook timeout')
+
+
 def verify_local(host, ctx):
     with tempfile.TemporaryDirectory(prefix='agent-memory-install-') as temporary:
         root = Path(temporary)
@@ -272,6 +322,10 @@ def verify_local(host, ctx):
                     found = bridge.call('search_memories', {'query': FACT, 'scope': {'project': ctx.project}})
                     if FACT not in [r.get('memory', {}).get('text') for r in found.get('results', [])]:
                         raise InstallError('a captured turn was formed but the bridge could not find it')
+                if ctx.recall:
+                    if not ctx.capture:
+                        seed(bridge, ctx)
+                    check_recall(host, ctx, root, url, env)
             finally:
                 bridge.close()
         if len(calls) > 2:
@@ -279,6 +333,8 @@ def verify_local(host, ctx):
     steps = 'server/discover fallback, MCP handshake, 8 tools, get_context'
     if ctx.capture:
         steps += f', {host.LABEL} capture -> outbox -> uploader -> formation -> search'
+    if ctx.recall:
+        steps += f', {host.LABEL} recall -> SessionStart and prompt context, no repeats, silent without a daemon'
     print(f'[check] offline mock daemon: {steps} passed')
 
 

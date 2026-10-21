@@ -26,7 +26,8 @@ reranking. A separately configured generation provider performs inferred memory 
 Follow deployment first, then client integration. After the daemon is running, one command registers
 the bridge and dialogue capture in an agent platform, for example
 `bash scripts/install.sh --host codex --apply --project my-project` (also `workbuddy`, `claude-code`
-with `--workspace`, and `deepseek-harness`, which gets MCP tools only). MCP registration alone does not start the daemon, capture conversations or inject
+with `--workspace`, and `deepseek-harness`, which gets MCP tools only). Add `--recall` on the first three
+to inject relevant memory automatically at session start and with each prompt. MCP registration alone does not start the daemon, capture conversations or inject
 memory into the client. The daemon binds to loopback for one local user; tenant/platform headers are
 routing metadata, not authentication.
 

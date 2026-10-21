@@ -28,6 +28,7 @@ LABEL = 'Codex'
 DESCRIPTION = ('Register the shared-memory MCP bridge, notify capture and a SessionEnd hook in Codex. '
                'Preview unless --apply is given.')
 CAPTURE = True
+RECALL = True
 EVENTS = ('SessionEnd',)
 TOOL_TIMEOUT_SEC = 180
 MANUAL = 'edit it by hand as in docs/mcp-harness.md#use-with-codex'
@@ -253,11 +254,12 @@ def refuse_toml_hooks(text):
 def changes(args, ctx, uninstall):
     text = core.read_text(ctx.config_toml)
     capture = ctx.capture and not uninstall
-    if capture:
+    if capture or (ctx.recall and not uninstall):
         refuse_toml_hooks(text)
     config = edit_config(text, None if uninstall else server_entry(ctx), notify_argv(ctx) if capture else None)
     hooks = core.merge_hooks(core.read_json(ctx.hooks_json), EVENTS if capture else (),
                              lambda _: core.hook_handler(ctx), str(ctx.hooks_json))
+    hooks = core.merge_recall_hooks(hooks, ctx, uninstall, str(ctx.hooks_json))
     return [core.text_change(ctx.config_toml, config, 0o600),
             core.json_change(ctx.hooks_json, hooks, 0o600)]
 
@@ -270,6 +272,15 @@ def capture_events(ctx, outbox):
            'cwd': str(ctx.home), 'model': 'installer', 'permission_mode': 'default', 'reason': 'other'}
     return [(notify_argv(ctx, outbox) + [json.dumps(event)], None, False),
             (core.hook_command(ctx, outbox), json.dumps(end), True)], 2
+
+
+def recall_event(ctx, name, session, prompt=None):
+    """Every field Codex 0.163's session-start / user-prompt-submit input schemas require."""
+    base = {'hook_event_name': name, 'session_id': session, 'transcript_path': None, 'cwd': str(ctx.home),
+            'model': 'installer', 'permission_mode': 'default'}
+    if name == 'SessionStart':
+        return dict(base, source='startup')
+    return dict(base, turn_id='installer-recall', prompt=prompt)
 
 
 def app_server(home, requests, env, timeout=30):
@@ -364,12 +375,16 @@ def host_check(args, ctx, planned):
     entries = (responses[2].get('result', {}).get('data') or [{}])[0]
     for problem in entries.get('errors', []) + entries.get('warnings', []):
         print(f'[note] codex reports: {problem}')
-    command = core.hook_command(ctx)
-    ours = {h.get('eventName'): h.get('timeoutSec') for h in entries.get('hooks', []) if h.get('command') == command}
-    wanted = {'sessionEnd': core.HOOK_TIMEOUT} if ctx.capture else {}
-    if ours != wanted:
+    loaded = lambda command: {h.get('eventName'): h.get('timeoutSec') for h in entries.get('hooks', [])
+                              if h.get('command') == command}
+    collector = loaded(core.hook_command(ctx))
+    if collector != ({'sessionEnd': core.HOOK_TIMEOUT} if ctx.capture else {}):
         raise InstallError('Codex did not load the collector hooks as written')
-    print(f'[check] codex app-server loaded {len(ours)} collector hook(s) from the planned hooks.json')
+    recall = loaded(core.recall_command(ctx))
+    if recall != ({'sessionStart': core.RECALL_TIMEOUT, 'userPromptSubmit': core.RECALL_TIMEOUT} if ctx.recall else {}):
+        raise InstallError('Codex did not load the recall hooks as written')
+    print(f'[check] codex app-server loaded {len(collector)} collector and {len(recall)} recall hook(s) '
+          'from the planned hooks.json')
 
 
 def post_install(args, ctx):
@@ -378,6 +393,9 @@ def post_install(args, ctx):
         lines += [f'         notify captures every completed Codex turn on this machine under project "{ctx.project}".',
                   '         Codex runs no new hook until you trust it: run /hooks (App: Settings -> Hooks) and',
                   '         trust the SessionEnd collector hook; without it sessions just get no close marker.']
+    if ctx.recall:
+        lines += [f'         Recall hooks inject project "{ctx.project}" memory into every Codex session once you',
+                  '         trust its SessionStart and UserPromptSubmit hooks in /hooks (App: Settings -> Hooks).']
     lines += [f'[next] add the shared memory workflow for project "{ctx.project or "<id>"}" to AGENTS.md:',
               '       docs/mcp-harness.md#shared-memory-workflow']
     return lines

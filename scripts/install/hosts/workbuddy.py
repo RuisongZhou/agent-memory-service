@@ -17,6 +17,7 @@ LABEL = 'WorkBuddy'
 DESCRIPTION = ('Register the shared-memory MCP bridge and dialogue-capture hooks in WorkBuddy (GUI and its bundled CLI). '
                'Preview unless --apply is given.')
 CAPTURE = True
+RECALL = True
 EVENTS = ('UserPromptSubmit', 'Stop', 'SessionEnd')
 HOOK_EXTRA = ('--turn-id-field', 'none')
 TOOL_TIMEOUT_MS = 180000
@@ -65,6 +66,7 @@ def changes(args, ctx, uninstall):
     events = EVENTS if ctx.capture and not uninstall else ()
     hooks = core.merge_hooks(core.read_json(ctx.settings), events,
                              lambda _: core.hook_handler(ctx, HOOK_EXTRA), str(ctx.settings))
+    hooks = core.merge_recall_hooks(hooks, ctx, uninstall, str(ctx.settings))
     result.append(core.json_change(ctx.settings, hooks, 0o600))
     return result
 
@@ -84,6 +86,14 @@ def capture_events(ctx, outbox):
     return [(command, json.dumps(event), True) for event in events], 2
 
 
+def recall_event(ctx, name, session, prompt=None):
+    """WorkBuddy 5.8 sends SessionStart without cwd."""
+    base = {'session_id': session, 'transcript_path': str(ctx.home / 'transcript.jsonl'), 'hook_event_name': name}
+    if name == 'SessionStart':
+        return dict(base, source='startup')
+    return dict(base, cwd=str(ctx.home), prompt=prompt)
+
+
 def host_check(args, ctx, planned):
     print('[note] WorkBuddy has no CLI to parse its configuration; JSON structure checked by the installer only')
 
@@ -94,6 +104,8 @@ def post_install(args, ctx):
     if ctx.capture:
         lines += [f'         User-level hooks file every WorkBuddy conversation under project "{ctx.project}".',
                   '         The GUI may not send SessionEnd; completed turns are still captured on Stop.']
+    if ctx.recall:
+        lines += [f'         Recall hooks inject project "{ctx.project}" memory into every WorkBuddy conversation.']
     lines += [f'[next] add the shared memory workflow for project "{ctx.project or "<id>"}" to the agent '
               'instructions: docs/mcp-harness.md#shared-memory-workflow']
     return lines
