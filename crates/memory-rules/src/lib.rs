@@ -1,4 +1,5 @@
-//! Pure date, identifier and revision planning rules.
+//! Pure date, identifier, revision planning and consolidation rules.
+pub mod consolidation;
 pub mod dependencies;
 pub mod mem0;
 pub mod mem0_entities;

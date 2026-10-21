@@ -12,6 +12,15 @@ impl Store {
             .await
     }
 
+    /// Current facts scoped to `project`.
+    pub async fn current_project_facts(&self, project: &str) -> Result<Vec<MemoryRec>> {
+        self.find_memories(
+            "type = 'fact' AND status = 'current' AND scope.kind = 'project' AND scope.project = $p ORDER BY mid ASC",
+            vec![("p", json!(project))],
+        )
+        .await
+    }
+
     /// One `{type, status, n}` row per type/status pair.
     pub async fn memory_counts_by_type_status(&self) -> Result<Vec<Value>> {
         self.select(

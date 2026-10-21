@@ -66,7 +66,7 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
 
 /// All memories (debug). Optional filters: `status`, `type`, `project` (strings or arrays of strings).
 pub async fn export(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResult<Value> {
-    // Read-only evaluation extensions for request-level billing and proposal/discard audits.
+    // Read-only extensions for request-level billing, proposal/discard and consolidation-run audits.
     if let Some(table) = body.get("table").and_then(Value::as_str) {
         if !(matches!(
             table,
@@ -75,6 +75,7 @@ pub async fn export(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResul
                 | schema::EXTRACT_LOG
                 | schema::RETRIEVAL_LOG
                 | schema::PROPOSALS
+                | schema::CONSOLIDATION_RUNS
                 | schema::UNCERTAINTIES
                 | schema::REQUESTS
                 | schema::STORE_REVISIONS

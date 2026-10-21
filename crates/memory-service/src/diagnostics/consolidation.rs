@@ -1,0 +1,346 @@
+//! Propose-only consolidation end to end: Mem0 formation and consolidation both answered by a local
+//! generation stub, with mock embeddings. No external model call.
+use super::tenant;
+use axum::routing::post;
+use axum::{Json, Router};
+use memory_config::ServiceConfig;
+use memory_domain::types::*;
+use memory_engine::app::{consolidation, ingest, management};
+use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub};
+use memory_store::schema;
+use memory_store::store::Tx;
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+/// The section of a prompt that follows `header`, up to the next section.
+fn section<'a>(prompt: &'a str, header: &str) -> &'a str {
+    let start = prompt
+        .find(header)
+        .map_or(prompt.len(), |i| i + header.len());
+    let rest = &prompt[start..];
+    &rest[..rest
+        .find("\n\n## ")
+        .or(rest.find("\n\n# "))
+        .unwrap_or(rest.len())]
+}
+
+/// Formation: every user message line becomes one fact. Consolidation: a fixed decision per topic.
+fn reply(system: &str, prompt: &str) -> Value {
+    if system.contains("Memory Consolidator") {
+        let facts: Vec<Value> = serde_json::from_str(section(prompt, "## Facts\n")).unwrap();
+        let ids: Vec<&Value> = facts.iter().map(|f| &f["id"]).collect();
+        let texts: String = facts.iter().filter_map(|f| f["text"].as_str()).collect();
+        if texts.contains("Arch Linux") {
+            json!({"operations":[{"op":"merge","ids":ids,"text":"User uses Arch Linux on the work laptop"}]})
+        } else if texts.contains("Postgres") {
+            // Version 16 appears in no input: provenance validation rejects this merge.
+            json!({"operations":[{"op":"merge","ids":ids,"text":"User runs Postgres 16 in production on AWS"}]})
+        } else {
+            json!({"operations":[{"op":"keep","ids":ids}]})
+        }
+    } else {
+        let memory: Vec<Value> = section(prompt, "## New Messages\n")
+            .lines()
+            .filter_map(|line| line.strip_prefix("user: "))
+            .enumerate()
+            .map(|(i, text)| json!({"id":i.to_string(),"text":text,"attributed_to":"user"}))
+            .collect();
+        json!({ "memory": memory })
+    }
+}
+
+/// An OpenAI-compatible chat-completions stub on a loopback port.
+async fn generation_stub() -> String {
+    let app = Router::new().route(
+        "/chat/completions",
+        post(|Json(body): Json<Value>| async move {
+            let system = body["messages"][0]["content"].as_str().unwrap_or_default();
+            let prompt = body["messages"][1]["content"].as_str().unwrap_or_default();
+            Json(json!({"id":"stub","choices":[{"message":{"content":reply(system, prompt).to_string()},
+                "finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+fn engine(url: &str, enabled: bool) -> Arc<Engine> {
+    let cfg = ServiceConfig {
+        consolidation_enabled: enabled,
+        ..Default::default()
+    };
+    let strategy = cfg.memory_strategy;
+    Engine::new(
+        cfg,
+        Llm::new(url, "stub", "stub-model", 2, 10).unwrap(),
+        ModelHub::mock(),
+        crate::algorithms::select(strategy),
+    )
+}
+
+async fn add(
+    eng: &Arc<Engine>,
+    t: &Arc<memory_engine::runtime::tenant::Tenant>,
+    c: &Caller,
+    project: &str,
+    turn: &str,
+    at: &str,
+    texts: &[&str],
+) -> String {
+    let req = AddMemoriesReq {
+        scope: ReqScope {
+            project: Some(project.into()),
+            session: Some("s".into()),
+            ..Default::default()
+        },
+        turn_id: Some(turn.into()),
+        messages: Some(
+            texts
+                .iter()
+                .map(|text| InMessage {
+                    role: "user".into(),
+                    content: text.to_string(),
+                    timestamp: at.into(),
+                })
+                .collect(),
+        ),
+        sync: Some(true),
+        ..Default::default()
+    };
+    let out = ingest::add_memories(eng, t, c, req).await.unwrap();
+    assert_eq!(out["status"], "completed", "{out}");
+    out["requestId"].as_str().unwrap().to_string()
+}
+
+pub async fn selftest() {
+    let url = generation_stub().await;
+    let eng = engine(&url, true);
+    let (t, caller, dir) = tenant(&eng, "consolidation-selftest", "test").await;
+    let first = add(
+        &eng,
+        &t,
+        &caller,
+        "main",
+        "c1",
+        "2026-01-01T09:00:00Z",
+        &[
+            "User uses Arch Linux on the laptop",
+            "User drinks green tea every morning",
+            "User met Alice Smith at the conference",
+            "User runs Postgres in production",
+            "User keeps a dog named Rex",
+            "User plays chess on weekends",
+            "User writes Rust at work",
+            "User commutes by bicycle",
+        ],
+    )
+    .await;
+    let second = add(
+        &eng,
+        &t,
+        &caller,
+        "main",
+        "c2",
+        "2026-02-01T09:00:00Z",
+        &[
+            "User uses Arch Linux on the work laptop",
+            "User reports to Alice Smith",
+            "User runs Postgres in production on AWS",
+            "User uses Arch Linux on the home laptop",
+        ],
+    )
+    .await;
+    // Explicit text (origin explicit) is never a candidate, however similar.
+    let raw = AddMemoriesReq {
+        scope: ReqScope {
+            project: Some("main".into()),
+            session: Some("s".into()),
+            ..Default::default()
+        },
+        turn_id: Some("c3".into()),
+        text: Some("User uses Arch Linux on the laptop".into()),
+        infer: Some(false),
+        sync: Some(true),
+        ..Default::default()
+    };
+    ingest::add_memories(&eng, &t, &caller, raw).await.unwrap();
+    let facts = t.store.current_project_facts("main").await.unwrap();
+    assert_eq!(facts.len(), 13);
+    let id = |text: &str, origin: &str| {
+        facts
+            .iter()
+            .find(|m| m.text == text && m.source.origin == origin)
+            .map(|m| m.id.clone())
+            .unwrap()
+    };
+    let (laptop, work) = (
+        id("User uses Arch Linux on the laptop", ORIGIN_USER),
+        id("User uses Arch Linux on the work laptop", ORIGIN_USER),
+    );
+    let explicit = id("User uses Arch Linux on the laptop", ORIGIN_EXPLICIT);
+    // A record in an open uncertainty is never a candidate.
+    let home = id("User uses Arch Linux on the home laptop", ORIGIN_USER);
+    let mut tx = Tx::new();
+    tx.put(
+        schema::UNCERTAINTIES,
+        "uopen",
+        json!({"memoryIds":[home],"scope":MemScope::project("main"),
+        "reason":"test","status":"open","createdAt":"2026-02-02T00:00:00Z"}),
+    )
+    .unwrap();
+    t.store.commit(tx).await.unwrap();
+
+    let request = |project: &str, dry_run: Option<bool>| ConsolidateReq {
+        project: project.into(),
+        dry_run,
+    };
+    // Off by default; dry runs only; one named project.
+    let disabled = engine(&url, false);
+    for (eng, req) in [
+        (&disabled, request("main", Some(true))),
+        (&eng, request("main", None)),
+        (&eng, request("main", Some(false))),
+        (&eng, request("*", Some(true))),
+    ] {
+        assert!(matches!(
+            consolidation::consolidate(eng, &t, req).await,
+            Err(ApiError::InvalidArgument(_))
+        ));
+    }
+
+    let revision = t.store.memory_revision();
+    let memories = t.store.count(schema::MEMORIES, None).await.unwrap();
+    let out = consolidation::consolidate(&eng, &t, request("main", Some(true)))
+        .await
+        .unwrap();
+    let run = &out["run"];
+    assert_eq!(run["status"], "proposed", "{run}");
+    assert_eq!(run["projectFacts"], 13);
+    assert_eq!(run["eligibleFacts"], 11);
+    assert_eq!(run["snapshotRevision"], revision);
+    assert_eq!(run["promptFormat"], "mem0-consolidation-v1");
+    assert_eq!(run["llmModel"], "stub-model");
+    let clusters = run["clusters"].as_array().unwrap();
+    assert_eq!(clusters.len(), 3, "{run}");
+    let members: Vec<&Value> = clusters.iter().map(|c| &c["memberIds"]).collect();
+    assert!(members.contains(&&json!([laptop, work])), "{members:?}");
+    assert!(!members
+        .iter()
+        .flat_map(|m| m.as_array().unwrap())
+        .any(|m| m == &explicit || m == &home));
+    assert_eq!(run["acceptedOps"], 2);
+    assert_eq!(run["rejectedOps"], 1);
+    assert_eq!(run["retireCount"], 2);
+    let proposals = out["proposals"].as_array().unwrap();
+    let merge = proposals
+        .iter()
+        .find(|p| p["memoryIds"] == json!([laptop, work]))
+        .unwrap();
+    assert_eq!(merge["op"], "merge");
+    assert_eq!(merge["status"], "proposed");
+    assert_eq!(merge["text"], "User uses Arch Linux on the work laptop");
+    assert_eq!(merge["detail"]["inputRequestIds"], json!([first, second]));
+    assert_eq!(
+        merge["detail"]["inputContentKeys"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let rejected = proposals
+        .iter()
+        .find(|p| p["status"] == "rejected")
+        .unwrap();
+    assert!(
+        rejected["rejectReason"]
+            .as_str()
+            .unwrap()
+            .contains("\"16\""),
+        "{rejected}"
+    );
+    let keep = proposals.iter().find(|p| p["op"] == "keep").unwrap();
+    assert_eq!(keep["status"], "proposed");
+    assert_eq!(
+        keep["detail"]["inputContentKeys"].as_array().unwrap().len(),
+        2
+    );
+    assert!(keep["detail"].get("inputRequestIds").is_none());
+
+    // Proposing writes no memory: same records, same statuses, same revision.
+    assert_eq!(t.store.memory_revision(), revision);
+    assert_eq!(
+        t.store.count(schema::MEMORIES, None).await.unwrap(),
+        memories
+    );
+    assert!(t.store.current_project_facts("main").await.unwrap().len() == 13);
+    // The run, its proposals and the raw generation responses are exportable evidence.
+    let runs = management::export(&eng, &t, json!({"table":"consolidation_runs"}))
+        .await
+        .unwrap();
+    assert_eq!(runs["count"], 1);
+    assert_eq!(runs["records"][0]["runId"], run["runId"]);
+    let stored = management::export(&eng, &t, json!({"table":"proposals"}))
+        .await
+        .unwrap();
+    assert_eq!(stored["count"], 3);
+    let responses = management::export(&eng, &t, json!({"table":"llm_responses"}))
+        .await
+        .unwrap();
+    for log in run["responseLogIds"].as_array().unwrap() {
+        let row = responses["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| &r["mid"] == log)
+            .unwrap();
+        assert_eq!(row["stage"], "Mem0-consolidate");
+        assert!(row["rawBody"].as_str().unwrap().contains("operations"));
+    }
+
+    // A run that would retire more than the per-run share of a project's facts is aborted.
+    add(
+        &eng,
+        &t,
+        &caller,
+        "tiny",
+        "t1",
+        "2026-03-01T09:00:00Z",
+        &[
+            "User uses Arch Linux on the laptop",
+            "User uses Arch Linux on the work laptop",
+        ],
+    )
+    .await;
+    let out = consolidation::consolidate(&eng, &t, request("tiny", Some(true)))
+        .await
+        .unwrap();
+    assert_eq!(out["run"]["status"], "aborted", "{out}");
+    assert!(out["run"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("per-run share"));
+    assert_eq!(out["proposals"][0]["status"], "aborted");
+    assert_eq!(
+        t.store.current_project_facts("tiny").await.unwrap().len(),
+        2
+    );
+    // An empty project needs no generation call and still records its run.
+    let out = consolidation::consolidate(&eng, &t, request("empty", Some(true)))
+        .await
+        .unwrap();
+    assert_eq!(out["run"]["clusterCount"], 0);
+    assert_eq!(out["run"]["status"], "proposed");
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+    println!("consolidation_selftest OK: dry-run clusters, exclusions, provenance rejection, retire cap, no memory writes; local generation stub");
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proposes_without_writing_memory() {
+        super::selftest().await;
+    }
+}

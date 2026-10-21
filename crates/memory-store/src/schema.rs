@@ -14,6 +14,8 @@ pub const EXTRACT_LOG: &str = "extract_log";
 pub const LLM_USAGE: &str = "llm_usage";
 pub const LLM_RESPONSES: &str = "llm_responses";
 pub const PROPOSALS: &str = "proposals";
+/// One record per consolidation run; its ops are `proposals` rows carrying the run id.
+pub const CONSOLIDATION_RUNS: &str = "consolidation_runs";
 
 /// Shared tables in stats order; algorithm-private tables are listed by each algorithm module.
 pub const SHARED_TABLES: &[&str] = &[
@@ -32,6 +34,7 @@ pub const SHARED_TABLES: &[&str] = &[
     LLM_USAGE,
     LLM_RESPONSES,
     PROPOSALS,
+    CONSOLIDATION_RUNS,
 ];
 
 /// Values of the `kind` field of a `requests` document.

@@ -490,6 +490,16 @@ pub struct ResolveUncertaintyReq {
     pub reason: String,
 }
 
+/// `POST /admin/consolidate`: propose consolidation ops for one project's facts.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsolidateReq {
+    pub project: String,
+    /// Must be true: runs only propose; applying them is not implemented.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GetTaskReq {

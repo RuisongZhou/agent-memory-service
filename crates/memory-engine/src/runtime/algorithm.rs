@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
 use memory_config::{MemoryStrategy, ServiceConfig};
+use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
 use memory_domain::types::*;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -75,5 +76,28 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
         _memory_id: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Value>>> {
         Box::pin(async { Ok(None) })
+    }
+
+    /// Propose-only consolidation, first step: cluster `project`'s eligible facts without a model
+    /// call (see `app::consolidation`). `None` when the algorithm has no consolidation prompt.
+    fn consolidation_snapshot<'a>(
+        &'a self,
+        _eng: &'a Arc<Engine>,
+        _t: &'a Arc<Tenant>,
+        _project: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<Option<ConsolidationSnapshot>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Second step: one generation call for `cluster`, its ops mapped back to memory ids. Called only
+    /// for clusters of a snapshot this algorithm returned.
+    fn consolidation_generate<'a>(
+        &'a self,
+        _eng: &'a Arc<Engine>,
+        _t: &'a Arc<Tenant>,
+        _project: &'a str,
+        _cluster: &'a Cluster,
+    ) -> BoxFuture<'a, anyhow::Result<GeneratedOps>> {
+        Box::pin(async { Err(anyhow::anyhow!("consolidation is not supported")) })
     }
 }
