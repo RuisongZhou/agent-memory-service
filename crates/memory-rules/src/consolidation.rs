@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Cosine similarity at which two records' existing vectors link them. Selection only nominates
 /// candidates: the model may keep every member, so a loose link costs one call, never a write.
-pub const VECTOR_LINK: f32 = 0.85;
+pub const VECTOR_LINK: f64 = 0.85;
 pub const MIN_CLUSTER: usize = 2;
 /// Largest cluster sent to the model in one call.
 pub const MAX_CLUSTER: usize = 8;
@@ -96,7 +96,7 @@ pub fn cluster(items: &[Item], ids: &[&str]) -> Vec<Group> {
         for b in a + 1..items.len() {
             let cosine = pair_cosine(&items[a], &items[b]);
             let shared_entity = shared.contains(&(a, b));
-            if shared_entity || cosine.is_some_and(|c| c >= VECTOR_LINK) {
+            if shared_entity || cosine.is_some_and(|c| f64::from(c) >= VECTOR_LINK) {
                 links.push(Link {
                     a,
                     b,

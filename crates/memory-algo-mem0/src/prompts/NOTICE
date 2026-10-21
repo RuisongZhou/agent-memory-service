@@ -3,3 +3,5 @@ Source: https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem0-ts/src/oss/src/prompt
 Copyright Mem0 contributors. Licensed under Apache License 2.0 (see LICENSE).
 The runtime template value of ADDITIVE_EXTRACTION_PROMPT is copied unchanged;
 Rust orchestration, strict validation and safe UTF-16 clipping are original.
+
+consolidation.txt is original to this service and not derived from Mem0.
