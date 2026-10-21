@@ -3,6 +3,8 @@ pub mod algorithms;
 pub mod api;
 #[cfg(feature = "selftest")]
 pub mod diagnostics;
+pub mod envfile;
+pub mod harness;
 
 // Flat facade for external clients (binary, examples); internal code uses the canonical paths.
 pub use api::{http, mcp};

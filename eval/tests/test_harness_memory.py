@@ -1,4 +1,8 @@
-"""Offline lifecycle/outbox tests: no harness installation or model requests."""
+"""Offline lifecycle/outbox tests: no harness installation or model requests.
+
+The command-line test also runs `agent-memoryd hook capture` / `outbox drain`, when built, in every
+pairing with scripts/harness_memory.py: both implementations share one outbox file.
+"""
 import importlib.util
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +15,7 @@ from urllib.error import HTTPError
 import pytest
 
 
+BINARY = Path(__file__).resolve().parents[2] / 'target/fast/agent-memoryd'
 spec = importlib.util.spec_from_file_location('harness_memory', Path(__file__).resolve().parents[2] / 'scripts/harness_memory.py')
 adapter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(adapter)
@@ -122,14 +127,30 @@ def test_http_errors_keep_the_input_locally(tmp_path, code, expected):
         assert job['status'] == expected and json.loads(job['body'])['messages']
 
 
-def test_cli_capture_then_actual_http_upload(tmp_path):
+def commands(implementation, outbox):
+    """(capture prefix, drain prefix): options follow as the implementation expects them."""
+    if implementation == 'rust':
+        if not BINARY.is_file():
+            pytest.skip('agent-memoryd is not built (make build)')
+        return ([str(BINARY), 'hook', 'capture', '--outbox', str(outbox)],
+                [str(BINARY), 'outbox', 'drain', '--outbox', str(outbox)])
+    base = [sys.executable, str(Path(adapter.__file__)), '--outbox', str(outbox)]
+    return base, base + ['drain']
+
+
+@pytest.mark.parametrize('captured_by,uploaded_by', [('python', 'python'), ('rust', 'rust'),
+                                                     ('python', 'rust'), ('rust', 'python')])
+def test_cli_capture_then_actual_http_upload(tmp_path, captured_by, uploaded_by):
+    outbox = tmp_path / 'outbox.sqlite3'
+    collector, _ = commands(captured_by, outbox)
+    _, drain = commands(uploaded_by, outbox)
     requests = []
     class Stub(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-            requests.append((self.path, dict(self.headers), body))
+            requests.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
             result = {'requestId':'rq-stub'} if self.path.endswith('add_memories') else {
                 'status':'completed','formed':True,'searchable':True}
             data = json.dumps(result).encode()
@@ -140,9 +161,9 @@ def test_cli_capture_then_actual_http_upload(tmp_path):
             self.wfile.write(data)
     server = ThreadingHTTPServer(('127.0.0.1', 0), Stub)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = [sys.executable, str(Path(adapter.__file__)), '--outbox', str(tmp_path/'outbox.sqlite3')]
-    capture = base + ['--project','p','--tenant','isolated','--platform','claude-code','hook']
-    idless = base + ['--project','p','--platform','workbuddy','hook','--turn-id-field','none']
+    python = captured_by == 'python'
+    capture = collector + ['--project','p','--tenant','isolated','--platform','claude-code'] + (['hook'] if python else [])
+    idless = collector + ['--project','p','--platform','workbuddy'] + (['hook'] if python else []) + ['--turn-id-field','none']
     try:
         for event in (hook('UserPromptSubmit', prompt='original user'), hook('Stop', last_assistant_message='original assistant')):
             subprocess.run(capture, input=json.dumps(event), text=True, check=True, capture_output=True)
@@ -151,13 +172,13 @@ def test_cli_capture_then_actual_http_upload(tmp_path):
             result = subprocess.run(idless, input=json.dumps(event), text=True, check=True, capture_output=True)
             assert result.stdout.strip() == '{}'
         assert requests == []  # The hook never waits on a daemon.
-        result = subprocess.run(base + ['drain','--url',f'http://127.0.0.1:{server.server_port}','--once'],
+        result = subprocess.run(drain + ['--url',f'http://127.0.0.1:{server.server_port}','--once'],
                                 text=True, check=True, capture_output=True)
         assert json.loads(result.stdout)['statuses'] == {'completed':2}
         assert [r[0] for r in requests] == ['/v1/add_memories','/v1/add_memories','/v1/get_task','/v1/get_task']
-        assert requests[0][1]['X-Memory-Tenant'] == 'isolated'
+        assert requests[0][1]['x-memory-tenant'] == 'isolated'
         assert [m['content'] for m in requests[0][2]['messages']] == ['original user','original assistant']
-        assert requests[1][1]['X-Memory-Platform'] == 'workbuddy'
+        assert requests[1][1]['x-memory-platform'] == 'workbuddy'
         assert [m['content'] for m in requests[1][2]['messages']] == ['idless user','idless assistant']
     finally:
         server.shutdown()

@@ -22,9 +22,10 @@
     post_install(args, ctx)            lines telling the user what only they can do
 
 Entries are recognized by content, not by a marker: an MCP server named
-`shared-memory` that runs `agent-memoryd mcp`, and hook/notify commands that run
-`harness_memory.py hook`/`codex-notify`, and recall hooks that run
-`harness_recall.py`. Manually added entries from the
+`shared-memory` that runs `agent-memoryd mcp`, hook/notify commands that run
+`agent-memoryd hook capture`/`codex-notify`, and recall hooks that run
+`agent-memoryd hook recall`, or the `harness_memory.py`/`harness_recall.py`
+scripts earlier installers wrote instead. Manually added entries from the
 templates in examples/ are therefore adopted and replaced, never duplicated.
 DeepSeek Harness is the exception: without a YAML parser in the standard library,
 its row is a marker-delimited block in cordis.patch.yml.

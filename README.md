@@ -4,7 +4,8 @@ A local shared memory service for AI agents. Codex, Claude Code and other client
 and explicit instructions, recall project decisions, inspect sources and correct earlier memories.
 Each client keeps its own task state and native configuration.
 
-The Rust daemon exposes a JSON HTTP API and a stdio MCP bridge. Main supports **Mem0 only**:
+The Rust daemon exposes a JSON HTTP API and a stdio MCP bridge; the same `agent-memoryd` binary also
+provides the hook commands that capture dialogue and inject memory, and uploads captured dialogue itself. Main supports **Mem0 only**:
 ordered additive formation, persistent raw inputs, scoped exact deduplication and
 semantic/BM25/entity scoring aligned with the Node SDK 3.3.1 built-in NLP fallback.
 SurrealDB/SurrealKV runs in-process; local llama-server processes provide embeddings and optional
@@ -16,7 +17,7 @@ reranking. A separately configured generation provider performs inferred memory 
 |---|---|
 | Install, configure model processes, start the daemon, back up or troubleshoot | [Deployment and operations](docs/deployment.md) |
 | Install into Codex, Claude Code, WorkBuddy or DeepSeek Harness with one command | [One-command install](docs/mcp-harness.md#one-command-install) |
-| Connect Codex/Claude Code, capture dialogue and run the uploader | [MCP and harness integration](docs/mcp-harness.md) |
+| Connect Codex/Claude Code, capture dialogue and upload it | [MCP and harness integration](docs/mcp-harness.md) |
 | Look up request fields, completion states, scope or configuration defaults | [API and configuration](docs/api.md) |
 | Understand write/read paths, storage, entity projection and SDK adaptations | [Architecture](docs/architecture.md) |
 | Build, validate or contribute a change | [Contributing](CONTRIBUTING.md) |

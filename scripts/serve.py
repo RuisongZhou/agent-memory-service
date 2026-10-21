@@ -20,6 +20,8 @@ def main():
     parser.add_argument('--mock', action='store_true')
     parser.add_argument('--max-calls', type=int, default=60, help='attempt guard, including retries; use 0 for unlimited after pilot approval')
     parser.add_argument('--llm-concurrency',type=int,default=1)
+    parser.add_argument('--outbox', nargs='?', const='', metavar='PATH',
+                        help='also upload captured dialogue from this outbox (the default outbox without PATH)')
     args = parser.parse_args()
     env = dict(os.environ)
     if (ROOT/'.env').is_file():
@@ -48,6 +50,8 @@ def main():
         command += ['--memory-strategy', args.memory_strategy]
     if args.config:
         command += ['--config', str(args.config)]
+    if args.outbox is not None:
+        command += ['--outbox'] + ([str(Path(args.outbox).expanduser())] if args.outbox else [])
     raise SystemExit(subprocess.call(command, env=env))
 
 if __name__ == '__main__':
