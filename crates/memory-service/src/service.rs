@@ -1,0 +1,1101 @@
+//! `agent-memoryd service`: run `serve` as a per-user service, a macOS LaunchAgent or a Linux
+//! systemd user unit, under the label and file name of the templates in docs/deployment.md.
+//! Previews unless `--apply`; writes only the unit file and the directories it names, backs up a
+//! file it replaces or removes, never reads the env file or puts a key in the unit, and prints the
+//! launchctl/systemctl commands instead of running them.
+use anyhow::{bail, ensure, Context, Result};
+use clap::{Args, Subcommand, ValueEnum};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+pub const LAUNCHD_LABEL: &str = "local.agent-memory-daemon";
+pub const SYSTEMD_UNIT: &str = "agent-memory.service";
+/// Default memory store, relative to the home directory.
+pub const DEFAULT_DATA_DIR: &str = ".local/share/agent-memory-service/mem0";
+/// Copies of replaced or removed unit files, relative to the home directory.
+pub const BACKUPS: &str = ".local/state/agent-memory-service/service-backups";
+/// LaunchAgent stdout/stderr logs, relative to the home directory.
+pub const LAUNCHD_LOGS: &str = "Library/Logs/agent-memory-service";
+/// Opening comment of every file `service install` writes.
+const MARKER: &str = "Written by agent-memoryd service install";
+const SYSTEMD_ENABLED: &str = ".config/systemd/user/default.target.wants";
+
+#[derive(Subcommand, Debug)]
+pub enum ServiceCmd {
+    /// Write a LaunchAgent (macOS) or systemd user unit (Linux) that runs `serve`; preview unless --apply
+    Install(InstallArgs),
+    /// Remove the unit file after the service is stopped; preview unless --apply
+    Uninstall {
+        #[command(flatten)]
+        at: Target,
+        /// Remove the file (default: preview only)
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Show the unit file, the command it runs and whether a daemon answers on its port
+    Status {
+        #[command(flatten)]
+        at: Target,
+    },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Manager {
+    /// LaunchAgent ~/Library/LaunchAgents/local.agent-memory-daemon.plist
+    Launchd,
+    /// systemd user unit ~/.config/systemd/user/agent-memory.service
+    Systemd,
+}
+
+/// The service manager and home directory a command acts on.
+#[derive(Args, Debug, Clone)]
+pub struct Target {
+    /// Service manager [default: launchd on macOS, systemd elsewhere]
+    #[arg(long, value_enum)]
+    pub manager: Option<Manager>,
+    /// Home directory of the unit file and the default data, outbox, log and backup paths
+    /// [default: $HOME]
+    #[arg(long, value_name = "DIR")]
+    pub home: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct InstallArgs {
+    #[command(flatten)]
+    pub at: Target,
+    /// Write the unit (default: preview only)
+    #[arg(long)]
+    pub apply: bool,
+    /// Dotenv file with the provider keys, read by the daemon at each start (`serve --env-file`);
+    /// the unit stores only its path
+    #[arg(long, value_name = "PATH")]
+    pub env_file: PathBuf,
+    /// Memory store [default: ~/.local/share/agent-memory-service/mem0]
+    #[arg(long, value_name = "DIR")]
+    pub data_dir: Option<PathBuf>,
+    /// Also upload captured dialogue from this outbox (the default outbox when given without PATH)
+    #[arg(long, value_name = "PATH", num_args = 0..=1)]
+    pub outbox: Option<Option<PathBuf>>,
+    /// Port the daemon listens on (`serve --port`)
+    #[arg(long, default_value_t = 8765)]
+    pub port: u16,
+    /// Generation-attempt guard, set as MEMORY_LLM_MAX_CALLS in the unit; 0 removes it
+    #[arg(long, default_value_t = 60)]
+    pub max_calls: u64,
+    /// Concurrent generation requests (`serve --llm-concurrency`)
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    pub llm_concurrency: u32,
+    /// agent-memoryd executable the unit runs [default: this executable]
+    #[arg(long, value_name = "PATH")]
+    pub binary: Option<PathBuf>,
+}
+
+impl Manager {
+    pub fn unit_path(self, home: &Path) -> PathBuf {
+        match self {
+            Manager::Launchd => home
+                .join("Library/LaunchAgents")
+                .join(format!("{LAUNCHD_LABEL}.plist")),
+            Manager::Systemd => home.join(".config/systemd/user").join(SYSTEMD_UNIT),
+        }
+    }
+}
+
+impl Target {
+    pub fn manager(&self) -> Manager {
+        self.manager.unwrap_or(if cfg!(target_os = "macos") {
+            Manager::Launchd
+        } else {
+            Manager::Systemd
+        })
+    }
+
+    pub fn home(&self) -> Result<PathBuf> {
+        let home = match &self.home {
+            Some(home) => home.clone(),
+            None => std::env::var_os("HOME")
+                .filter(|h| !h.is_empty())
+                .map(PathBuf::from)
+                .context("HOME is not set; pass --home")?,
+        };
+        Ok(std::path::absolute(home)?)
+    }
+}
+
+/// The `serve` command a unit runs; every path is absolute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Serve {
+    pub binary: PathBuf,
+    pub env_file: PathBuf,
+    pub data_dir: PathBuf,
+    pub outbox: Option<PathBuf>,
+    pub port: u16,
+    pub llm_concurrency: u32,
+    /// MEMORY_LLM_MAX_CALLS; None leaves generation attempts unguarded.
+    pub max_calls: Option<u64>,
+}
+
+impl Serve {
+    /// The command line, starting with the executable.
+    pub fn argv(&self) -> Result<Vec<String>> {
+        let mut argv = vec![
+            unit_text(&self.binary)?,
+            "serve".into(),
+            "--env-file".into(),
+            unit_text(&self.env_file)?,
+            "--data-dir".into(),
+            unit_text(&self.data_dir)?,
+            "--port".into(),
+            self.port.to_string(),
+            "--llm-concurrency".into(),
+            self.llm_concurrency.to_string(),
+        ];
+        if let Some(outbox) = &self.outbox {
+            argv.push("--outbox".into());
+            argv.push(unit_text(outbox)?);
+        }
+        Ok(argv)
+    }
+
+    /// Environment the unit sets; never a key.
+    pub fn environment(&self) -> Vec<(&'static str, String)> {
+        self.max_calls
+            .map(|n| ("MEMORY_LLM_MAX_CALLS", n.to_string()))
+            .into_iter()
+            .collect()
+    }
+}
+
+/// A path as unit-file text: UTF-8 without control characters.
+fn unit_text(path: &Path) -> Result<String> {
+    let text = path
+        .to_str()
+        .with_context(|| format!("{} is not valid UTF-8", path.display()))?;
+    ensure!(
+        !text.chars().any(char::is_control),
+        "{} contains a control character",
+        path.display()
+    );
+    Ok(text.to_string())
+}
+
+/// The file `manager` reads: a LaunchAgent property list or a systemd user unit.
+pub fn render(manager: Manager, serve: &Serve, home: &Path) -> Result<String> {
+    let argv = serve.argv()?;
+    let env = serve.environment();
+    let mut lines: Vec<String> = Vec::new();
+    match manager {
+        Manager::Launchd => {
+            let string = |s: &str| format!("<string>{}</string>", xml_escape(s));
+            let logs = home.join(LAUNCHD_LOGS);
+            lines.push(r#"<?xml version="1.0" encoding="UTF-8"?>"#.into());
+            lines.push(r#"<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">"#.into());
+            lines.push(format!("<!-- {MARKER}. Keys stay in the env file. -->"));
+            lines.push(r#"<plist version="1.0">"#.into());
+            lines.push("<dict>".into());
+            lines.push(format!("  <key>Label</key>{}", string(LAUNCHD_LABEL)));
+            lines.push("  <key>ProgramArguments</key>".into());
+            lines.push("  <array>".into());
+            lines.extend(argv.iter().map(|arg| format!("    {}", string(arg))));
+            lines.push("  </array>".into());
+            if !env.is_empty() {
+                lines.push("  <key>EnvironmentVariables</key>".into());
+                lines.push("  <dict>".into());
+                lines.extend(
+                    env.iter()
+                        .map(|(k, v)| format!("    <key>{k}</key>{}", string(v))),
+                );
+                lines.push("  </dict>".into());
+            }
+            lines.push("  <key>RunAtLoad</key><true/>".into());
+            lines.push("  <key>KeepAlive</key><true/>".into());
+            lines.push("  <key>ThrottleInterval</key><integer>10</integer>".into());
+            // 63 is umask 077; property lists have no octal integers.
+            lines.push("  <key>Umask</key><integer>63</integer>".into());
+            for (key, file) in [
+                ("StandardOutPath", "daemon.stdout.log"),
+                ("StandardErrorPath", "daemon.stderr.log"),
+            ] {
+                let path = unit_text(&logs.join(file))?;
+                lines.push(format!("  <key>{key}</key>{}", string(&path)));
+            }
+            lines.push("</dict>".into());
+            lines.push("</plist>".into());
+        }
+        Manager::Systemd => {
+            lines.push(format!("# {MARKER}. Keys stay in the env file."));
+            lines.push("[Unit]".into());
+            lines.push("Description=Agent Memory daemon".into());
+            lines.push(String::new());
+            lines.push("[Service]".into());
+            let words: Vec<String> = argv.iter().map(|a| systemd_quote(a)).collect();
+            lines.push(format!("ExecStart={}", words.join(" ")));
+            lines.extend(
+                env.iter()
+                    .map(|(k, v)| format!("Environment={}", systemd_quote(&format!("{k}={v}")))),
+            );
+            // The daemon exits when the retrieval models do not answer at startup; retry later.
+            lines.push("Restart=on-failure".into());
+            lines.push("RestartSec=5".into());
+            lines.push("UMask=0077".into());
+            lines.push(String::new());
+            lines.push("[Install]".into());
+            lines.push("WantedBy=default.target".into());
+        }
+    }
+    Ok(lines.join("\n") + "\n")
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// One systemd command-line word: `%` specifiers and `$` expansion escaped, quoted when needed.
+fn systemd_quote(word: &str) -> String {
+    let escaped = word.replace('%', "%%").replace('$', "$$");
+    if !escaped.is_empty() && escaped.chars().all(safe_char) {
+        return escaped;
+    }
+    format!("\"{}\"", escaped.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The words of a systemd command line written by `systemd_quote`.
+fn systemd_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut chars = line.chars().peekable();
+    loop {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        let Some(first) = chars.next() else {
+            return words;
+        };
+        let mut word = String::new();
+        if first == '"' {
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => word.extend(chars.next()),
+                    c => word.push(c),
+                }
+            }
+        } else {
+            word.push(first);
+            while let Some(c) = chars.next_if(|c| !c.is_whitespace()) {
+                word.push(c);
+            }
+        }
+        words.push(word.replace("%%", "%").replace("$$", "$"));
+    }
+}
+
+/// Characters that need no quoting in a systemd command line or a shell.
+fn safe_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "/._-+:@=,%".contains(c)
+}
+
+/// `word` quoted for a POSIX shell.
+fn sh(word: &str) -> String {
+    if !word.is_empty() && word.chars().all(safe_char) {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+/// The `serve` argv a unit file runs, as written by `render` (or a hand-made file of the same form).
+pub fn unit_argv(manager: Manager, text: &str) -> Option<Vec<String>> {
+    match manager {
+        Manager::Launchd => {
+            let start = text.find("<key>ProgramArguments</key>")?;
+            let rest = &text[start..];
+            let array = &rest[..rest.find("</array>")?];
+            let argv: Vec<String> = array
+                .split("<string>")
+                .skip(1)
+                .filter_map(|s| s.split_once("</string>"))
+                .map(|(s, _)| xml_unescape(s))
+                .collect();
+            (!argv.is_empty()).then_some(argv)
+        }
+        Manager::Systemd => text
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("ExecStart="))
+            .map(systemd_words),
+    }
+}
+
+/// What `install` or `uninstall` did, as report lines.
+#[derive(Debug, Default)]
+pub struct Outcome {
+    pub report: Vec<String>,
+    pub path: PathBuf,
+    /// The unit file changed on disk.
+    pub changed: bool,
+    pub backup: Option<PathBuf>,
+}
+
+/// Plan, and with `--apply` write, the unit that runs `serve`.
+pub fn install(args: &InstallArgs) -> Result<Outcome> {
+    let manager = args.at.manager();
+    let home = args.at.home()?;
+    let binary = match &args.binary {
+        Some(binary) => std::path::absolute(binary)?,
+        None => std::env::current_exe()?.canonicalize()?,
+    };
+    ensure!(
+        is_executable(&binary),
+        "{} is not an executable file",
+        binary.display()
+    );
+    let env_file = std::path::absolute(&args.env_file)?;
+    ensure!(
+        env_file.is_file(),
+        "--env-file {} does not exist; create it with the provider keys (docs/deployment.md)",
+        env_file.display()
+    );
+    let serve = Serve {
+        binary,
+        env_file,
+        data_dir: match &args.data_dir {
+            Some(dir) => std::path::absolute(dir)?,
+            None => home.join(DEFAULT_DATA_DIR),
+        },
+        outbox: match &args.outbox {
+            Some(Some(path)) => Some(std::path::absolute(path)?),
+            Some(None) => Some(home.join(crate::harness::outbox::DEFAULT_OUTBOX)),
+            None => None,
+        },
+        port: args.port,
+        llm_concurrency: args.llm_concurrency,
+        max_calls: (args.max_calls > 0).then_some(args.max_calls),
+    };
+    let text = render(manager, &serve, &home)?;
+    let path = manager.unit_path(&home);
+    let current = existing(&path)?;
+
+    let mut out = Outcome {
+        path: path.clone(),
+        ..Outcome::default()
+    };
+    let argv: Vec<String> = serve.argv()?.iter().map(|a| sh(a)).collect();
+    out.report.push(format!(
+        "[plan] {} unit {}",
+        manager_name(manager),
+        path.display()
+    ));
+    out.report.push(format!("[plan] runs {}", argv.join(" ")));
+    for (key, value) in serve.environment() {
+        out.report.push(format!("[plan] with {key}={value}"));
+    }
+    if serve.max_calls.is_none() {
+        out.report
+            .push("[note] --max-calls 0: generation attempts are not guarded".into());
+    }
+    out.report.extend(private_note(&serve.env_file));
+    if current.as_deref() == Some(text.as_str()) {
+        out.report.push(format!(
+            "[write] {} is up to date; nothing written",
+            path.display()
+        ));
+    } else if !args.apply {
+        out.report.push(format!(
+            "[preview] {} {}:",
+            if current.is_some() {
+                "would replace (after a backup)"
+            } else {
+                "would write"
+            },
+            path.display()
+        ));
+        out.report.extend(text.lines().map(str::to_string));
+        out.report
+            .push("[result] preview only. Rerun with --apply to write it.".into());
+        return Ok(out);
+    } else {
+        private_dir(&serve.data_dir)?;
+        if manager == Manager::Launchd {
+            private_dir(&home.join(LAUNCHD_LOGS))?;
+        }
+        if let Some(previous) = &current {
+            let backup = back_up(&home, &path, previous)?;
+            out.report.push(format!("[backup] {}", backup.display()));
+            out.backup = Some(backup);
+        }
+        write_atomic(&path, &text)?;
+        out.changed = true;
+        out.report
+            .push(format!("[write] {}; it holds no key", path.display()));
+    }
+    out.report.push(format!(
+        "[next] stop any daemon you started by hand on port {}, then run:",
+        serve.port
+    ));
+    out.report.extend(
+        start_commands(manager, &path, current.is_some())
+            .into_iter()
+            .map(|c| format!("  {c}")),
+    );
+    out.report.push(format!(
+        "[next] check: curl -fsS http://127.0.0.1:{}/health",
+        serve.port
+    ));
+    Ok(out)
+}
+
+/// Remove the unit file with `--apply`, after a backup. The data, outbox, logs and env file stay.
+pub fn uninstall(at: &Target, apply: bool) -> Result<Outcome> {
+    let manager = at.manager();
+    let home = at.home()?;
+    let path = manager.unit_path(&home);
+    let mut out = Outcome {
+        path: path.clone(),
+        ..Outcome::default()
+    };
+    let Some(current) = existing(&path)? else {
+        out.report.push(format!(
+            "[uninstall] no unit at {}; nothing to remove",
+            path.display()
+        ));
+        return Ok(out);
+    };
+    if !current.contains(MARKER) {
+        out.report.push(format!(
+            "[note] {} was not written by agent-memoryd service install; it is backed up before removal",
+            path.display()
+        ));
+    }
+    let stop = stop_command(manager);
+    if manager == Manager::Systemd && enabled(&home) {
+        out.report
+            .push(format!("[next] disable and stop it first: {stop}"));
+        ensure!(
+            !apply,
+            "{SYSTEMD_UNIT} is still enabled; run `{stop}`, then rerun with --apply"
+        );
+    }
+    if !apply {
+        if manager == Manager::Launchd {
+            out.report
+                .push(format!("[next] stop it first if it is loaded: {stop}"));
+        }
+        out.report.push(format!(
+            "[result] preview only. Rerun with --apply to remove {} (after a backup).",
+            path.display()
+        ));
+        return Ok(out);
+    }
+    let backup = back_up(&home, &path, &current)?;
+    out.report.push(format!("[backup] {}", backup.display()));
+    std::fs::remove_file(&path)?;
+    out.changed = true;
+    out.backup = Some(backup);
+    out.report.push(format!(
+        "[uninstall] removed {}; memory data, the outbox, logs and the env file are untouched",
+        path.display()
+    ));
+    out.report.push(match manager {
+        Manager::Launchd => format!("[next] if it is still loaded: {stop}"),
+        Manager::Systemd => "[next] systemctl --user daemon-reload".into(),
+    });
+    Ok(out)
+}
+
+/// Report lines about the unit file; the port of its `serve` command, when one is found.
+pub fn status_report(at: &Target) -> Result<(Vec<String>, Option<u16>)> {
+    let manager = at.manager();
+    let home = at.home()?;
+    let path = manager.unit_path(&home);
+    let mut report = Vec::new();
+    let Some(text) = existing(&path)? else {
+        report.push(format!(
+            "[status] no {} unit at {}; see `agent-memoryd service install --help`",
+            manager_name(manager),
+            path.display()
+        ));
+        return Ok((report, None));
+    };
+    report.push(format!(
+        "[status] {} unit {}{}",
+        manager_name(manager),
+        path.display(),
+        if text.contains(MARKER) {
+            ""
+        } else {
+            " (not written by agent-memoryd service install)"
+        }
+    ));
+    let argv = unit_argv(manager, &text).unwrap_or_default();
+    let quoted: Vec<String> = argv.iter().map(|a| sh(a)).collect();
+    report.push(format!("[status] runs {}", quoted.join(" ")));
+    if let Some(env_file) = flag_value(&argv, "--env-file") {
+        let env_file = PathBuf::from(env_file);
+        if env_file.is_file() {
+            report.push(format!("[status] env file {} exists", env_file.display()));
+            report.extend(private_note(&env_file));
+        } else {
+            report.push(format!(
+                "[status] env file {} is missing; the daemon cannot start",
+                env_file.display()
+            ));
+        }
+    }
+    if manager == Manager::Systemd {
+        report.push(format!(
+            "[status] {}",
+            if enabled(&home) {
+                "enabled (starts with the user manager)"
+            } else {
+                "not enabled"
+            }
+        ));
+    }
+    report.push(format!("[next] inspect it: {}", inspect_command(manager)));
+    let port = match flag_value(&argv, "--port") {
+        Some(port) => port.parse().ok(),
+        None => Some(8765),
+    };
+    Ok((report, port))
+}
+
+/// Run a service command; prints its report and returns the process exit code.
+pub async fn run(cmd: ServiceCmd) -> i32 {
+    let result = match cmd {
+        ServiceCmd::Install(args) => install(&args).map(|o| o.report),
+        ServiceCmd::Uninstall { at, apply } => uninstall(&at, apply).map(|o| o.report),
+        ServiceCmd::Status { at } => match status_report(&at) {
+            Ok((mut report, port)) => {
+                if let Some(port) = port {
+                    report.push(health(port).await);
+                }
+                Ok(report)
+            }
+            Err(e) => Err(e),
+        },
+    };
+    match result {
+        Ok(report) => {
+            for line in report {
+                println!("{line}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("[error] {e:#}");
+            1
+        }
+    }
+}
+
+async fn health(port: u16) -> String {
+    let url = format!("http://127.0.0.1:{port}/health");
+    let answer = async {
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()?
+            .get(&url)
+            .send()
+            .await?
+            .error_for_status()
+    };
+    match answer.await {
+        Ok(_) => format!("[status] a daemon answers at {url}"),
+        Err(_) => format!("[status] no daemon answers at {url}"),
+    }
+}
+
+fn manager_name(manager: Manager) -> &'static str {
+    match manager {
+        Manager::Launchd => "LaunchAgent",
+        Manager::Systemd => "systemd user",
+    }
+}
+
+fn start_commands(manager: Manager, path: &Path, replaced: bool) -> Vec<String> {
+    let file = sh(&path.to_string_lossy());
+    match manager {
+        Manager::Launchd => {
+            let mut commands = vec![format!("plutil -lint {file}")];
+            if replaced {
+                commands.push(format!("{}   # if it is loaded", stop_command(manager)));
+            }
+            commands.push(format!("launchctl bootstrap \"gui/$(id -u)\" {file}"));
+            commands
+        }
+        Manager::Systemd if replaced => vec![
+            "systemctl --user daemon-reload".into(),
+            format!("systemctl --user enable {SYSTEMD_UNIT}"),
+            format!("systemctl --user restart {SYSTEMD_UNIT}"),
+        ],
+        Manager::Systemd => vec![
+            "systemctl --user daemon-reload".into(),
+            format!("systemctl --user enable --now {SYSTEMD_UNIT}"),
+        ],
+    }
+}
+
+fn stop_command(manager: Manager) -> String {
+    match manager {
+        Manager::Launchd => format!("launchctl bootout \"gui/$(id -u)/{LAUNCHD_LABEL}\""),
+        Manager::Systemd => format!("systemctl --user disable --now {SYSTEMD_UNIT}"),
+    }
+}
+
+fn inspect_command(manager: Manager) -> String {
+    match manager {
+        Manager::Launchd => format!("launchctl print \"gui/$(id -u)/{LAUNCHD_LABEL}\""),
+        Manager::Systemd => format!("systemctl --user status {SYSTEMD_UNIT}"),
+    }
+}
+
+fn flag_value<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+    let at = argv.iter().position(|a| a == flag)?;
+    argv.get(at + 1).map(String::as_str)
+}
+
+/// Whether the systemd unit is enabled for the user manager.
+fn enabled(home: &Path) -> bool {
+    std::fs::symlink_metadata(home.join(SYSTEMD_ENABLED).join(SYSTEMD_UNIT)).is_ok()
+}
+
+/// The unit file's text, or None when there is none. Refuses a symbolic link.
+fn existing(path: &Path) -> Result<Option<String>> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot inspect {}", path.display())),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            bail!("{} is a symbolic link; change it by hand", path.display())
+        }
+        Ok(_) => {
+            Ok(Some(std::fs::read_to_string(path).with_context(|| {
+                format!("cannot read {}", path.display())
+            })?))
+        }
+    }
+}
+
+/// A note when `path` (the env file) is accessible to other users.
+#[cfg(unix)]
+fn private_note(path: &Path) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path).ok()?.permissions().mode();
+    (mode & 0o077 != 0).then(|| {
+        format!(
+            "[note] {} is accessible to other users; run chmod 600 {}",
+            path.display(),
+            sh(&path.to_string_lossy())
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn private_note(_: &Path) -> Option<String> {
+    None
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Create `dir` and missing parents 0700; an existing directory is left as it is.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
+/// Copy the current unit file into the backup directory; returns the copy's path.
+fn back_up(home: &Path, path: &Path, text: &str) -> Result<PathBuf> {
+    let dir = home.join(BACKUPS);
+    private_dir(&dir)?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let backup = dir.join(format!("{name}.{stamp}-{suffix}"));
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        file.mode(0o600);
+    }
+    use std::io::Write;
+    file.open(&backup)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .with_context(|| format!("cannot write backup {}", backup.display()))?;
+    Ok(backup)
+}
+
+/// Replace `path` with `text` (mode 0644) through a temporary file in its directory.
+fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    let dir = path.parent().context("unit path has no directory")?;
+    std::fs::create_dir_all(dir)?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temp = dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let written = (|| -> std::io::Result<()> {
+        std::fs::write(&temp, text)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o644))?;
+        }
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.with_context(|| format!("cannot write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        cmd: ServiceCmd,
+    }
+
+    /// A temporary home holding an executable stand-in for agent-memoryd and an env file.
+    struct Home {
+        dir: tempfile::TempDir,
+    }
+
+    impl Home {
+        fn new(name: &str) -> Home {
+            let dir = tempfile::Builder::new().prefix(name).tempdir().unwrap();
+            let home = Home { dir };
+            std::fs::create_dir_all(home.path().join("bin")).unwrap();
+            std::fs::create_dir_all(home.path().join("checkout")).unwrap();
+            std::fs::write(home.binary(), "#!/bin/sh\n").unwrap();
+            std::fs::write(home.env_file(), "QWEN_API_KEY=offline-test-value\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::Permissions::from_mode;
+                std::fs::set_permissions(home.binary(), mode(0o755)).unwrap();
+                std::fs::set_permissions(home.env_file(), mode(0o600)).unwrap();
+            }
+            home
+        }
+
+        fn path(&self) -> &Path {
+            self.dir.path()
+        }
+
+        fn binary(&self) -> PathBuf {
+            self.path().join("bin/agent-memoryd")
+        }
+
+        fn env_file(&self) -> PathBuf {
+            self.path().join("checkout/.env")
+        }
+
+        fn parse(&self, manager: &str, args: &[&str]) -> ServiceCmd {
+            let home = self.path().to_str().unwrap().to_string();
+            let binary = self.binary().to_str().unwrap().to_string();
+            let env_file = self.env_file().to_str().unwrap().to_string();
+            let mut argv = vec![
+                "agent-memoryd",
+                args[0],
+                "--manager",
+                manager,
+                "--home",
+                home.as_str(),
+            ];
+            if args[0] == "install" {
+                argv.extend(["--binary", binary.as_str(), "--env-file", env_file.as_str()]);
+            }
+            argv.extend(&args[1..]);
+            Cli::try_parse_from(argv).unwrap().cmd
+        }
+
+        fn install(&self, manager: &str, args: &[&str]) -> Result<Outcome> {
+            let mut all = vec!["install"];
+            all.extend(args);
+            match self.parse(manager, &all) {
+                ServiceCmd::Install(args) => install(&args),
+                _ => unreachable!(),
+            }
+        }
+
+        fn uninstall(&self, manager: &str, args: &[&str]) -> Result<Outcome> {
+            let mut all = vec!["uninstall"];
+            all.extend(args);
+            match self.parse(manager, &all) {
+                ServiceCmd::Uninstall { at, apply } => uninstall(&at, apply),
+                _ => unreachable!(),
+            }
+        }
+
+        fn backups(&self) -> Vec<PathBuf> {
+            match std::fs::read_dir(self.path().join(BACKUPS)) {
+                Ok(dir) => dir.map(|e| e.unwrap().path()).collect(),
+                Err(_) => Vec::new(),
+            }
+        }
+    }
+
+    #[test]
+    fn previews_then_writes_a_launch_agent_without_the_key() {
+        let home = Home::new("svc-launchd");
+        let unit = home
+            .path()
+            .join("Library/LaunchAgents/local.agent-memory-daemon.plist");
+
+        let preview = home.install("launchd", &["--outbox"]).unwrap();
+        assert_eq!(preview.path, unit);
+        assert!(!preview.changed && !unit.exists());
+        assert!(!home.path().join(DEFAULT_DATA_DIR).exists());
+        let report = preview.report.join("\n");
+        assert!(report.contains("[result] preview only"), "{report}");
+        assert!(report.contains("<string>serve</string>"), "{report}");
+
+        let written = home.install("launchd", &["--outbox", "--apply"]).unwrap();
+        assert!(written.changed && written.backup.is_none());
+        let text = std::fs::read_to_string(&unit).unwrap();
+        assert!(!text.contains("offline-test-value"));
+        assert!(text.contains(MARKER));
+        assert!(text.contains("<key>MEMORY_LLM_MAX_CALLS</key><string>60</string>"));
+        let argv = unit_argv(Manager::Launchd, &text).unwrap();
+        let p = |rel: &str| home.path().join(rel).to_str().unwrap().to_string();
+        assert_eq!(
+            argv,
+            [
+                p("bin/agent-memoryd"),
+                "serve".into(),
+                "--env-file".into(),
+                p("checkout/.env"),
+                "--data-dir".into(),
+                p(DEFAULT_DATA_DIR),
+                "--port".into(),
+                "8765".into(),
+                "--llm-concurrency".into(),
+                "1".into(),
+                "--outbox".into(),
+                p(crate::harness::outbox::DEFAULT_OUTBOX),
+            ]
+        );
+        assert!(text.contains(&p("Library/Logs/agent-memory-service/daemon.stderr.log")));
+        assert!(home.path().join(LAUNCHD_LOGS).is_dir());
+        assert!(home.path().join(DEFAULT_DATA_DIR).is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&unit), 0o644);
+            assert_eq!(mode(&home.path().join(DEFAULT_DATA_DIR)), 0o700);
+        }
+        let next = written.report.join("\n");
+        assert!(
+            next.contains("launchctl bootstrap \"gui/$(id -u)\""),
+            "{next}"
+        );
+        assert!(!next.contains("bootout"), "{next}");
+
+        // A rerun with the same options writes nothing.
+        let again = home.install("launchd", &["--outbox", "--apply"]).unwrap();
+        assert!(!again.changed && again.backup.is_none());
+        assert!(home.backups().is_empty());
+    }
+
+    #[test]
+    fn replacing_a_systemd_unit_backs_it_up_and_keeps_the_key_out() {
+        let home = Home::new("svc-systemd");
+        let unit = home
+            .path()
+            .join(".config/systemd/user/agent-memory.service");
+        std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
+        let hand_made = "[Service]\nExecStart=/usr/bin/python3 scripts/serve.py --max-calls 60\n";
+        std::fs::write(&unit, hand_made).unwrap();
+
+        let preview = home.install("systemd", &["--port", "9001"]).unwrap();
+        assert!(!preview.changed);
+        assert_eq!(std::fs::read_to_string(&unit).unwrap(), hand_made);
+
+        let written = home
+            .install("systemd", &["--port", "9001", "--apply"])
+            .unwrap();
+        let backup = written.backup.unwrap();
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), hand_made);
+        assert_eq!(home.backups(), [backup]);
+        let text = std::fs::read_to_string(&unit).unwrap();
+        assert!(!text.contains("offline-test-value"));
+        assert!(text.contains("\nEnvironment=MEMORY_LLM_MAX_CALLS=60\n"));
+        assert!(text.contains("\nWantedBy=default.target\n"));
+        let argv = unit_argv(Manager::Systemd, &text).unwrap();
+        assert_eq!(flag_value(&argv, "--port"), Some("9001"));
+        assert_eq!(flag_value(&argv, "--llm-concurrency"), Some("1"));
+        assert_eq!(flag_value(&argv, "--outbox"), None);
+        let next = written.report.join("\n");
+        assert!(
+            next.contains("systemctl --user restart agent-memory.service"),
+            "{next}"
+        );
+    }
+
+    #[test]
+    fn quotes_paths_with_spaces_and_special_characters() {
+        let home = Home::new("svc quote &%$ 'x'");
+        for manager in ["launchd", "systemd"] {
+            home.install(manager, &["--outbox", "--apply"]).unwrap();
+            let m = if manager == "launchd" {
+                Manager::Launchd
+            } else {
+                Manager::Systemd
+            };
+            let text = std::fs::read_to_string(m.unit_path(home.path())).unwrap();
+            let argv = unit_argv(m, &text).unwrap();
+            assert_eq!(argv[0], home.binary().to_str().unwrap(), "{text}");
+            assert_eq!(
+                flag_value(&argv, "--env-file"),
+                home.env_file().to_str(),
+                "{text}"
+            );
+            if m == Manager::Systemd {
+                assert!(text.contains("%%"), "{text}");
+                assert!(text.contains("$$"), "{text}");
+            } else {
+                assert!(text.contains("&amp;"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn max_calls_zero_removes_the_guard() {
+        let home = Home::new("svc-guard");
+        home.install(
+            "systemd",
+            &["--max-calls", "0", "--llm-concurrency", "2", "--apply"],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(Manager::Systemd.unit_path(home.path())).unwrap();
+        assert!(!text.contains("MEMORY_LLM_MAX_CALLS"));
+        let argv = unit_argv(Manager::Systemd, &text).unwrap();
+        assert_eq!(flag_value(&argv, "--llm-concurrency"), Some("2"));
+        assert!(
+            Cli::try_parse_from(["t", "install", "--env-file", "x", "--llm-concurrency", "0"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn refuses_a_missing_env_file_and_a_symlinked_unit() {
+        let home = Home::new("svc-refuse");
+        std::fs::remove_file(home.env_file()).unwrap();
+        let e = home.install("systemd", &["--apply"]).unwrap_err();
+        assert!(e.to_string().contains("--env-file"), "{e}");
+        assert!(!Manager::Systemd.unit_path(home.path()).exists());
+
+        #[cfg(unix)]
+        {
+            let home = Home::new("svc-link");
+            let unit = Manager::Systemd.unit_path(home.path());
+            std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(home.env_file(), &unit).unwrap();
+            let e = home.install("systemd", &["--apply"]).unwrap_err();
+            assert!(e.to_string().contains("symbolic link"), "{e}");
+            assert!(std::fs::symlink_metadata(&unit)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
+    }
+
+    #[test]
+    fn uninstall_waits_for_disable_then_backs_up_and_removes() {
+        let home = Home::new("svc-uninstall");
+        let nothing = home.uninstall("systemd", &["--apply"]).unwrap();
+        assert!(!nothing.changed);
+
+        home.install("systemd", &["--apply"]).unwrap();
+        let unit = Manager::Systemd.unit_path(home.path());
+        let text = std::fs::read_to_string(&unit).unwrap();
+        #[cfg(unix)]
+        {
+            let wants = home.path().join(SYSTEMD_ENABLED);
+            std::fs::create_dir_all(&wants).unwrap();
+            std::os::unix::fs::symlink(&unit, wants.join(SYSTEMD_UNIT)).unwrap();
+            let e = home.uninstall("systemd", &["--apply"]).unwrap_err();
+            assert!(e.to_string().contains("disable --now"), "{e}");
+            assert!(unit.exists());
+            std::fs::remove_file(wants.join(SYSTEMD_UNIT)).unwrap();
+        }
+        let preview = home.uninstall("systemd", &[]).unwrap();
+        assert!(!preview.changed && unit.exists());
+
+        let removed = home.uninstall("systemd", &["--apply"]).unwrap();
+        assert!(removed.changed && !unit.exists());
+        assert_eq!(
+            std::fs::read_to_string(removed.backup.unwrap()).unwrap(),
+            text
+        );
+        assert!(home.env_file().exists());
+        assert!(home.path().join(DEFAULT_DATA_DIR).is_dir());
+    }
+
+    #[test]
+    fn status_reads_the_command_back() {
+        let home = Home::new("svc-status");
+        let at = Target {
+            manager: Some(Manager::Launchd),
+            home: Some(home.path().to_path_buf()),
+        };
+        let (report, port) = status_report(&at).unwrap();
+        assert!(report[0].contains("no LaunchAgent unit"), "{report:?}");
+        assert_eq!(port, None);
+
+        home.install("launchd", &["--port", "9002", "--apply"])
+            .unwrap();
+        let (report, port) = status_report(&at).unwrap();
+        assert_eq!(port, Some(9002));
+        let report = report.join("\n");
+        assert!(
+            report.contains("env file") && report.contains("exists"),
+            "{report}"
+        );
+        assert!(report.contains("launchctl print"), "{report}");
+    }
+
+    #[test]
+    fn systemd_words_round_trip() {
+        for word in [
+            "/plain/path",
+            "a b",
+            "100%",
+            "$HOME",
+            "q\"uote",
+            "back\\slash",
+            "it's",
+        ] {
+            assert_eq!(systemd_words(&systemd_quote(word)), [word]);
+        }
+        assert_eq!(sh("/a b/it's"), r"'/a b/it'\''s'");
+        assert_eq!(sh("/plain/path"), "/plain/path");
+    }
+}

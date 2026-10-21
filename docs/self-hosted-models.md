@@ -90,7 +90,8 @@ Keep weights and caches out of Git, releases and CI artifacts.
 
 ## 3. Point the daemon at the servers
 
-Set the provider in the checkout's `.env` (read by `scripts/serve.py`) or export it for a direct launch:
+Set the provider in the env file the daemon reads (`serve --env-file`, or the checkout's `.env` for
+`scripts/serve.py`) or export it for a direct launch:
 
 ```sh
 MEMORY_MODEL_PROVIDER=self-hosted

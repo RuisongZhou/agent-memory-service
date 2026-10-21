@@ -22,10 +22,14 @@ DeepSeek Harness.
 Without `--apply` it only previews. With `--apply` it builds `target/fast/agent-memoryd` (as `make build`), checks the exact commands
 it will install against a temporary mock daemon, then backs up and writes the platform's configuration.
 It never starts or installs the daemon, model servers or uploader and never handles provider keys:
-[deploy the daemon](deployment.md) first. After writing, it reports whether a daemon answers at `--url`
-and whether an uploader holds the outbox, and says how to start one when none does.
+[deploy the daemon](deployment.md) first (`agent-memoryd service install` runs it as a service). After
+writing, it reports whether a daemon answers at `--url` and whether an uploader holds the outbox, and
+says how to start one when none does.
 
-Requirements: macOS or Linux, Rust/Cargo (or `--binary`), and Python 3.11+ to run the installer itself.
+Requirements: macOS or Linux, a checkout of this repository, Python 3.11+ to run the installer itself
+(the only component that needs Python), and Rust/Cargo to build the binary, or `--binary` with an
+existing one such as a [release binary](deployment.md#release-archive) of the same version:
+`bash scripts/install.sh --host codex --apply --project my-project --binary "$HOME/.local/bin/agent-memoryd"`.
 The bridge, the hooks and `notify` all run `agent-memoryd`, so the agent host needs no Python. Run from
 the checkout:
 
