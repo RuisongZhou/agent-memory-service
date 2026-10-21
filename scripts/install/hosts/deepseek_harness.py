@@ -33,6 +33,7 @@ END = '# <<< agent-memory-service <<<'
 DESKTOP_CLI = Path('DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh')
 MANUAL = 'edit it by hand as in docs/mcp-harness.md#use-with-deepseek-harness'
 OUR_NAME = re.compile(rf'''^\s*(?:-\s+)?serverName:\s*(?:{SERVER}|'{SERVER}'|"{SERVER}")\s*(?:#.*)?$''')
+ANY_OUR_NAME = re.compile(rf'''serverName['"]?:\s*(?:{SERVER}|'{SERVER}'|"{SERVER}")\s*(?:[,}}#]|$)''')  # block or flow style
 
 
 def add_arguments(parser):
@@ -90,7 +91,7 @@ def check_list(lines):
     if len(filled) == 1 and flow_empty(filled[0]):
         return
     for line in filled:
-        if OUR_NAME.match(line):
+        if ANY_OUR_NAME.search(line):
             raise InstallError(f'cordis.patch.yml already has another MCP row named {SERVER}; remove it, then rerun')
         if not line[:1].isspace() and not (content(line) == '-' or content(line).startswith('- ')):
             raise InstallError(f'cordis.patch.yml is not a plain top-level YAML list '

@@ -299,6 +299,7 @@ def test_dsh_patch_block_is_replaced_in_place():
     ('[a, b]\n', 'not a plain top-level YAML list'),
     ('  - id: x\n', 'indented'),
     ('- insert:\n    - id: mine\n      config:\n        serverName: shared-memory\n', 'another MCP row'),
+    ('- insert:\n    - id: mine\n      config: {serverName: "shared-memory", command: x}\n', 'another MCP row'),
     (deepseek_harness.BEGIN + '\n- id: x\n', 'markers are damaged'),
     (deepseek_harness.END + '\n' + deepseek_harness.BEGIN + '\n', 'markers are damaged'),
 ])
