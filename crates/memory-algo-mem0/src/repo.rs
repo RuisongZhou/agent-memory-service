@@ -121,6 +121,16 @@ pub async fn entity_rows(t: &Tenant) -> Result<Vec<Value>> {
         .await
 }
 
+/// Canonical entity rows without their vectors: `{mid, entityType, linkedMemoryIds}`.
+pub async fn entity_links(t: &Tenant) -> Result<Vec<Value>> {
+    t.store
+        .select(
+            "SELECT mid, entityType, linkedMemoryIds FROM mem0_entities ORDER BY mid ASC",
+            vec![],
+        )
+        .await
+}
+
 /// Extraction intermediates are rebuildable; a stored text/version must match the
 /// authoritative fact before its extracted entities are reused.
 pub async fn entity_extractions(t: &Tenant) -> Result<Vec<Value>> {

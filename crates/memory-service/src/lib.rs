@@ -25,4 +25,7 @@ pub use runtime::{engine, indexer, llm, models, reference_time, tenant};
 // Stable Rust facade for existing clients and diagnostics; implementations live with their algorithm.
 pub use algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
 #[cfg(feature = "selftest")]
-pub use diagnostics::{integrity as integrity_tests, mem0 as mem0_tests, selftest};
+pub use diagnostics::{
+    consolidation as consolidation_tests, integrity as integrity_tests, mem0 as mem0_tests,
+    selftest,
+};

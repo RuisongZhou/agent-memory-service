@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use memory_domain::types::*;
-use memory_engine::app::ingest;
 use memory_engine::app::management;
+use memory_engine::app::{consolidation, ingest};
 use memory_engine::retrieval;
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
@@ -113,6 +113,7 @@ async fn admin(
             "wait_idle" => ingest::wait_idle(&eng, &t).await,
             "stats" => management::stats(&eng, &t).await,
             "export" => management::export(&eng, &t, body).await,
+            "consolidate" => consolidation::consolidate(&eng, &t, parse(body)?).await,
             "seed" if eng.models.is_mock() => management::seed(&eng, &t, body).await,
             "reindex" => {
                 let v = body.get("vector").and_then(|x| x.as_bool()).unwrap_or(true);

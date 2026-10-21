@@ -3,12 +3,14 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use memory_config::{MemoryStrategy, ServiceConfig};
+use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
 use memory_domain::types::*;
 use memory_engine::runtime::algorithm::{BoxFuture, MemoryAlgorithm};
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::tenant::Tenant;
 
 pub mod config;
+pub mod consolidation;
 pub mod entities;
 pub mod formation;
 pub mod repo;
@@ -116,5 +118,24 @@ impl MemoryAlgorithm for Mem0 {
         memory_id: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Value>>> {
         Box::pin(t.store.get_doc(SOURCES, memory_id))
+    }
+
+    fn consolidation_snapshot<'a>(
+        &'a self,
+        eng: &'a Arc<Engine>,
+        t: &'a Arc<Tenant>,
+        project: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<Option<ConsolidationSnapshot>>> {
+        Box::pin(async move { consolidation::snapshot(eng, t, project).await.map(Some) })
+    }
+
+    fn consolidation_generate<'a>(
+        &'a self,
+        eng: &'a Arc<Engine>,
+        t: &'a Arc<Tenant>,
+        project: &'a str,
+        cluster: &'a Cluster,
+    ) -> BoxFuture<'a, anyhow::Result<GeneratedOps>> {
+        Box::pin(consolidation::generate(eng, t, project, cluster))
     }
 }

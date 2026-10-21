@@ -73,6 +73,10 @@ pub struct ServiceConfig {
     pub default_token_budget: usize, // 2,000
     pub context_token_budget: usize, // 1,500
     pub use_reranker: bool,
+    /// Allows `POST /admin/consolidate` (propose-only consolidation, a deviation from the pinned Mem0
+    /// algorithm). Off by default; evaluation protocols never enable it.
+    #[serde(default)]
+    pub consolidation_enabled: bool,
 }
 
 impl Default for ServiceConfig {
@@ -100,6 +104,7 @@ impl Default for ServiceConfig {
             default_token_budget: 2_000,
             context_token_budget: 1_500,
             use_reranker: true,
+            consolidation_enabled: false,
         }
     }
 }
@@ -184,6 +189,7 @@ mod tests {
             MemoryStrategy::Mem0
         );
         ServiceConfig::default().validate().unwrap();
+        assert!(!ServiceConfig::default().consolidation_enabled);
     }
     #[test]
     fn unsupported_strategy_is_rejected() {

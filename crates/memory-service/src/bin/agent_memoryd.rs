@@ -6,6 +6,7 @@
 //!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
 //!   agent-memoryd service install | uninstall | status ...     (LaunchAgent / systemd user unit for serve)
 //!   agent-memoryd reindex --vector | --fulltext | --all [--url ...]
+//!   agent-memoryd consolidate --project P --dry-run [--url ...]   (propose-only; needs consolidationEnabled)
 use clap::{error::ErrorKind, Parser, Subcommand};
 use memory_service::harness::{self, outbox::Outbox, HookCmd, OutboxCmd};
 use memory_service::service::{self, ServiceCmd};
@@ -110,6 +111,19 @@ enum Cmd {
         fulltext: bool,
         #[arg(long)]
         all: bool,
+        #[arg(long, default_value = "default")]
+        tenant: String,
+    },
+    /// Propose consolidation ops for one project's facts on a running daemon and print the run.
+    /// Requires `consolidationEnabled` in the daemon's configuration; nothing is applied.
+    Consolidate {
+        #[arg(long, default_value = "http://127.0.0.1:8765")]
+        url: String,
+        #[arg(long)]
+        project: String,
+        /// Required: runs only propose; applying them is not implemented.
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long, default_value = "default")]
         tenant: String,
     },
@@ -269,6 +283,7 @@ fn main() -> anyhow::Result<()> {
                 memory_service::selftest::store_roundtrip().await;
                 memory_service::integrity_tests::selftest().await;
                 memory_service::mem0_tests::selftest().await;
+                memory_service::consolidation_tests::selftest().await;
             }
             Cmd::Mcp { url, platform } => {
                 memory_service::mcp::run_stdio(&url, &platform).await?;
@@ -294,6 +309,28 @@ fn main() -> anyhow::Result<()> {
                     .await?
                     .error_for_status()?;
                 println!("{}", resp.text().await?);
+            }
+            Cmd::Consolidate {
+                url,
+                project,
+                dry_run,
+                tenant,
+            } => {
+                anyhow::ensure!(
+                    dry_run,
+                    "--dry-run is required: applying consolidation proposals is not implemented"
+                );
+                let resp = reqwest::Client::new()
+                    .post(format!("{}/admin/consolidate", url.trim_end_matches('/')))
+                    .header("x-memory-tenant", tenant)
+                    .json(&serde_json::json!({"project": project, "dryRun": true}))
+                    .send()
+                    .await?;
+                let status = resp.status();
+                let text = resp.text().await?;
+                anyhow::ensure!(status.is_success(), "HTTP {status}: {text}");
+                let body: serde_json::Value = serde_json::from_str(&text)?;
+                println!("{}", serde_json::to_string_pretty(&body)?);
             }
         }
         Ok(())

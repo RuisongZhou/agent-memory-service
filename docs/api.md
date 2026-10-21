@@ -125,11 +125,42 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs |
 | `POST /admin/export` | Read memories or selected audit tables in the current tenant; not a full backup |
 | `POST /admin/reindex` | Queue vector/full-text rebuild; CLI requires `--all`, `--vector` or `--fulltext` |
+| `POST /admin/consolidate` | Propose consolidation ops for one project and store the run; requires `consolidationEnabled` and `dryRun:true` |
 | `POST /admin/seed` | Direct fixture admission, available only with mock models |
 
 Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `requests`,
-`store_revisions`, `uncertainties`, `proposals` and [Mem0 private tables](architecture.md#entity-projection-and-storage).
+`store_revisions`, `uncertainties`, `proposals`, `consolidation_runs` and [Mem0 private tables](architecture.md#entity-projection-and-storage).
 Embedding token usage is approximate, not provider billing. Reindex HTTP errors produce a nonzero CLI exit.
+
+### Consolidation proposals
+
+Consolidation is an opt-in deviation from the pinned Mem0 algorithm and only proposes: no memory record
+changes and nothing applies the proposals yet. [Architecture](architecture.md#consolidation) describes
+candidate selection, validation, limits and the planned apply/rollback stage.
+
+```json
+POST /admin/consolidate
+{"project": "my-project", "dryRun": true}
+```
+
+The request fails with `INVALID_ARGUMENT` unless the configuration sets `consolidationEnabled:true`,
+`dryRun` is `true` and `project` names one project (not `*`); it fails with `MODEL_UNAVAILABLE` when
+there are clusters and no generation key. Each selected cluster costs one generation call (with the
+contract's bounded repair). The response is `{"run": {...}, "proposals": [...]}`, also stored in
+`consolidation_runs` and `proposals`:
+
+| Field | Meaning |
+|---|---|
+| `run.status` | `proposed`; `aborted` when accepted ops would retire more than the per-run share of the project's current facts; `failed` when a generation call failed |
+| `run.snapshotRevision`, `llmModel`, `embeddingModel`, `promptFormat`, `promptHash` | What the proposals were generated from |
+| `run.projectFacts`, `eligibleFacts`, `clusters`, `responseLogIds` | Candidate counts, each cluster's members, links, input hash and `llm_responses` id |
+| `run.acceptedOps`, `rejectedOps`, `retireCount`, `retireFraction`, `limits` | Validation outcome and the fixed limits applied |
+| `proposals[].op` | `merge` (`ids`, `text`), `supersede` (`old`, `new`), `conflict` (`ids`, `reason`) or `keep` (`ids`), with memory ids |
+| `proposals[].status`, `rejectReason` | `proposed`, `rejected` (failed validation, with the reason), or the run's `aborted`/`failed` |
+| `proposals[].detail` | Algorithm provenance for applying: input content keys; for merges the union of input request ids and the merged content key |
+
+`agent-memoryd consolidate --project P --dry-run [--url URL] [--tenant T]` posts the same request to a
+running daemon and prints the run; it refuses to run without `--dry-run`, and HTTP errors exit nonzero.
 
 ## Configuration
 
@@ -180,6 +211,7 @@ read from JSON.
 | `bruteForceLimit` | 20000 | Exact/ANN selection boundary; zero forces ANN |
 | `useReranker` | true | Global gate; `--no-reranker` disables it |
 | `llmTimeoutSecs` | 180 | Generation request timeout |
+| `consolidationEnabled` | false | Allow `POST /admin/consolidate` (propose-only); evaluation protocols never set it |
 
 `zh` adds a formation instruction to match the new messages' language/script and selects Chinese context
 labels; it does not unconditionally translate facts to Simplified Chinese. `en` uses the base prompt.
