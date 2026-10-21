@@ -5,6 +5,7 @@ pub mod api;
 pub mod diagnostics;
 pub mod envfile;
 pub mod harness;
+pub mod service;
 
 // Flat facade for external clients (binary, examples); internal code uses the canonical paths.
 pub use api::{http, mcp};

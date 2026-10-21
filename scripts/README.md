@@ -6,7 +6,7 @@ Run commands from the repository root.
 
 | Script | Purpose | Generation calls |
 |---|---|---|
-| `serve.py` | Launch the daemon using local `.env` settings (the binary's `serve --env-file` reads the same keys) | Starting/recovering jobs can invoke the configured provider |
+| `serve.py` | Python alternative to `agent-memoryd serve --env-file .env`: launch the daemon with the checkout's `.env`, a generation-attempt guard and concurrency 1 (`agent-memoryd service install` runs the binary as a service instead) | Starting/recovering jobs can invoke the configured provider |
 | `install.sh`, `install/` | One-command MCP, capture and recall registration for Codex, Claude Code and WorkBuddy (as `agent-memoryd hook` commands), and MCP registration for DeepSeek Harness, verified against a temporary mock daemon | None; a local stub forms the check's one fact |
 | `harness_memory.py` | Legacy Python collector and uploader that `agent-memoryd hook capture` / `outbox` replace; kept so hooks written by earlier installers keep working, with the same outbox | Capture is local only; uploaded dialogue can trigger service formation |
 | `harness_recall.py` | Legacy Python recall hook that `agent-memoryd hook recall` replaces; kept for hooks written by earlier installers | None; reads only |

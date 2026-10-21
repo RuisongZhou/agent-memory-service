@@ -4,9 +4,11 @@
 //!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 8 tools)
 //!   agent-memoryd hook   capture | codex-notify | recall ...   (commands agent hosts run as hooks)
 //!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
+//!   agent-memoryd service install | uninstall | status ...     (LaunchAgent / systemd user unit for serve)
 //!   agent-memoryd reindex --vector | --fulltext | --all [--url ...]
 use clap::{error::ErrorKind, Parser, Subcommand};
 use memory_service::harness::{self, outbox::Outbox, HookCmd, OutboxCmd};
+use memory_service::service::{self, ServiceCmd};
 use memory_service::{config::ServiceConfig, envfile, http, llm::Llm, models::ModelHub, Engine};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -92,6 +94,9 @@ enum Cmd {
     /// Local dialogue outbox: receipts, a standalone uploader and manual enqueue
     #[command(subcommand)]
     Outbox(OutboxCmd),
+    /// Run `serve` as a LaunchAgent (macOS) or systemd user unit (Linux); writes only with --apply
+    #[command(subcommand)]
+    Service(ServiceCmd),
     /// Run storage self-tests
     #[cfg(feature = "selftest")]
     Selftest,
@@ -270,6 +275,7 @@ fn main() -> anyhow::Result<()> {
             }
             Cmd::Hook(cmd) => std::process::exit(harness::hook(cmd).await),
             Cmd::Outbox(cmd) => std::process::exit(harness::outbox(cmd).await),
+            Cmd::Service(cmd) => std::process::exit(service::run(cmd).await),
             Cmd::Reindex {
                 url,
                 vector,

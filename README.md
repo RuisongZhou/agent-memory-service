@@ -14,9 +14,13 @@ provider performs inferred memory formation.
 
 ## Start here
 
+Running the service takes the `agent-memoryd` binary, from a
+[release archive](docs/deployment.md#release-archive) or a Rust source build, and a model API key.
+Python 3.11+ is needed only for the client installer (`scripts/install.sh`) and evaluation.
+
 | Task | Authoritative guide |
 |---|---|
-| Install, configure model keys, start the daemon, back up or troubleshoot | [Deployment and operations](docs/deployment.md) |
+| Install, configure model keys, start the daemon or run it as a service, back up or troubleshoot | [Deployment and operations](docs/deployment.md) |
 | Run the embedding and rerank models yourself instead of the hosted API | [Self-hosted retrieval models](docs/self-hosted-models.md) |
 | Install into Codex, Claude Code, WorkBuddy or DeepSeek Harness with one command | [One-command install](docs/mcp-harness.md#one-command-install) |
 | Connect Codex/Claude Code, capture dialogue and upload it | [MCP and harness integration](docs/mcp-harness.md) |
@@ -26,7 +30,8 @@ provider performs inferred memory formation.
 | Run a controlled SDK comparison or inspect historical evidence | [Evaluation](eval/README.md) |
 | Find service operations and verification scripts | [Script inventory](scripts/README.md) |
 
-Follow deployment first, then client integration. After the daemon is running, one command registers
+Follow deployment first, then client integration. `agent-memoryd service install` keeps the daemon
+running as a macOS LaunchAgent or a systemd user unit. After the daemon is running, one command registers
 the bridge and dialogue capture in an agent platform, for example
 `bash scripts/install.sh --host codex --apply --project my-project` (also `workbuddy`, `claude-code`
 with `--workspace`, and `deepseek-harness`, which gets MCP tools only). Add `--recall` on the first three

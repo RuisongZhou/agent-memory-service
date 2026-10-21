@@ -137,7 +137,7 @@ Use [.env.example](../.env.example), [examples/service-config.json](../examples/
 and `agent-memoryd serve --help`. JSON keys use camelCase; unknown fields and invalid tunables fail
 before model connections or stores open. [ServiceConfig](../crates/memory-config/src/lib.rs) defines the fields.
 
-The Python launcher, and the daemon given `--env-file PATH`, read only `QWEN_API_KEY`, `QWEN_BASE_URL`,
+The daemon given `--env-file PATH`, and the Python launcher for the checkout's `.env`, read only `QWEN_API_KEY`, `QWEN_BASE_URL`,
 `LLM_MODEL`, `MEMORY_STRATEGY` and the `MEMORY_MODEL_*`, `MEMORY_EMBED_*` and `MEMORY_RERANK_*` variables
 below from `.env`; nonempty exported values take precedence. Both parse data, never shell code, and the
 daemon logs key names only. Without `--env-file`, direct daemon launches do not load `.env`; export all
@@ -146,7 +146,7 @@ OpenAI-compatible chat-completions/JSON contract and `enable_thinking:false`.
 
 | Startup value | CLI / environment | Direct-daemon default |
 |---|---|---|
-| Data root | `--data-dir` / `MEMORY_DATA_DIR` | `./memory-data`; Python launcher defaults to checkout `daemon-data` |
+| Data root | `--data-dir` / `MEMORY_DATA_DIR` | `./memory-data`; `service install` defaults to `~/.local/share/agent-memory-service/mem0`, the Python launcher to checkout `daemon-data` |
 | Retrieval-model provider | `--model-provider` / `MEMORY_MODEL_PROVIDER` | `api`; `self-hosted` uses [your own llama-server](self-hosted-models.md) |
 | Retrieval-model API key | `MEMORY_MODEL_API_KEY` (environment only) | Falls back to `QWEN_API_KEY`; required for `api` |
 | Embedding base URL | `--embed-url` / `MEMORY_EMBED_URL` | `api`: `https://maas.qianwenaiapi.com/compatible-mode/v1` (`/embeddings`); `self-hosted`: `http://127.0.0.1:8081` |
@@ -156,7 +156,7 @@ OpenAI-compatible chat-completions/JSON contract and `enable_thinking:false`.
 | Formation/context language | `--prompt-variant` / `MEMORY_PROMPT_VARIANT` | `zh`; `en` is also accepted |
 | Generation endpoint | `--llm-base-url` / `QWEN_BASE_URL` | `https://maas.qianwenaiapi.com/compatible-mode/v1` |
 | Generation model | `--llm-model` / `LLM_MODEL` | `qwen3.8-flash` |
-| Concurrency | `--llm-concurrency` / `LLM_MAX_CONCURRENCY` | 24; Python launcher defaults to 1 |
+| Concurrency | `--llm-concurrency` / `LLM_MAX_CONCURRENCY` | 24; `service install` and the Python launcher default to 1 |
 | Algorithm | `--memory-strategy` / `MEMORY_STRATEGY` | `mem0` only |
 | Dialogue upload | `--outbox [PATH]` (no environment variable) | Off; without PATH, `~/.local/share/agent-memory-service/harness-outbox.sqlite3` |
 
@@ -188,8 +188,9 @@ by the model adapter; stored messages remain complete. Startup probes the retrie
 for self-hosted servers to load); a provider, model or quantization change schedules re-embedding.
 Health reports `modelBackend` as `api`, `llama-server` or `mock`, with the embedding base URL as `modelDevice`.
 
-`MEMORY_LLM_MAX_CALLS` guards process-local generation attempts, including retries. The Python launcher's
-`--max-calls` defaults to 60; zero removes the guard. Restart resets the counter, so it is not a durable
+`MEMORY_LLM_MAX_CALLS` guards process-local generation attempts, including retries. The binary sets no
+guard by itself; `agent-memoryd service install --max-calls` and the Python launcher's `--max-calls` set it
+to 60 by default, and zero removes it. Restart resets the counter, so it is not a durable
 spending budget. `MEMORY_MOCK_MODELS=1` selects mock retrieval, not a generation stub. `MEMORY_TENANT`
 sets the MCP store. Deployment commands and process-manager templates live in [deployment](deployment.md).
 
