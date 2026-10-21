@@ -63,7 +63,7 @@ def notify_argv(ctx, outbox=None):
 
 def owned_notify(value):
     return (isinstance(value, list) and all(isinstance(word, str) for word in value)
-            and core.collector_command(value, 'codex-notify'))
+            and core.ours(value, 'codex-notify'))
 
 
 # --- config.toml --------------------------------------------------------------
@@ -151,7 +151,7 @@ def edit_config(text, server, notify):
     current_notify = before.get('notify')
     if notify is not None and current_notify is not None and not owned_notify(current_notify):
         raise InstallError('config.toml already sets notify to another program; chain it to '
-                           'harness_memory.py codex-notify yourself, or rerun with --no-capture')
+                           '`agent-memoryd hook codex-notify` yourself, or rerun with --no-capture')
     drop_server = existing is not None and core.owned_server(existing)
     drop_notify = current_notify is not None and owned_notify(current_notify)
     if server is None and notify is None and not drop_server and not drop_notify:

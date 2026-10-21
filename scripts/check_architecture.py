@@ -26,9 +26,10 @@ ALGORITHM_CRATES = ('memory-algo-mem0/src/',)
 ALGORITHM_EXEMPT = ALGORITHM_CRATES + ('memory-service/src/bin/', 'memory-service/src/diagnostics/')
 ALGORITHM_EXEMPT_FILES = ('memory-service/src/lib.rs', 'memory-service/src/algorithms.rs')
 # Raw SurrealQL belongs to the memory-store crate and to each algorithm crate's own repo persistence module;
-# test-only selftest modules may inspect tables directly.
+# test-only selftest modules may inspect tables directly. The harness commands keep a local SQLite outbox and
+# recall record shared with the Python hook scripts; that SQL never reaches the memory store.
 RAW_SQL = re.compile(r'"(?:SELECT|UPDATE|DELETE|INSERT|CREATE|DEFINE|BEGIN) |\b(?:SELECT|UPDATE|DELETE) [a-z*]')
-SQL_EXEMPT = ('memory-store/src/', 'memory-service/src/diagnostics/')
+SQL_EXEMPT = ('memory-store/src/', 'memory-service/src/diagnostics/', 'memory-service/src/harness/')
 # Module paths must follow the directory tree.
 PATH_ATTR = re.compile(r'#\[path\s*=')
 # memory-domain is pure: no database, runtime, network or async code.

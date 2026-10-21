@@ -69,31 +69,31 @@ async fn health(State(eng): State<Arc<Engine>>) -> Json<Value> {
     }))
 }
 
+/// One public interface call (`POST /v1/{name}`); the in-process dialogue uploader shares it.
+pub async fn call(eng: &Arc<Engine>, c: &Caller, name: &str, body: Value) -> ApiResult<Value> {
+    let t = eng.tenant(&c.tenant).await?;
+    match name {
+        "add_memories" => ingest::add_memories(eng, &t, c, parse(body)?).await,
+        "get_task" => ingest::get_task(eng, &t, parse(body)?).await,
+        "search_memories" => eng.search_memories(&t, c, parse(body)?).await,
+        "get_context" => retrieval::get_context(eng, &t, c, parse(body)?).await,
+        "list_turns" => eng.list_turns(&t, c, parse(body)?).await,
+        "get_memory" => retrieval::get_memory(eng, &t, parse(body)?).await,
+        "correct_memory" => management::correct_memory(eng, &t, c, parse(body)?).await,
+        "delete_memory" => management::delete_memory(eng, &t, parse(body)?).await,
+        "feedback" => management::feedback(eng, &t, parse(body)?).await,
+        "resolve_uncertainty" => management::resolve_uncertainty(&t, c, parse(body)?).await,
+        other => Err(ApiError::NotFound(format!("unknown interface {other}"))),
+    }
+}
+
 async fn api(
     State(eng): State<Arc<Engine>>,
     Path(name): Path<String>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let c = caller(&headers);
-    let res: ApiResult<Value> = async {
-        let t = eng.tenant(&c.tenant).await?;
-        match name.as_str() {
-            "add_memories" => ingest::add_memories(&eng, &t, &c, parse(body)?).await,
-            "get_task" => ingest::get_task(&eng, &t, parse(body)?).await,
-            "search_memories" => eng.search_memories(&t, &c, parse(body)?).await,
-            "get_context" => retrieval::get_context(&eng, &t, &c, parse(body)?).await,
-            "list_turns" => eng.list_turns(&t, &c, parse(body)?).await,
-            "get_memory" => retrieval::get_memory(&eng, &t, parse(body)?).await,
-            "correct_memory" => management::correct_memory(&eng, &t, &c, parse(body)?).await,
-            "delete_memory" => management::delete_memory(&eng, &t, parse(body)?).await,
-            "feedback" => management::feedback(&eng, &t, parse(body)?).await,
-            "resolve_uncertainty" => management::resolve_uncertainty(&t, &c, parse(body)?).await,
-            other => Err(ApiError::NotFound(format!("unknown interface {other}"))),
-        }
-    }
-    .await;
-    match res {
+    match call(&eng, &caller(&headers), &name, body).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => err_response(e),
     }

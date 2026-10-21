@@ -28,7 +28,8 @@ UNUSED_URL = 'http://127.0.0.1:9'  # nothing answers: daemon status stays a note
 def fake_binary(tmp_path):
     path = tmp_path / 'bin/agent-memoryd'
     path.parent.mkdir()
-    path.write_text('#!/bin/sh\necho "Usage: agent-memoryd mcp [--url URL] [--platform NAME]"\n')
+    path.write_text('#!/bin/sh\necho "Usage: agent-memoryd mcp [--url URL] [--platform NAME]"\n'
+                    'echo "Commands: capture codex-notify recall"\n')
     path.chmod(0o755)
     return path
 
@@ -100,6 +101,13 @@ def test_mcp_merge_adopts_template_entries_and_refuses_a_foreign_server():
     ('/Users/me/bin/dispatch python3 /a/harness_memory.py --project p hook', False),
     ('env A=1 python3 /a/harness_memory.py --project p hook', False),
     ('python3 /a/harness_memory.py --project p codex-notify', False),
+    ('/opt/ams/target/fast/agent-memoryd hook capture --project p', True),
+    ("'/a b/agent-memoryd' hook capture --outbox /x --project p --turn-id-field none", True),
+    ('/a/agent-memoryd hook capture --project p && echo done', False),
+    ('/Users/me/bin/dispatch /a/agent-memoryd hook capture --project p', False),
+    ('/a/agent-memoryd hook codex-notify --project p', False),
+    ('/a/agent-memoryd hook recall --project p', False),
+    ('/a/agent-memoryd capture --project p', False),
 ])
 def test_only_the_collector_itself_is_owned(command, owned):
     assert core.owned_handler({'type': 'command', 'command': command}) is owned
@@ -111,6 +119,9 @@ def test_only_the_collector_itself_is_owned(command, owned):
     ('python3 /a/harness_recall.py --project p && echo done', False),
     ('/Users/me/bin/dispatch python3 /a/harness_recall.py --project p', False),
     ('python3 /a/harness_memory.py --project p hook', False),
+    ('/opt/ams/target/fast/agent-memoryd hook recall --project p --url http://127.0.0.1:8765', True),
+    ('/Users/me/bin/dispatch /a/agent-memoryd hook recall --project p', False),
+    ('/a/agent-memoryd hook capture --project p', False),
 ])
 def test_only_the_recall_script_itself_is_owned_as_recall(command, owned):
     handler = {'type': 'command', 'command': command}
@@ -123,7 +134,7 @@ def test_a_dispatcher_hook_that_forwards_to_the_collector_is_kept(capsys):
     ours = lambda event: {'type': 'command', 'command': 'python3 /x/harness_memory.py --project q hook'}
     merged = core.merge_hooks({'hooks': {'SessionEnd': [{'hooks': [mine]}]}}, ('SessionEnd',), ours, 'hooks.json')
     assert merged['hooks']['SessionEnd'] == [{'hooks': [mine]}, {'hooks': [ours('SessionEnd')]}]
-    assert 'also runs harness_memory.py' in capsys.readouterr().out
+    assert 'also runs the shared-memory collector' in capsys.readouterr().out
     assert core.merge_hooks(merged, (), ours, 'hooks.json') == {'hooks': {'SessionEnd': [{'hooks': [mine]}]}}
 
 
@@ -139,8 +150,27 @@ def test_claude_code_replaces_the_documented_manual_setup(tmp_path):
     hooks = changes[workspace / '.claude/settings.local.json']['hooks']
     assert set(hooks) == set(claude_code.EVENTS) and all(len(groups) == 1 for groups in hooks.values())
     words = shlex.split(hooks['Stop'][0]['hooks'][0]['command'])
-    assert words[-7:] == ['--project', 'proj', '--platform', 'claude-code', '--tenant', 'team', 'hook']
-    assert words[1] == str(core.HARNESS)
+    assert words[:3] == ['/opt/agent-memoryd', 'hook', 'capture']
+    assert words[-6:] == ['--project', 'proj', '--platform', 'claude-code', '--tenant', 'team']
+
+
+def test_a_rerun_migrates_python_hook_entries_to_the_binary(tmp_path):
+    workspace = tmp_path / 'project'
+    (workspace / '.claude').mkdir(parents=True)
+    legacy = lambda script, *rest: {'type': 'command', 'timeout': 3,
+                                    'command': f'/usr/bin/python3 /repo/scripts/{script} --project proj {" ".join(rest)}'}
+    mine = {'type': 'command', 'command': 'echo mine'}
+    hooks = {event: [{'hooks': [legacy('harness_memory.py', 'hook')]}] for event in claude_code.EVENTS}
+    hooks['UserPromptSubmit'].append({'hooks': [legacy('harness_recall.py', '--url', 'http://127.0.0.1:8765')]})
+    hooks['SessionStart'] = [{'hooks': [mine]}, {'hooks': [legacy('harness_recall.py')]}]
+    (workspace / '.claude/settings.local.json').write_text(json.dumps({'hooks': hooks}))
+    args, ctx = ctx_for(claude_code, tmp_path, '--workspace', str(workspace), '--recall')
+    planned = {path.name: json.loads(data) for path, data, _ in filter(None, claude_code.changes(args, ctx, False))}
+    migrated = planned['settings.local.json']['hooks']
+    commands = [h['command'] for groups in migrated.values() for g in groups for h in g['hooks']]
+    assert not any('harness_' in command for command in commands)
+    assert migrated['SessionStart'] == [{'hooks': [mine]}, {'hooks': [core.recall_handler(ctx)]}]  # kept in place
+    assert migrated['UserPromptSubmit'] == [{'hooks': [core.hook_handler(ctx)]}, {'hooks': [core.recall_handler(ctx)]}]
 
 
 def test_workbuddy_enables_the_cli_server_and_pairs_without_turn_ids(tmp_path):
@@ -151,8 +181,8 @@ def test_workbuddy_enables_the_cli_server_and_pairs_without_turn_ids(tmp_path):
     changes = {path.name: json.loads(data) for path, data, _ in filter(None, workbuddy.changes(args, ctx, False))}
     assert changes['.mcp.json']['disabledMcpServers'] == ['x']
     assert changes['mcp.json']['mcpServers']['shared-memory']['timeout'] == workbuddy.TOOL_TIMEOUT_MS
-    command = changes['settings.json']['hooks']['Stop'][0]['hooks'][0]['command']
-    assert shlex.split(command)[-3:] == ['hook', '--turn-id-field', 'none']
+    words = shlex.split(changes['settings.json']['hooks']['Stop'][0]['hooks'][0]['command'])
+    assert words[1:3] == ['hook', 'capture'] and words[-2:] == ['--turn-id-field', 'none']
     assert set(changes['settings.json']['hooks']) == set(workbuddy.EVENTS)
 
 
@@ -178,7 +208,7 @@ def test_recall_adds_its_own_groups_and_a_rerun_without_it_removes_them(module, 
         (group,) = recall[event]
         assert group['hooks'] == [core.recall_handler(ctx)] and group['hooks'][0]['timeout'] == core.RECALL_TIMEOUT
         words = shlex.split(group['hooks'][0]['command'])
-        assert words[1] == str(core.RECALL) and words[-8:] == [
+        assert words[:3] == ['/opt/agent-memoryd', 'hook', 'recall'] and words[-8:] == [
             '--project', 'proj', '--platform', module.PLATFORM, '--tenant', 'team', '--url', 'http://127.0.0.1:8765']
     capture = {event for event, groups in hooks.items() for g in groups if core.owned_handler(g['hooks'][0])}
     assert capture == set(module.EVENTS)  # capture is unchanged alongside recall
@@ -228,8 +258,8 @@ def test_codex_recall_hooks_refuse_config_toml_hooks_without_capture(tmp_path):
 
 SERVER = {'command': '/opt/agent-memoryd', 'args': ['mcp', '--url', 'http://127.0.0.1:8765', '--platform', 'codex'],
           'tool_timeout_sec': 180, 'env': {'MEMORY_TENANT': 'default'}}
-NOTIFY = ['/usr/bin/python3', '/repo/scripts/harness_memory.py', '--project', 'p', '--platform', 'codex',
-          '--tenant', 'default', 'codex-notify']
+NOTIFY = ['/opt/agent-memoryd', 'hook', 'codex-notify', '--project', 'p', '--platform', 'codex',
+          '--tenant', 'default']
 CONFIG = '''# personal settings
 model = "gpt-5"
 approval_policy = "on-request"
@@ -628,21 +658,24 @@ def test_dsh_install_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary,
     assert code == 1 and 'MCP tools only' in output and patch.read_text() == PATCH
 
 
-def test_python_is_looked_up_on_path(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    module, args = core.arguments(['--host', 'codex', '--home', str(tmp_path), '--python', 'python3'])
-    assert core.context(module, args).python == shutil.which('python3')
-    module, args = core.arguments(['--host', 'codex', '--home', str(tmp_path), '--python', 'no-such-python-3'])
-    with pytest.raises(core.InstallError, match='not found on PATH'):
-        core.context(module, args)
-
-
-def test_installed_commands_stay_recognizable(tmp_path, capsys, fake_binary):
+def test_installed_commands_stay_recognizable(tmp_path):
     assert core.owned_handler({'command': "python3 /a/harness_memory.py --note 'a # b' --project p hook"})
-    launcher = tmp_path / 'bin/py3'
-    launcher.symlink_to(sys.executable)
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--python', launcher))
-    assert code == 1 and '--python must name a python interpreter' in output
+    for module in (claude_code, codex, workbuddy):
+        workspace = ['--workspace', str(tmp_path)] if module is claude_code else []
+        args, ctx = ctx_for(module, tmp_path, *workspace, '--project', 'it has spaces')
+        assert core.owned_handler({'command': core.hook_command(ctx)})
+        assert core.owned_recall({'command': core.recall_command(ctx)})
+    assert codex.owned_notify(codex.notify_argv(ctx))
+
+
+def test_a_binary_without_hook_commands_is_refused(tmp_path, capsys, offline):
+    old = tmp_path / 'old/agent-memoryd'
+    old.parent.mkdir()
+    old.write_text('#!/bin/sh\necho "Usage: agent-memoryd mcp [--url URL] [--platform NAME]"\n')
+    old.chmod(0o755)
+    code, output = run(capsys, *install_args('codex', tmp_path, old, '--project', 'p', '--apply'))
+    assert code == 1 and 'has no hook commands' in output and offline == []
+    assert not (tmp_path / '.codex').exists()
 
 
 def test_argument_errors(tmp_path, capsys, fake_binary):

@@ -1,10 +1,14 @@
 //! `agent-memoryd` — 共享记忆库 daemon.
 //!
-//!   agent-memoryd serve  --data-dir D [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
+//!   agent-memoryd serve  --data-dir D [--env-file .env] [--outbox [PATH]] [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
 //!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 8 tools)
+//!   agent-memoryd hook   capture | codex-notify | recall ...   (commands agent hosts run as hooks)
+//!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
 //!   agent-memoryd reindex --vector | --fulltext | --all [--url ...]
-use clap::{Parser, Subcommand};
-use memory_service::{config::ServiceConfig, http, llm::Llm, models::ModelHub, Engine};
+use clap::{error::ErrorKind, Parser, Subcommand};
+use memory_service::harness::{self, outbox::Outbox, HookCmd, OutboxCmd};
+use memory_service::{config::ServiceConfig, envfile, http, llm::Llm, models::ModelHub, Engine};
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 #[cfg(all(not(target_env = "msvc"), not(target_os = "windows")))]
@@ -66,6 +70,14 @@ enum Cmd {
         memory_strategy: Option<String>,
         #[arg(long, env = "LOG_LEVEL", default_value = "info")]
         log_level: String,
+        /// Read QWEN_API_KEY, QWEN_BASE_URL, LLM_MODEL, MEMORY_STRATEGY and the MEMORY_MODEL_*,
+        /// MEMORY_EMBED_* and MEMORY_RERANK_* settings from this dotenv file as data; a non-empty
+        /// environment variable takes precedence
+        #[arg(long, value_name = "PATH")]
+        env_file: Option<PathBuf>,
+        /// Upload captured dialogue from this outbox (default path when given without one)
+        #[arg(long, value_name = "PATH", num_args = 0..=1)]
+        outbox: Option<Option<PathBuf>>,
     },
     /// MCP stdio shim exposing eight memory tools; forwards to a running daemon
     Mcp {
@@ -74,6 +86,12 @@ enum Cmd {
         #[arg(long, default_value = "mcp")]
         platform: String,
     },
+    /// Commands agent hosts run as hooks: dialogue capture and automatic recall
+    #[command(subcommand)]
+    Hook(HookCmd),
+    /// Local dialogue outbox: receipts, a standalone uploader and manual enqueue
+    #[command(subcommand)]
+    Outbox(OutboxCmd),
     /// Run storage self-tests
     #[cfg(feature = "selftest")]
     Selftest,
@@ -92,8 +110,41 @@ enum Cmd {
     },
 }
 
+/// Parse the command line. A hook never exits 2, which would block the host's prompt: argument
+/// errors make recall print `{}` and exit 0, and the collector exit 1.
+fn parse() -> Cli {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    match Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        Err(e) if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) => {
+            e.exit()
+        }
+        Err(e) => match (
+            args.get(1).and_then(|a| a.to_str()),
+            args.get(2).and_then(|a| a.to_str()),
+        ) {
+            (Some("hook"), Some("recall")) => harness::recall::invalid_arguments(&e),
+            (Some("hook"), _) => {
+                let _ = e.print();
+                std::process::exit(1)
+            }
+            _ => e.exit(),
+        },
+    }
+}
+
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let mut cli = parse();
+    let mut env_keys = Vec::new();
+    if let Cmd::Serve {
+        env_file: Some(path),
+        ..
+    } = &cli.cmd
+    {
+        // Before the runtime starts: clap reads these variables, so parse again once they are set.
+        env_keys = envfile::apply(path)?;
+        cli = parse();
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(16 * 1024 * 1024)
@@ -117,6 +168,8 @@ fn main() -> anyhow::Result<()> {
                 config,
                 memory_strategy,
                 log_level,
+                env_file: _,
+                outbox,
             } => {
                 let bind_address: std::net::IpAddr = host.parse()?;
                 anyhow::ensure!(bind_address.is_loopback(), "only loopback binding is supported; remote access requires an authenticated gateway");
@@ -124,6 +177,15 @@ fn main() -> anyhow::Result<()> {
                     .with_env_filter(&log_level)
                     .with_writer(std::io::stderr)
                     .init();
+                if !env_keys.is_empty() {
+                    tracing::info!(keys = ?env_keys, "settings read from --env-file");
+                }
+                // Open before serving so a bad outbox path fails startup instead of every pass.
+                let outbox = outbox
+                    .map(|path| path.unwrap_or_else(harness::outbox::default_path))
+                    .map(|path| Outbox::open(&path).map(|o| (path, o)))
+                    .transpose()
+                    .map_err(|e| anyhow::anyhow!("--outbox: {e}"))?;
                 let mut cfg = ServiceConfig::default();
                 if let Some(p) = config {
                     let over: serde_json::Value = serde_json::from_slice(&std::fs::read(p)?)?;
@@ -189,6 +251,9 @@ fn main() -> anyhow::Result<()> {
                 let eng = Engine::new(cfg, llm, models, algorithm);
                 // open the default store eagerly so its workers resume unfinished tasks
                 eng.tenant("default").await?;
+                if let Some((path, outbox)) = outbox {
+                    tokio::spawn(harness::uploader::run(eng.clone(), path, outbox));
+                }
                 let app = http::router(eng.clone());
                 let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
                 tracing::info!("agent-memoryd listening on http://{host}:{port}");
@@ -203,6 +268,8 @@ fn main() -> anyhow::Result<()> {
             Cmd::Mcp { url, platform } => {
                 memory_service::mcp::run_stdio(&url, &platform).await?;
             }
+            Cmd::Hook(cmd) => std::process::exit(harness::hook(cmd).await),
+            Cmd::Outbox(cmd) => std::process::exit(harness::outbox(cmd).await),
             Cmd::Reindex {
                 url,
                 vector,

@@ -11,8 +11,8 @@ continue with [MCP and harness integration](mcp-harness.md) after the daemon is 
 | Embedding model | Hosted `qwen3.7-text-embedding-flash` through an API key (default), or your own `llama-server` | `https://maas.qianwenaiapi.com/compatible-mode/v1` |
 | Reranker (optional) | Hosted `qwen3.7-text-rerank` (default), or your own `llama-server` | `https://maas.qianwenaiapi.com/compatible-api/v1` |
 | MCP bridge | Each agent client launches `agent-memoryd mcp` as a stdio child process | Forwards tools to the daemon |
-| Optional dialogue collector | Codex notification, Claude Code or WorkBuddy hook | Writes a local SQLite outbox |
-| Optional uploader | One `harness_memory.py drain` process per outbox | Submits dialogue and polls task receipts |
+| Optional dialogue collector | `agent-memoryd hook capture` (Codex: `hook codex-notify`) run by a Codex, Claude Code or WorkBuddy hook | Writes a local SQLite outbox |
+| Optional uploader | The daemon started with `--outbox`, or one `agent-memoryd outbox drain` per outbox | Submits dialogue and polls task receipts |
 
 Configure the model key and start the daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) then registers a client. MCP registration makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context (the installer's `--recall` adds hooks that do).
 
@@ -23,7 +23,7 @@ The service runs Mem0 only. Its reranker is optional and disabled by default. Se
 
 ## Install and deploy
 
-The supplied shell scripts and dialogue uploader target macOS and Linux. On Windows, run this workflow in WSL; the uploader uses Unix `fcntl` locking. Commands in this section run from the repository root unless stated otherwise.
+The supplied shell scripts target macOS and Linux. On Windows, run this workflow in WSL. Commands in this section run from the repository root unless stated otherwise.
 
 ### 1. Install prerequisites
 
@@ -62,7 +62,7 @@ target/fast/agent-memoryd serve --help
 
 `make build` uses the locked Rust dependencies and the `fast` profile, producing `target/fast/agent-memoryd`. Limit compilation parallelism with `make build JOBS=2` on a machine with limited memory. The daemon's Rust build does not embed model weights or require a GPU backend; inference runs at the configured model provider.
 
-The Python launcher and dialogue adapter use only the standard library, so deployment does not require the evaluation packages or dataset. If you also want the offline regression suite, `make setup` creates `.venv`, installs [eval/requirements.txt](../eval/requirements.txt), and downloads the public research dataset and tokenizer caches. It makes no paid model requests.
+The Python launcher and installer use only the standard library, so deployment does not require the evaluation packages or dataset. Dialogue capture, automatic recall and the uploader are `agent-memoryd` subcommands and need no Python. If you also want the offline regression suite, `make setup` creates `.venv`, installs [eval/requirements.txt](../eval/requirements.txt), and downloads the public research dataset and tokenizer caches. It makes no paid model requests.
 
 ### 3. Configure memory formation
 
@@ -74,7 +74,8 @@ chmod 600 .env
 ```
 
 Fill the provider connection in `.env` using the supplied template: `QWEN_API_KEY` for memory formation and,
-in the next step, the retrieval-model key. The launcher reads it as data; the direct daemon does not load `.env`. For accepted variables, precedence and algorithm tunables,
+in the next step, the retrieval-model key. The launcher reads it as data, and so does the daemon started
+directly with `--env-file .env`; without that option it does not load `.env`. For accepted variables, precedence and algorithm tunables,
 use the [configuration reference](api.md#configuration) and
 [JSON template](../examples/service-config.json). Keep keys outside version control.
 
@@ -122,6 +123,21 @@ python3 scripts/serve.py \
 
 This runs in the foreground. Keep the terminal open or use the [process-manager setup](#keep-services-running). An explicit data path avoids the launcher's relative `daemon-data` default and the direct binary's different `./memory-data` default.
 
+If agents capture dialogue, add `--outbox`: the daemon then also uploads the collector's outbox
+(`~/.local/share/agent-memory-service/harness-outbox.sqlite3`, or the path given after `--outbox`)
+and no separate uploader process is needed. The option is never on by default, so evaluation and
+check daemons never take conversations from your outbox. The daemon log reports only lock and outbox
+failures; a turn whose formation failed or was rejected shows in `agent-memoryd outbox status`.
+
+The binary can also start without the Python launcher. `--env-file` reads the same `.env` keys as
+data; a non-empty environment variable still wins. The launcher's `--max-calls 60` corresponds to
+`MEMORY_LLM_MAX_CALLS=60`, and its concurrency default of 1 to `--llm-concurrency 1`:
+
+```sh
+MEMORY_LLM_MAX_CALLS=60 target/fast/agent-memoryd serve --env-file .env \
+  --data-dir "$HOME/.local/share/agent-memory-service/mem0" --llm-concurrency 1 --outbox
+```
+
 The launcher accepts `--config`, `--bin`, `--model-provider`, endpoint/port options, concurrency and a
 generation-attempt guard. Use [API configuration](api.md#configuration) for defaults and precedence. A release binary
 can be selected with `--bin target/release/agent-memoryd` after a release build. For daemon-only flags
@@ -161,7 +177,7 @@ Stop previously launched servers/daemon/uploader before enabling managed service
 
 ### macOS LaunchAgents
 
-Use one LaunchAgent per process (daemon, optional uploader and any self-hosted model server) so each can restart independently. Create the definition and log directories:
+Use one LaunchAgent for the daemon and one per self-hosted model server, if any, so each process can restart independently. Create the definition and log directories:
 
 ```sh
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/agent-memory-service"
@@ -182,6 +198,7 @@ Save this daemon template as `~/Library/LaunchAgents/local.agent-memory-daemon.p
     <string>--memory-strategy</string><string>mem0</string>
     <string>--data-dir</string><string>/Users/YOUR_USER/.local/share/agent-memory-service/mem0</string>
     <string>--max-calls</string><string>60</string>
+    <string>--outbox</string>
   </array>
   <key>WorkingDirectory</key><string>/absolute/path/agent-memory-service</string>
   <key>RunAtLoad</key><true/>
@@ -193,28 +210,21 @@ Save this daemon template as `~/Library/LaunchAgents/local.agent-memory-daemon.p
 </plist>
 ```
 
-Create the other plists from the same template, using the following labels as filenames plus `.plist`. Change the `ProgramArguments` array and give each process distinct stdout/stderr log paths:
-
-| Label | Program arguments |
-|---|---|
-| `local.agent-memory-uploader` | Absolute Python executable, absolute `scripts/harness_memory.py` path, `drain`, `--url`, `http://127.0.0.1:8765` |
-
-Each command argument is a separate `<string>`; do not put a shell command or `&` into the array. The daemon launcher reads the checkout's `.env`. The uploader uses the logged-in user's default outbox. Omit the uploader if capture is disabled. Self-hosted model servers get their own labels with the foreground commands in [self-hosted retrieval models](self-hosted-models.md#2-download-weights-and-start-the-servers).
+Each command argument is a separate `<string>`; do not put a shell command or `&` into the array. The daemon launcher reads the checkout's `.env`. With `--outbox` the daemon uploads the logged-in user's default outbox, so no uploader agent is needed; omit `--outbox` if capture is disabled. For self-hosted model servers, create one more plist per server from the same template, with its own label (for example `local.agent-memory-embed`), distinct log paths and the foreground command from [self-hosted retrieval models](self-hosted-models.md#2-download-weights-and-start-the-servers).
 
 Validate and load the selected plists in your logged-in GUI session:
 
 ```sh
 plutil -lint "$HOME/Library/LaunchAgents/local.agent-memory-daemon.plist"
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.agent-memory-daemon.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.agent-memory-uploader.plist"
 launchctl print "gui/$(id -u)/local.agent-memory-daemon"
 ```
 
-Validate each additional plist before loading it. The uploader retries while the daemon is unavailable. LaunchAgents run during the user's login session. To stop the daemon, use `launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"`; apply the same command to the uploader label when shutting everything down. After changing a plist, boot it out and bootstrap the updated file. See Apple's [LaunchAgent guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) and the local `man launchctl` / `man launchd.plist` references.
+Validate each additional plist before loading it. LaunchAgents run during the user's login session. To stop the daemon, use `launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"`; apply the same command to any model labels when shutting everything down. After changing a plist, boot it out and bootstrap the updated file. See Apple's [LaunchAgent guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) and the local `man launchctl` / `man launchd.plist` references.
 
 ### Linux user-systemd services
 
-The following example supervises the daemon and uploader. Replace every `/absolute/path` first. For self-hosted model servers, add their units from [self-hosted retrieval models](self-hosted-models.md#4-keep-the-servers-running).
+The following example supervises the daemon, which also uploads captured dialogue. Replace every `/absolute/path` first. For self-hosted model servers, add their units from [self-hosted retrieval models](self-hosted-models.md#4-keep-the-servers-running).
 
 ```sh
 mkdir -p "$HOME/.config/systemd/user"
@@ -228,7 +238,7 @@ Description=Agent Memory daemon
 
 [Service]
 WorkingDirectory=/absolute/path/agent-memory-service
-ExecStart=/absolute/path/to/python3 /absolute/path/agent-memory-service/scripts/serve.py --memory-strategy mem0 --data-dir %h/.local/share/agent-memory-service/mem0 --max-calls 60
+ExecStart=/absolute/path/to/python3 /absolute/path/agent-memory-service/scripts/serve.py --memory-strategy mem0 --data-dir %h/.local/share/agent-memory-service/mem0 --max-calls 60 --outbox
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -237,37 +247,17 @@ UMask=0077
 WantedBy=default.target
 ```
 
-The launcher reads the checkout's `.env`; no key belongs in the unit file. It probes the retrieval models before opening the HTTP listener and exits if they do not answer, so a restart retries once the network or model servers are up.
-
-Create `~/.config/systemd/user/agent-memory-uploader.service` if using capture:
-
-```ini
-[Unit]
-Description=Agent Memory dialogue uploader
-Wants=agent-memory.service
-After=agent-memory.service
-
-[Service]
-ExecStart=/absolute/path/to/python3 /absolute/path/agent-memory-service/scripts/harness_memory.py drain --url http://127.0.0.1:8765
-Restart=on-failure
-RestartSec=5
-UMask=0077
-
-[Install]
-WantedBy=default.target
-```
+The launcher reads the checkout's `.env`; no key belongs in the unit file. It probes the retrieval models before opening the HTTP listener and exits if they do not answer, so a restart retries once the network or model servers are up. `--outbox` uploads the user's default outbox; omit it when capture is disabled.
 
 Load and start the units, then repeat the readiness and capture checks:
 
 ```sh
 systemctl --user daemon-reload
 systemctl --user enable --now agent-memory.service
-systemctl --user enable --now agent-memory-uploader.service
-systemctl --user status agent-memory.service agent-memory-uploader.service
-journalctl --user -u agent-memory.service -u agent-memory-uploader.service -n 100
+systemctl --user status agent-memory.service
+journalctl --user -u agent-memory.service -n 100
 ```
-
-Omit uploader commands when capture is disabled. To run user services after logout, enable lingering according to the host's administration policy, for example `loginctl enable-linger "$USER"`. These are deployment templates; validate them on the target host. Refer to upstream [systemd service documentation](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html) for host-specific behavior.
+ To run user services after logout, enable lingering according to the host's administration policy, for example `loginctl enable-linger "$USER"`. These are deployment templates; validate them on the target host. Refer to upstream [systemd service documentation](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html) for host-specific behavior.
 
 ## Operations and troubleshooting
 
@@ -289,9 +279,9 @@ Use `--vector` or `--fulltext` for a specific index. Changing the model provider
 
 ### Stop and restart
 
-With the terminal/script setup, stop the uploader and foreground daemon with Ctrl-C, then any self-hosted model servers with `scripts/self_hosted_models.sh stop`. Restart self-hosted models first, then the daemon with the same arguments/data directory, then the uploader. Accepted outbox jobs resume polling; pending ones retain their payloads for retry. Durable unfinished server jobs resume when their tenant is opened.
+With the terminal/script setup, stop the foreground daemon (and a standalone uploader, if you run one) with Ctrl-C, then any self-hosted model servers with `scripts/self_hosted_models.sh stop`. Restart self-hosted models first, then the daemon with the same arguments/data directory. Accepted outbox jobs resume polling; pending ones retain their payloads for retry. Durable unfinished server jobs resume when their tenant is opened.
 
-With the LaunchAgent setup, use `launchctl bootout` for the selected service labels. With systemd, stop the uploader, daemon, and any model units using `systemctl --user stop`. Use the process manager's logs instead of `results/llama/`, which belongs to the self-hosted helper script.
+With the LaunchAgent setup, use `launchctl bootout` for the selected service labels. With systemd, stop the daemon and any model units using `systemctl --user stop`. Use the process manager's logs instead of `results/llama/`, which belongs to the self-hosted helper script.
 
 ### Common problems
 
@@ -301,7 +291,7 @@ With the LaunchAgent setup, use `launchctl bootout` for the selected service lab
 | `embedding model probe failed` with HTTP 401/403/404 | Check the model key, `MEMORY_EMBED_URL`/`MEMORY_RERANK_URL` and model names; the rerank base must offer `/reranks` |
 | Self-hosted model not ready | See [self-hosted troubleshooting](self-hosted-models.md#troubleshooting) |
 | Daemon fails before listening | Check `serve --help`; invalid config fields/tunables are rejected, and the retrieval models must answer |
-| `LLM API key not configured` or provider 401 | Check `.env`, exported overrides, and provider access; direct binary launches do not read `.env` |
+| `LLM API key not configured` or provider 401 | Check `.env`, exported overrides, and provider access; direct binary launches read `.env` only with `--env-file` |
 | Generation attempt guard reached | Inspect usage/errors and deliberately revise the launch guard/provider budget; restarting resets the process guard |
 | Legacy jobs at startup | Complete them with the preserved version or use a fresh store; see [compatibility](api.md#compatibility) |
 

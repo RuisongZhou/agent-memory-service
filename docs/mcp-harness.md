@@ -6,8 +6,10 @@ This is the client setup and dialogue-capture guide. Start the daemon using
 
 The bridge is a local stdio child process that forwards tools to the HTTP daemon. It does not start
 the daemon, read chats automatically or inject context. The daemon's URL is not an HTTP MCP endpoint.
-Each client starts its own bridge; a separate collector and uploader handle automatic capture, and
-optional [recall hooks](#automatic-recall) inject memory into the agent's context.
+Each client starts its own bridge; a collector hook and an uploader handle automatic capture, and
+optional [recall hooks](#automatic-recall) inject memory into the agent's context. The bridge, the
+collector and recall are all subcommands of the one `agent-memoryd` binary, and the daemon itself is
+the uploader when started with `--outbox`.
 Templates must be merged into the target client's existing configuration with absolute executable paths.
 The [one-command installer](#one-command-install) performs that merge for Codex, Claude Code, WorkBuddy and
 DeepSeek Harness.
@@ -21,10 +23,11 @@ Without `--apply` it only previews. With `--apply` it builds `target/fast/agent-
 it will install against a temporary mock daemon, then backs up and writes the platform's configuration.
 It never starts or installs the daemon, model servers or uploader and never handles provider keys:
 [deploy the daemon](deployment.md) first. After writing, it reports whether a daemon answers at `--url`
-and whether an uploader is running, and prints the uploader command when none is.
+and whether an uploader holds the outbox, and says how to start one when none does.
 
-Requirements: macOS or Linux, Rust/Cargo (or `--binary`), and Python 3.11+. The interpreter running the
-installer is the one the hooks and `notify` use; pass `--python` to choose another. Run from the checkout:
+Requirements: macOS or Linux, Rust/Cargo (or `--binary`), and Python 3.11+ to run the installer itself.
+The bridge, the hooks and `notify` all run `agent-memoryd`, so the agent host needs no Python. Run from
+the checkout:
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
 |---|---|---|---|---|
@@ -37,13 +40,15 @@ With `--recall`, Codex, Claude Code and WorkBuddy also get a `SessionStart` and 
 recall hook (Codex: trust both in `/hooks` as well). `--recall` needs `--project` and a loopback `--url`;
 it is refused for DeepSeek Harness, which gets MCP tools only.
 
-On a platform with capture, keep one uploader running, for example in another terminal or under the
-[process manager](deployment.md#keep-services-running). It must use the installer's `--url` (and
-`--outbox`, if given); the installer prints the exact command when no uploader is running:
+On a platform with capture, captured turns also need an uploader. Start the daemon with `--outbox`
+([deployment](deployment.md#5-start-the-shared-daemon)); without a path it drains the default outbox the
+installer configures. With the installer's `--outbox`, give the daemon that path. Alternatively keep a
+standalone uploader running against the installer's `--url`; the installer prints the exact command when
+no uploader holds the outbox:
 
 ```sh
-python3 /absolute/path/agent-memory-service/scripts/harness_memory.py \
-  drain --url http://127.0.0.1:8765
+/absolute/path/agent-memory-service/target/fast/agent-memoryd \
+  outbox drain --url http://127.0.0.1:8765
 ```
 
 Capture and recall commands fix `--project`. Codex `notify`, WorkBuddy hooks and Claude Code `--scope user` are
@@ -59,7 +64,7 @@ MCP tools are not tied to the installed project.
 | `--tenant`, `--url` | Daemon store (`default`), recorded by the bridge and collector, and base URL (`http://127.0.0.1:8765`) for the bridge and the printed uploader command |
 | `--no-capture` | No dialogue collector; removes collector entries this installer manages |
 | `--recall` | Add the [automatic recall](#automatic-recall) hooks (not for DeepSeek Harness); without it, a rerun removes recall entries this installer manages |
-| `--binary`, `--python`, `--outbox` | Use an existing `agent-memoryd`, another Python 3.11+, or a non-default outbox |
+| `--binary`, `--outbox` | Use an existing `agent-memoryd` (it must have the `hook` commands), or a non-default outbox |
 | `--codex-home`; `--scope`, `--workspace`, `--claude-config-dir`; `--workbuddy-home`, `--mcp-target`; `--dsh-home`, `--dsh-binary` | Platform locations and, for DeepSeek Harness, the `dsh` CLI that parses the result; host environment variables such as `CODEX_HOME` or `DSH_HOME` are not read |
 | `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, never prompt, or install into another home (tests) |
 | `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only this project's entries |
@@ -73,8 +78,8 @@ Every `--apply` runs these checks before writing anything; none reaches a model 
    to `initialize`. The bridge, collector and uploader keep your proxy variables; they bypass proxies for
    a loopback daemon.
 2. With capture, platform-shaped events run through the installed collector command into a temporary
-   outbox; the real uploader submits them; a local generation stub forms one fact; the bridge finds it
-   with `search_memories` under the configured tenant and project.
+   outbox; the temporary daemon's own uploader (`serve --outbox`) submits them; a local generation stub
+   forms one fact; the bridge finds it with `search_memories` under the configured tenant and project.
 3. With recall (after forming the fact through the bridge when capture is off), platform-shaped
    `SessionStart` and `UserPromptSubmit` events run through the installed recall command. Each output
    must be one JSON object of the shape Codex's hook schema allows, and both injected contexts must
@@ -89,9 +94,10 @@ Every `--apply` runs these checks before writing anything; none reaches a model 
 
 Merges keep other servers, hooks, settings, comments and ordering. In the files it writes, entries
 created from the [examples](../examples) are adopted and replaced rather than duplicated; an entry counts
-as the installer's only when it runs the collector or recall script itself, so a dispatcher that forwards to
-`harness_memory.py` or `harness_recall.py` stays yours. Reruns with the same options write nothing, and a file that removing
-the installer's entries leaves empty is deleted. The installer refuses, without writing, a different server already named
+as the installer's only when it runs `agent-memoryd hook capture`, `codex-notify` or `recall` itself, or
+the Python script an earlier installer wrote instead (see [migration](#migrate-from-the-python-hook-scripts)),
+so a dispatcher that forwards to them stays yours. Reruns with the same options write nothing, and a file
+that removing the installer's entries leaves empty is deleted. The installer refuses, without writing, a different server already named
 `shared-memory`, a Codex `notify` that runs another program (chain it to `codex-notify` yourself or use
 `--no-capture`), Codex hooks defined under `[hooks]` in `config.toml`, TOML forms it cannot edit safely,
 symlinked configuration files, a Claude Code local-scope `shared-memory` for the workspace, which
@@ -116,7 +122,7 @@ session with a real provider; confirm with the [sharing check](#shared-memory-wo
 ## Use with Codex
 
 This and the next section describe the configuration the installer writes, for manual setup or review.
-Install Codex separately and start the shared daemon first. Replace `/absolute/path/agent-memory-service` in all templates with the checkout's actual absolute path; use the absolute Python executable too if `python3` is not available in the client's PATH.
+Install Codex separately and start the shared daemon first. Replace `/absolute/path/agent-memory-service` in all templates with the checkout's actual absolute path.
 
 Register the stdio bridge with the Codex CLI:
 
@@ -245,16 +251,16 @@ To verify sharing, save that project instruction in Codex, then ask Claude Code 
 
 ## Automatically save conversations
 
-Automatic saving requires **both a collector and a running uploader**. The supplied adapter captures completed user/assistant text into a local durable queue; another process submits it without involving the agent's main model. It does not capture tool traces, reasoning, images, or every possible client/subagent lifecycle.
+Automatic saving requires **both a collector and a running uploader**. The collector (`agent-memoryd hook capture`, or `hook codex-notify` for Codex) captures completed user/assistant text into a local durable queue without waiting for the daemon. The uploader, the daemon itself when started with `--outbox` or a standalone `agent-memoryd outbox drain`, submits it without involving the agent's main model. Capture does not include tool traces, reasoning, images, or every possible client/subagent lifecycle.
 
-Use the same `--project`, `--platform`, and `--tenant` in capture commands as in the corresponding MCP setup. `--tenant default` is the adapter default; `MEMORY_TENANT` configures the MCP bridge and is not read by the collector. If you change `--outbox`, every collector, uploader, and status command must use that same path. One outbox can contain both Codex and Claude Code records for one daemon.
+Use the same `--project`, `--platform`, and `--tenant` in capture commands as in the corresponding MCP setup. `--tenant default` is the collector default; `MEMORY_TENANT` configures the MCP bridge and is not read by the collector. If you change `--outbox`, every collector, uploader, and status command must use that same path. One outbox can contain both Codex and Claude Code records for one daemon.
 
 ### Codex notifications and session end
 
-Merge the optional `notify` setting from [examples/codex.toml](../examples/codex.toml) into **user-level `~/.codex/config.toml`**, before any TOML tables:
+Merge the optional `notify` setting from [examples/codex.toml](../examples/codex.toml) into **user-level `~/.codex/config.toml`**, before any TOML tables. Codex appends the event JSON as the last argument:
 
 ```toml
-notify = ["python3", "/absolute/path/agent-memory-service/scripts/harness_memory.py", "--project", "my-project", "--platform", "codex", "codex-notify"]
+notify = ["/absolute/path/agent-memory-service/target/fast/agent-memoryd", "hook", "codex-notify", "--project", "my-project", "--platform", "codex"]
 ```
 
 Install the supplied notification template at user level; keep project-scoped MCP registration separate. Preserve an existing notification program by having it forward the event to the collector. This notification command fixes the project ID, so enable it for sessions belonging to that project, or use a dispatcher that explicitly maps projects; otherwise unrelated sessions will be filed under the same project. See [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
@@ -265,7 +271,7 @@ For session closure, merge [examples/codex.hooks.json](../examples/codex.hooks.j
 
 ### Claude Code hooks
 
-Merge the `hooks` object from [examples/claude-code.settings.json](../examples/claude-code.settings.json) into the target project's `.claude/settings.local.json`. Replace every script path and project ID; preserve existing hooks and permissions. The template sets a three-second timeout and runs the collector synchronously only for local SQLite writes.
+Merge the `hooks` object from [examples/claude-code.settings.json](../examples/claude-code.settings.json) into the target project's `.claude/settings.local.json`. Replace every binary path and project ID; preserve existing hooks and permissions. The template sets a three-second timeout and runs the collector synchronously only for local SQLite writes.
 
 | Event | Adapter behavior |
 |---|---|
@@ -281,7 +287,7 @@ The example assumes a serial main conversation. Other Stop hooks can ask Claude 
 ### WorkBuddy hooks
 
 WorkBuddy and its bundled CodeBuddy CLI use the Claude Code hook dialect but send no `prompt_id` or
-`turn_id`. Their collector command ends with `hook --turn-id-field none`: each `UserPromptSubmit` opens a
+`turn_id`. Their collector command ends with `--turn-id-field none`: each `UserPromptSubmit` opens a
 turn with a generated ID stored in the outbox, and `Stop` pairs with the session's open prompt. A prompt
 without text, such as an image only, closes the open turn without starting one. A later `Stop` without
 an open prompt, such as a continued reply, is ignored instead of failing; only the first final reply of a
@@ -292,22 +298,24 @@ CodeBuddy Code keeps its configuration in `~/.codebuddy` and is not covered by `
 
 ### Run and inspect the uploader
 
-Start this in a separate terminal or supervised process:
+Start the daemon with `--outbox` ([deployment](deployment.md#5-start-the-shared-daemon)); it then uploads
+for as long as it runs. Without that option, run a standalone uploader in a separate terminal or
+supervised process:
 
 ```sh
-python3 /absolute/path/agent-memory-service/scripts/harness_memory.py \
-  drain --url http://127.0.0.1:8765
+/absolute/path/agent-memory-service/target/fast/agent-memoryd \
+  outbox drain --url http://127.0.0.1:8765
 ```
 
-By default, the outbox is `~/.local/share/agent-memory-service/harness-outbox.sqlite3`. The adapter creates a private database with WAL and FULL synchronous commits; new parent directories use mode 0700 and the database uses 0600. Keep it outside version control: it contains raw conversation text and receipts.
+By default, the outbox is `~/.local/share/agent-memory-service/harness-outbox.sqlite3`. The collector creates a private database with WAL and FULL synchronous commits; new parent directories use mode 0700 and the database uses 0600. Keep it outside version control: it contains raw conversation text and receipts.
 
 After completing a turn in the client, inspect local status:
 
 ```sh
-python3 /absolute/path/agent-memory-service/scripts/harness_memory.py status
+/absolute/path/agent-memory-service/target/fast/agent-memoryd outbox status
 ```
 
-Status output includes identifiers, receipts, and errors without dumping chat text. An empty list means no turn was captured in that outbox. The uploader scans every five seconds, uses a five-second HTTP timeout, and holds a process lock so only one uploader handles the queue. `drain --once` performs one upload/poll pass; it does not wait for every request to finish.
+Status output includes identifiers, receipts, and errors without dumping chat text. An empty list means no turn was captured in that outbox. The daemon's uploader makes a pass every second and calls the interface in-process; the standalone one scans every five seconds with a five-second HTTP timeout. Both hold the same process lock (`<outbox>.uploader.lock`), so only one uploader handles a queue: a daemon started while another uploader runs logs that it is waiting and takes over once the lock is released. `outbox drain --once` performs one upload/poll pass; it does not wait for every request to finish.
 
 | Outbox status | Meaning |
 |---|---|
@@ -328,8 +336,8 @@ A durable request ID is not formation completion. The uploader follows the [task
 Any client supporting local stdio MCP can use [examples/mcp.json](../examples/mcp.json), with an absolute binary path and its own `--platform` label. A host wrapper can enqueue completed dialogue without relying on either client's private transcript format:
 
 ```sh
-python3 /absolute/path/agent-memory-service/scripts/harness_memory.py \
-  --platform my-agent enqueue <<'JSON'
+/absolute/path/agent-memory-service/target/fast/agent-memoryd \
+  outbox enqueue --platform my-agent <<'JSON'
 {
   "scope": {"project": "my-project", "session": "session-123"},
   "turnId": "my-project/session-123/turn-456",
@@ -345,12 +353,13 @@ Supply actual IDs and available source timestamps for real input. Mem0 accepts 1
 
 ## Automatic recall
 
-`scripts/harness_recall.py` injects shared memory through the hooks of Codex, Claude Code and WorkBuddy.
+`agent-memoryd hook recall` injects shared memory through the hooks of Codex, Claude Code and WorkBuddy.
 The installer adds it with `--recall`, as its own hook groups next to the collector's. Capture is
 unchanged and recall works without it. DeepSeek Harness gets MCP tools only, and the installer refuses
-`--recall` there. Recall is a separate script, not a collector subcommand, because its failure contract
-is the reverse: the collector exits 1 so faults surface, while recall always exits 0 so even a broken
-command cannot block a prompt. It also needs neither the outbox nor a non-loopback path.
+`--recall` there. Recall is its own hook command because its failure contract is the reverse of the
+collector's: the collector exits 1 so faults surface, while recall always exits 0 so even a broken
+command cannot block a prompt. Neither ever exits 2, which blocks a prompt, not even for invalid
+arguments. Recall also needs neither the outbox nor a non-loopback path.
 Each hook makes one request to the daemon and prints the result as `hookSpecificOutput.additionalContext`:
 
 | Event | Request | Injected |
@@ -366,7 +375,7 @@ only through `get_context`. Stored text is flattened to one line and cannot clos
 
 | Constraint | Behavior |
 |---|---|
-| Never block or fail the host | Every outcome prints exactly one JSON object and exits 0. Nothing to inject, a daemon that is down, slow or failing, invalid input, invalid arguments or a non-loopback URL all print `{}`, with only the error type on stderr. The script never exits 2, which would block a prompt. Codex's output schema allows no extra fields; `hookSpecificOutput` appears only on these two events, and the collector's `Stop`/`SessionEnd` output stays `{}` |
+| Never block or fail the host | Every outcome prints exactly one JSON object and exits 0. Nothing to inject, a daemon that is down, slow or failing, invalid input, invalid arguments or a non-loopback URL all print `{}`, with only the error type on stderr. It never exits 2, which would block a prompt, and a panic still prints `{}`. Codex's output schema allows no extra fields; `hookSpecificOutput` appears only on these two events, and the collector's `Stop`/`SessionEnd` output stays `{}` |
 | Time | `--timeout` (2 s) bounds the whole recall; the installed hook timeout (5 s) is the host's backstop |
 | Tokens | The daemon packs both budgets. `--max-chars` (6000) also caps the block in whole lines, marked `[truncated]`, below Claude Code's 10,000-character limit for one `additionalContext` |
 | Repeats | A per-session record of shown memory IDs (`~/.local/state/agent-memory-service/recall-state.sqlite3`, mode 0600, IDs only, pruned after 30 days) keeps prompts from re-injecting what this session was already shown. If the record fails, recall injects unfiltered; each prompt still stays within budget |
@@ -388,9 +397,19 @@ To see what a hook would inject, run it by hand:
 
 ```sh
 echo '{"hook_event_name":"SessionStart","session_id":"manual-check"}' | \
-  python3 /absolute/path/agent-memory-service/scripts/harness_recall.py \
+  /absolute/path/agent-memory-service/target/fast/agent-memoryd hook recall \
   --project my-project --platform codex --state /tmp/recall-check.sqlite3
 ```
+
+### Migrate from the Python hook scripts
+
+Installers before `agent-memoryd hook` wrote hooks that run `scripts/harness_memory.py` and
+`scripts/harness_recall.py` with Python 3.11. Those scripts stay in the repository with the same
+contracts, outbox and recall record, so existing entries keep working; deleting them would make Python
+exit 2 and block prompts. Rerun the installer with the same options to replace every entry with
+`agent-memoryd hook` commands. A Python `drain` and a daemon started with `--outbox` exclude each other
+through the outbox lock, so either can finish the queue the other started; stop the Python uploader
+once the daemon uploads.
 
 ## Troubleshooting
 
@@ -398,12 +417,12 @@ echo '{"hook_event_name":"SessionStart","session_id":"manual-check"}' | \
 |---|---|
 | Installer refuses to write | Read the `[error]` line: it names the conflicting entry; nothing was changed. Fix it or edit the configuration by hand as in the sections above |
 | MCP is listed but calls fail | Check daemon `/health`, absolute binary path, port, and stdio transport; the bridge does not start the daemon |
-| Codex captures no turns | Put `notify` in user-level config, verify the Python path, preserve existing notification dispatch, and inspect the selected outbox |
+| Codex captures no turns | Put `notify` in user-level config, verify the `agent-memoryd` path, preserve existing notification dispatch, and inspect the selected outbox |
 | Session-end hook is skipped | Review/trust Codex hooks with `/hooks`; restart the client after edits |
 | Claude Stop pairing fails | Start a new turn with capture hooks installed; verify required event fields and the matching project/platform |
-| Outbox stays `pending` | Ensure one uploader is running and can reach the daemon; inspect `status` errors |
+| Outbox stays `pending` | Start the daemon with `--outbox` (or run `outbox drain`) on the same outbox path; inspect `outbox status` errors |
 | Outbox stays `accepted` | Query `get_task`; inspect provider failures and unfinished index publication |
-| Uploader reports a lock error | Another uploader holds the same outbox lock; keep one worker per queue |
+| Uploader reports a lock error, or the daemon log says another uploader holds the outbox lock | Another uploader (a Python `drain`, `outbox drain` or a second daemon) holds the same outbox lock; keep one per queue |
 | DeepSeek Harness lists no `mcp__shared-memory__*` tools | Restart it and start a new session; rerun the installer, which reports whether `dsh --dump-config` reads the row; check the daemon URL |
 | Cross-agent recall is empty | Check the same daemon, tenant/project IDs, record scope, completion state, token budget, and explicit cross-platform raw-input scope |
 | Automatic recall injects nothing | Check the daemon at the loopback `--url`, trust the recall hooks in Codex, and run the hook by hand as in [automatic recall](#automatic-recall); stderr names the error type |

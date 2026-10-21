@@ -3,12 +3,13 @@
 `verify_local` runs the exact bridge and collector commands an installation
 writes against a temporary mock-retrieval daemon whose generation endpoint is a
 local deterministic stub: the version-probe fallback, MCP handshake, the eight
-tools, a context read and, with capture, host-format events -> outbox ->
-uploader -> formation -> search. With recall, host-format SessionStart /
-UserPromptSubmit events run through the installed recall command and must
-inject the formed fact exactly once per session.
+tools, a context read and, with capture, host-format events -> outbox -> the
+daemon's own uploader (`serve --outbox`) -> formation -> search. With recall,
+host-format SessionStart / UserPromptSubmit events run through the installed
+recall command and must inject the formed fact exactly once per session.
 """
 
+import collections
 import fcntl
 import json
 import os
@@ -71,7 +72,7 @@ def daemon_health(url):
 
 
 def uploader_running(outbox):
-    """Whether a `drain` process holds the outbox's uploader lock."""
+    """Whether an uploader (a daemon with --outbox, or `outbox drain`) holds the outbox's lock."""
     lock = Path(str(outbox) + '.uploader.lock')
     if not lock.is_file():
         return False
@@ -122,8 +123,8 @@ def free_port():
 
 
 @contextmanager
-def mock_daemon(binary, root, generation_url):
-    """A daemon with mock retrieval models and a stub generation endpoint in `root`."""
+def mock_daemon(binary, root, generation_url, outbox=None):
+    """A daemon with mock retrieval models and a stub generation endpoint in `root`; it uploads `outbox`."""
     port = free_port()
     url = f'http://127.0.0.1:{port}'
     env = dict(check_env(root), MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline-installer-check',
@@ -132,7 +133,8 @@ def mock_daemon(binary, root, generation_url):
     with log_path.open('w') as log:
         process = subprocess.Popen(
             [str(binary), 'serve', '--data-dir', str(root / 'data'), '--port', str(port),
-             '--llm-base-url', generation_url, '--log-level', 'warn'],
+             '--llm-base-url', generation_url, '--log-level', 'warn',
+             *(['--outbox', str(outbox)] if outbox else [])],
             env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
         try:
             deadline = time.monotonic() + 60
@@ -229,17 +231,17 @@ def run_capture(events, env):
             raise InstallError(f'collector rejected the {name} event: {result.stderr.strip()[:200]}')
 
 
-def drain(ctx, outbox, url, env, expected):
-    """Upload with the real uploader until every captured job completes."""
-    command = [ctx.python, str(core.HARNESS), '--outbox', str(outbox), 'drain', '--url', url, '--once']
+def wait_uploaded(ctx, outbox, env, expected):
+    """The daemon's own uploader must complete every captured job."""
+    command = [str(ctx.binary), 'outbox', 'status', '--outbox', str(outbox)]
     statuses = {}
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=60)
         try:
-            statuses = json.loads(result.stdout)['statuses']
+            statuses = dict(collections.Counter(row['status'] for row in json.loads(result.stdout)))
         except (ValueError, KeyError, TypeError) as error:
-            raise InstallError(f'uploader failed: {result.stderr.strip()[:200]}') from error
+            raise InstallError(f'outbox status failed: {result.stderr.strip()[:200]}') from error
         if set(statuses) & {'failed', 'rejected'}:
             raise InstallError(f'uploader reports {statuses}')
         if statuses == {'completed': expected}:
@@ -300,7 +302,8 @@ def verify_local(host, ctx):
     with tempfile.TemporaryDirectory(prefix='agent-memory-install-') as temporary:
         root = Path(temporary)
         env = check_env(root)
-        with generation_stub() as (generation, calls), mock_daemon(ctx.binary, root, generation) as url:
+        outbox = root / 'outbox.sqlite3' if ctx.capture else None
+        with generation_stub() as (generation, calls), mock_daemon(ctx.binary, root, generation, outbox) as url:
             argv = [str(ctx.binary), *core.bridge_args(url, ctx.platform)]
             bridge_env = dict(env, MEMORY_TENANT=ctx.tenant)
             verify_discover(argv, bridge_env)
@@ -315,10 +318,9 @@ def verify_local(host, ctx):
                 scope = {'project': ctx.project or 'installer-check', 'session': SESSION}
                 bridge.call('get_context', {'scope': scope, 'tokenBudget': 500})
                 if ctx.capture:
-                    outbox = root / 'outbox.sqlite3'
                     events, expected = host.capture_events(ctx, outbox)
                     run_capture(events, env)
-                    drain(ctx, outbox, url, env, expected)
+                    wait_uploaded(ctx, outbox, env, expected)
                     found = bridge.call('search_memories', {'query': FACT, 'scope': {'project': ctx.project}})
                     if FACT not in [r.get('memory', {}).get('text') for r in found.get('results', [])]:
                         raise InstallError('a captured turn was formed but the bridge could not find it')

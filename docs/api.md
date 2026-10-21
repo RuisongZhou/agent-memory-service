@@ -137,10 +137,11 @@ Use [.env.example](../.env.example), [examples/service-config.json](../examples/
 and `agent-memoryd serve --help`. JSON keys use camelCase; unknown fields and invalid tunables fail
 before model connections or stores open. [ServiceConfig](../crates/memory-config/src/lib.rs) defines the fields.
 
-The Python launcher reads only `QWEN_API_KEY`, `QWEN_BASE_URL`, `LLM_MODEL`, `MEMORY_STRATEGY` and the
-`MEMORY_MODEL_*`, `MEMORY_EMBED_*` and `MEMORY_RERANK_*` variables below from `.env`; nonempty exported
-values take precedence. It parses data, never shell code. Direct daemon launches do
-not load `.env`; export all needed variables explicitly. The provider must support the service's
+The Python launcher, and the daemon given `--env-file PATH`, read only `QWEN_API_KEY`, `QWEN_BASE_URL`,
+`LLM_MODEL`, `MEMORY_STRATEGY` and the `MEMORY_MODEL_*`, `MEMORY_EMBED_*` and `MEMORY_RERANK_*` variables
+below from `.env`; nonempty exported values take precedence. Both parse data, never shell code, and the
+daemon logs key names only. Without `--env-file`, direct daemon launches do not load `.env`; export all
+needed variables explicitly. The provider must support the service's
 OpenAI-compatible chat-completions/JSON contract and `enable_thinking:false`.
 
 | Startup value | CLI / environment | Direct-daemon default |
@@ -157,6 +158,7 @@ OpenAI-compatible chat-completions/JSON contract and `enable_thinking:false`.
 | Generation model | `--llm-model` / `LLM_MODEL` | `qwen3.8-flash` |
 | Concurrency | `--llm-concurrency` / `LLM_MAX_CONCURRENCY` | 24; Python launcher defaults to 1 |
 | Algorithm | `--memory-strategy` / `MEMORY_STRATEGY` | `mem0` only |
+| Dialogue upload | `--outbox [PATH]` (no environment variable) | Off; without PATH, `~/.local/share/agent-memory-service/harness-outbox.sqlite3` |
 
 For the algorithm and the retrieval-model provider, URLs and models, precedence is explicit CLI,
 environment, JSON (`memoryStrategy`, `modelProvider`, `embedUrl`, `rerankUrl`, `embedModel`,
