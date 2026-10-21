@@ -8,12 +8,14 @@ The bridge is a local stdio child process that forwards tools to the HTTP daemon
 the daemon, read chats automatically or inject context. The daemon's URL is not an HTTP MCP endpoint.
 Each client starts its own bridge; a separate collector and uploader handle automatic capture.
 Templates must be merged into the target client's existing configuration with absolute executable paths.
-The [one-command installer](#one-command-install) performs that merge for Codex, Claude Code and WorkBuddy.
+The [one-command installer](#one-command-install) performs that merge for Codex, Claude Code, WorkBuddy and
+DeepSeek Harness.
 
 ## One-command install
 
 `scripts/install.sh` registers the stdio bridge and, unless `--no-capture` is given, the
-[dialogue collector](#automatically-save-conversations) in one agent platform. Without `--apply` it only
+[dialogue collector](#automatically-save-conversations) in one agent platform; DeepSeek Harness gets the
+bridge only. Without `--apply` it only
 previews. With `--apply` it builds `target/fast/agent-memoryd` (as `make build`), checks the exact commands
 it will install against a temporary mock daemon, then backs up and writes the platform's configuration.
 It never starts or installs the daemon, model servers or uploader and never handles provider keys:
@@ -28,8 +30,9 @@ installer is the one the hooks and `notify` use; pass `--python` to choose anoth
 | Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]` and `notify`; `~/.codex/hooks.json`: `SessionEnd` | `notify` on each completed turn; `SessionEnd` close marker | Restart Codex; trust the `SessionEnd` hook in `/hooks` (App: Settings → Hooks) |
 | Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project` | `<project>/.mcp.json` and `<project>/.claude/settings.local.json`; `--scope user`: `~/.claude.json` and `~/.claude/settings.json` | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; approve the project MCP server (`/mcp`) |
 | WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
+| DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness); `--project` is refused | Restart DeepSeek Harness and start a new session |
 
-Then keep one uploader running, for example in another terminal or under the
+On a platform with capture, keep one uploader running, for example in another terminal or under the
 [process manager](deployment.md#keep-services-running). It must use the installer's `--url` (and
 `--outbox`, if given); the installer prints the exact command when no uploader is running:
 
@@ -47,11 +50,11 @@ MCP tools are not tied to the installed project.
 | Option | Meaning |
 |---|---|
 | `--dry-run` (default) / `--apply` | Preview only / build, verify and write |
-| `--project ID` | Stable shared project ID recorded with captured turns; prompted for when interactive |
+| `--project ID` | Stable shared project ID recorded with captured turns; prompted for when interactive; refused for DeepSeek Harness |
 | `--tenant`, `--url` | Daemon store (`default`), recorded by the bridge and collector, and base URL (`http://127.0.0.1:8765`) for the bridge and the printed uploader command |
 | `--no-capture` | MCP tools only; removes collector entries this installer manages |
 | `--binary`, `--python`, `--outbox` | Use an existing `agent-memoryd`, another Python 3.11+, or a non-default outbox |
-| `--codex-home`; `--scope`, `--workspace`, `--claude-config-dir`; `--workbuddy-home`, `--mcp-target` | Platform locations; host environment variables such as `CODEX_HOME` are not read |
+| `--codex-home`; `--scope`, `--workspace`, `--claude-config-dir`; `--workbuddy-home`, `--mcp-target`; `--dsh-home`, `--dsh-binary` | Platform locations and, for DeepSeek Harness, the `dsh` CLI that parses the result; host environment variables such as `CODEX_HOME` or `DSH_HOME` are not read |
 | `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, never prompt, or install into another home (tests) |
 | `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only this project's entries |
 
@@ -59,12 +62,17 @@ Every `--apply` runs these checks before writing anything; none reaches a model 
 
 1. The bridge, started exactly as configured, completes the MCP handshake, lists the
    [eight tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
-   The bridge, collector and uploader keep your proxy variables; they bypass proxies for a loopback daemon.
+   A separate bridge process answers the 2026-07-28 `server/discover` version probe at once with
+   `-32022` and the 2025-era versions it serves, so clients that probe first (DeepSeek Harness) fall back
+   to `initialize`. The bridge, collector and uploader keep your proxy variables; they bypass proxies for
+   a loopback daemon.
 2. With capture, platform-shaped events run through the installed collector command into a temporary
    outbox; the real uploader submits them; a local generation stub forms one fact; the bridge finds it
    with `search_memories` under the configured tenant and project.
 3. When the platform's CLI is installed, it parses a copy of the planned files in a temporary home:
-   `codex mcp get` and `codex app-server` `hooks/list` for Codex, `claude mcp get` for Claude Code.
+   `codex mcp get` and `codex app-server` `hooks/list` for Codex, `claude mcp get` for Claude Code, and
+   `dsh --profile web --dump-config` for DeepSeek Harness (found on `PATH` or in the Desktop app), which
+   must compose the `shared-memory` row exactly once, as written, with no warning the current file lacks.
    WorkBuddy has no such CLI; its JSON is checked by the installer only.
 
 Merges keep other servers, hooks, settings, comments and ordering. In the files it writes, entries
@@ -74,18 +82,23 @@ as the installer's only when it runs the collector itself, so a dispatcher that 
 the installer's entries leaves empty is deleted. The installer refuses, without writing, a different server already named
 `shared-memory`, a Codex `notify` that runs another program (chain it to `codex-notify` yourself or use
 `--no-capture`), Codex hooks defined under `[hooks]` in `config.toml`, TOML forms it cannot edit safely,
-symlinked configuration files, and a Claude Code local-scope `shared-memory` for the workspace, which
-would take precedence. It cannot see a trusted project's `.codex/config.toml`, a project-level
-`.codex/hooks.json` collector hook or another project's `.mcp.json`; remove such entries yourself.
+symlinked configuration files, a Claude Code local-scope `shared-memory` for the workspace, which
+would take precedence, and a DeepSeek Harness `cordis.patch.yml` that is not a plain top-level YAML list,
+has damaged installer markers or already holds another `shared-memory` row. It cannot see a trusted
+project's `.codex/config.toml`, a project-level `.codex/hooks.json` collector hook or another project's
+`.mcp.json`; remove such entries yourself.
 Backups live in `~/.local/state/agent-memory-service/installations/<platform>/`, one history per
 Claude Code project or user configuration. `--rollback` undoes the latest installation for the same
 target and refuses when a file changed after it, as happens when Codex records hook trust or Claude Code
 updates `~/.claude.json`; use `--uninstall` then. Neither touches daemon data or the outbox.
 
 Verification scope: the offline checks above and the CLI parsing checks (Codex CLI 0.163.0, Claude Code
-2.1.305) have run on macOS. WorkBuddy hook payloads follow events recorded from WorkBuddy 5.8.3 by the
-[pd-memory](https://github.com/RuisongZhou/pd-memory) integration. No installation has been exercised in
-a live client session with a real provider; confirm with the [sharing check](#shared-memory-workflow).
+2.1.305, `dsh` from DeepSeek Harness 0.2.1-rc.2) have run on macOS; without a platform's CLI the installer
+prints a note instead. WorkBuddy hook payloads follow events recorded from WorkBuddy 5.8.3 by the
+[pd-memory](https://github.com/RuisongZhou/pd-memory) integration. For DeepSeek Harness, its bundled MCP
+client SDK (`@modelcontextprotocol/client` 2.2.0) was connected to the bridge once by hand: probe,
+`-32022`, `initialize` 2025-11-25, eight tools. No installation has been exercised in a live client
+session with a real provider; confirm with the [sharing check](#shared-memory-workflow).
 
 ## Use with Codex
 
@@ -146,6 +159,44 @@ Alternatively, merge [examples/claude-code.mcp.json](../examples/claude-code.mcp
 Preserve other MCP servers. Project scope writes `.mcp.json`; use `--scope user` for registration across projects or the default local scope for a private project registration. Start/restart Claude Code, enable the project server when prompted, and check `/mcp` for connection status. See the [official Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
 
 Add the [shared memory workflow](#shared-memory-workflow) to the target project's `CLAUDE.md`. Optional conversation capture uses [Claude Code hooks](#claude-code-hooks); MCP alone does not capture it.
+
+## Use with DeepSeek Harness
+
+DeepSeek Harness (`dsh` and the Desktop app) gets the eight tools, named `mcp__shared-memory__<tool>`,
+and no automatic capture: its Claude Code and Codex hook bridges pass no transcript and no final reply
+and send no `SessionEnd`, so the collector would have nothing to save. Ask the agent to save with
+`add_memories`, and put the [shared memory workflow](#shared-memory-workflow) in its instructions.
+
+`~/.dsh/cordis.patch.yml` is the home-level patch list that every profile, the Desktop app's included,
+applies after its own layers. The installer keeps one block in it and leaves every other byte alone:
+
+```yaml
+# >>> agent-memory-service: managed by scripts/install.sh --host deepseek-harness >>>
+- insert:
+    - id: mcp-shared-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: "shared-memory"
+        transport: "stdio"
+        command: "/absolute/path/agent-memory-service/target/fast/agent-memoryd"
+        args: ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "deepseek-harness"]
+        env: {"MEMORY_TENANT": "default"}
+        toolCallTimeoutMs: 180000
+# <<< agent-memory-service <<<
+```
+
+To add it by hand, keep the two marker lines so a later install or `--uninstall` manages the block. dsh
+refuses to start when this file is empty or holds anything but a top-level YAML list, so the installer
+replaces a lone `[]` with the block and writes `[]` back when uninstalling leaves no item. The Desktop
+app manages its own profile files under `~/.dsh/profiles/desktop/`; the installer does not touch them.
+
+- `toolCallTimeoutMs` raises dsh's 60-second default to the 180 seconds used for Codex and WorkBuddy.
+- dsh starts the bridge with an environment stripped of `DSH_*` and credential-like variables plus the
+  row's `env`. The bridge needs no key; the daemon holds the provider configuration.
+- dsh's MCP client first probes with `server/discover` (protocol 2026-07-28). The bridge serves the
+  2025-era protocol and answers that probe with `-32022`, after which dsh connects with `initialize`.
+- With the official DeepSeek API, dsh uploads the session log, tool results such as retrieved memories
+  included, unless **Settings → General → Upload Session Log when using the official model API** is off.
 
 ## Shared memory workflow
 
@@ -288,6 +339,7 @@ Supply actual IDs and available source timestamps for real input. Mem0 accepts 1
 | Outbox stays `pending` | Ensure one uploader is running and can reach the daemon; inspect `status` errors |
 | Outbox stays `accepted` | Query `get_task`; inspect provider failures and unfinished index publication |
 | Uploader reports a lock error | Another uploader holds the same outbox lock; keep one worker per queue |
+| DeepSeek Harness lists no `mcp__shared-memory__*` tools | Restart it and start a new session; rerun the installer, which reports whether `dsh --dump-config` reads the row; check the daemon URL |
 | Cross-agent recall is empty | Check the same daemon, tenant/project IDs, record scope, completion state, token budget, and explicit cross-platform raw-input scope |
 
 For daemon, model and storage problems, see [deployment troubleshooting](deployment.md#common-problems).

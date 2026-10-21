@@ -34,7 +34,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / 'scripts/harness_memory.py'
 DEFAULT_BINARY = ROOT / 'target/fast/agent-memoryd'
-HOSTS = ('codex', 'claude-code', 'workbuddy')
+HOSTS = ('codex', 'claude-code', 'workbuddy', 'deepseek-harness')
 SERVER = 'shared-memory'
 TOOLS = {'add_memories', 'search_memories', 'get_context', 'get_task', 'list_turns',
          'get_memory', 'correct_memory', 'feedback'}
@@ -502,8 +502,11 @@ def interpreter(python):
 def context(host, args):
     """Paths and settings for one host. host_paths may narrow ctx.state to one target."""
     home = args.home
+    if not host.CAPTURE and args.project:
+        raise InstallError(f'{host.LABEL} gets MCP tools only, without dialogue capture; '
+                           '--project only names captured dialogue, so leave it out')
     ctx = types.SimpleNamespace(home=home, platform=host.PLATFORM, project=args.project,
-                                tenant=args.tenant, capture=not args.no_capture)
+                                tenant=args.tenant, capture=host.CAPTURE and not args.no_capture)
     ctx.url = check_url(args.url)
     ctx.python = interpreter(args.python)
     ctx.binary = args.binary or DEFAULT_BINARY
@@ -547,8 +550,10 @@ def print_plan(host, ctx):
     if ctx.capture:
         print(f"[plan] capture project={ctx.project or '<required: --project ID>'} collector={HARNESS}")
         print(f'[plan] outbox={ctx.outbox}')
-    else:
+    elif host.CAPTURE:
         print('[plan] capture disabled (MCP tools only)')
+    else:
+        print(f'[plan] MCP tools only: {host.LABEL} offers no hooks the collector can capture from')
 
 
 def daemon_status(ctx):

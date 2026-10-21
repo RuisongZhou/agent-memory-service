@@ -25,10 +25,11 @@ smoke:
 # One-command install for every platform into a temporary home, verified against a mock daemon.
 install-check:
 	tmp=$$(mktemp -d) && mkdir "$$tmp/project" && \
-	  opts="--apply --non-interactive --binary target/fast/agent-memoryd --project install-check" && \
-	  bash scripts/install.sh --host codex --home "$$tmp" $$opts && \
-	  bash scripts/install.sh --host workbuddy --home "$$tmp" $$opts && \
-	  bash scripts/install.sh --host claude-code --home "$$tmp" --workspace "$$tmp/project" $$opts; \
+	  opts="--apply --non-interactive --binary target/fast/agent-memoryd" && \
+	  bash scripts/install.sh --host codex --home "$$tmp" $$opts --project install-check && \
+	  bash scripts/install.sh --host workbuddy --home "$$tmp" $$opts --project install-check && \
+	  bash scripts/install.sh --host claude-code --home "$$tmp" --workspace "$$tmp/project" $$opts --project install-check && \
+	  bash scripts/install.sh --host deepseek-harness --home "$$tmp" $$opts; \
 	  status=$$?; rm -rf "$$tmp"; exit $$status
 fmt:
 	$(CARGO) fmt --all -- --check
