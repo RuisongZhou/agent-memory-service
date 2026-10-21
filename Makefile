@@ -1,16 +1,20 @@
 PYTHON ?= .venv/bin/python
 CARGO ?= cargo
-# Empty = cargo default (all cores). CI limits parallelism through CARGO_BUILD_JOBS.
+# Empty = cargo default (all cores). Set JOBS=2 on a machine with limited memory.
 JOBS ?=
 JFLAG = $(if $(JOBS),-j $(JOBS))
 
-.PHONY: setup build test test-rust test-service selftest smoke install-check fmt check-public check-arch
+.PHONY: setup build test test-workspace test-rust test-service selftest smoke install-check fmt check-public check-arch
 setup:
 	python3 eval/setup_eval.py
 build:
 	$(CARGO) build --locked -p memory-service --bin agent-memoryd --profile fast $(JFLAG)
 test:
 	$(PYTHON) -m pytest -q eval/tests
+# Every crate in one cargo invocation: separate invocations resolve dependency features differently and
+# rebuild shared dependencies. test-rust and test-service run each half on its own.
+test-workspace:
+	$(CARGO) test --locked --workspace --lib --profile fast $(JFLAG)
 test-rust:
 	$(CARGO) test --locked -p memory-rules -p memory-fulltext -p memory-config --profile fast $(JFLAG)
 test-service:
