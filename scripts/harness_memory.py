@@ -14,12 +14,13 @@ import sqlite3
 import sys
 import time
 from urllib.error import HTTPError
-from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlsplit
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 import uuid
 
 
 DEFAULT_OUTBOX = Path.home() / '.local/share/agent-memory-service/harness-outbox.sqlite3'
+DIRECT = build_opener(ProxyHandler({}))
 
 
 def now():
@@ -112,7 +113,8 @@ def capture_notify(db, event, project, tenant, platform):
         enqueue(db, tenant, platform, turn_body(project, session, native_id, user, assistant, stamp, stamp))
 
 
-def capture_hook(db, event, project, tenant, platform):
+def capture_hook(db, event, project, tenant, platform, id_field=None):
+    """`id_field` names the event's native turn id; 'none' pairs Stop with the session's open prompt."""
     if not isinstance(event, dict):
         raise ValueError('expected a JSON object')
     name = event.get('hook_event_name')
@@ -120,6 +122,7 @@ def capture_hook(db, event, project, tenant, platform):
         return
     session = required(event, 'session_id')
     key = (tenant, platform, project, session)
+    id_field = id_field or ('turn_id' if platform == 'codex' else 'prompt_id')
     with db:
         # Serialize capture transactions before reading pending state.
         db.execute('BEGIN IMMEDIATE')
@@ -131,18 +134,26 @@ def capture_hook(db, event, project, tenant, platform):
                 enqueue(db, tenant, platform, {'scope': {'project': project, 'session': session},
                         'turnId': turn_key(project, session, f'session-end:{uuid.uuid4()}'), 'sessionEnded': True})
             return
-        id_field = 'turn_id' if platform == 'codex' else 'prompt_id'
-        native_id = required(event, id_field)
+        # Without native ids each prompt opens a new turn, identified once when it is stored.
+        native_id = f'prompt-{uuid.uuid4()}' if id_field == 'none' else required(event, id_field)
         if name == 'UserPromptSubmit':
+            if id_field == 'none' and not str(event.get('prompt') or '').strip():
+                # A prompt without text (an image only) still ends the open turn: never pair its reply with that.
+                db.execute('DELETE FROM prompts WHERE tenant=? AND platform=? AND project=? AND session=?', key)
+                return
             prompt = required(event, 'prompt')
             if pending and pending['native_id'] == native_id:
                 return
             # Replacing an unmatched prompt discards an interrupted/incomplete turn.
             db.execute('INSERT OR REPLACE INTO prompts VALUES (?,?,?,?,?,?,?)', (*key, native_id, prompt, now()))
         elif name in {'Interrupt', 'StopFailure'}:
-            if pending and pending['native_id'] == native_id:
+            if pending and (id_field == 'none' or pending['native_id'] == native_id):
                 db.execute('DELETE FROM prompts WHERE tenant=? AND platform=? AND project=? AND session=?', key)
         else:
+            if id_field == 'none':
+                if not pending:
+                    return  # A repeated or continued Stop: its turn was already queued.
+                native_id = pending['native_id']
             turn_id = turn_key(project, session, native_id)
             existing = db.execute('SELECT 1 FROM jobs WHERE tenant=? AND platform=? AND turn_id=?', (tenant, platform, turn_id)).fetchone()
             if existing:
@@ -159,7 +170,9 @@ def post(base, name, body, tenant, platform, timeout):
                       data=json.dumps(body).encode(), method='POST',
                       headers={'Content-Type': 'application/json', 'X-Memory-Tenant': tenant,
                                'X-Memory-Platform': platform})
-    with urlopen(request, timeout=timeout) as response:
+    # The daemon binds to loopback: a configured HTTP proxy cannot reach it.
+    loopback = urlsplit(base).hostname in {'127.0.0.1', 'localhost', '::1'}
+    with (DIRECT.open if loopback else urlopen)(request, timeout=timeout) as response:
         result = json.load(response)
         if not isinstance(result, dict):
             raise ValueError('expected a JSON object response')
@@ -219,7 +232,10 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     notify = sub.add_parser('codex-notify', help='Capture Codex agent-turn-complete JSON argument')
     notify.add_argument('event')
-    sub.add_parser('hook', help='Capture UserPromptSubmit/Stop/SessionEnd JSON from stdin')
+    hook_parser = sub.add_parser('hook', help='Capture UserPromptSubmit/Stop/SessionEnd JSON from stdin')
+    hook_parser.add_argument('--turn-id-field', choices=['prompt_id', 'turn_id', 'none'],
+                             help='native turn id field (default: turn_id for codex, else prompt_id); '
+                                  'none pairs Stop with the open prompt for hosts that send no id')
     sub.add_parser('enqueue', help='Enqueue normalized add_memories dialogue JSON from stdin')
     sub.add_parser('status', help='Inspect local receipts and errors without chat text or network access')
     drain = sub.add_parser('drain', help='Upload and poll the local outbox')
@@ -251,7 +267,7 @@ def main():
         elif args.command == 'codex-notify':
             capture_notify(db, json.loads(args.event), args.project, args.tenant, args.platform)
         elif args.command == 'hook':
-            capture_hook(db, json.load(sys.stdin), args.project, args.tenant, args.platform)
+            capture_hook(db, json.load(sys.stdin), args.project, args.tenant, args.platform, args.turn_id_field)
             print('{}')  # Never inject raw chat, block Stop or request a continuation.
         else:
             with db:

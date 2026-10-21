@@ -8,9 +8,88 @@ The bridge is a local stdio child process that forwards tools to the HTTP daemon
 the daemon, read chats automatically or inject context. The daemon's URL is not an HTTP MCP endpoint.
 Each client starts its own bridge; a separate collector and uploader handle automatic capture.
 Templates must be merged into the target client's existing configuration with absolute executable paths.
+The [one-command installer](#one-command-install) performs that merge for Codex, Claude Code and WorkBuddy.
+
+## One-command install
+
+`scripts/install.sh` registers the stdio bridge and, unless `--no-capture` is given, the
+[dialogue collector](#automatically-save-conversations) in one agent platform. Without `--apply` it only
+previews. With `--apply` it builds `target/fast/agent-memoryd` (as `make build`), checks the exact commands
+it will install against a temporary mock daemon, then backs up and writes the platform's configuration.
+It never starts or installs the daemon, model servers or uploader and never handles provider keys:
+[deploy the daemon](deployment.md) first. After writing, it reports whether a daemon answers at `--url`
+and whether an uploader is running, and prints the uploader command when none is.
+
+Requirements: macOS or Linux, Rust/Cargo (or `--binary`), and Python 3.11+. The interpreter running the
+installer is the one the hooks and `notify` use; pass `--python` to choose another. Run from the checkout:
+
+| Platform | Command | Configuration written | Capture | Still to do by hand |
+|---|---|---|---|---|
+| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]` and `notify`; `~/.codex/hooks.json`: `SessionEnd` | `notify` on each completed turn; `SessionEnd` close marker | Restart Codex; trust the `SessionEnd` hook in `/hooks` (App: Settings → Hooks) |
+| Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project` | `<project>/.mcp.json` and `<project>/.claude/settings.local.json`; `--scope user`: `~/.claude.json` and `~/.claude/settings.json` | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; approve the project MCP server (`/mcp`) |
+| WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
+
+Then keep one uploader running, for example in another terminal or under the
+[process manager](deployment.md#keep-services-running). It must use the installer's `--url` (and
+`--outbox`, if given); the installer prints the exact command when no uploader is running:
+
+```sh
+python3 /absolute/path/agent-memory-service/scripts/harness_memory.py \
+  drain --url http://127.0.0.1:8765
+```
+
+Capture commands fix `--project`. Codex `notify`, WorkBuddy hooks and Claude Code `--scope user` are
+user-level, so every session on that platform is filed under that project; Claude Code's default project
+scope binds one project directory. Use the same `--project` and `--tenant` on every platform that should
+share memory, and add the [shared memory workflow](#shared-memory-workflow) to `AGENTS.md`/`CLAUDE.md`.
+MCP tools are not tied to the installed project.
+
+| Option | Meaning |
+|---|---|
+| `--dry-run` (default) / `--apply` | Preview only / build, verify and write |
+| `--project ID` | Stable shared project ID recorded with captured turns; prompted for when interactive |
+| `--tenant`, `--url` | Daemon store (`default`), recorded by the bridge and collector, and base URL (`http://127.0.0.1:8765`) for the bridge and the printed uploader command |
+| `--no-capture` | MCP tools only; removes collector entries this installer manages |
+| `--binary`, `--python`, `--outbox` | Use an existing `agent-memoryd`, another Python 3.11+, or a non-default outbox |
+| `--codex-home`; `--scope`, `--workspace`, `--claude-config-dir`; `--workbuddy-home`, `--mcp-target` | Platform locations; host environment variables such as `CODEX_HOME` are not read |
+| `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, never prompt, or install into another home (tests) |
+| `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only this project's entries |
+
+Every `--apply` runs these checks before writing anything; none reaches a model provider or the real store:
+
+1. The bridge, started exactly as configured, completes the MCP handshake, lists the
+   [eight tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
+   The bridge, collector and uploader keep your proxy variables; they bypass proxies for a loopback daemon.
+2. With capture, platform-shaped events run through the installed collector command into a temporary
+   outbox; the real uploader submits them; a local generation stub forms one fact; the bridge finds it
+   with `search_memories` under the configured tenant and project.
+3. When the platform's CLI is installed, it parses a copy of the planned files in a temporary home:
+   `codex mcp get` and `codex app-server` `hooks/list` for Codex, `claude mcp get` for Claude Code.
+   WorkBuddy has no such CLI; its JSON is checked by the installer only.
+
+Merges keep other servers, hooks, settings, comments and ordering. In the files it writes, entries
+created from the [examples](../examples) are adopted and replaced rather than duplicated; an entry counts
+as the installer's only when it runs the collector itself, so a dispatcher that forwards to
+`harness_memory.py` stays yours. Reruns with the same options write nothing, and a file that removing
+the installer's entries leaves empty is deleted. The installer refuses, without writing, a different server already named
+`shared-memory`, a Codex `notify` that runs another program (chain it to `codex-notify` yourself or use
+`--no-capture`), Codex hooks defined under `[hooks]` in `config.toml`, TOML forms it cannot edit safely,
+symlinked configuration files, and a Claude Code local-scope `shared-memory` for the workspace, which
+would take precedence. It cannot see a trusted project's `.codex/config.toml`, a project-level
+`.codex/hooks.json` collector hook or another project's `.mcp.json`; remove such entries yourself.
+Backups live in `~/.local/state/agent-memory-service/installations/<platform>/`, one history per
+Claude Code project or user configuration. `--rollback` undoes the latest installation for the same
+target and refuses when a file changed after it, as happens when Codex records hook trust or Claude Code
+updates `~/.claude.json`; use `--uninstall` then. Neither touches daemon data or the outbox.
+
+Verification scope: the offline checks above and the CLI parsing checks (Codex CLI 0.163.0, Claude Code
+2.1.305) have run on macOS. WorkBuddy hook payloads follow events recorded from WorkBuddy 5.8.3 by the
+[pd-memory](https://github.com/RuisongZhou/pd-memory) integration. No installation has been exercised in
+a live client session with a real provider; confirm with the [sharing check](#shared-memory-workflow).
 
 ## Use with Codex
 
+This and the next section describe the configuration the installer writes, for manual setup or review.
 Install Codex separately and start the shared daemon first. Replace `/absolute/path/agent-memory-service` in all templates with the checkout's actual absolute path; use the absolute Python executable too if `python3` is not available in the client's PATH.
 
 Register the stdio bridge with the Codex CLI:
@@ -115,7 +194,7 @@ Install the supplied notification template at user level; keep project-scoped MC
 
 Codex sends an `agent-turn-complete` event as a single JSON argument containing thread/turn IDs, user inputs, and the last assistant message. The collector joins multiple user inputs into one user text and records the observed completion time because the event supplies no source message timestamps. See [official notification documentation](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications).
 
-For session closure, merge [examples/codex.hooks.json](../examples/codex.hooks.json) into the target project's `.codex/hooks.json`, replacing the script path and project ID. This queues a `SessionEnd` marker. Review and trust the installed definition using `/hooks`; untrusted or changed hooks are skipped. See [official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks). This hook needs an already captured turn; it does not replace `notify`.
+For session closure, merge [examples/codex.hooks.json](../examples/codex.hooks.json) into user-level `~/.codex/hooks.json`, as the installer does, replacing the script path and project ID. This queues a `SessionEnd` marker. Review and trust the installed definition using `/hooks`; untrusted or changed hooks are skipped. See [official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks). This hook needs an already captured turn; it does not replace `notify`.
 
 ### Claude Code hooks
 
@@ -131,6 +210,18 @@ Merge the `hooks` object from [examples/claude-code.settings.json](../examples/c
 Restart the client and start a new turn after installing hooks; a `Stop` from a turn whose prompt was not captured cannot be paired. Required fields come from the [official Claude Code hooks contract](https://code.claude.com/docs/en/hooks). Older clients missing them must be upgraded or integrated through a wrapper; the adapter reports missing fields rather than guessing private transcript formats.
 
 The example assumes a serial main conversation. Other Stop hooks can ask Claude to continue after this collector has seen a Stop event. In that configuration, use a wrapper that confirms final completion before enqueuing. Parallel prompts, subagents, and multimodal capture need their own adapter design.
+
+### WorkBuddy hooks
+
+WorkBuddy and its bundled CodeBuddy CLI use the Claude Code hook dialect but send no `prompt_id` or
+`turn_id`. Their collector command ends with `hook --turn-id-field none`: each `UserPromptSubmit` opens a
+turn with a generated ID stored in the outbox, and `Stop` pairs with the session's open prompt. A prompt
+without text, such as an image only, closes the open turn without starting one. A later `Stop` without
+an open prompt, such as a continued reply, is ignored instead of failing; only the first final reply of a
+turn is captured. The GUI reads only user-level `~/.workbuddy/settings.json` hooks, and switching sessions
+or quitting may not send `SessionEnd`; completed turns are still queued on `Stop`. Use the
+[installer](#one-command-install) or copy its hook entries; there is no separate template. Standalone
+CodeBuddy Code keeps its configuration in `~/.codebuddy` and is not covered by `--host workbuddy`.
 
 ### Run and inspect the uploader
 
@@ -189,6 +280,7 @@ Supply actual IDs and available source timestamps for real input. Mem0 accepts 1
 
 | Symptom | Check or action |
 |---|---|
+| Installer refuses to write | Read the `[error]` line: it names the conflicting entry; nothing was changed. Fix it or edit the configuration by hand as in the sections above |
 | MCP is listed but calls fail | Check daemon `/health`, absolute binary path, port, and stdio transport; the bridge does not start the daemon |
 | Codex captures no turns | Put `notify` in user-level config, verify the Python path, preserve existing notification dispatch, and inspect the selected outbox |
 | Session-end hook is skipped | Review/trust Codex hooks with `/hooks`; restart the client after edits |

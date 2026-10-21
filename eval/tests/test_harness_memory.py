@@ -51,6 +51,41 @@ def test_hook_pairs_prompt_and_final_text_and_discards_incomplete_turn(tmp_path)
         assert bodies[1]['sessionEnded'] is True and len(bodies) == 2
 
 
+def test_hosts_without_turn_ids_pair_stop_with_the_open_prompt(tmp_path):
+    with adapter.database(tmp_path / 'outbox.sqlite3') as db:
+        capture = lambda event: adapter.capture_hook(db, event, 'project', 'default', 'workbuddy', 'none')
+        event = lambda name, **fields: {'hook_event_name':name, 'session_id':'s1', **fields}
+        capture(event('Stop', last_assistant_message='nothing open yet'))
+        capture(event('UserPromptSubmit', prompt='interrupted prompt'))
+        capture(event('StopFailure'))
+        capture(event('Stop', last_assistant_message='reply to a discarded prompt'))
+        capture(event('UserPromptSubmit', prompt='first prompt'))
+        capture(event('Stop', last_assistant_message='first reply'))
+        capture(event('Stop', stop_hook_active=True, last_assistant_message='continued reply'))
+        capture(event('UserPromptSubmit', prompt='second prompt'))
+        capture(event('Stop', last_assistant_message='second reply'))
+        capture(event('SessionEnd'))
+        bodies = [json.loads(row[0]) for row in db.execute('SELECT body FROM jobs ORDER BY seq')]
+        assert [[m['content'] for m in b['messages']] for b in bodies[:2]] == [
+            ['first prompt', 'first reply'], ['second prompt', 'second reply']]
+        assert bodies[0]['turnId'] != bodies[1]['turnId'] and bodies[0]['turnId'].startswith('project/s1/prompt-')
+        assert bodies[2]['sessionEnded'] is True and len(bodies) == 3
+        # Hosts that do send ids keep the strict pairing contract.
+        with pytest.raises(ValueError, match='prompt_id'):
+            adapter.capture_hook(db, event('UserPromptSubmit', prompt='x'), 'project', 'default', 'claude-code')
+
+
+def test_a_prompt_without_text_never_pairs_its_reply_with_an_older_prompt(tmp_path):
+    with adapter.database(tmp_path / 'outbox.sqlite3') as db:
+        capture = lambda event: adapter.capture_hook(db, event, 'project', 'default', 'workbuddy', 'none')
+        event = lambda name, **fields: {'hook_event_name':name, 'session_id':'s1', **fields}
+        capture(event('UserPromptSubmit', prompt='a turn that failed without Stop'))
+        capture(event('UserPromptSubmit', prompt='  '))  # e.g. an image only
+        capture(event('Stop', last_assistant_message='reply to the image'))
+        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0
+        assert db.execute('SELECT count(*) FROM prompts').fetchone()[0] == 0
+
+
 def test_lost_response_resends_same_key_then_polls_without_resubmitting(tmp_path):
     with adapter.database(tmp_path / 'outbox.sqlite3') as db:
         adapter.capture_notify(db, notify(), 'p', 'tenant-one', 'codex')
@@ -107,16 +142,23 @@ def test_cli_capture_then_actual_http_upload(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = [sys.executable, str(Path(adapter.__file__)), '--outbox', str(tmp_path/'outbox.sqlite3')]
     capture = base + ['--project','p','--tenant','isolated','--platform','claude-code','hook']
+    idless = base + ['--project','p','--platform','workbuddy','hook','--turn-id-field','none']
     try:
         for event in (hook('UserPromptSubmit', prompt='original user'), hook('Stop', last_assistant_message='original assistant')):
             subprocess.run(capture, input=json.dumps(event), text=True, check=True, capture_output=True)
+        for event in ({'hook_event_name':'UserPromptSubmit', 'session_id':'w1', 'prompt':'idless user'},
+                      {'hook_event_name':'Stop', 'session_id':'w1', 'last_assistant_message':'idless assistant'}):
+            result = subprocess.run(idless, input=json.dumps(event), text=True, check=True, capture_output=True)
+            assert result.stdout.strip() == '{}'
         assert requests == []  # The hook never waits on a daemon.
         result = subprocess.run(base + ['drain','--url',f'http://127.0.0.1:{server.server_port}','--once'],
                                 text=True, check=True, capture_output=True)
-        assert json.loads(result.stdout)['statuses'] == {'completed':1}
-        assert [r[0] for r in requests] == ['/v1/add_memories','/v1/get_task']
+        assert json.loads(result.stdout)['statuses'] == {'completed':2}
+        assert [r[0] for r in requests] == ['/v1/add_memories','/v1/add_memories','/v1/get_task','/v1/get_task']
         assert requests[0][1]['X-Memory-Tenant'] == 'isolated'
         assert [m['content'] for m in requests[0][2]['messages']] == ['original user','original assistant']
+        assert requests[1][1]['X-Memory-Platform'] == 'workbuddy'
+        assert [m['content'] for m in requests[1][2]['messages']] == ['idless user','idless assistant']
     finally:
         server.shutdown()
         server.server_close()
