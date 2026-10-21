@@ -552,7 +552,8 @@ def context(host, args):
                                 recall=args.recall)
     ctx.url = check_url(args.url)
     if ctx.recall and urlsplit(ctx.url).hostname not in LOOPBACK:
-        # Every prompt becomes a search query: it never leaves this machine.
+        # Every prompt becomes a search query, and the daemon has no authentication: keep it on this
+        # machine. (With hosted retrieval models the daemon still sends each prompt to their API.)
         raise InstallError('--recall needs a loopback daemon --url, for example http://127.0.0.1:8765')
     ctx.binary = args.binary or DEFAULT_BINARY
     ctx.outbox = args.outbox or home / OUTBOX
@@ -605,6 +606,25 @@ def print_plan(host, ctx):
     if ctx.recall:
         print(f"[plan] recall project={ctx.project or '<required: --project ID>'} command={ctx.binary} hook recall")
         print('[plan] recall injects get_context on SessionStart and search_memories on UserPromptSubmit')
+        print('[plan] every prompt becomes a search query; with hosted retrieval models (the default provider)')
+        print('       the daemon sends it to the embedding API')
+
+
+def recall_privacy(health):
+    """Where recall's search queries, the user's prompts, go beyond the daemon: [lines] for `/health`."""
+    backend = health.get('modelBackend') if health else None
+    device = health.get('modelDevice') if health else None
+    if backend == 'api':
+        lines = [f'[note] the daemon uses hosted retrieval models: recall sends every prompt to {device} for embedding']
+        if health.get('rerankModel'):
+            lines.append('       and, with the candidate memories, to the rerank API')
+        return lines + ['       (use self-hosted models to keep prompts on this machine; docs/deployment.md)']
+    if backend == 'llama-server':
+        return [f'[note] the daemon uses self-hosted retrieval models: recall prompts are embedded at {device}']
+    if backend == 'mock':
+        return []
+    return ['[note] with hosted retrieval models (MEMORY_MODEL_PROVIDER=api, the default) the daemon sends every',
+            '       recalled prompt to the embedding API; self-hosted models keep prompts on this machine']
 
 
 def daemon_status(ctx):
@@ -616,6 +636,9 @@ def daemon_status(ctx):
               + ('; recall injects nothing until it answers' if ctx.recall else ''))
     else:
         print(f"[check] daemon at {ctx.url} is up (strategy {health.get('memoryStrategy')})")
+    if ctx.recall:
+        for line in recall_privacy(health):
+            print(line)
     if ctx.capture and not checks.uploader_running(ctx.outbox):
         print('[note] no uploader holds the outbox lock; captured turns stay queued until one runs.')
         print(f'       Start the daemon with --outbox {shlex.quote(str(ctx.outbox))} (docs/deployment.md), or run:')

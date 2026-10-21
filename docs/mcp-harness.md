@@ -38,7 +38,8 @@ the checkout:
 
 With `--recall`, Codex, Claude Code and WorkBuddy also get a `SessionStart` and a `UserPromptSubmit`
 recall hook (Codex: trust both in `/hooks` as well). `--recall` needs `--project` and a loopback `--url`;
-it is refused for DeepSeek Harness, which gets MCP tools only.
+it is refused for DeepSeek Harness, which gets MCP tools only. Every prompt becomes a search query, which
+the default hosted retrieval models receive; see [privacy](#automatic-recall).
 
 On a platform with capture, captured turns also need an uploader. Start the daemon with `--outbox`
 ([deployment](deployment.md#5-start-the-shared-daemon)); without a path it drains the default outbox the
@@ -383,8 +384,13 @@ only through `get_context`. Stored text is flattened to one line and cannot clos
 | Network | The URL must be loopback (`127.0.0.1`, `localhost`, `::1`), and proxy variables are ignored; the installer refuses `--recall` with another `--url` |
 | Daemon down | Nothing is injected and the prompt proceeds; recall resumes when the daemon answers |
 
-Privacy: every prompt goes to the local daemon as a search query, even without capture. The daemon
-records queries in its retrieval log, which is readable through `POST /admin/export`.
+Privacy: every prompt goes to the local daemon as a search query, even without capture, and the daemon
+records it in its retrieval log, which is readable through `POST /admin/export`. The daemon embeds the
+query with its [retrieval models](deployment.md#4-configure-the-retrieval-models). With the default
+hosted provider (`api`), **every prompt (up to 2000 characters) is sent to the hosted embedding API**,
+and, when Mem0 reranking is enabled, to the rerank API together with the candidate memories. Only
+`self-hosted` models on this machine keep prompts local. `SessionStart` (`get_context`) makes no model
+call. The installer notes which provider the daemon at `--url` uses.
 
 Hosts differ in when the hooks run. Codex runs them only after you trust them in `/hooks` (App:
 Settings → Hooks). Claude Code runs the collector and recall `UserPromptSubmit` hooks in parallel and

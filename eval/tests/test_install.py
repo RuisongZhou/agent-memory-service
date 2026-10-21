@@ -239,6 +239,35 @@ def test_recall_without_capture_needs_a_project_and_a_loopback_daemon(tmp_path, 
     assert code == 0 and not (tmp_path / '.workbuddy/settings.json').exists()  # it only held recall hooks
 
 
+API = {'modelBackend': 'api', 'modelDevice': 'https://models.example/v1', 'rerankModel': None}
+
+
+@pytest.mark.parametrize('health,expected', [
+    (API, ['recall sends every prompt to https://models.example/v1 for embedding', 'self-hosted models']),
+    (dict(API, rerankModel='qwen3.7-text-rerank'), ['to the rerank API']),
+    ({'modelBackend': 'llama-server', 'modelDevice': 'http://127.0.0.1:8081', 'rerankModel': None},
+     ['recall prompts are embedded at http://127.0.0.1:8081']),
+    (None, ['MEMORY_MODEL_PROVIDER=api, the default']),
+])
+def test_recall_says_where_prompts_go(tmp_path, capsys, fake_binary, offline, monkeypatch, health, expected):
+    monkeypatch.setattr(checks, 'daemon_health', lambda url: health and dict(health, memoryStrategy='mem0'))
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--recall', '--apply'))
+    assert code == 0, output
+    assert 'the daemon sends it to the embedding API' in output  # in the plan, before anything is written
+    for text in expected:
+        assert text in output
+    assert ('to the rerank API' in output) == bool(health and health['rerankModel'])
+
+
+def test_no_recall_note_without_recall_or_with_mock_models(tmp_path, capsys, fake_binary, offline, monkeypatch):
+    monkeypatch.setattr(checks, 'daemon_health', lambda url: dict(API, memoryStrategy='mem0'))
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    assert code == 0 and 'embedding' not in output, output
+    monkeypatch.setattr(checks, 'daemon_health', lambda url: {'modelBackend': 'mock', 'memoryStrategy': 'mem0'})
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--recall', '--apply'))
+    assert code == 0 and 'for embedding' not in output and 'MEMORY_MODEL_PROVIDER' not in output, output
+
+
 def test_recall_is_refused_for_a_host_with_mcp_tools_only(tmp_path, capsys, fake_binary):
     code, output = run(capsys, *install_args('deepseek-harness', tmp_path, fake_binary, '--recall', '--apply'))
     assert code == 1 and 'leave out --recall' in output and not (tmp_path / '.dsh').exists()
