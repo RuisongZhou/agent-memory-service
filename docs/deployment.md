@@ -1,7 +1,18 @@
 # Deployment and operations
 
-Install and operate the service from the repository root. For client registration and dialogue capture,
-continue with [MCP and harness integration](mcp-harness.md) after the daemon is ready.
+Install and operate the service from the repository root. The
+[one-command installer](mcp-harness.md#one-command-install) performs steps 2–5 of
+[install and deploy](#install-and-deploy) for you: it builds the binary into `~/.local/bin`, writes the
+model key into `~/.config/agent-memory-service/.env` and runs the daemon as a service, then connects an
+agent platform:
+
+```sh
+bash scripts/install.sh --host codex --apply --project my-project
+```
+
+The rest of this guide describes those steps for a manual or customized deployment and for operating
+the daemon. For client registration and dialogue capture by hand, continue with
+[MCP and harness integration](mcp-harness.md) after the daemon is ready.
 
 ## Deployment components and strategy
 
@@ -14,7 +25,7 @@ continue with [MCP and harness integration](mcp-harness.md) after the daemon is 
 | Optional dialogue collector | `agent-memoryd hook capture` (Codex: `hook codex-notify`) run by a Codex, Claude Code or WorkBuddy hook | Writes a local SQLite outbox |
 | Optional uploader | The daemon started with `--outbox`, or one `agent-memoryd outbox drain` per outbox | Submits dialogue and polls task receipts |
 
-Configure the model key and start the daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) then registers a client. MCP registration makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context (the installer's `--recall` adds hooks that do).
+Configure the model key and start the daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) does both and then registers a client. MCP registration alone, by hand or with the installer's `--no-service`, makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context (the installer's `--recall` adds hooks that do).
 
 The daemon exposes ordinary JSON HTTP endpoints, **not an HTTP MCP endpoint**. Configure clients with a stdio command, not an MCP `url` pointing to port 8765. There is no `/mcp`, SSE, or Streamable HTTP MCP endpoint in this repository.
 
@@ -34,7 +45,7 @@ section run from the repository root unless stated otherwise.
 | [Release archive](#release-archive) | `curl`, `tar` and `shasum` |
 | [Build from source](#build-from-source) | Git, Make, curl, a current stable Rust toolchain with Cargo and a native C compiler (SQLite is compiled in) |
 
-Python **3.11 or later** is needed only for the [client installer](mcp-harness.md#one-command-install)
+Python **3.11 or later** is needed only for the [one-command installer](mcp-harness.md#one-command-install)
 (`scripts/install.sh`), the optional [Python launcher](#python-launcher) and
 [evaluation](../eval/README.md). The daemon, the MCP bridge and the capture and recall hooks do not use
 it. The default retrieval models are hosted, so no model weights or GPU are needed. To run the models
@@ -92,9 +103,10 @@ by a browser, run `xattr -d com.apple.quarantine "$name/agent-memoryd"` before i
 The [release workflow](../.github/workflows/release.yml) builds the archives with `--release` and runs
 each binary's mock-model `selftest` first.
 
-The daemon needs nothing else from the repository. To register agent clients with this binary, run the
-[installer](mcp-harness.md#one-command-install) from a checkout of the same version with `--binary`; it
-then builds nothing and writes that path into every command it installs:
+The daemon needs nothing else from the repository. To deploy this binary and register agent clients
+with it, run the [installer](mcp-harness.md#one-command-install) from a checkout of the same version with
+`--binary`; it then builds nothing, writes that path into every command it installs and runs the service
+with it:
 
 ```sh
 bash scripts/install.sh --host codex --apply --project my-project --binary "$HOME/.local/bin/agent-memoryd"
@@ -264,8 +276,16 @@ target/fast/agent-memoryd service install --env-file .env --outbox
 Without `--apply` it only previews: it prints the `serve` command, its environment and the complete file.
 Rerun with `--apply` to write it. It then creates the data directory (and on macOS the log directory)
 private to you, backs up a file it replaces under `~/.local/state/agent-memory-service/service-backups/`,
-and prints the commands that start the service; it never runs `launchctl` or `systemctl` itself. A
-rerun with the same options writes nothing.
+and prints the commands that start the service. A rerun with the same options writes nothing.
+
+With `--start` as well, it runs those commands itself instead, in your login session, and waits up to
+60 seconds until the daemon answers `/health`: launchd bootstraps the job, after booting out a loaded
+one whose file changed; systemd reloads and enables the unit and starts or restarts it. A loaded,
+unchanged service is left running, unless `--restart` asks to restart it, for example after replacing
+its binary. `--start` refuses when a daemon the service did not start already answers on the port, and
+a unit under another `--home`. The [one-command installer](mcp-harness.md#one-command-install) runs
+`service install --apply --start` and keeps the options of a unit it finds, which it reads with
+`agent-memoryd service status --json`.
 
 | Option | Meaning |
 |---|---|
@@ -278,8 +298,9 @@ rerun with the same options writes nothing.
 | `--binary PATH` | The executable the unit runs (default: the `agent-memoryd` you invoked) |
 | `--manager launchd\|systemd`, `--home DIR` | Service manager (launchd on macOS, systemd elsewhere) and the home directory for the unit and default paths (tests) |
 | `--apply` | Write the unit (default: preview) |
+| `--start`, `--restart` | With `--apply`: load (or reload) the service and wait until the daemon answers; also restart an unchanged, loaded service |
 
-Then run the printed commands. On macOS:
+Without `--start`, run the printed commands. On macOS:
 
 ```sh
 plutil -lint "$HOME/Library/LaunchAgents/local.agent-memory-daemon.plist"
@@ -295,6 +316,8 @@ systemctl --user enable --now agent-memory.service
 
 `agent-memoryd service status` shows the installed file, the command it runs, whether its env file
 exists and is private, on Linux whether the unit is enabled, and whether a daemon answers on its port.
+`service status --json` prints the unit's settings (binary, env file, data directory, outbox, port,
+concurrency, generation guard) as one JSON object for scripts, without the health check.
 To remove the service, stop it first, with `launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"`
 or `systemctl --user disable --now agent-memory.service`, then run
 `agent-memoryd service uninstall --apply`. It backs up and deletes the unit file and leaves the data,
@@ -302,8 +325,10 @@ outbox, logs and env file alone; on Linux it refuses while the unit is still ena
 
 The service runs the binary at the recorded path. In a checkout, `make build` replaces
 `target/fast/agent-memoryd` in place and a restart picks up the new build, while `cargo clean` removes
-it; install a release binary's upgrades to the same path. After changing an option, rerun
-`service install --apply` and restart the service as printed.
+it; install a release binary's upgrades to the same path. The one-command installer records its
+`~/.local/bin/agent-memoryd` instead, and a rerun that builds a new binary replaces it and restarts the
+service. After changing an option, rerun `service install --apply` (with `--start` to restart it) or
+restart the service as printed.
 
 ### macOS LaunchAgents
 

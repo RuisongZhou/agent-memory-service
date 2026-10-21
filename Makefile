@@ -26,10 +26,11 @@ smoke:
 	$(PYTHON) scripts/mem0_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-http-smoke.json
 	$(PYTHON) scripts/mem0_history_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-history-http-smoke.json
 	$(PYTHON) scripts/mem0_hybrid_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-hybrid-http-smoke.json
-# One-command install for every platform (with capture and recall where it has hooks) into a temporary home, verified against a mock daemon.
+# One-command install for every platform (with capture and recall where it has hooks) into a temporary home, verified
+# against a mock daemon. --no-service: no model key, and no service starts in the login session.
 install-check:
 	tmp=$$(mktemp -d) && mkdir "$$tmp/project" && \
-	  opts="--apply --non-interactive --binary target/fast/agent-memoryd" && \
+	  opts="--apply --non-interactive --no-service --binary target/fast/agent-memoryd" && \
 	  bash scripts/install.sh --host codex --home "$$tmp" $$opts --project install-check --recall && \
 	  bash scripts/install.sh --host workbuddy --home "$$tmp" $$opts --project install-check --recall && \
 	  bash scripts/install.sh --host claude-code --home "$$tmp" --workspace "$$tmp/project" $$opts --project install-check --recall && \

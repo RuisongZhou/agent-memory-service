@@ -1,15 +1,17 @@
-"""Register the shared-memory MCP bridge and dialogue collector in an agent host.
+"""One-command install: the shared-memory daemon plus its MCP bridge and dialogue collector in an agent host.
 
 Shared installer: arguments, configuration merges, backup/rollback and the
 install flow. Standard library only (Python 3.11+). Each agent host is one module in `hosts/`
-(see hosts/__init__.py for the interface); this module owns everything else.
-Entry point: `scripts/install.sh --host <id>`.
+(see hosts/__init__.py for the interface); runtime.py owns the binary, env file and service the
+hosts share; this module owns everything else. Entry point: `scripts/install.sh --host <id>`.
 
-The installer registers the stdio MCP bridge, the dialogue collector and,
-with --recall, the automatic recall hooks in a host's own configuration; all of
-them run `agent-memoryd`, so hosts need no Python. It never stores keys, never
-starts or installs the daemon, model servers or uploader, and verifies
-everything against a temporary mock daemon before writing (checks.py).
+With --apply the installer builds `agent-memoryd` and installs it in ~/.local/bin, writes the
+model key into a private env file (asked for hidden, never taken from an argument), verifies the
+exact commands it will register against a temporary mock daemon (checks.py), registers the stdio
+MCP bridge, the dialogue collector and, with --recall, the automatic recall hooks in the host's
+own configuration, and finally installs and starts the daemon as a LaunchAgent / systemd user
+service (runtime.py; --no-service leaves the daemon to you). Every entry runs `agent-memoryd`,
+so hosts need no Python. Self-hosted model servers are never installed or started.
 """
 
 import argparse
@@ -26,6 +28,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import uuid
 from contextlib import contextmanager
@@ -446,7 +449,8 @@ def rollback(host, ctx, target):
         save_manifest(backup, manifest)
     for item in manifest['files']:
         print(f"[rollback] restored {item['path']}")
-    print(f'[rollback] undid {backup.name}; memory data and the outbox are untouched. Restart {host.LABEL}.')
+    print(f'[rollback] undid {backup.name}. Restart {host.LABEL}.')
+    print_shared(ctx)
 
 
 # --- environment checks -----------------------------------------------------
@@ -460,7 +464,8 @@ def check_url(url):
     return url.rstrip('/')
 
 
-def build_binary(args):
+def build_binary(args, service):
+    """The agent-memoryd to install: built from this checkout, or --binary. `service`: it must start one."""
     if args.binary:
         binary = args.binary
     else:
@@ -483,6 +488,12 @@ def build_binary(args):
     result = subprocess.run([str(binary), 'hook', '--help'], capture_output=True, text=True, timeout=30)
     if result.returncode or not all(name in result.stdout for name in ('capture', 'codex-notify', 'recall')):
         raise InstallError(f'{binary} has no hook commands; build this checkout (make build) or pass a newer --binary')
+    if service:
+        result = subprocess.run([str(binary), 'service', 'install', '--help'], capture_output=True, text=True,
+                                timeout=30)
+        if result.returncode or '--start' not in result.stdout:
+            raise InstallError(f'{binary} cannot start its service (no `service install --start`); build this '
+                               'checkout, pass a newer --binary, or add --no-service')
     return binary
 
 
@@ -507,7 +518,8 @@ def arguments(argv=None):
     parser = argparse.ArgumentParser(prog='install.sh', description=host.DESCRIPTION)
     parser.add_argument('--host', choices=HOSTS, required=True, help='agent platform to install into')
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--apply', action='store_true', help='build, verify offline, then write (default: preview)')
+    mode.add_argument('--apply', action='store_true',
+                      help='build, verify offline, write, then start the daemon service (default: preview)')
     mode.add_argument('--dry-run', action='store_true', help='preview only; no build, writes or network')
     mode.add_argument('--rollback', nargs='?', const='latest', metavar='BACKUP',
                       help='restore the files of the latest (or given) installation backup')
@@ -523,7 +535,22 @@ def arguments(argv=None):
                              'search results on UserPromptSubmit (loopback daemon only); without it, '
                              'recall hooks this installer manages are removed')
     parser.add_argument('--binary', type=absolute,
-                        help='use this agent-memoryd (bridge and hooks) instead of building target/fast')
+                        help='use this agent-memoryd as is (bridge, hooks and service) instead of building one '
+                             'and installing it in ~/.local/bin')
+    parser.add_argument('--no-service', action='store_true',
+                        help='register the platform only: no env file, model key or daemon service '
+                             '(run the daemon yourself)')
+    parser.add_argument('--env-file', type=absolute,
+                        help='env file of the daemon service (default: the installed service\'s, else '
+                             '~/.config/agent-memory-service/.env); created from .env.example when missing')
+    parser.add_argument('--key-file', type=absolute,
+                        help='read the model API key from this file and write it into the env file')
+    parser.add_argument('--api-key-env', default='QWEN_API_KEY', metavar='NAME',
+                        help='environment variable with the model API key when the env file has none '
+                             '(default: %(default)s); otherwise it is asked for, hidden')
+    parser.add_argument('--verify-model', action='store_true',
+                        help="also check the env file's real models: one synthetic fact is formed and found in a "
+                             'temporary store (a few model calls)')
     parser.add_argument('--outbox', type=absolute, help='collector outbox (default: the collector default)')
     parser.add_argument('--home', type=absolute, default=Path.home(), help='home directory (for isolated installs)')
     parser.add_argument('--skip-host-check', action='store_true',
@@ -535,6 +562,10 @@ def arguments(argv=None):
         value = getattr(args, name)
         if value is not None and (not value.strip() or value.startswith('-')):
             parser.error(f'--{name} must be non-empty and must not start with "-"')
+    if args.no_service:
+        for name in ('env_file', 'key_file', 'verify_model'):
+            if getattr(args, name):
+                parser.error(f"--{name.replace('_', '-')} configures the daemon service; leave out --no-service")
     return host, args
 
 
@@ -555,7 +586,17 @@ def context(host, args):
         # Every prompt becomes a search query, and the daemon has no authentication: keep it on this
         # machine. (With hosted retrieval models the daemon still sends each prompt to their API.)
         raise InstallError('--recall needs a loopback daemon --url, for example http://127.0.0.1:8765')
-    ctx.binary = args.binary or DEFAULT_BINARY
+    import runtime
+    ctx.binary = args.binary or home / runtime.BINARY
+    ctx.port = runtime.service_port(ctx.url)
+    ctx.manage_service = not args.no_service and ctx.port is not None
+    ctx.service_started = False
+    if args.verify_model and not ctx.manage_service:
+        raise InstallError(f'--verify-model checks the daemon service this installer runs; --url {ctx.url} '
+                           'is not a loopback http URL with a port')
+    if args.apply and ctx.manage_service and home != Path.home():
+        raise InstallError('--home installs into another home directory, but the service starts in your own '
+                           'login session; add --no-service')
     ctx.outbox = args.outbox or home / OUTBOX
     # Name the outbox in commands only when it differs from the hooks' own default.
     ctx.outbox_arg = None if ctx.outbox == Path.home() / OUTBOX else ctx.outbox
@@ -593,9 +634,10 @@ def plan(host, args, ctx, uninstall=False):
     return changes, expected
 
 
-def print_plan(host, ctx):
+def print_plan(host, args, ctx):
     print(f'[plan] host={host.LABEL} platform={ctx.platform} tenant={ctx.tenant} daemon={ctx.url}')
-    print(f'[plan] bridge={ctx.binary}')
+    import runtime
+    runtime.print_plan(args, ctx)
     if ctx.capture:
         print(f"[plan] capture project={ctx.project or '<required: --project ID>'} collector={ctx.binary} hook capture")
         print(f'[plan] outbox={ctx.outbox}')
@@ -628,7 +670,7 @@ def recall_privacy(health):
 
 
 def daemon_status(ctx):
-    """Report (never fail on) the shared daemon and the uploader; neither is managed here."""
+    """Report (never fail on) the shared daemon and the uploader."""
     import checks
     health = checks.daemon_health(ctx.url)
     if health is None:
@@ -639,6 +681,10 @@ def daemon_status(ctx):
     if ctx.recall:
         for line in recall_privacy(health):
             print(line)
+    # A service that just started takes the outbox lock right after it answers.
+    deadline = time.monotonic() + (5 if ctx.service_started else 0)
+    while ctx.capture and not checks.uploader_running(ctx.outbox) and time.monotonic() < deadline:
+        time.sleep(0.2)
     if ctx.capture and not checks.uploader_running(ctx.outbox):
         print('[note] no uploader holds the outbox lock; captured turns stay queued until one runs.')
         print(f'       Start the daemon with --outbox {shlex.quote(str(ctx.outbox))} (docs/deployment.md), or run:')
@@ -656,11 +702,11 @@ def install(host, args):
             print(f'[plan] remove {SERVER} entries from {path}')
         with installation_lock(ctx.state_root):
             apply_changes(changes, ctx.state, expected)
-        print(f'[uninstall] removed from {host.LABEL}; the daemon, its data and the outbox are untouched.')
-        print(f'            Restart {host.LABEL}. Revert with --rollback.')
+        print(f'[uninstall] removed from {host.LABEL}. Restart it. Revert with --rollback.')
+        print_shared(ctx)
         return
     resolve_project(host, args, ctx)
-    print_plan(host, ctx)
+    print_plan(host, args, ctx)
     if (ctx.capture or ctx.recall) and not ctx.project:
         print('[result] preview only; --apply needs --project ID (or --no-capture without --recall).')
         return
@@ -668,18 +714,34 @@ def install(host, args):
     for path, data, _ in changes:
         print(f"[plan] {'update' if data is not None else 'delete'} {path}")
     if not args.apply:
-        print('[result] preview only. Rerun with --apply to build, verify and write.')
+        print('[result] preview only. Rerun with --apply to build, verify, write and start the daemon.')
         return
     import checks
-    build_binary(args)
-    checks.verify_local(host, ctx)
-    if not args.skip_host_check:
-        host.host_check(args, ctx, {path: data for path, data, _ in changes})
+    import runtime
+    runtime.prepare(args, ctx)  # the key prompt comes before the build, so the rest runs unattended
+    source = build_binary(args, ctx.manage_service)
+    service = runtime.plan_service(args, ctx, source)
     with installation_lock(ctx.state_root):
-        apply_changes(changes, ctx.state, expected)
+        # The checks run the installed binary: exactly the commands the configuration will hold.
+        with runtime.staged(ctx, None if args.binary else source, service):
+            checks.verify_local(host, ctx)
+            if not args.skip_host_check:
+                host.host_check(args, ctx, {path: data for path, data, _ in changes})
+            if args.verify_model:
+                checks.verify_model(ctx, service.env_file if service else args.env_file)
+            apply_changes(changes, ctx.state, expected)
+        if service is not None:
+            runtime.start_service(ctx, service)
     daemon_status(ctx)
     for line in host.post_install(args, ctx):
         print(line)
+
+
+def print_shared(ctx):
+    """What --rollback and --uninstall leave for the other platforms, and how to remove it."""
+    print(f'[note] the binary {ctx.binary}, the daemon service, its env file, memory data and the outbox are')
+    print('       kept for other platforms. To remove the service: agent-memoryd service status shows how to')
+    print('       stop it, then agent-memoryd service uninstall --apply (docs/deployment.md#install-the-service).')
 
 
 def interrupted(signum, frame):
