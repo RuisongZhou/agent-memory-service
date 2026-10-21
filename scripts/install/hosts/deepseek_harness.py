@@ -25,6 +25,7 @@ LABEL = 'DeepSeek Harness'
 DESCRIPTION = ('Register the shared-memory MCP bridge in DeepSeek Harness (MCP tools only; no dialogue capture). '
                'Preview unless --apply is given.')
 CAPTURE = False
+RECALL = False
 ROW_ID = 'mcp-shared-memory'
 CLIENT = '@deepseek-ai/dsh-mcp-client'
 TOOL_TIMEOUT_MS = 180000  # dsh's default per-call timeout is 60 s

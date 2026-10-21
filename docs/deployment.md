@@ -14,7 +14,7 @@ continue with [MCP and harness integration](mcp-harness.md) after the daemon is 
 | Optional dialogue collector | Codex notification, Claude Code or WorkBuddy hook | Writes a local SQLite outbox |
 | Optional uploader | One `harness_memory.py drain` process per outbox | Submits dialogue and polls task receipts |
 
-Start the model servers and daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) then registers a client. MCP registration makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context.
+Start the model servers and daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) then registers a client. MCP registration makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context (the installer's `--recall` adds hooks that do).
 
 The daemon exposes ordinary JSON HTTP endpoints, **not an HTTP MCP endpoint**. Configure clients with a stdio command, not an MCP `url` pointing to port 8765. There is no `/mcp`, SSE, or Streamable HTTP MCP endpoint in this repository.
 

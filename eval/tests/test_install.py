@@ -105,6 +105,19 @@ def test_only_the_collector_itself_is_owned(command, owned):
     assert core.owned_handler({'type': 'command', 'command': command}) is owned
 
 
+@pytest.mark.parametrize('command,owned', [
+    ('python3 "/a/scripts/harness_recall.py" --project p --url http://127.0.0.1:8765', True),
+    ('/opt/ams/scripts/harness_recall.py --project p', True),
+    ('python3 /a/harness_recall.py --project p && echo done', False),
+    ('/Users/me/bin/dispatch python3 /a/harness_recall.py --project p', False),
+    ('python3 /a/harness_memory.py --project p hook', False),
+])
+def test_only_the_recall_script_itself_is_owned_as_recall(command, owned):
+    handler = {'type': 'command', 'command': command}
+    assert core.owned_recall(handler) is owned
+    assert not (owned and core.owned_handler(handler))  # collector and recall never adopt each other
+
+
 def test_a_dispatcher_hook_that_forwards_to_the_collector_is_kept(capsys):
     mine = {'type': 'command', 'command': '/Users/me/bin/archive.sh; python3 /a/harness_memory.py --project p hook'}
     ours = lambda event: {'type': 'command', 'command': 'python3 /x/harness_memory.py --project q hook'}
@@ -141,6 +154,74 @@ def test_workbuddy_enables_the_cli_server_and_pairs_without_turn_ids(tmp_path):
     command = changes['settings.json']['hooks']['Stop'][0]['hooks'][0]['command']
     assert shlex.split(command)[-3:] == ['hook', '--turn-id-field', 'none']
     assert set(changes['settings.json']['hooks']) == set(workbuddy.EVENTS)
+
+
+def recall_hooks(module, tmp_path, *extra):
+    """{event: [handler groups]} the host's planned hook file holds."""
+    workspace = tmp_path / 'project'
+    workspace.mkdir(exist_ok=True)
+    flags = ['--workspace', str(workspace)] if module is claude_code else []
+    args, ctx = ctx_for(module, tmp_path, *flags, *extra)
+    planned = {path: data for path, data, _ in filter(None, module.changes(args, ctx, False))}
+    hook_file = ctx.hooks_json if module is codex else ctx.settings
+    if hook_file not in planned:  # already as desired
+        return ctx, core.read_json(hook_file).get('hooks', {})
+    return ctx, json.loads(planned[hook_file]).get('hooks', {}) if planned[hook_file] else {}
+
+
+@pytest.mark.parametrize('module', [claude_code, codex, workbuddy])
+def test_recall_adds_its_own_groups_and_a_rerun_without_it_removes_them(module, tmp_path):
+    ctx, hooks = recall_hooks(module, tmp_path, '--recall', '--tenant', 'team')
+    recall = {event: [g for g in groups if core.owned_recall(g['hooks'][0])] for event, groups in hooks.items()}
+    assert {event for event, groups in recall.items() if groups} == set(core.RECALL_EVENTS)
+    for event in core.RECALL_EVENTS:
+        (group,) = recall[event]
+        assert group['hooks'] == [core.recall_handler(ctx)] and group['hooks'][0]['timeout'] == core.RECALL_TIMEOUT
+        words = shlex.split(group['hooks'][0]['command'])
+        assert words[1] == str(core.RECALL) and words[-8:] == [
+            '--project', 'proj', '--platform', module.PLATFORM, '--tenant', 'team', '--url', 'http://127.0.0.1:8765']
+    capture = {event for event, groups in hooks.items() for g in groups if core.owned_handler(g['hooks'][0])}
+    assert capture == set(module.EVENTS)  # capture is unchanged alongside recall
+    hook_file = ctx.hooks_json if module is codex else ctx.settings
+    hook_file.parent.mkdir(parents=True, exist_ok=True)
+    hook_file.write_text(json.dumps({'hooks': hooks}))
+    assert recall_hooks(module, tmp_path, '--recall', '--tenant', 'team')[1] == hooks  # idempotent
+    without = recall_hooks(module, tmp_path, '--tenant', 'team')[1]
+    assert not any(core.owned_recall(g['hooks'][0]) for groups in without.values() for g in groups)
+    assert {event for event, groups in without.items() for g in groups if core.owned_handler(g['hooks'][0])} == capture
+
+
+def test_recall_without_capture_needs_a_project_and_a_loopback_daemon(tmp_path, capsys, fake_binary, offline):
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--no-capture', '--recall', '--apply'))
+    assert code == 1 and '--project' in output
+    remote = install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--recall', '--apply')
+    code, output = run(capsys, *remote[:remote.index('--url')], *remote[remote.index('--url') + 2:],
+                       '--url', 'http://10.0.0.5:8765')
+    assert code == 1 and 'loopback' in output and not (tmp_path / '.workbuddy').exists()
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--no-capture',
+                                             '--recall', '--apply'))
+    assert code == 0 and offline == ['workbuddy'], output
+    hooks = json.loads((tmp_path / '.workbuddy/settings.json').read_text())['hooks']
+    assert set(hooks) == set(core.RECALL_EVENTS) and all(core.owned_recall(g['hooks'][0]) for gs in hooks.values() for g in gs)
+    command = hooks['SessionStart'][0]['hooks'][0]['command']
+    assert f"--state {tmp_path / core.RECALL_STATE}" in command  # an isolated home keeps its own record
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--no-capture', '--apply'))
+    assert code == 0 and not (tmp_path / '.workbuddy/settings.json').exists()  # it only held recall hooks
+
+
+def test_recall_is_refused_for_a_host_with_mcp_tools_only(tmp_path, capsys, fake_binary):
+    code, output = run(capsys, *install_args('deepseek-harness', tmp_path, fake_binary, '--recall', '--apply'))
+    assert code == 1 and 'leave out --recall' in output and not (tmp_path / '.dsh').exists()
+
+
+def test_codex_recall_hooks_refuse_config_toml_hooks_without_capture(tmp_path):
+    (tmp_path / '.codex').mkdir()
+    (tmp_path / '.codex/config.toml').write_text('[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "x"\n')
+    args, ctx = ctx_for(codex, tmp_path, '--no-capture', '--recall')
+    with pytest.raises(core.InstallError, match='hooks.json'):
+        codex.changes(args, ctx, False)
+    args, ctx = ctx_for(codex, tmp_path, '--no-capture')
+    codex.changes(args, ctx, False)  # MCP only never needs hooks.json
 
 
 # --- Codex config.toml ------------------------------------------------------------
@@ -583,17 +664,22 @@ def test_argument_errors(tmp_path, capsys, fake_binary):
 # --- real offline verification ------------------------------------------------------
 
 @pytest.mark.skipif(not BINARY.is_file(), reason='needs `make build` (target/fast/agent-memoryd)')
-@pytest.mark.parametrize('host', core.HOSTS)
-def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host):
+@pytest.mark.parametrize('host,flags', [(host, ['--recall'] if core.load_host(host).RECALL else []) for host in core.HOSTS]
+                         + [('workbuddy', ['--no-capture', '--recall']), ('codex', [])])
+def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     workspace = tmp_path / 'project'
     workspace.mkdir()
     capture = core.load_host(host).CAPTURE
     extra = ['--workspace', str(workspace)] if host == 'claude-code' else []
     extra += ['--project', 'install-test'] if capture else []
     result = subprocess.run(['bash', str(ROOT / 'scripts/install.sh'), *map(str, install_args(
-        host, tmp_path, BINARY, '--apply', *extra))],
+        host, tmp_path, BINARY, '--apply', *flags, *extra))],
         capture_output=True, text=True, timeout=300, env={'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable})
     assert result.returncode == 0, result.stdout + result.stderr
-    assert 'server/discover fallback, MCP handshake, 8 tools, get_context' in result.stdout
-    assert ('capture -> outbox -> uploader -> formation -> search passed' in result.stdout) is capture
+    check = next(line for line in result.stdout.splitlines() if line.startswith('[check] offline mock daemon'))
+    assert check.startswith('[check] offline mock daemon: server/discover fallback, MCP handshake, 8 tools, get_context')
+    assert ('capture -> outbox -> uploader -> formation -> search' in check) == (capture and '--no-capture' not in flags)
+    assert ('recall -> SessionStart and prompt context, no repeats, silent without a daemon' in check) == ('--recall' in flags)
+    assert check.endswith(' passed')
     assert not (tmp_path / core.OUTBOX).exists()  # verification used a temporary outbox
+    assert not (tmp_path / core.RECALL_STATE).exists()  # and a temporary recall record

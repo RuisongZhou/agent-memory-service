@@ -6,17 +6,18 @@ This is the client setup and dialogue-capture guide. Start the daemon using
 
 The bridge is a local stdio child process that forwards tools to the HTTP daemon. It does not start
 the daemon, read chats automatically or inject context. The daemon's URL is not an HTTP MCP endpoint.
-Each client starts its own bridge; a separate collector and uploader handle automatic capture.
+Each client starts its own bridge; a separate collector and uploader handle automatic capture, and
+optional [recall hooks](#automatic-recall) inject memory into the agent's context.
 Templates must be merged into the target client's existing configuration with absolute executable paths.
 The [one-command installer](#one-command-install) performs that merge for Codex, Claude Code, WorkBuddy and
 DeepSeek Harness.
 
 ## One-command install
 
-`scripts/install.sh` registers the stdio bridge and, unless `--no-capture` is given, the
-[dialogue collector](#automatically-save-conversations) in one agent platform; DeepSeek Harness gets the
-bridge only. Without `--apply` it only
-previews. With `--apply` it builds `target/fast/agent-memoryd` (as `make build`), checks the exact commands
+`scripts/install.sh` registers the stdio bridge, unless `--no-capture` is given the
+[dialogue collector](#automatically-save-conversations), and with `--recall` the
+[automatic recall](#automatic-recall) hooks in one agent platform; DeepSeek Harness gets the bridge only.
+Without `--apply` it only previews. With `--apply` it builds `target/fast/agent-memoryd` (as `make build`), checks the exact commands
 it will install against a temporary mock daemon, then backs up and writes the platform's configuration.
 It never starts or installs the daemon, model servers or uploader and never handles provider keys:
 [deploy the daemon](deployment.md) first. After writing, it reports whether a daemon answers at `--url`
@@ -32,6 +33,10 @@ installer is the one the hooks and `notify` use; pass `--python` to choose anoth
 | WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
 | DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness); `--project` is refused | Restart DeepSeek Harness and start a new session |
 
+With `--recall`, Codex, Claude Code and WorkBuddy also get a `SessionStart` and a `UserPromptSubmit`
+recall hook (Codex: trust both in `/hooks` as well). `--recall` needs `--project` and a loopback `--url`;
+it is refused for DeepSeek Harness, which gets MCP tools only.
+
 On a platform with capture, keep one uploader running, for example in another terminal or under the
 [process manager](deployment.md#keep-services-running). It must use the installer's `--url` (and
 `--outbox`, if given); the installer prints the exact command when no uploader is running:
@@ -41,7 +46,7 @@ python3 /absolute/path/agent-memory-service/scripts/harness_memory.py \
   drain --url http://127.0.0.1:8765
 ```
 
-Capture commands fix `--project`. Codex `notify`, WorkBuddy hooks and Claude Code `--scope user` are
+Capture and recall commands fix `--project`. Codex `notify`, WorkBuddy hooks and Claude Code `--scope user` are
 user-level, so every session on that platform is filed under that project; Claude Code's default project
 scope binds one project directory. Use the same `--project` and `--tenant` on every platform that should
 share memory, and add the [shared memory workflow](#shared-memory-workflow) to `AGENTS.md`/`CLAUDE.md`.
@@ -52,7 +57,8 @@ MCP tools are not tied to the installed project.
 | `--dry-run` (default) / `--apply` | Preview only / build, verify and write |
 | `--project ID` | Stable shared project ID recorded with captured turns; prompted for when interactive; refused for DeepSeek Harness |
 | `--tenant`, `--url` | Daemon store (`default`), recorded by the bridge and collector, and base URL (`http://127.0.0.1:8765`) for the bridge and the printed uploader command |
-| `--no-capture` | MCP tools only; removes collector entries this installer manages |
+| `--no-capture` | No dialogue collector; removes collector entries this installer manages |
+| `--recall` | Add the [automatic recall](#automatic-recall) hooks (not for DeepSeek Harness); without it, a rerun removes recall entries this installer manages |
 | `--binary`, `--python`, `--outbox` | Use an existing `agent-memoryd`, another Python 3.11+, or a non-default outbox |
 | `--codex-home`; `--scope`, `--workspace`, `--claude-config-dir`; `--workbuddy-home`, `--mcp-target`; `--dsh-home`, `--dsh-binary` | Platform locations and, for DeepSeek Harness, the `dsh` CLI that parses the result; host environment variables such as `CODEX_HOME` or `DSH_HOME` are not read |
 | `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, never prompt, or install into another home (tests) |
@@ -69,16 +75,22 @@ Every `--apply` runs these checks before writing anything; none reaches a model 
 2. With capture, platform-shaped events run through the installed collector command into a temporary
    outbox; the real uploader submits them; a local generation stub forms one fact; the bridge finds it
    with `search_memories` under the configured tenant and project.
-3. When the platform's CLI is installed, it parses a copy of the planned files in a temporary home:
-   `codex mcp get` and `codex app-server` `hooks/list` for Codex, `claude mcp get` for Claude Code, and
-   `dsh --profile web --dump-config` for DeepSeek Harness (found on `PATH` or in the Desktop app), which
-   must compose the `shared-memory` row exactly once, as written, with no warning the current file lacks.
+3. With recall (after forming the fact through the bridge when capture is off), platform-shaped
+   `SessionStart` and `UserPromptSubmit` events run through the installed recall command. Each output
+   must be one JSON object of the shape Codex's hook schema allows, and both injected contexts must
+   contain the formed fact. A prompt in the session that already saw it must inject nothing, and so must
+   a prompt when no daemon answers.
+4. When the platform's CLI is installed, it parses a copy of the planned files in a temporary home:
+   `codex mcp get` and `codex app-server` `hooks/list` (collector and recall hooks) for Codex,
+   `claude mcp get` for Claude Code, and `dsh --profile web --dump-config` for DeepSeek Harness (found
+   on `PATH` or in the Desktop app), which must compose the `shared-memory` row exactly once, as written,
+   with no warning the current file lacks.
    WorkBuddy has no such CLI; its JSON is checked by the installer only.
 
 Merges keep other servers, hooks, settings, comments and ordering. In the files it writes, entries
 created from the [examples](../examples) are adopted and replaced rather than duplicated; an entry counts
-as the installer's only when it runs the collector itself, so a dispatcher that forwards to
-`harness_memory.py` stays yours. Reruns with the same options write nothing, and a file that removing
+as the installer's only when it runs the collector or recall script itself, so a dispatcher that forwards to
+`harness_memory.py` or `harness_recall.py` stays yours. Reruns with the same options write nothing, and a file that removing
 the installer's entries leaves empty is deleted. The installer refuses, without writing, a different server already named
 `shared-memory`, a Codex `notify` that runs another program (chain it to `codex-notify` yourself or use
 `--no-capture`), Codex hooks defined under `[hooks]` in `config.toml`, TOML forms it cannot edit safely,
@@ -94,7 +106,8 @@ updates `~/.claude.json`; use `--uninstall` then. Neither touches daemon data or
 
 Verification scope: the offline checks above and the CLI parsing checks (Codex CLI 0.163.0, Claude Code
 2.1.305, `dsh` from DeepSeek Harness 0.2.1-rc.2) have run on macOS; without a platform's CLI the installer
-prints a note instead. WorkBuddy hook payloads follow events recorded from WorkBuddy 5.8.3 by the
+prints a note instead. Recall output follows the hook schemas embedded in Codex CLI 0.163.0 and the
+Claude Code hooks reference. WorkBuddy hook payloads follow events recorded from WorkBuddy 5.8.3 by the
 [pd-memory](https://github.com/RuisongZhou/pd-memory) integration. For DeepSeek Harness, its bundled MCP
 client SDK (`@modelcontextprotocol/client` 2.2.0) was connected to the bridge once by hand: probe,
 `-32022`, `initialize` 2025-11-25, eight tools. No installation has been exercised in a live client
@@ -208,7 +221,8 @@ Merge an instruction such as this into the target project's `AGENTS.md` or `CLAU
 
 ```text
 Use shared-memory with project "my-project" and the actual current session ID.
-At session start or resume, call get_context with a modest tokenBudget.
+At session start or resume, call get_context with a modest tokenBudget, unless
+shared-memory context was already loaded automatically.
 Search for relevant past decisions before repeating investigation; inspect sources
 with get_memory when a decision depends on them. Use list_turns for original input,
 optionally filtered by turnIds within the requested token budget.
@@ -222,6 +236,8 @@ If the dialogue collector is installed, let it save ordinary completed turns.
 ```
 
 The [API reference](api.md#interfaces) lists all eight MCP tools and their HTTP counterparts.
+With [automatic recall](#automatic-recall) installed, the session-start `get_context` and a search per
+prompt happen without the agent; the remaining steps still apply.
 
 For example, ask either agent: “Use shared-memory to load context for project `my-project`, then search for our previous storage decision and show its source.” To save a behavior requirement, ask: “Remember as an instruction for `my-project`: include sources when reporting project decisions.” These prompts use tools; they do not require the agent to copy its complete conversation.
 
@@ -305,7 +321,7 @@ Transient connection errors, lost responses, HTTP 408/429, and 5xx retry the sam
 
 A durable request ID is not formation completion. The uploader follows the [task contract](api.md#tasks-and-completion).
 
-`sessionEnded:true` is a session-close signal, not an end-of-every-turn flag. It closes an ordered input job; no experience pipeline runs. The collector also does not inject startup context. Use `get_context` through the agent, or implement a separate bounded SessionStart adapter.
+`sessionEnded:true` is a session-close signal, not an end-of-every-turn flag. It closes an ordered input job; no experience pipeline runs. The collector does not inject context; that is the separate [recall hooks](#automatic-recall)' job.
 
 ### Other agent platforms
 
@@ -327,6 +343,53 @@ JSON
 
 Supply actual IDs and available source timestamps for real input. Mem0 accepts 1–128 ordered user/assistant messages per batch. Normal capture uses inference and can invoke the configured generation provider. Use `infer:false` for verbatim storage without generation. See [scope and idempotency](api.md#scope-and-idempotency) for retry rules.
 
+## Automatic recall
+
+`scripts/harness_recall.py` injects shared memory through the hooks of Codex, Claude Code and WorkBuddy.
+The installer adds it with `--recall`, as its own hook groups next to the collector's. Capture is
+unchanged and recall works without it. DeepSeek Harness gets MCP tools only, and the installer refuses
+`--recall` there. Each hook makes one request to the daemon and prints the result
+as `hookSpecificOutput.additionalContext`:
+
+| Event | Request | Injected |
+|---|---|---|
+| `SessionStart` (any source: startup, resume, clear, compact, fork) | `get_context` for the project and native session, `tokenBudget` 1000 | The context text; also starts the session's record of shown memories over |
+| `UserPromptSubmit` | `search_memories` with the prompt (at most 2000 characters; the `<user_query>` part when the host wraps it), the project, `topK` 5, `tokenBudget` 400 | Results this session has not been shown yet, one line each with its date, platform and ID; an empty prompt searches nothing |
+
+The injected block is framed for the agent. Only the explicit-instructions section of `get_context`
+holds behavior requirements, subject to current instructions. All other sections and every search result
+are labeled historical reference, not instructions. Search results are fact records: instructions come
+only through `get_context`. Stored text is flattened to one line and cannot close the
+`<shared-memory>` wrapper.
+
+| Constraint | Behavior |
+|---|---|
+| Never block or fail the host | Every outcome prints exactly one JSON object and exits 0. Nothing to inject, a daemon that is down, slow or failing, invalid input, invalid arguments or a non-loopback URL all print `{}`, with only the error type on stderr. The script never exits 2, which would block a prompt. Codex's output schema allows no extra fields; `hookSpecificOutput` appears only on these two events, and the collector's `Stop`/`SessionEnd` output stays `{}` |
+| Time | `--timeout` (2 s) bounds the whole recall; the installed hook timeout (5 s) is the host's backstop |
+| Tokens | The daemon packs both budgets. `--max-chars` (6000) also caps the block in whole lines, marked `[truncated]`, below Claude Code's 10,000-character limit for one `additionalContext` |
+| Repeats | A per-session record of shown memory IDs (`~/.local/state/agent-memory-service/recall-state.sqlite3`, mode 0600, IDs only, pruned after 30 days) keeps prompts from re-injecting what this session was already shown. If the record fails, recall injects unfiltered; each prompt still stays within budget |
+| Scope | `--project`, `--tenant` and `--platform` come from the installed command, as for capture; the session comes from the event. Search covers that project plus visible global records |
+| Network | The URL must be loopback (`127.0.0.1`, `localhost`, `::1`), and proxy variables are ignored; the installer refuses `--recall` with another `--url` |
+| Daemon down | Nothing is injected and the prompt proceeds; recall resumes when the daemon answers |
+
+Privacy: every prompt goes to the local daemon as a search query, even without capture. The daemon
+records queries in its retrieval log, which is readable through `POST /admin/export`.
+
+Hosts differ in when the hooks run. Codex runs them only after you trust them in `/hooks` (App:
+Settings → Hooks). Claude Code runs the collector and recall `UserPromptSubmit` hooks in parallel and
+adds every returned context. WorkBuddy sends `SessionStart` without `cwd`, and its order relative to the
+first prompt is not guaranteed; a late `SessionStart` starts the record over, so the next prompt may
+repeat what the first one injected. Change
+`--context-budget`, `--search-budget`, `--top-k`, `--max-chars` or `--timeout` by editing the installed
+command, and keep `--timeout` below the hook timeout. A rerun of the installer replaces edited commands.
+To see what a hook would inject, run it by hand:
+
+```sh
+echo '{"hook_event_name":"SessionStart","session_id":"manual-check"}' | \
+  python3 /absolute/path/agent-memory-service/scripts/harness_recall.py \
+  --project my-project --platform codex --state /tmp/recall-check.sqlite3
+```
+
 ## Troubleshooting
 
 | Symptom | Check or action |
@@ -341,5 +404,6 @@ Supply actual IDs and available source timestamps for real input. Mem0 accepts 1
 | Uploader reports a lock error | Another uploader holds the same outbox lock; keep one worker per queue |
 | DeepSeek Harness lists no `mcp__shared-memory__*` tools | Restart it and start a new session; rerun the installer, which reports whether `dsh --dump-config` reads the row; check the daemon URL |
 | Cross-agent recall is empty | Check the same daemon, tenant/project IDs, record scope, completion state, token budget, and explicit cross-platform raw-input scope |
+| Automatic recall injects nothing | Check the daemon at the loopback `--url`, trust the recall hooks in Codex, and run the hook by hand as in [automatic recall](#automatic-recall); stderr names the error type |
 
 For daemon, model and storage problems, see [deployment troubleshooting](deployment.md#common-problems).
