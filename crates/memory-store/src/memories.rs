@@ -21,6 +21,15 @@ impl Store {
         .await
     }
 
+    /// Records a consolidation merge derived from `id`.
+    pub async fn consolidation_merges_of(&self, id: &str) -> Result<Vec<MemoryRec>> {
+        self.find_memories(
+            "derivation.stage = 'consolidation' AND derivation.inputMemoryIds CONTAINS $id",
+            vec![("id", json!(id))],
+        )
+        .await
+    }
+
     /// One `{type, status, n}` row per type/status pair.
     pub async fn memory_counts_by_type_status(&self) -> Result<Vec<Value>> {
         self.select(

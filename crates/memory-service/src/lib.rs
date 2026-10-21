@@ -26,6 +26,6 @@ pub use runtime::{engine, indexer, llm, models, reference_time, tenant};
 pub use algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
 #[cfg(feature = "selftest")]
 pub use diagnostics::{
-    consolidation as consolidation_tests, integrity as integrity_tests, mem0 as mem0_tests,
-    selftest,
+    consolidation as consolidation_tests, consolidation_apply as consolidation_apply_tests,
+    integrity as integrity_tests, mem0 as mem0_tests, selftest,
 };

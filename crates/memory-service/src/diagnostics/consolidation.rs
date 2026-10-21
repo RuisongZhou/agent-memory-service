@@ -1,5 +1,5 @@
-//! Propose-only consolidation end to end: Mem0 formation and consolidation both answered by a local
-//! generation stub, with mock embeddings. No external model call.
+//! Consolidation proposals end to end: Mem0 formation and consolidation both answered by a local
+//! generation stub, with mock embeddings. No external model call. `consolidation_apply` reuses the stub.
 use super::tenant;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -32,6 +32,11 @@ fn reply(system: &str, prompt: &str) -> Value {
         let texts: String = facts.iter().filter_map(|f| f["text"].as_str()).collect();
         if texts.contains("Arch Linux") {
             json!({"operations":[{"op":"merge","ids":ids,"text":"User uses Arch Linux on the work laptop"}]})
+        } else if texts.contains("Jenkins") {
+            // Members arrive in statement order: the January fact is "0".
+            json!({"operations":[{"op":"supersede","old":"0","new":"1"}]})
+        } else if texts.contains("Acme Corp") {
+            json!({"operations":[{"op":"conflict","ids":ids,"reason":"manager differs"}]})
         } else if texts.contains("Postgres") {
             // Version 16 appears in no input: provenance validation rejects this merge.
             json!({"operations":[{"op":"merge","ids":ids,"text":"User runs Postgres 16 in production on AWS"}]})
@@ -50,7 +55,7 @@ fn reply(system: &str, prompt: &str) -> Value {
 }
 
 /// An OpenAI-compatible chat-completions stub on a loopback port.
-async fn generation_stub() -> String {
+pub(crate) async fn generation_stub() -> String {
     let app = Router::new().route(
         "/chat/completions",
         post(|Json(body): Json<Value>| async move {
@@ -66,7 +71,7 @@ async fn generation_stub() -> String {
     url
 }
 
-fn engine(url: &str, enabled: bool) -> Arc<Engine> {
+pub(crate) fn engine(url: &str, enabled: bool) -> Arc<Engine> {
     let cfg = ServiceConfig {
         consolidation_enabled: enabled,
         ..Default::default()
@@ -80,7 +85,7 @@ fn engine(url: &str, enabled: bool) -> Arc<Engine> {
     )
 }
 
-async fn add(
+pub(crate) async fn add(
     eng: &Arc<Engine>,
     t: &Arc<memory_engine::runtime::tenant::Tenant>,
     c: &Caller,

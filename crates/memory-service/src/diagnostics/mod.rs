@@ -1,5 +1,6 @@
 //! Self-tests run by `agent-memoryd selftest`; compiled only with the `selftest` feature.
 pub mod consolidation;
+pub mod consolidation_apply;
 pub mod integrity;
 pub mod mem0;
 pub mod selftest;

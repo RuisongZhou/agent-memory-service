@@ -4,9 +4,11 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use super::must_get;
+use crate::app::consolidation::write_patch;
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::tenant::Tenant;
+use memory_domain::consolidation::apply::{is_merge, release_inputs};
 use memory_domain::types::*;
 use memory_store::schema;
 use memory_store::store::{safe_id, turn_rid, Tx};
@@ -16,16 +18,22 @@ use memory_store::store::{safe_id, turn_rid, Tx};
 /// relinked prev ↔ next. OPEN: deleting the head of a chain does not revive the previous value (it stays
 /// superseded with no successor); a `conflict` memory whose only conflict partner was deleted returns to
 /// `current`.
+///
+/// A consolidation merge restates its inputs (`derivation.inputMemoryIds`). Deleting it leaves the inputs
+/// superseded without a successor; deleting one of its inputs deletes the merge too, since its text holds
+/// the deleted content, and returns the merge's other inputs to `current`.
 pub async fn delete_memory(eng: &Arc<Engine>, t: &Arc<Tenant>, req: IdReq) -> ApiResult<Value> {
     let _guard = t.lock_formation().await;
     must_get(t, &req.id).await?;
-    // Profiles and skills copy their source memories. Delete these derived records transitively;
-    // otherwise a deleted fact would still be disclosed through the next context injection.
-    let mut pending = vec![req.id.clone()];
+    // Profiles and skills copy their source memories, and merges restate theirs. Delete these derived
+    // records transitively; otherwise a deleted fact would still be disclosed through the next context
+    // injection. `true` marks a merge reached through one of its inputs.
+    let mut pending = vec![(req.id.clone(), false)];
     let mut visited = HashSet::new();
     let mut derived = Vec::new();
+    let mut restored = Vec::new();
     let mut root = Value::Null;
-    while let Some(id) = pending.pop() {
+    while let Some((id, from_input)) = pending.pop() {
         if !visited.insert(id.clone()) {
             continue;
         }
@@ -36,8 +44,17 @@ pub async fn delete_memory(eng: &Arc<Engine>, t: &Arc<Tenant>, req: IdReq) -> Ap
                 vec![("id", json!(id))],
             )
             .await?;
-        pending.extend(dependents.into_iter().map(|m| m.id));
-        let out = delete_one(eng, t, &id).await?;
+        pending.extend(dependents.into_iter().map(|m| (m.id, false)));
+        let merges = t.store.consolidation_merges_of(&id).await?;
+        pending.extend(merges.into_iter().map(|m| (m.id, true)));
+        let out = delete_one(eng, t, &id, &visited, from_input).await?;
+        restored.extend(
+            out["restoredInputs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
         if id == req.id {
             root = out;
         } else {
@@ -45,16 +62,45 @@ pub async fn delete_memory(eng: &Arc<Engine>, t: &Arc<Tenant>, req: IdReq) -> Ap
         }
     }
     root["derivedDeleted"] = json!(derived);
+    root["restoredInputs"] = json!(restored);
     Ok(root)
 }
 
-async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiResult<Value> {
+async fn delete_one(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    memory_id: &str,
+    deleted: &HashSet<String>,
+    from_input: bool,
+) -> ApiResult<Value> {
     let m = must_get(t, memory_id).await?;
     let id = m.id.clone();
     let mut tx = Tx::new();
     tx.delete(schema::MEMORIES, &id)?;
 
-    // chain relink
+    // a merge's inputs: unlinked, or back to current when the merge goes because an input went
+    let mut restored = Vec::new();
+    if is_merge(&m) {
+        let inputs = m
+            .derivation
+            .as_ref()
+            .map(|d| d.input_memory_ids.clone())
+            .unwrap_or_default();
+        let inputs = t.store.get_memories(&inputs).await?;
+        for patch in release_inputs(&m, &inputs, deleted, from_input) {
+            write_patch(&mut tx, &patch)?;
+            if patch.after.contains_key("status") {
+                restored.push(patch.id);
+            }
+        }
+        if !restored.is_empty() {
+            eng.algorithm()
+                .consolidation_inputs_restored(t, &m, &restored, &mut tx)
+                .await?;
+        }
+    }
+
+    // chain relink; a merge's inputs point at it through `supersededBy` but it never `supersedes` them
     let prev = match &m.supersedes {
         Some(p) if safe_id(p).is_ok() => t.store.get_memory(p).await?,
         _ => None,
@@ -62,7 +108,8 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
     let next = match &m.superseded_by {
         Some(n) if safe_id(n).is_ok() => t.store.get_memory(n).await?,
         _ => None,
-    };
+    }
+    .filter(|n| n.supersedes.as_deref() == Some(id.as_str()));
     let mut relinked = json!(null);
     match (&prev, &next) {
         (Some(p), Some(n)) => {
@@ -146,6 +193,7 @@ async fn delete_one(eng: &Arc<Engine>, t: &Arc<Tenant>, memory_id: &str) -> ApiR
     indexer::drain(eng, t).await?;
     Ok(json!({
         "deleted": id,
+        "restoredInputs": restored,
         "relinked": relinked,
         "edgesRemoved": edges_removed,
         "evidenceDeleted": ev_deleted,

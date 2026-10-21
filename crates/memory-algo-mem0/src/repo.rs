@@ -121,6 +121,19 @@ pub async fn entity_rows(t: &Tenant) -> Result<Vec<Value>> {
         .await
 }
 
+/// Content keys that currently deduplicate into `memory_id`.
+pub async fn content_keys_of(t: &Tenant, memory_id: &str) -> Result<Vec<String>> {
+    Ok(t.store
+        .select(
+            "SELECT mid FROM mem0_hashes WHERE memoryId = $id ORDER BY mid ASC",
+            vec![("id", json!(memory_id))],
+        )
+        .await?
+        .iter()
+        .filter_map(|row| row["mid"].as_str().map(str::to_string))
+        .collect())
+}
+
 /// Canonical entity rows without their vectors: `{mid, entityType, linkedMemoryIds}`.
 pub async fn entity_links(t: &Tenant) -> Result<Vec<Value>> {
     t.store

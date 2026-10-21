@@ -1,6 +1,7 @@
-//! Propose-only consolidation: which facts a run may consider, how they cluster, and whether a model's
-//! consolidation ops are acceptable. Pure; the algorithm owns the prompt and generation call, the engine
-//! stores runs and proposals. Limits are the fixed constants in `memory_rules::consolidation`.
+//! Consolidation: which facts a run may consider, how they cluster, and whether a model's consolidation
+//! ops are acceptable; `apply` plans applying and rolling them back. Pure; the algorithm owns the prompt,
+//! generation call and its private tables, the engine stores runs and proposals. Limits are the fixed
+//! constants in `memory_rules::consolidation`.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -9,6 +10,8 @@ use std::sync::Arc;
 use super::types::*;
 use memory_rules::consolidation as rules;
 use memory_rules::util;
+
+pub mod apply;
 
 /// Longest `conflict` reason kept with a proposal.
 pub const MAX_REASON_BYTES: usize = 1024;
@@ -191,7 +194,7 @@ pub fn check_ids(members: &[&str], ops: &[ConsolidationOp]) -> Result<(), String
 }
 
 /// Statement instant (nanoseconds) and position within its turn.
-fn statement_order(m: &MemoryRec) -> Option<(i64, i64)> {
+pub(crate) fn statement_order(m: &MemoryRec) -> Option<(i64, i64)> {
     util::parse_ts(&m.stated_at)
         .and_then(|t| t.timestamp_nanos_opt())
         .map(|t| (t, m.stated_pos))

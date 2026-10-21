@@ -8,8 +8,10 @@ use std::sync::Arc;
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
 use memory_config::{MemoryStrategy, ServiceConfig};
+use memory_domain::consolidation::apply::OpOutcome;
 use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
 use memory_domain::types::*;
+use memory_store::store::Tx;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -99,5 +101,41 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
         _cluster: &'a Cluster,
     ) -> BoxFuture<'a, anyhow::Result<GeneratedOps>> {
         Box::pin(async { Err(anyhow::anyhow!("consolidation is not supported")) })
+    }
+
+    /// Apply one `proposed` consolidation op (a `proposals` row) by adding its writes to `tx`, which the
+    /// engine commits with the proposal's bookkeeping. Rechecks the op against the stored records first
+    /// and leaves `tx` untouched when it returns `Skipped`. Called under the formation lock.
+    fn consolidation_apply<'a>(
+        &'a self,
+        _eng: &'a Arc<Engine>,
+        _t: &'a Arc<Tenant>,
+        _proposal: &'a Value,
+        _tx: &'a mut Tx,
+    ) -> BoxFuture<'a, anyhow::Result<OpOutcome>> {
+        Box::pin(async { Err(anyhow::anyhow!("consolidation is not supported")) })
+    }
+
+    /// The logical inverse of an `applied` op, under the same contract as `consolidation_apply`.
+    fn consolidation_rollback<'a>(
+        &'a self,
+        _eng: &'a Arc<Engine>,
+        _t: &'a Arc<Tenant>,
+        _proposal: &'a Value,
+        _tx: &'a mut Tx,
+    ) -> BoxFuture<'a, anyhow::Result<OpOutcome>> {
+        Box::pin(async { Err(anyhow::anyhow!("consolidation is not supported")) })
+    }
+
+    /// Algorithm-private writes when `restored` inputs of the merged record `merged` return to
+    /// `current` because one of its other inputs was deleted (see `delete_memory`).
+    fn consolidation_inputs_restored<'a>(
+        &'a self,
+        _t: &'a Tenant,
+        _merged: &'a MemoryRec,
+        _restored: &'a [String],
+        _tx: &'a mut Tx,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
     }
 }

@@ -1,4 +1,5 @@
 //! SurrealDB persistence: transactions, schema names, repositories and the integrity glue that runs under the write lock.
+pub mod consolidation;
 pub mod evidence;
 pub mod index_tasks;
 pub mod integrity;

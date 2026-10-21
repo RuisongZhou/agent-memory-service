@@ -126,6 +126,8 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /admin/export` | Read memories or selected audit tables in the current tenant; not a full backup |
 | `POST /admin/reindex` | Queue vector/full-text rebuild; CLI requires `--all`, `--vector` or `--fulltext` |
 | `POST /admin/consolidate` | Propose consolidation ops for one project and store the run; requires `consolidationEnabled` and `dryRun:true` |
+| `POST /admin/consolidation_apply` | Apply a proposed run's ops, one transaction per op; requires `consolidationEnabled` |
+| `POST /admin/consolidation_rollback` | Undo an applied run's ops, newest first; ops changed since stay applied |
 | `POST /admin/seed` | Direct fixture admission, available only with mock models |
 
 Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `requests`,
@@ -134,9 +136,10 @@ Embedding token usage is approximate, not provider billing. Reindex HTTP errors 
 
 ### Consolidation proposals
 
-Consolidation is an opt-in deviation from the pinned Mem0 algorithm and only proposes: no memory record
-changes and nothing applies the proposals yet. [Architecture](architecture.md#consolidation) describes
-candidate selection, validation, limits and the planned apply/rollback stage.
+Consolidation is an opt-in deviation from the pinned Mem0 algorithm. Proposing changes no memory record;
+a run changes records only when it is [applied](#applying-and-rolling-back-consolidation-runs).
+[Architecture](architecture.md#consolidation) describes candidate selection, validation, limits, apply
+and rollback.
 
 ```json
 POST /admin/consolidate
@@ -160,7 +163,52 @@ contract's bounded repair). The response is `{"run": {...}, "proposals": [...]}`
 | `proposals[].detail` | Algorithm provenance for applying: input content keys; for merges the union of input request ids and the merged content key |
 
 `agent-memoryd consolidate --project P --dry-run [--url URL] [--tenant T]` posts the same request to a
-running daemon and prints the run; it refuses to run without `--dry-run`, and HTTP errors exit nonzero.
+running daemon and prints the run. HTTP errors exit nonzero.
+
+### Applying and rolling back consolidation runs
+
+```json
+POST /admin/consolidation_apply
+{"runId": "cr…"}
+```
+
+Apply requires `consolidationEnabled:true` and a run in status `proposed`, or `applying` to resume an
+interrupted apply. Under the formation lock, each `proposed` op is rechecked against the stored records.
+It then commits in its own transaction, and its proposal becomes `applied`, keeping in `applied` the
+values it replaced. An op is marked `skipped` with `skipReason` when an input changed or is no longer a
+current candidate. The run becomes `applied` with `appliedOps` and `skippedOps`. What each op writes:
+
+| Op | Writes |
+|---|---|
+| merge | A new current fact (`applied.mergedId`) with `derivation.stage:"consolidation"`; its inputs become `superseded` with `supersededBy` pointing at it |
+| supersede | `old` becomes `superseded` with `supersededBy` and `validUntil`; `new.supersedes` is set |
+| conflict | One open uncertainty (`applied.uncertaintyId`); the members become `conflict` and are settled with `resolve_uncertainty` |
+| keep | Nothing |
+
+```json
+POST /admin/consolidation_rollback
+{"runId": "cr…"}
+```
+
+Rollback accepts runs in status `applied`, `applying`, `rolling_back` or `partially_rolled_back`. It is
+not gated by `consolidationEnabled`, so a run can still be undone after the flag is turned off. It
+inverts `applied` ops, newest first:
+
+- A merged record becomes `superseded` (it is never deleted) and its inputs return to `current`.
+- A supersede link is removed.
+- An open question becomes `withdrawn` and its members return to `current`.
+
+An op stays `applied`, with `rollbackSkipReason`, when a person or a later run changed its result: the
+merged record was corrected, deleted or merged again, the question was resolved, or a link moved. The run
+is then `partially_rolled_back` and can be rolled back again later; otherwise it is `rolled_back`, which
+is final. Both actions return `{"run": {...}, "proposals": [...]}`.
+
+`agent-memoryd consolidate --apply RUN` and `--rollback RUN` post these requests. `--dry-run`, `--apply`
+and `--rollback` are mutually exclusive.
+
+`delete_memory` also follows merges. Deleting a merged record leaves its inputs superseded. Deleting one
+of its inputs deletes the merged record too and returns the other inputs to `current`; these are listed
+in `restoredInputs`.
 
 ## Configuration
 
@@ -211,7 +259,7 @@ read from JSON.
 | `bruteForceLimit` | 20000 | Exact/ANN selection boundary; zero forces ANN |
 | `useReranker` | true | Global gate; `--no-reranker` disables it |
 | `llmTimeoutSecs` | 180 | Generation request timeout |
-| `consolidationEnabled` | false | Allow `POST /admin/consolidate` (propose-only); evaluation protocols never set it |
+| `consolidationEnabled` | false | Allow proposing and applying consolidation runs; evaluation protocols never set it |
 
 `zh` adds a formation instruction to match the new messages' language/script and selects Chinese context
 labels; it does not unconditionally translate facts to Simplified Chinese. `en` uses the base prompt.

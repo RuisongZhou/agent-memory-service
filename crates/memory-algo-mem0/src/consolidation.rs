@@ -1,7 +1,7 @@
-//! Propose-only consolidation of Mem0 facts: clusters from existing vectors and canonical entity rows,
-//! one generation call per cluster under a strict JSON contract, and the batch provenance and content
-//! keys a later apply stage needs. This deviates from the pinned Mem0 algorithm, so it runs only when
-//! the service enables it and never inside evaluation protocols.
+//! Consolidation of Mem0 facts: clusters from existing vectors and canonical entity rows, one generation
+//! call per cluster under a strict JSON contract, and the batch provenance and content keys `apply`
+//! needs. This deviates from the pinned Mem0 algorithm, so it runs only when the service enables it
+//! and never inside evaluation protocols.
 use super::config::Mem0Config;
 use super::{entities, repo};
 use anyhow::{anyhow, Result};
@@ -15,6 +15,8 @@ use memory_store::schema;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+pub mod apply;
 
 pub const FORMAT: &str = "mem0-consolidation-v1";
 pub const SYSTEM: &str = include_str!("prompts/consolidation.txt");
