@@ -171,7 +171,15 @@ impl Shim {
             tenant: std::env::var("MEMORY_TENANT")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            http: reqwest::Client::new(),
+            // The daemon binds to loopback: never route it through a proxy from the client's environment.
+            http: if crate::runtime::models::is_loopback(url) {
+                reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .unwrap_or_default()
+            } else {
+                reqwest::Client::new()
+            },
             tools: Arc::new(tools),
         }
     }

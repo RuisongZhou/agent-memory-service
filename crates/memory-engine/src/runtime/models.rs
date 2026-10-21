@@ -458,7 +458,8 @@ fn longest_first(q: usize, d: usize, budget: usize) -> (usize, usize) {
     }
 }
 
-fn is_loopback(url: &str) -> bool {
+/// Whether `url` names this host; HTTP proxies from the environment cannot reach it.
+pub fn is_loopback(url: &str) -> bool {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))

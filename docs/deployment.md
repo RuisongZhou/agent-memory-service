@@ -11,10 +11,10 @@ continue with [MCP and harness integration](mcp-harness.md) after the daemon is 
 | Embedding model | `llama-server` with BGE-M3 Q8_0 GGUF | `http://127.0.0.1:8081` |
 | Reranker | Separate `llama-server` with BGE-reranker-v2-m3 Q8_0 GGUF | `http://127.0.0.1:8082` |
 | MCP bridge | Each agent client launches `agent-memoryd mcp` as a stdio child process | Forwards tools to the daemon |
-| Optional dialogue collector | Codex notification or Claude Code hook | Writes a local SQLite outbox |
+| Optional dialogue collector | Codex notification, Claude Code or WorkBuddy hook | Writes a local SQLite outbox |
 | Optional uploader | One `harness_memory.py drain` process per outbox | Submits dialogue and polls task receipts |
 
-Start the model servers and daemon before connecting agent clients. MCP registration makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context.
+Start the model servers and daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) then registers a client. MCP registration makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context.
 
 The daemon exposes ordinary JSON HTTP endpoints, **not an HTTP MCP endpoint**. Configure clients with a stdio command, not an MCP `url` pointing to port 8765. There is no `/mcp`, SSE, or Streamable HTTP MCP endpoint in this repository.
 

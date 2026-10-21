@@ -4,7 +4,7 @@ CARGO ?= cargo
 JOBS ?=
 JFLAG = $(if $(JOBS),-j $(JOBS))
 
-.PHONY: setup build test test-rust test-service selftest smoke fmt check-public check-arch
+.PHONY: setup build test test-rust test-service selftest smoke install-check fmt check-public check-arch
 setup:
 	python3 eval/setup_eval.py
 build:
@@ -22,6 +22,14 @@ smoke:
 	$(PYTHON) scripts/mem0_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-http-smoke.json
 	$(PYTHON) scripts/mem0_history_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-history-http-smoke.json
 	$(PYTHON) scripts/mem0_hybrid_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-hybrid-http-smoke.json
+# One-command install for every platform into a temporary home, verified against a mock daemon.
+install-check:
+	tmp=$$(mktemp -d) && mkdir "$$tmp/project" && \
+	  opts="--apply --non-interactive --binary target/fast/agent-memoryd --project install-check" && \
+	  bash scripts/install.sh --host codex --home "$$tmp" $$opts && \
+	  bash scripts/install.sh --host workbuddy --home "$$tmp" $$opts && \
+	  bash scripts/install.sh --host claude-code --home "$$tmp" --workspace "$$tmp/project" $$opts; \
+	  status=$$?; rm -rf "$$tmp"; exit $$status
 fmt:
 	$(CARGO) fmt --all -- --check
 check-public:

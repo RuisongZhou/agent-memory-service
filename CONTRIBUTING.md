@@ -8,12 +8,13 @@ Install evaluation/test dependencies once with `make setup` (see [evaluation set
 For changes to service behavior, run the existing local/CI workflow:
 
 ```sh
-make fmt test-rust test-service test build selftest smoke
+make fmt test-rust test-service test build selftest smoke install-check
 make check-arch check-public
 ```
 
 `test-rust` runs pure-crate tests, `test-service` covers the domain/store/engine/algorithm/service crates,
-and `selftest` runs the daemon with `MEMORY_MOCK_MODELS=1`. HTTP/MCP smoke checks use temporary stores,
+and `selftest` runs the daemon with `MEMORY_MOCK_MODELS=1`; `install-check` runs the
+one-command installer for every platform into a temporary home. HTTP/MCP smoke checks use temporary stores,
 mock retrieval and local deterministic generation stubs or raw writes. They never call paid providers.
 `serve.py --mock` does not supply a generation stub and is not a substitute for these checks.
 See the [CI workflow](.github/workflows/ci.yml) and [script inventory](scripts/README.md).

@@ -15,6 +15,7 @@ reranking. A separately configured generation provider performs inferred memory 
 | Task | Authoritative guide |
 |---|---|
 | Install, configure model processes, start the daemon, back up or troubleshoot | [Deployment and operations](docs/deployment.md) |
+| Install into Codex, Claude Code or WorkBuddy with one command | [One-command install](docs/mcp-harness.md#one-command-install) |
 | Connect Codex/Claude Code, capture dialogue and run the uploader | [MCP and harness integration](docs/mcp-harness.md) |
 | Look up request fields, completion states, scope or configuration defaults | [API and configuration](docs/api.md) |
 | Understand write/read paths, storage, entity projection and SDK adaptations | [Architecture](docs/architecture.md) |
@@ -22,9 +23,12 @@ reranking. A separately configured generation provider performs inferred memory 
 | Run a controlled SDK comparison or inspect historical evidence | [Evaluation](eval/README.md) |
 | Find service operations and verification scripts | [Script inventory](scripts/README.md) |
 
-Follow deployment first, then client integration. MCP registration alone does not start the daemon,
-capture conversations or inject memory into the client. The daemon binds to loopback for one local
-user; tenant/platform headers are routing metadata, not authentication.
+Follow deployment first, then client integration. After the daemon is running, one command registers
+the bridge and dialogue capture in an agent platform, for example
+`bash scripts/install.sh --host codex --apply --project my-project` (also `workbuddy`, and `claude-code`
+with `--workspace`). MCP registration alone does not start the daemon, capture conversations or inject
+memory into the client. The daemon binds to loopback for one local user; tenant/platform headers are
+routing metadata, not authentication.
 
 ## Repository layout
 
