@@ -2,7 +2,7 @@
 # MCP tables can also go in a trusted project's .codex/config.toml; notify cannot.
 # Optional automatic dialogue capture: remove notify if you only want MCP tools.
 # This fixes the capture project; use a dispatcher if you work across projects.
-notify = ["python3", "/absolute/path/agent-memory-service/scripts/harness_memory.py", "--project", "agent-memory-service", "--platform", "codex", "codex-notify"]
+notify = ["/absolute/path/agent-memory-service/target/fast/agent-memoryd", "hook", "codex-notify", "--project", "agent-memory-service", "--platform", "codex"]
 
 [mcp_servers.shared-memory]
 command = "/absolute/path/agent-memory-service/target/fast/agent-memoryd"

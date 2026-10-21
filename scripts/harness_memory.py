@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Local dialogue outbox. Hooks only capture; a separate worker uploads and polls receipts.
 
+Legacy: `agent-memoryd hook capture|codex-notify` and `agent-memoryd outbox` replace this script with
+the same outbox and contract; the installer now writes those. It stays so hooks written by earlier
+installers keep working (a missing script would make Python exit 2 and block prompts).
+
 Uses documented Codex notify / Claude Code hook fields, never private transcript formats.
 See docs/mcp-harness.md. Python 3.11+, standard library only.
 """

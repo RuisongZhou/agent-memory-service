@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Bounded automatic recall: inject shared memory into an agent through its hooks.
 
+Legacy: `agent-memoryd hook recall` replaces this script with the same contract and recall record;
+the installer now writes that. It stays so hooks written by earlier installers keep working.
+
 SessionStart injects get_context; UserPromptSubmit injects search_memories results for
 the prompt, skipping memories this session was already shown. The daemon must be on
 loopback. A hook never blocks or fails its host: every outcome prints exactly one JSON

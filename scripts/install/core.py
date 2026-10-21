@@ -6,10 +6,10 @@ install flow. Standard library only (Python 3.11+). Each agent host is one modul
 Entry point: `scripts/install.sh --host <id>`.
 
 The installer registers the stdio MCP bridge, the dialogue collector and,
-with --recall, the automatic recall hooks in a host's own configuration. It
-never stores keys, never starts or installs the daemon, model servers or
-uploader, and verifies everything against a temporary mock daemon before
-writing (checks.py).
+with --recall, the automatic recall hooks in a host's own configuration; all of
+them run `agent-memoryd`, so hosts need no Python. It never stores keys, never
+starts or installs the daemon, model servers or uploader, and verifies
+everything against a temporary mock daemon before writing (checks.py).
 """
 
 import argparse
@@ -20,8 +20,8 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -33,9 +33,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
-HARNESS = ROOT / 'scripts/harness_memory.py'
-RECALL = ROOT / 'scripts/harness_recall.py'
 DEFAULT_BINARY = ROOT / 'target/fast/agent-memoryd'
+# Python scripts earlier installers wrote into hooks; a rerun replaces their entries.
+LEGACY_COLLECTOR = 'harness_memory.py'
+LEGACY_RECALL = 'harness_recall.py'
 HOSTS = ('codex', 'claude-code', 'workbuddy', 'deepseek-harness')
 SERVER = 'shared-memory'
 TOOLS = {'add_memories', 'search_memories', 'get_context', 'get_task', 'list_turns',
@@ -45,7 +46,7 @@ STATE = Path('.local/state/agent-memory-service/installations')
 HOOK_TIMEOUT = 3  # seconds; the collector only writes local SQLite
 RECALL_STATE = Path('.local/state/agent-memory-service/recall-state.sqlite3')  # relative to home
 RECALL_EVENTS = ('SessionStart', 'UserPromptSubmit')
-RECALL_TIMEOUT = 5  # seconds; the recall script itself gives up after 2
+RECALL_TIMEOUT = 5  # seconds; recall itself gives up after 2
 LOOPBACK = ('127.0.0.1', 'localhost', '::1')
 
 
@@ -140,15 +141,26 @@ def text_change(path, text, default_mode):
 SHELL_OPERATORS = set(';&|<>()`$')
 
 
-def collector_command(words, subcommand, script=HARNESS.name):
-    """Whether argv `words` is `script` (the collector) itself running `subcommand` (None: any).
-
-    Only `<script> ...` or `<python> <script> ...` counts: a dispatcher that
-    also forwards to the collector or recall belongs to the user.
-    """
+def legacy_script(words, subcommand, script):
+    """Whether argv `words` is the Python `script` itself running `subcommand` (None: any)."""
     start = 1 if words and Path(words[0]).name.startswith('python') else 0
     return (len(words) > start and Path(words[start]).name == script
             and (subcommand is None or subcommand in words[start + 1:]))
+
+
+# Each hook subcommand and the (subcommand, script) of the Python entry it replaces.
+LEGACY = {'capture': ('hook', LEGACY_COLLECTOR), 'codex-notify': ('codex-notify', LEGACY_COLLECTOR),
+          'recall': (None, LEGACY_RECALL)}
+
+
+def ours(words, subcommand):
+    """Whether argv `words` runs `agent-memoryd hook <subcommand>` or the Python script it replaces.
+
+    Only the program itself counts (`<agent-memoryd> hook ...`, `<script> ...` or
+    `<python> <script> ...`): a dispatcher that also forwards to it belongs to the user.
+    """
+    return ((len(words) > 2 and Path(words[0]).name == 'agent-memoryd' and words[1:3] == ['hook', subcommand])
+            or legacy_script(words, *LEGACY[subcommand]))
 
 
 def handler_words(handler):
@@ -172,19 +184,20 @@ def handler_words(handler):
 
 def owned_handler(handler):
     words = handler_words(handler)
-    return words is not None and collector_command(words, 'hook')
+    return words is not None and ours(words, 'capture')
 
 
 def owned_recall(handler):
     words = handler_words(handler)
-    return words is not None and collector_command(words, None, RECALL.name)
+    return words is not None and ours(words, 'recall')
 
 
 def mentions_ours(handler):
-    """A handler of the user's that also runs the collector or recall script."""
+    """A handler of the user's that also runs the collector or recall."""
     command = str(handler.get('command', '')) if isinstance(handler, dict) else ''
-    return (any(name in command for name in (HARNESS.name, RECALL.name))
-            and not owned_handler(handler) and not owned_recall(handler))
+    mentioned = (any(name in command for name in (LEGACY_COLLECTOR, LEGACY_RECALL))
+                 or re.search(r'agent-memoryd\S*\s+hook\b', command))
+    return bool(mentioned) and not owned_handler(handler) and not owned_recall(handler)
 
 
 def owned_server(entry):
@@ -253,8 +266,8 @@ def merge_hooks(current, events, make_handler, where, owned=owned_handler):
             ours = [h for h in group['hooks'] if owned(h)]
             rest = [h for h in group['hooks'] if not owned(h)]
             if events and any(mentions_ours(h) for h in rest):
-                print(f'[note] {where}: a {event} hook of yours also runs {HARNESS.name} or {RECALL.name}; '
-                      'it is kept as is')
+                print(f'[note] {where}: a {event} hook of yours also runs the shared-memory collector or '
+                      'recall; it is kept as is')
             removed = removed or bool(ours)
             if not ours:
                 kept.append(group)
@@ -288,18 +301,17 @@ def bridge_args(url, platform):
 
 
 def collector_argv(ctx, subcommand, outbox=None, extra=()):
-    """The collector command a host runs. Verification passes a temporary outbox."""
-    argv = [ctx.python, str(HARNESS)]
+    """The collector command (`capture` or `codex-notify`) a host runs. Verification passes a temporary outbox."""
+    argv = [str(ctx.binary), 'hook', subcommand]
     outbox = outbox or ctx.outbox_arg
     if outbox:
         argv += ['--outbox', str(outbox)]
-    return argv + ['--project', ctx.project, '--platform', ctx.platform,
-                   '--tenant', ctx.tenant, subcommand, *extra]
+    return argv + ['--project', ctx.project, '--platform', ctx.platform, '--tenant', ctx.tenant, *extra]
 
 
 def hook_command(ctx, outbox=None, extra=()):
     """Shell command of a collector hook; the same string is installed and verified."""
-    return shlex.join(collector_argv(ctx, 'hook', outbox, extra))
+    return shlex.join(collector_argv(ctx, 'capture', outbox, extra))
 
 
 def hook_handler(ctx, extra=()):
@@ -308,7 +320,7 @@ def hook_handler(ctx, extra=()):
 
 def recall_argv(ctx, url=None, state=None):
     """The recall command a host runs. Verification passes the mock daemon and a temporary state."""
-    argv = [ctx.python, str(RECALL)]
+    argv = [str(ctx.binary), 'hook', 'recall']
     state = state or ctx.recall_state_arg
     if state:
         argv += ['--state', str(state)]
@@ -324,11 +336,12 @@ def recall_handler(ctx):
     return {'type': 'command', 'command': recall_command(ctx), 'timeout': RECALL_TIMEOUT}
 
 
-def uploader_argv(ctx):
-    argv = [ctx.python, str(HARNESS)]
+def drain_argv(ctx):
+    """A standalone uploader, for a daemon started without --outbox."""
+    argv = [str(ctx.binary), 'outbox', 'drain']
     if ctx.outbox_arg:
         argv += ['--outbox', str(ctx.outbox_arg)]
-    return argv + ['drain', '--url', ctx.url]
+    return argv + ['--url', ctx.url]
 
 
 # --- transaction ------------------------------------------------------------
@@ -447,16 +460,6 @@ def check_url(url):
     return url.rstrip('/')
 
 
-def check_python(python):
-    try:
-        result = subprocess.run([python, '-c', 'import sys; print(sys.version_info >= (3, 11))'],
-                                capture_output=True, text=True, timeout=30)
-    except OSError as error:
-        raise InstallError(f'Cannot run {python}') from error
-    if result.stdout.strip() != 'True':
-        raise InstallError(f'{python} must be Python 3.11+ (the collector needs it); pass --python')
-
-
 def build_binary(args):
     if args.binary:
         binary = args.binary
@@ -476,6 +479,10 @@ def build_binary(args):
     result = subprocess.run([str(binary), 'mcp', '--help'], capture_output=True, text=True, timeout=30)
     if result.returncode or '--platform' not in result.stdout:
         raise InstallError(f'{binary} is not an agent-memoryd binary with the mcp bridge')
+    # Hooks of an older binary would fail on its argument parser, and exit 2 blocks a prompt.
+    result = subprocess.run([str(binary), 'hook', '--help'], capture_output=True, text=True, timeout=30)
+    if result.returncode or not all(name in result.stdout for name in ('capture', 'codex-notify', 'recall')):
+        raise InstallError(f'{binary} has no hook commands; build this checkout (make build) or pass a newer --binary')
     return binary
 
 
@@ -515,8 +522,8 @@ def arguments(argv=None):
                         help='also inject shared memory automatically: get_context on SessionStart and '
                              'search results on UserPromptSubmit (loopback daemon only); without it, '
                              'recall hooks this installer manages are removed')
-    parser.add_argument('--binary', type=absolute, help='use this agent-memoryd instead of building target/fast')
-    parser.add_argument('--python', help='Python 3.11+ that runs the collector (default: this interpreter)')
+    parser.add_argument('--binary', type=absolute,
+                        help='use this agent-memoryd (bridge and hooks) instead of building target/fast')
     parser.add_argument('--outbox', type=absolute, help='collector outbox (default: the collector default)')
     parser.add_argument('--home', type=absolute, default=Path.home(), help='home directory (for isolated installs)')
     parser.add_argument('--skip-host-check', action='store_true',
@@ -529,18 +536,6 @@ def arguments(argv=None):
         if value is not None and (not value.strip() or value.startswith('-')):
             parser.error(f'--{name} must be non-empty and must not start with "-"')
     return host, args
-
-
-def interpreter(python):
-    """Absolute path of --python; a bare name is looked up on PATH like a shell would."""
-    if not python:
-        return sys.executable
-    if os.sep not in python:
-        found = shutil.which(python)
-        if not found:
-            raise InstallError(f'--python {python} not found on PATH')
-        return found
-    return str(absolute(python))
 
 
 def context(host, args):
@@ -559,10 +554,9 @@ def context(host, args):
     if ctx.recall and urlsplit(ctx.url).hostname not in LOOPBACK:
         # Every prompt becomes a search query: it never leaves this machine.
         raise InstallError('--recall needs a loopback daemon --url, for example http://127.0.0.1:8765')
-    ctx.python = interpreter(args.python)
     ctx.binary = args.binary or DEFAULT_BINARY
     ctx.outbox = args.outbox or home / OUTBOX
-    # Name the outbox in commands only when it differs from the collector's own default.
+    # Name the outbox in commands only when it differs from the hooks' own default.
     ctx.outbox_arg = None if ctx.outbox == Path.home() / OUTBOX else ctx.outbox
     ctx.recall_state = home / RECALL_STATE
     ctx.recall_state_arg = None if ctx.recall_state == Path.home() / RECALL_STATE else ctx.recall_state
@@ -602,14 +596,14 @@ def print_plan(host, ctx):
     print(f'[plan] host={host.LABEL} platform={ctx.platform} tenant={ctx.tenant} daemon={ctx.url}')
     print(f'[plan] bridge={ctx.binary}')
     if ctx.capture:
-        print(f"[plan] capture project={ctx.project or '<required: --project ID>'} collector={HARNESS}")
+        print(f"[plan] capture project={ctx.project or '<required: --project ID>'} collector={ctx.binary} hook capture")
         print(f'[plan] outbox={ctx.outbox}')
     elif host.CAPTURE:
         print('[plan] capture disabled' + ('' if ctx.recall else ' (MCP tools only)'))
     else:
         print(f'[plan] MCP tools only: {host.LABEL} offers no hooks the collector can capture from')
     if ctx.recall:
-        print(f"[plan] recall project={ctx.project or '<required: --project ID>'} script={RECALL}")
+        print(f"[plan] recall project={ctx.project or '<required: --project ID>'} command={ctx.binary} hook recall")
         print('[plan] recall injects get_context on SessionStart and search_memories on UserPromptSubmit')
 
 
@@ -623,8 +617,9 @@ def daemon_status(ctx):
     else:
         print(f"[check] daemon at {ctx.url} is up (strategy {health.get('memoryStrategy')})")
     if ctx.capture and not checks.uploader_running(ctx.outbox):
-        print('[note] no uploader holds the outbox lock; captured turns stay queued until one runs:')
-        print('       ' + shlex.join(uploader_argv(ctx)))
+        print('[note] no uploader holds the outbox lock; captured turns stay queued until one runs.')
+        print(f'       Start the daemon with --outbox {shlex.quote(str(ctx.outbox))} (docs/deployment.md), or run:')
+        print('       ' + shlex.join(drain_argv(ctx)))
 
 
 def install(host, args):
@@ -641,9 +636,6 @@ def install(host, args):
         print(f'[uninstall] removed from {host.LABEL}; the daemon, its data and the outbox are untouched.')
         print(f'            Restart {host.LABEL}. Revert with --rollback.')
         return
-    if (ctx.capture or ctx.recall) and not collector_command([ctx.python, str(HARNESS), 'hook'], 'hook'):
-        # Reruns and --uninstall recognize our entries by `<python*> harness_memory.py` (or harness_recall.py).
-        raise InstallError(f'--python must name a python interpreter (python3, python3.12, ...); got {ctx.python}')
     resolve_project(host, args, ctx)
     print_plan(host, ctx)
     if (ctx.capture or ctx.recall) and not ctx.project:
@@ -656,7 +648,6 @@ def install(host, args):
         print('[result] preview only. Rerun with --apply to build, verify and write.')
         return
     import checks
-    check_python(ctx.python)
     build_binary(args)
     checks.verify_local(host, ctx)
     if not args.skip_host_check:

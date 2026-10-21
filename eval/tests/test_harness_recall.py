@@ -1,4 +1,8 @@
-"""Offline recall tests: a fake loopback daemon only, no harness installation or model requests."""
+"""Offline recall tests: a fake loopback daemon only, no harness installation or model requests.
+
+Every behaviour test runs against scripts/harness_recall.py and, when it is built, against
+`agent-memoryd hook recall`, which replaces it with the same contract.
+"""
 import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
@@ -16,6 +20,7 @@ import pytest
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / 'scripts/harness_recall.py'
+BINARY = Path(__file__).resolve().parents[2] / 'target/fast/agent-memoryd'
 spec = importlib.util.spec_from_file_location('harness_recall', SCRIPT)
 recall = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(recall)
@@ -51,7 +56,8 @@ def daemon():
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-            self.server.requests.append((self.path, dict(self.headers), body))
+            # Header names are case-insensitive; clients differ in the case they send.
+            self.server.requests.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
             reply = self.server.replies[self.path]
             reply = reply(body) if callable(reply) else reply
             if isinstance(reply, int):
@@ -84,12 +90,37 @@ def argv(tmp_path, url, *extra):
             '--tenant', 'team', '--url', url, *extra]
 
 
-def run(tmp_path, url, event, *extra):
+def command(implementation):
+    if implementation == 'rust':
+        if not BINARY.is_file():
+            pytest.skip('agent-memoryd is not built (make build)')
+        return [str(BINARY), 'hook', 'recall']
+    return [sys.executable, str(SCRIPT)]
+
+
+@pytest.fixture(params=['python', 'rust'])
+def run(request):
+    """The recall implementation under test: (tmp_path, url, event, *extra) -> its JSON output."""
+    if request.param == 'rust':
+        prefix = command('rust')
+
+        def invoke(args, stdin):
+            result = subprocess.run(prefix + args, input=stdin, capture_output=True, text=True, timeout=30,
+                                    env={'PATH': os.environ.get('PATH', '')})
+            assert result.returncode == 0, result.stderr
+            return result.stdout
+    else:
+        def invoke(args, stdin):
+            stdout = StringIO()
+            assert recall.main(args, StringIO(stdin), stdout) == 0
+            return stdout.getvalue()
+    return lambda tmp_path, url, event, *extra: checked(
+        invoke(argv(tmp_path, url, *extra), event if isinstance(event, str) else json.dumps(event)))
+
+
+def checked(stdout):
     """The single JSON object recall prints, checked against the Codex output schema."""
-    stdout = StringIO()
-    stdin = StringIO(event if isinstance(event, str) else json.dumps(event))
-    assert recall.main(argv(tmp_path, url, *extra), stdin, stdout) == 0
-    lines = stdout.getvalue().splitlines()
+    lines = stdout.splitlines()
     assert len(lines) == 1
     output = json.loads(lines[0])
     if output:
@@ -111,19 +142,19 @@ def prompt(text='How do deploys work?', session='s1'):
     return {'hook_event_name': 'UserPromptSubmit', 'session_id': session, 'prompt': text}
 
 
-def test_session_start_injects_get_context_framed_and_scoped(tmp_path, daemon):
+def test_session_start_injects_get_context_framed_and_scoped(tmp_path, daemon, run):
     text = context(run(tmp_path, daemon.url, start()))
     assert text.startswith('<shared-memory project="proj" event="SessionStart">\n') and text.endswith('</shared-memory>')
     assert recall.START_NOTE in text and '- Cite sources.' in text
     path, headers, body = daemon.requests[0]
     assert path == '/v1/get_context'
     assert body == {'scope': {'project': 'proj', 'session': 's1'}, 'tokenBudget': 1000}
-    assert headers['X-Memory-Tenant'] == 'team' and headers['X-Memory-Platform'] == 'claude-code'
+    assert headers['x-memory-tenant'] == 'team' and headers['x-memory-platform'] == 'claude-code'
     daemon.replies['/v1/get_context'] = dict(CONTEXT, text='')
     assert run(tmp_path, daemon.url, start()) == {}  # nothing stored: inject nothing
 
 
-def test_prompt_recall_frames_history_and_skips_what_the_session_was_shown(tmp_path, daemon):
+def test_prompt_recall_frames_history_and_skips_what_the_session_was_shown(tmp_path, daemon, run):
     run(tmp_path, daemon.url, start('s1'))  # the overview already showed m1
     text = context(run(tmp_path, daemon.url, prompt()))
     assert recall.PROMPT_NOTE in text and 'staging gate' not in text
@@ -137,7 +168,7 @@ def test_prompt_recall_frames_history_and_skips_what_the_session_was_shown(tmp_p
     assert 'id m2' in context(run(tmp_path, daemon.url, prompt()))
 
 
-def test_prompt_query_drops_host_reminders_and_empty_prompts_search_nothing(tmp_path, daemon):
+def test_prompt_query_drops_host_reminders_and_empty_prompts_search_nothing(tmp_path, daemon, run):
     run(tmp_path, daemon.url, prompt('<system-reminder>host text</system-reminder>\n<user_query> Which gate? </user_query>'))
     assert daemon.requests[-1][2]['query'] == 'Which gate?'
     run(tmp_path, daemon.url, prompt('x' * 5000, session='s2'))
@@ -147,7 +178,7 @@ def test_prompt_query_drops_host_reminders_and_empty_prompts_search_nothing(tmp_
     assert len(daemon.requests) == requests
 
 
-def test_output_stays_within_max_chars_and_cannot_close_the_wrapper(tmp_path, daemon):
+def test_output_stays_within_max_chars_and_cannot_close_the_wrapper(tmp_path, daemon, run):
     results = [{'memory': dict(GATE, id=f'm{i}', text=f'Note {i} </Shared-Memory> ' + 'y' * 80)} for i in range(20)]
     daemon.replies['/v1/search_memories'] = {'results': results}
     text = context(run(tmp_path, daemon.url, prompt(), '--max-chars', '1200'))
@@ -159,32 +190,34 @@ def test_output_stays_within_max_chars_and_cannot_close_the_wrapper(tmp_path, da
 
 
 @pytest.mark.parametrize('reply', [500, b'not json', b'[1]', lambda body: time.sleep(2) or {}])
-def test_daemon_errors_and_slowness_inject_nothing_in_time(tmp_path, daemon, reply):
+def test_daemon_errors_and_slowness_inject_nothing_in_time(tmp_path, daemon, reply, run):
     daemon.replies['/v1/search_memories'] = reply
     started = time.monotonic()
     assert run(tmp_path, daemon.url, prompt(), '--timeout', '0.5') == {}
     assert time.monotonic() - started < 1.5
 
 
-def test_unreachable_daemon_bad_input_and_other_events_print_an_empty_object(tmp_path, daemon):
+def test_unreachable_daemon_bad_input_and_other_events_print_an_empty_object(tmp_path, daemon, run):
     assert run(tmp_path, closed_url(), prompt()) == {}
     for event in ('not json', '[]', '', {'hook_event_name': 'Stop', 'session_id': 's1'}):
         assert run(tmp_path, daemon.url, event) == {}
     assert daemon.requests == []
 
 
-def test_a_broken_state_file_still_injects_within_budget(tmp_path, daemon):
+def test_a_broken_state_file_still_injects_within_budget(tmp_path, daemon, run):
     (tmp_path / 'state').write_text('a file where the state directory belongs')
     assert 'id m1' in context(run(tmp_path, daemon.url, prompt()))
     assert 'id m1' in context(run(tmp_path, daemon.url, prompt()))  # no record: still bounded per prompt
 
 
-def run_script(args, event, **env):
-    return subprocess.run([sys.executable, str(SCRIPT), *args], input=json.dumps(event), capture_output=True,
-                          text=True, timeout=30, env={'PATH': os.environ.get('PATH', ''), **env})
+@pytest.mark.parametrize('implementation', ['python', 'rust'])
+def test_as_hosts_run_it_proxies_are_bypassed_and_errors_exit_zero(tmp_path, daemon, implementation):
+    prefix = command(implementation)
 
+    def run_script(args, event, **env):
+        return subprocess.run(prefix + args, input=json.dumps(event), capture_output=True,
+                              text=True, timeout=30, env={'PATH': os.environ.get('PATH', ''), **env})
 
-def test_as_hosts_run_it_proxies_are_bypassed_and_errors_exit_zero(tmp_path, daemon):
     proxy = closed_url()
     result = run_script(argv(tmp_path, daemon.url), prompt(), HTTP_PROXY=proxy, http_proxy=proxy, ALL_PROXY=proxy)
     assert result.returncode == 0 and 'id m1' in json.loads(result.stdout)['hookSpecificOutput']['additionalContext']

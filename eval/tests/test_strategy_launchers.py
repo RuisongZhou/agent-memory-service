@@ -55,6 +55,22 @@ def test_wrapper_preserves_strategy_precedence(monkeypatch, tmp_path, cli, envir
         assert command[command.index('--config') + 1] == str(cfg)
 
 
+@pytest.mark.parametrize('flags,expected', [([], None), (['--outbox'], []), (['--outbox', '/x/o.sqlite3'], ['/x/o.sqlite3'])])
+def test_wrapper_passes_the_outbox_to_the_daemon_uploader(monkeypatch, tmp_path, flags, expected):
+    module = script('serve')
+    monkeypatch.setattr(module, 'ROOT', tmp_path)
+    monkeypatch.setattr(sys, 'argv', ['serve.py', '--mock', *flags])
+    emitted = {}
+    monkeypatch.setattr(module.subprocess, 'call', lambda command, *, env: emitted.update(command=command) or 0)
+    with pytest.raises(SystemExit):
+        module.main()
+    command = emitted['command']
+    if expected is None:
+        assert '--outbox' not in command
+    else:
+        assert command[command.index('--outbox'):] == ['--outbox', *expected]
+
+
 def test_llama_smoke_environment_pins_mem0_without_inheriting_provider_settings(monkeypatch):
     module = script('llama_http_smoke')
     monkeypatch.setenv('MEMORY_STRATEGY', 'mem0')
