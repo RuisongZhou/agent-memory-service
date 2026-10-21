@@ -831,16 +831,23 @@ def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys,
     assert runtime.env_value(env.read_text(), 'QWEN_API_KEY') == KEY and KEY not in output
     assert oct(env.stat().st_mode & 0o777) == '0o600' and oct(env.parent.stat().st_mode & 0o777) == '0o700'
     (call,) = service_calls(service_binary)
-    assert call[:4] == ['service', 'install', '--apply', '--start'] and '--restart' not in call
+    assert call[:4] == ['service', 'install', '--apply', '--start'] and call[-1] == '--restart'  # a new key
     assert flag(call, '--binary') == str(service_binary) and flag(call, '--env-file') == str(env)
     assert flag(call, '--port') == '8765' and flag(call, '--home') == str(session)
     assert flag(call, '--outbox') == str(session / core.OUTBOX)  # the daemon uploads what capture writes
     assert flag(call, '--data-dir') is None and flag(call, '--max-calls') is None  # service defaults
-    # A rerun reuses the env file: no key needed, nothing rewritten.
+    # A rerun reuses the env file: no key needed, nothing rewritten, no restart; the same key from
+    # --key-file changes nothing either.
     stamp = env.stat().st_mtime_ns
-    code, output = run(capsys, *argv[:-2])
-    assert code == 0 and env.stat().st_mtime_ns == stamp, output
-    assert len(service_calls(service_binary)) == 2
+    for rerun in (argv[:-2], argv):
+        code, output = run(capsys, *rerun)
+        assert code == 0 and env.stat().st_mtime_ns == stamp and '[backup]' not in output, output
+        assert service_calls(service_binary)[-1][-1] != '--restart'
+    (session / 'key.txt').write_text('offline-test-key-2\n')
+    code, output = run(capsys, *argv)
+    assert code == 0 and runtime.env_value(env.read_text(), 'QWEN_API_KEY') == 'offline-test-key-2', output
+    assert service_calls(service_binary)[-1][-1] == '--restart'  # the running daemon must read the new key
+    assert len(list((session / core.STATE / 'env').iterdir())) == 1  # the replaced file was backed up
 
 
 def test_mcp_only_installs_the_service_without_an_outbox(session, capsys, service_binary):

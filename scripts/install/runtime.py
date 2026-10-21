@@ -187,6 +187,9 @@ def plan_service(args, ctx, binary):
     if not installed and checks.daemon_health(ctx.url) is not None:
         print(f'[note] a daemon started by hand answers at {ctx.url}; it is used as is, and no service is installed')
         return None
+    if installed and status['port'] is None:
+        raise InstallError(f"Cannot read the port of {status['unit']}; fix its --port or reinstall it with "
+                           'agent-memoryd service install')
     if installed and status['port'] != ctx.port:
         raise InstallError(f"The installed service listens on port {status['port']}; pass "
                            f"--url http://127.0.0.1:{status['port']}")
@@ -206,7 +209,8 @@ def plan_service(args, ctx, binary):
         secret = ctx.secret or read_key(args)
         current = read_file(env_file)
         text = with_value(current, KEY, secret) if current.strip() else new_env_text(secret)
-        plan.env_change = (env_file, text.encode())
+        if text != current:  # --key-file with the key already in place writes nothing
+            plan.env_change = (env_file, text.encode())
     return plan
 
 
@@ -323,8 +327,9 @@ def start_service(ctx, plan):
                         ('--llm-concurrency', plan.llm_concurrency), ('--max-calls', plan.max_calls)):
         if value is not None:
             argv += [flag, str(value)]
-    if ctx.binary_changed:
-        argv.append('--restart')  # the unit can stay the same while the binary it runs was replaced
+    if ctx.binary_changed or plan.env_change is not None:
+        # The unit can stay the same while the binary it runs or the key it reads changed.
+        argv.append('--restart')
     print('[service] ' + shlex.join(argv))
     sys.stdout.flush()
     try:

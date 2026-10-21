@@ -59,7 +59,8 @@ def check_env(home):
     Proxy variables stay, as the host passes them on to the bridge and the user's
     shell to the uploader: both must reach the loopback daemon regardless.
     """
-    keep = ('PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'SYSTEMROOT', *PROXIES)
+    # CA settings stay too: --verify-model reaches the provider through the same proxies.
+    keep = ('PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'SSL_CERT_FILE', 'SSL_CERT_DIR', *PROXIES)
     env = {k: v for k, v in os.environ.items() if k in keep}
     env['HOME'] = str(home)
     return env
