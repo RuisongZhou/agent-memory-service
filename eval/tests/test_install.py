@@ -728,6 +728,19 @@ def test_installed_commands_stay_recognizable(tmp_path):
     assert codex.owned_notify(wrapping) and codex.released_notify(wrapping) == [CLIENT, '--', 'turn-ended']
 
 
+def test_codex_install_ends_with_the_steps_only_the_user_can_take(tmp_path, capsys, fake_binary, offline):
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--recall', '--apply'))
+    assert code == 0, output
+    todo = output[output.index('[todo] 1.'):]
+    assert todo.index('[todo] 1. Restart Codex') < todo.index('[todo] 2. Run /hooks') < todo.index('[todo] 3.')
+    assert f'"{codex.CAPTURE_NAME}" on UserPromptSubmit, Stop and SessionEnd' in todo
+    assert f'"{codex.RECALL_NAME}" on SessionStart and UserPromptSubmit' in todo
+    assert 'this installer cannot trust them for you' in todo
+    assert f'outbox status --outbox {tmp_path / core.OUTBOX} lists it' in todo  # an isolated home names its outbox
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--no-capture', '--apply'))
+    assert code == 0 and '[todo] 1.' in output and '[todo] 2.' not in output, output  # MCP only: nothing to trust
+
+
 def test_codex_rerun_gives_notify_back_and_captures_with_hooks(tmp_path, capsys, fake_binary, offline):
     """An install made with the notify collector (wrapping Computer Use) moves to hooks on a rerun."""
     config = tmp_path / '.codex/config.toml'

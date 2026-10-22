@@ -415,17 +415,25 @@ def host_check(args, ctx, planned):
 
 
 def post_install(args, ctx):
-    lines = ['[result] installed for Codex. Restart Codex (CLI and App share ~/.codex) and check /mcp.']
-    if ctx.capture:
-        lines += [f'         Capture hooks file every completed Codex turn on this machine under project "{ctx.project}"',
-                  '         once you trust them: Codex runs no new or changed hook until then. Run /hooks (App:',
-                  f'         Settings -> Hooks) and trust "{CAPTURE_NAME}" on UserPromptSubmit, Stop and SessionEnd.']
+    lines = ['[result] installed for Codex.']
     if ctx.notify_released is not None:
         lines += ['         notify no longer runs the collector' + (f'; it runs {ctx.notify_released} again.'
                                                                  if ctx.notify_released else '.')]
+    trust = []
+    if ctx.capture:
+        trust.append(f'"{CAPTURE_NAME}" on UserPromptSubmit, Stop and SessionEnd: saves each completed turn '
+                     f'under project "{ctx.project}"')
     if ctx.recall:
-        lines += [f'         Recall hooks inject project "{ctx.project}" memory into every Codex session once you',
-                  f'         trust "{RECALL_NAME}" on SessionStart and UserPromptSubmit in /hooks (App: Settings -> Hooks).']
+        trust.append(f'"{RECALL_NAME}" on SessionStart and UserPromptSubmit: injects project "{ctx.project}" memory')
+    lines += ['[todo] 1. Restart Codex (CLI and App share ~/.codex) and check /mcp.']
+    if trust:
+        lines += ['[todo] 2. Run /hooks (App: Settings -> Hooks) and trust each of these hooks:']
+        lines += [f'           - {hook}' for hook in trust]
+        lines += ['         Codex runs no hook you have not reviewed, and this installer cannot trust them for you.',
+                  '         Trust them again after a rerun changes them (another --project, binary path or option).']
+    if ctx.capture:
+        status = [str(ctx.binary), 'outbox', 'status', *(['--outbox', str(ctx.outbox_arg)] if ctx.outbox_arg else [])]
+        lines += [f'[todo] 3. After one Codex turn, {shlex.join(status)} lists it.']
     lines += [f'[next] add the shared memory workflow for project "{ctx.project or "<id>"}" to AGENTS.md:',
               '       docs/mcp-harness.md#shared-memory-workflow']
     return lines

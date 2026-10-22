@@ -45,7 +45,7 @@ bash scripts/install.sh --host codex --apply --project my-project --recall
 
 | 宿主 | 接入方式 | 命令 | 安装后还需手动做 |
 |---|---|---|---|
-| Codex CLI / App | MCP + 自动捕获（3 个 hooks）+ 自动召回 | `bash scripts/install.sh --host codex --apply --project my-project --recall` | 重启 Codex；在 `/hooks`（App：Settings → Hooks）中信任名为 `shared-memory capture` 的 3 个捕获 hook 和 `shared-memory recall` 的 2 个召回 hook，信任之前不会捕获 |
+| Codex CLI / App | MCP + 自动捕获（3 个 hooks）+ 自动召回 | `bash scripts/install.sh --host codex --apply --project my-project --recall` | 重启 Codex，在 `/hooks` 中信任 5 个 `shared-memory` hook，见[安装后的确认](#安装后的确认只能手动完成) |
 | Claude Code | MCP + 自动捕获（4 个 hooks）+ 自动召回 | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project --recall` | 在该项目中重启 Claude Code，按提示批准项目 MCP server（用 `/mcp` 查看） |
 | WorkBuddy | MCP + 自动捕获（3 个 hooks）+ 自动召回 | `bash scripts/install.sh --host workbuddy --apply --project my-project --recall` | 重启 WorkBuddy，在「连接器 → 自定义连接器」中信任 `shared-memory`，确认 8 个工具都已启用 |
 | DeepSeek Harness（桌面版与 `dsh`） | 仅 MCP 工具，由模型主动调用 | `bash scripts/install.sh --host deepseek-harness --apply` | 重启 DeepSeek Harness，新建会话 |
@@ -56,7 +56,35 @@ bash scripts/install.sh --host codex --apply --project my-project --recall
 
 Codex 和 Claude Code 一样用 hooks 捕获对话（`UserPromptSubmit`、`Stop`、`SessionEnd`），不占用 `notify`，
 因此不会和 Codex Computer Use 等使用 `notify` 的程序冲突。之前的安装用 `notify` 捕获，重新运行安装命令时会去掉它，
-并把原来的程序（例如 Computer Use 的客户端）还回去。Codex 按命令内容记录信任，改了 `--project` 等选项后需要重新信任。
+并把原来的程序（例如 Computer Use 的客户端）还回去。
+
+### 安装后的确认（只能手动完成）
+
+安装命令结束时会列出这一步。每个宿主都要你在它自己的界面里确认一次，安装器无法代劳：
+
+- **Codex**：
+  1. 重启 Codex（CLI 和 App 共用 `~/.codex`）。
+  2. 在 CLI 里执行 `/hooks`（App：Settings → Hooks），逐个信任这 5 个 hook：
+     `UserPromptSubmit`、`Stop`、`SessionEnd` 上的 `shared-memory capture`，以及 `SessionStart`、`UserPromptSubmit` 上的 `shared-memory recall`。
+  3. 信任之前它们不会运行：不捕获对话，也不自动召回；MCP 工具不受影响。
+
+  **为什么不能自动化**：hook 会在你每次提问时以你的身份执行命令，Codex 要求你本人看过之后才运行。信任记录由 `/hooks`
+  写进 `~/.codex/config.toml` 的 `[hooks.state]`，Codex 没有提供让别的程序代为信任的命令或接口。安装器如果自己写这些
+  记录，就绕过了这道审阅，还依赖 Codex 的内部格式，所以不这样做。
+
+  **什么时候要重新信任**：Codex 按 hook 的内容记录信任。重跑安装时换了 `--project`、二进制路径或其他选项，或者升级后
+  hook 的内容变了，这些 hook 会显示为 modified，需要再信任一次。
+- **Claude Code**：在该项目里重启 Claude Code，按提示批准 `shared-memory` 项目 MCP server（用 `/mcp` 查看）。
+- **WorkBuddy**：重启后在「连接器 → 自定义连接器」中信任 `shared-memory`，确认 8 个工具都已启用。
+- **DeepSeek Harness**：重启后新建会话，不需要确认。
+
+确认之后完成一轮对话，再运行：
+
+```bash
+~/.local/bin/agent-memoryd outbox status
+```
+
+列表里应出现这一轮；状态为 `completed` 表示已经上传并形成记忆。
 
 ### 这条命令做了什么
 
@@ -117,8 +145,8 @@ systemctl --user disable --now agent-memory.service
 > 一键安装命令，项目 ID 用 my-project。保留已有的其他 MCP、hooks 和配置，不改代码。需要模型 API key 时，
 > 告诉我在本地终端用 `--key-file` 或隐藏输入提供，不要把密钥放进聊天或命令参数。
 
-Agent 的执行环境通常没有终端，无法使用隐藏输入，这时安装器会报错并说明可用的密钥来源。安装后仍需完成上表
-最后一列的手动步骤。
+Agent 的执行环境通常没有终端，无法使用隐藏输入，这时安装器会报错并说明可用的密钥来源。安装后仍需你本人完成
+[安装后的确认](#安装后的确认只能手动完成)，例如在 Codex 里信任 hooks。
 
 ### 验证范围
 
