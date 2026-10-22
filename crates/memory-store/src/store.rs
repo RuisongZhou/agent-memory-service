@@ -1,6 +1,7 @@
-//! 存储层: embedded SurrealDB (surrealkv). All records are plain JSON documents; our own string id is
-//! both the record key and the `mid` field (record ids are generated alphanumerics, so they are safe to
-//! inline in SurrealQL). Times are RFC3339 strings plus numeric `*Ts` columns for ordering/filtering.
+//! 存储层: SurrealDB (SurrealKV), served by the user's `surreal` for this store (see `surreal`). All
+//! records are plain JSON documents; our own string id is both the record key and the `mid` field (record
+//! ids are generated alphanumerics, so they are safe to inline in SurrealQL). Times are RFC3339 strings
+//! plus numeric `*Ts` columns for ordering/filtering.
 use anyhow::{anyhow, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -8,10 +9,9 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
-use surrealdb::engine::local::{Db, SurrealKv};
-use surrealdb::Surreal;
 use tokio::sync::{Mutex, RwLock};
 
+use super::surreal::Database;
 use super::{integrity, schema};
 use memory_domain::integrity::WriteSet;
 use memory_domain::types::*;
@@ -52,7 +52,7 @@ DEFINE INDEX IF NOT EXISTS uncertainties_memories ON uncertainties FIELDS memory
 "#;
 
 pub struct Store {
-    pub db: Surreal<Db>,
+    db: Database,
     write_lock: Mutex<()>,
     active_meta: RwLock<Option<Arc<Vec<Value>>>>,
     revisions: std::sync::Mutex<Revisions>,
@@ -248,17 +248,18 @@ impl Tx {
 }
 
 impl Store {
-    /// `algorithm_schema` is the owning algorithm's private DDL, appended to the shared schema.
-    pub async fn open(dir: &Path, dim: usize, algorithm_schema: &str) -> Result<Self> {
-        std::fs::create_dir_all(dir)?;
-        let db: Surreal<Db> = Surreal::new::<SurrealKv>(dir.to_path_buf())
-            .await
-            .context("open surrealkv")?;
-        db.use_ns("memory").use_db("main").await?;
-        db.query(format!("{SCHEMA}{algorithm_schema}").replace("{dim}", &dim.to_string()))
-            .await?
-            .check()
-            .context("schema")?;
+    /// Open the store in `root`: its SurrealKV datastore `root/db`, served by `surreal` (the user's
+    /// SurrealDB 3.x executable; a bare name is looked up on PATH) until the store is shut down or
+    /// dropped. `algorithm_schema` is the owning algorithm's private DDL, appended to the shared schema.
+    pub async fn open(
+        root: &Path,
+        surreal: &Path,
+        dim: usize,
+        algorithm_schema: &str,
+    ) -> Result<Self> {
+        let db = Database::open(root, surreal).await?;
+        let ddl = format!("{SCHEMA}{algorithm_schema}").replace("{dim}", &dim.to_string());
+        db.query(&ddl, vec![]).await?.check().context("schema")?;
         let store = Self {
             db,
             write_lock: Mutex::new(()),
@@ -276,11 +277,10 @@ impl Store {
     /// Run a query; returns one Vec<Value> per statement.
     pub async fn query(&self, sql: &str, binds: Vec<(&str, Value)>) -> Result<Vec<Vec<Value>>> {
         let n = sql.split(';').filter(|s| !s.trim().is_empty()).count();
-        let mut q = self.db.query(sql.to_string());
-        for (k, v) in binds {
-            q = q.bind((k.to_string(), v));
-        }
-        let mut resp = q
+        let vars = binds.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let mut resp = self
+            .db
+            .query(sql, vars)
             .await
             .with_context(|| format!("query: {}", util::truncate_bytes(sql, 200)))?;
         let mut out = Vec::with_capacity(n);
@@ -381,11 +381,11 @@ impl Store {
             sql.push_str(";\n");
         }
         sql.push_str("COMMIT TRANSACTION;");
-        let mut q = self.db.query(sql);
-        for (k, v) in tx.binds {
-            q = q.bind((k, v));
-        }
-        q.await?.check().context("transaction")?;
+        self.db
+            .query(&sql, tx.binds)
+            .await?
+            .check()
+            .context("transaction")?;
         let mut revisions = self.revisions.lock().expect("revisions poisoned");
         revisions.generation = generation;
         revisions.tables = tables;
@@ -394,6 +394,16 @@ impl Store {
             revisions.journal.pop_front();
         }
         Ok(Some(generation))
+    }
+
+    /// Stop the database server and wait until it has released the datastore.
+    pub async fn shutdown(&self) {
+        self.db.shutdown().await;
+    }
+
+    /// Completes once the database server exits, with how it exited. The store is unusable then.
+    pub async fn database_exited(&self) -> String {
+        self.db.exited().await
     }
 
     /// Last successful commit affecting any requested table; no database reads.
@@ -744,10 +754,21 @@ pub fn from_doc<T: DeserializeOwned>(v: Value) -> Result<T> {
 mod revision_tests {
     use super::*;
 
+    /// The SurrealDB the tests run on: `surreal` on PATH.
+    fn surreal() -> &'static Path {
+        Path::new("surreal")
+    }
+
     #[tokio::test]
     async fn revisions_publish_only_successful_commits_and_survive_reopen() -> Result<()> {
         let dir = std::env::temp_dir().join(util::new_id("store_revision_test"));
-        let store = Store::open(&dir, 2, "DEFINE TABLE projection_test SCHEMALESS;").await?;
+        let store = Store::open(
+            &dir,
+            surreal(),
+            2,
+            "DEFINE TABLE projection_test SCHEMALESS;",
+        )
+        .await?;
         let mut tx = Tx::new();
         tx.put("projection_test", "one", json!({"value":1}))?;
         store.commit(tx).await?;
@@ -789,21 +810,12 @@ mod revision_tests {
             store.document_revision(&[schema::MEMORIES]),
             opaque_revision
         );
+        // One daemon per datastore: a second store on it is refused while the first is open.
+        let second = Store::open(&dir, surreal(), 2, "").await;
+        assert!(second.is_err_and(|e| e.to_string().contains("in use")));
         drop(store);
-        let mut reopened = None;
-        for _ in 0..40 {
-            match Store::open(&dir, 2, "").await {
-                Ok(store) => {
-                    reopened = Some(store);
-                    break;
-                }
-                Err(error) if error.to_string() == "open surrealkv" => {
-                    tokio::time::sleep(std::time::Duration::from_millis(25)).await
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        let reopened = reopened.expect("SurrealKV release after dropping store");
+        // Dropping the store stops its server; reopening waits until the datastore is released.
+        let reopened = Store::open(&dir, surreal(), 2, "").await?;
         assert_eq!(
             reopened.document_revision(&["projection_test"]),
             opaque_revision
@@ -811,6 +823,7 @@ mod revision_tests {
         assert!(reopened
             .document_changes_since(revision, &["projection_test"])
             .is_none());
+        reopened.shutdown().await;
         drop(reopened);
         std::fs::remove_dir_all(dir)?;
         Ok(())
@@ -819,7 +832,7 @@ mod revision_tests {
     #[tokio::test]
     async fn memory_mutation_variants_journal_their_ids() -> Result<()> {
         let dir = std::env::temp_dir().join(util::new_id("store_memory_revision_test"));
-        let store = Store::open(&dir, 2, "").await?;
+        let store = Store::open(&dir, surreal(), 2, "").await?;
         let doc = to_doc(&MemoryRec {
             id: "memory1".into(),
             mtype: T_FACT.into(),
@@ -864,6 +877,7 @@ mod revision_tests {
         store.commit(tx).await?;
         assert!(store.memory_changes_since(revision).is_none());
         assert!(store.active_memory_meta().await?.is_empty());
+        store.shutdown().await;
         drop(store);
         std::fs::remove_dir_all(dir)?;
         Ok(())

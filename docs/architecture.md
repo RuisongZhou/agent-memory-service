@@ -7,7 +7,7 @@ are defined in [API and configuration](api.md); installation is in [deployment](
 
 The algorithm follows the **Node/TypeScript OSS `mem0ai@3.3.1`** built-in NLP fallback, without
 optional `natural` or `compromise`. It does not claim equivalence with every SDK API or NLP installation.
-The service keeps its own SurrealKV storage, scopes, durable jobs, strict validation and provenance.
+The service keeps its own SurrealDB storage, scopes, durable jobs, strict validation and provenance.
 Copied code and prompts retain their [licenses and notices](../THIRD_PARTY.md).
 
 Pinned upstream references are the [memory implementation](https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem0-ts/src/oss/src/memory/index.ts),
@@ -24,7 +24,7 @@ and [SQLite vector/BM25 store](https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem
 | `memory-rules` | Pure message formatting, identity, entity, scoring, time, dependency and consolidation rules | none |
 | `memory-config` | Startup configuration and validation | none |
 | `memory-domain` | Records, request types, errors and pure integrity and consolidation planners | rules |
-| `memory-store` | SurrealDB transactions, repositories, revisions and integrity glue | domain, rules |
+| `memory-store` | The store's SurrealDB server and RPC client, transactions, repositories, revisions and integrity glue | domain, rules |
 | `memory-engine` | The store, workers, model clients, context and application operations | config, domain, store, rules |
 | `memory-algo-mem0` | Formation, search, entity projection, consolidation prompt and ordered worker | engine and its dependencies |
 | `memory-service` | HTTP/MCP, composition, diagnostics and daemon | service layers |
@@ -116,6 +116,16 @@ Entity extraction copies/adapts the built-in PROPER, QUOTED, TOPIC and IDENTIFIE
 first matches normalized text exactly, then existing visible entities at cosine ≥0.95. Newly proposed
 entities in one batch do not semantically merge with each other. Formation position preserves batch
 order; older records without it use stable ID order, which cannot recover lost original ordering.
+
+The database is the user's own SurrealDB 3.x; no part of it is compiled into the service. Opening a store
+checks `surreal version` (3.2 or a later 3.x), starts `surreal start` on the store's SurrealKV datastore under
+a shell watchdog, on a random loopback port, signs in as root with the datastore's generated password and
+selects (in a new datastore, creates) the `memory` namespace and `main` database. Queries are SurrealQL sent as SurrealDB RPC
+`query` calls over HTTP with CBOR bodies, the encoding SurrealDB's SDKs use; its JSON format would turn
+strings that look like datetimes or record IDs into those types. Each statement batch, including a
+`BEGIN … COMMIT` transaction, is one call, so a failed statement still rolls the whole transaction back.
+The watchdog stops the server when the store shuts down or the daemon exits however it exits, and a lock
+next to the datastore keeps a second daemon out.
 
 Primary records are durable; entity and vector indexes are rebuildable. Projection rows and their
 state marker publish atomically after checking the dependency revision under the store write lock.
@@ -337,6 +347,7 @@ records `error` and resumes.
 | How does entity recovery work? | [entities.rs](../crates/memory-algo-mem0/src/entities.rs), [repo.rs](../crates/memory-algo-mem0/src/repo.rs) |
 | How is bootstrap context assembled? | [context.rs](../crates/memory-engine/src/retrieval/context.rs) |
 | Where do transaction integrity and revision checks live? | [memory-store](../crates/memory-store/src/), [domain integrity](../crates/memory-domain/src/integrity.rs) |
+| How is SurrealDB started, stopped and queried? | [server and watchdog](../crates/memory-store/src/surreal/server.rs), [RPC client](../crates/memory-store/src/surreal/mod.rs), [CBOR values](../crates/memory-store/src/surreal/cbor.rs) |
 | How are consolidation proposals selected, generated and validated? | [rules](../crates/memory-rules/src/consolidation.rs), [domain](../crates/memory-domain/src/consolidation.rs), [Mem0 prompt and provenance](../crates/memory-algo-mem0/src/consolidation.rs), [run storage](../crates/memory-engine/src/app/consolidation.rs) |
 | How are runs applied, rolled back and deleted? | [domain plans](../crates/memory-domain/src/consolidation/apply.rs), [Mem0 keys and sources](../crates/memory-algo-mem0/src/consolidation/apply.rs), [run use cases](../crates/memory-engine/src/app/consolidation.rs), [deletion](../crates/memory-engine/src/app/management/deletion.rs) |
 | How are a host's existing memories imported? | [host adapters and planner](../crates/memory-service/src/harness/import/), [pure rules](../crates/memory-rules/src/import/), [wire types and record plans](../crates/memory-domain/src/import.rs), [use cases](../crates/memory-engine/src/app/import/), [session turns](../crates/memory-engine/src/app/import/turns.rs), [extraction](../crates/memory-engine/src/app/import/extract.rs) |

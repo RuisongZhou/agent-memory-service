@@ -93,6 +93,10 @@ pub struct InstallArgs {
     /// agent-memoryd executable the unit runs [default: this executable]
     #[arg(long, value_name = "PATH")]
     pub binary: Option<PathBuf>,
+    /// SurrealDB 3.x `surreal` executable the daemon starts for its store (`serve --surreal-bin`);
+    /// the unit records its absolute path [default: `surreal` on PATH]
+    #[arg(long, value_name = "PATH")]
+    pub surreal_bin: Option<PathBuf>,
     /// Then load the service in your login session (reloading it when the unit changed) and wait
     /// until the daemon answers; runs launchctl or systemctl
     #[arg(long, requires = "apply")]
@@ -141,6 +145,7 @@ pub struct Serve {
     pub binary: PathBuf,
     pub env_file: PathBuf,
     pub data_dir: PathBuf,
+    pub surreal_bin: PathBuf,
     pub outbox: Option<PathBuf>,
     pub port: u16,
     pub llm_concurrency: u32,
@@ -156,6 +161,8 @@ impl Serve {
             unit_text(&self.env_file)?,
             "--data-dir".into(),
             unit_text(&self.data_dir)?,
+            "--surreal-bin".into(),
+            unit_text(&self.surreal_bin)?,
             "--port".into(),
             self.port.to_string(),
             "--llm-concurrency".into(),
@@ -360,6 +367,7 @@ pub fn install(args: &InstallArgs) -> Result<Outcome> {
             Some(dir) => std::path::absolute(dir)?,
             None => home.join(DEFAULT_DATA_DIR),
         },
+        surreal_bin: surreal_bin(args.surreal_bin.as_deref())?,
         outbox: match &args.outbox {
             Some(Some(path)) => Some(std::path::absolute(path)?),
             Some(None) => Some(home.join(crate::harness::outbox::DEFAULT_OUTBOX)),
@@ -534,6 +542,14 @@ pub fn status_report(at: &Target) -> Result<(Vec<String>, Option<u16>)> {
             ));
         }
     }
+    if let Some(surreal) = flag_value(&argv, "--surreal-bin") {
+        let state = if is_executable(Path::new(surreal)) {
+            "is installed"
+        } else {
+            "is missing; the daemon cannot start"
+        };
+        report.push(format!("[status] SurrealDB {surreal} {state}"));
+    }
     if manager == Manager::Systemd {
         report.push(format!(
             "[status] {}",
@@ -576,10 +592,34 @@ pub fn status_json(at: &Target) -> Result<serde_json::Value> {
         "binary": argv.first(),
         "envFile": flag("--env-file"),
         "dataDir": flag("--data-dir"),
+        "surrealBin": flag("--surreal-bin"),
         "outbox": flag("--outbox"),
         "port": if text.is_some() { serve_port(&argv) } else { None },
         "llmConcurrency": number(flag("--llm-concurrency")),
     }))
+}
+
+/// The absolute path of the `surreal` the unit records: `given`, else the first `surreal` on PATH.
+/// A service manager starts the daemon with a minimal PATH, so the unit cannot leave the lookup to it.
+fn surreal_bin(given: Option<&Path>) -> Result<PathBuf> {
+    let hint = memory_store::surreal::INSTALL_HINT;
+    let found = match given {
+        Some(path) => std::path::absolute(path)?,
+        None => std::env::var_os("PATH")
+            .iter()
+            .flat_map(std::env::split_paths)
+            .map(|dir| dir.join("surreal"))
+            .find(|candidate| candidate.is_absolute() && is_executable(candidate))
+            .with_context(|| {
+                format!("SurrealDB is not installed: no `surreal` on PATH; {hint}, or pass --surreal-bin")
+            })?,
+    };
+    ensure!(
+        is_executable(&found),
+        "{} is not an executable SurrealDB `surreal`; {hint}",
+        found.display()
+    );
+    Ok(found)
 }
 
 /// Run a service command; prints its report and returns the process exit code.
@@ -982,7 +1022,7 @@ mod tests {
         cmd: ServiceCmd,
     }
 
-    /// A temporary home holding an executable stand-in for agent-memoryd and an env file.
+    /// A temporary home holding executable stand-ins for agent-memoryd and surreal, and an env file.
     struct Home {
         dir: tempfile::TempDir,
     }
@@ -994,12 +1034,14 @@ mod tests {
             std::fs::create_dir_all(home.path().join("bin")).unwrap();
             std::fs::create_dir_all(home.path().join("checkout")).unwrap();
             std::fs::write(home.binary(), "#!/bin/sh\n").unwrap();
+            std::fs::write(home.surreal(), "#!/bin/sh\n").unwrap();
             std::fs::write(home.env_file(), "QWEN_API_KEY=offline-test-value\n").unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mode = std::fs::Permissions::from_mode;
                 std::fs::set_permissions(home.binary(), mode(0o755)).unwrap();
+                std::fs::set_permissions(home.surreal(), mode(0o755)).unwrap();
                 std::fs::set_permissions(home.env_file(), mode(0o600)).unwrap();
             }
             home
@@ -1013,6 +1055,10 @@ mod tests {
             self.path().join("bin/agent-memoryd")
         }
 
+        fn surreal(&self) -> PathBuf {
+            self.path().join("bin/surreal")
+        }
+
         fn env_file(&self) -> PathBuf {
             self.path().join("checkout/.env")
         }
@@ -1020,6 +1066,7 @@ mod tests {
         fn parse(&self, manager: &str, args: &[&str]) -> ServiceCmd {
             let home = self.path().to_str().unwrap().to_string();
             let binary = self.binary().to_str().unwrap().to_string();
+            let surreal = self.surreal().to_str().unwrap().to_string();
             let env_file = self.env_file().to_str().unwrap().to_string();
             let mut argv = vec![
                 "agent-memoryd",
@@ -1031,6 +1078,7 @@ mod tests {
             ];
             if args[0] == "install" {
                 argv.extend(["--binary", binary.as_str(), "--env-file", env_file.as_str()]);
+                argv.extend(["--surreal-bin", surreal.as_str()]);
             }
             argv.extend(&args[1..]);
             Cli::try_parse_from(argv).unwrap().cmd
@@ -1093,6 +1141,8 @@ mod tests {
                 p("checkout/.env"),
                 "--data-dir".into(),
                 p(DEFAULT_DATA_DIR),
+                "--surreal-bin".into(),
+                p("bin/surreal"),
                 "--port".into(),
                 "8765".into(),
                 "--llm-concurrency".into(),
@@ -1207,6 +1257,13 @@ mod tests {
         assert!(e.to_string().contains("--env-file"), "{e}");
         assert!(!Manager::Systemd.unit_path(home.path()).exists());
 
+        let home = Home::new("svc-no-surreal");
+        std::fs::remove_file(home.surreal()).unwrap();
+        let e = home.install("systemd", &["--apply"]).unwrap_err();
+        assert!(e.to_string().contains("not an executable SurrealDB"), "{e}");
+        assert!(e.to_string().contains("install.surrealdb.com"), "{e}");
+        assert!(!Manager::Systemd.unit_path(home.path()).exists());
+
         #[cfg(unix)]
         {
             let home = Home::new("svc-link");
@@ -1275,6 +1332,18 @@ mod tests {
             "{report}"
         );
         assert!(report.contains("launchctl print"), "{report}");
+        assert!(
+            report.contains("[status] SurrealDB ") && report.contains(" is installed"),
+            "{report}"
+        );
+        std::fs::remove_file(home.surreal()).unwrap();
+        let (report, _) = status_report(&at).unwrap();
+        assert!(
+            report
+                .join("\n")
+                .contains("is missing; the daemon cannot start"),
+            "{report:?}"
+        );
     }
 
     #[test]
@@ -1311,6 +1380,7 @@ mod tests {
             assert_eq!(json["binary"], p("bin/agent-memoryd"));
             assert_eq!(json["envFile"], p("checkout/.env"));
             assert_eq!(json["dataDir"], data);
+            assert_eq!(json["surrealBin"], p("bin/surreal"));
             assert_eq!(json["outbox"], p(crate::harness::outbox::DEFAULT_OUTBOX));
             assert_eq!(json["port"], 9003);
             assert_eq!(json["llmConcurrency"], 2);

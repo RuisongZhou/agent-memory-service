@@ -25,6 +25,8 @@ the dataset, use `python3 eval/download_data.py`. Neither setup command invokes 
 paid model or evaluates the dataset.
 
 `make test` runs the evaluation tests, with intercepted model calls and local Mem0/Qdrant components.
+Experiments that start `agent-memoryd serve` also need SurrealDB 3.2 or a later 3.x on PATH: the daemon starts it
+for each store ([install SurrealDB](../docs/deployment.md#install-surrealdb)). `make test` does not.
 Service deployment and service checks do not need these dependencies or the dataset. The service's
 script tests (`make test-scripts`) and mock/stub HTTP and MCP checks are in [scripts/](../scripts/README.md).
 If invoking a vendored upstream CLI directly, use `eval/` as its working directory;

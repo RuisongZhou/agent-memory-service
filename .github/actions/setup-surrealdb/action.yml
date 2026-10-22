@@ -1,0 +1,29 @@
+name: Set up SurrealDB
+description: >-
+  Put the official SurrealDB release on PATH, checked against its SHA-256. The daemon starts `surreal`
+  to serve its store, so the store tests, selftest, smoke checks and installer checks need it.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PLATFORM: ${{ runner.os }}-${{ runner.arch }}
+      run: |
+        version=v3.2.4
+        case "$PLATFORM" in
+          Linux-X64) asset=linux-amd64; sha256=aaf9c8d388248db63e10300385c94ec9f85ef4430e79f9569886045d896df369 ;;
+          Linux-ARM64) asset=linux-arm64; sha256=64d9f9c6138df768bf04c0d3637d2ca3655022819ae0b1772a0d62f2fb3f5f03 ;;
+          macOS-ARM64) asset=darwin-arm64; sha256=8d703e9c5ed12e509ec7eb9b17385d3cac440077f93980d5c98b57c2d99cbbe8 ;;
+          macOS-X64) asset=darwin-amd64; sha256=bcbb5cabf1695cda6a5d0d5866e54f020bd64f7d641abb932d946e2b8dbb0ad7 ;;
+          *) echo "no SurrealDB $version build for $PLATFORM" >&2; exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/surrealdb"
+        mkdir -p "$dir/bin"
+        archive="$dir/surreal-$version.$asset.tgz"
+        curl -fsSL --retry 3 -o "$archive" \
+          "https://github.com/surrealdb/surrealdb/releases/download/$version/surreal-$version.$asset.tgz"
+        echo "$sha256  $archive" | shasum -a 256 -c -
+        tar -xzf "$archive" -C "$dir/bin"
+        test -x "$dir/bin/surreal"
+        echo "$dir/bin" >> "$GITHUB_PATH"
+        "$dir/bin/surreal" version

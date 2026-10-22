@@ -7,7 +7,8 @@ use serde_json::json;
 
 pub async fn store_roundtrip() {
     let dir = std::env::temp_dir().join(util::new_id("memory-store-"));
-    let s = Store::open(&dir.join("db"), 4, "").await.unwrap();
+    let surreal = crate::config::ServiceConfig::default().surreal_bin;
+    let s = Store::open(&dir, &surreal, 4, "").await.unwrap();
     let m = MemoryRec {
         id: "mabc123".into(),
         mtype: T_FACT.into(),

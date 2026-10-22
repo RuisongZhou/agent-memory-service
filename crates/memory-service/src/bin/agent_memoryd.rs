@@ -1,6 +1,6 @@
 //! `agent-memoryd` — 共享记忆库 daemon.
 //!
-//!   agent-memoryd serve  --data-dir D [--env-file .env] [--outbox [PATH]] [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
+//!   agent-memoryd serve  --data-dir D [--surreal-bin PATH] [--env-file .env] [--outbox [PATH]] [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
 //!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 8 tools)
 //!   agent-memoryd hook   capture | codex-notify | recall ...   (commands agent hosts run as hooks)
 //!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
@@ -10,10 +10,12 @@
 //!   agent-memoryd consolidate --project P --dry-run | --apply RUN | --rollback RUN [--url ...]
 use clap::{error::ErrorKind, Parser, Subcommand};
 use memory_service::harness::{self, import::ImportCmd, outbox::Outbox, HookCmd, OutboxCmd};
+use memory_service::runtime::instance::Instance;
 use memory_service::service::{self, ServiceCmd};
 use memory_service::{config::ServiceConfig, envfile, http, llm::Llm, models::ModelHub, Engine};
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[cfg(all(not(target_env = "msvc"), not(target_os = "windows")))]
 #[global_allocator]
@@ -32,6 +34,10 @@ enum Cmd {
     Serve {
         #[arg(long, env = "MEMORY_DATA_DIR", default_value = "./memory-data")]
         data_dir: PathBuf,
+        /// SurrealDB 3.x `surreal` executable the daemon starts to serve its store
+        /// [default: `surreal` on PATH]
+        #[arg(long, env = "MEMORY_SURREAL_BIN", value_name = "PATH")]
+        surreal_bin: Option<PathBuf>,
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
         #[arg(long, default_value_t = 8765)]
@@ -135,6 +141,51 @@ enum Cmd {
     },
 }
 
+/// On SIGINT, SIGTERM or SIGHUP stop the store's SurrealDB server before exiting, so that a restart
+/// finds the datastore released; when the server exits, exit too, so the service manager restarts both.
+async fn supervise(eng: Arc<Engine>, store: Arc<Instance>) {
+    tokio::select! {
+        signal = stop_signal() => {
+            tracing::info!("{signal}: stopping the store's SurrealDB server");
+            eng.shutdown().await;
+            std::process::exit(0);
+        }
+        reason = store.store.database_exited() => {
+            tracing::error!("the store's SurrealDB server stopped: {reason}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The first stop signal to arrive.
+async fn stop_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        // A handler that cannot be installed leaves that signal's default action in place.
+        let arrives = |kind| async move {
+            match signal(kind) {
+                Ok(mut signal) => {
+                    signal.recv().await;
+                }
+                Err(_) => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            _ = arrives(SignalKind::interrupt()) => "SIGINT",
+            _ = arrives(SignalKind::terminate()) => "SIGTERM",
+            _ = arrives(SignalKind::hangup()) => "SIGHUP",
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+        "Ctrl-C"
+    }
+}
+
 /// Parse the command line. A hook never exits 2, which would block the host's prompt: argument
 /// errors make recall print `{}` and exit 0, and the collector exit 1.
 fn parse() -> Cli {
@@ -178,6 +229,7 @@ fn main() -> anyhow::Result<()> {
         match cli.cmd {
             Cmd::Serve {
                 data_dir,
+                surreal_bin,
                 host,
                 port,
                 prompt_variant,
@@ -224,6 +276,9 @@ fn main() -> anyhow::Result<()> {
                     cfg = serde_json::from_value(base)?;
                 }
                 cfg.data_dir = data_dir;
+                if let Some(surreal) = surreal_bin.filter(|p| !p.as_os_str().is_empty()) {
+                    cfg.surreal_bin = surreal;
+                }
                 // Empty values (an unset `.env` template line) leave the JSON/default value in place.
                 let given = |v: Option<String>| v.filter(|v| !v.trim().is_empty());
                 if let Some(provider) = given(model_provider) {
@@ -275,7 +330,8 @@ fn main() -> anyhow::Result<()> {
                 let algorithm = memory_service::algorithms::select(cfg.memory_strategy);
                 let eng = Engine::new(cfg, llm, models, algorithm);
                 // open the store eagerly so its workers resume unfinished tasks
-                eng.store().await?;
+                let store = eng.store().await?;
+                tokio::spawn(supervise(eng.clone(), store));
                 if let Some((path, outbox)) = outbox {
                     tokio::spawn(harness::uploader::run(eng.clone(), path, outbox));
                 }

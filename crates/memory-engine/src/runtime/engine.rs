@@ -88,9 +88,14 @@ impl Engine {
             .store
             .get_or_try_init(|| async {
                 let t = Arc::new(
-                    Instance::open(&self.cfg.data_dir, self.models.dim, self.algorithm.schema())
-                        .await
-                        .context("open the store")?,
+                    Instance::open(
+                        &self.cfg.data_dir,
+                        &self.cfg.surreal_bin,
+                        self.models.dim,
+                        self.algorithm.schema(),
+                    )
+                    .await
+                    .context("open the store")?,
                 );
                 self.warm(&t).await?;
                 tokio::spawn(indexer::run_index_worker(self.clone(), t.clone()));
@@ -100,6 +105,13 @@ impl Engine {
             })
             .await?;
         Ok(t.clone())
+    }
+
+    /// Stop the store's database server, if the store was opened, and wait until it has stopped.
+    pub async fn shutdown(&self) {
+        if let Some(t) = self.store.get() {
+            t.store.shutdown().await;
+        }
     }
 
     /// Load the vector caches; check index_meta (5.2 一致性与重建).

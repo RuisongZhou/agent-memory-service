@@ -23,7 +23,19 @@ import runtime  # noqa: E402
 from hosts import claude_code, codex, deepseek_harness, workbuddy  # noqa: E402
 
 BINARY = ROOT / 'target/fast/agent-memoryd'
+# The installed SurrealDB, which the end-to-end checks hand to their daemons; the other tests use a stand-in.
+SURREAL = shutil.which('surreal')
 UNUSED_URL = 'http://127.0.0.1:9'  # nothing answers: daemon status stays a note
+
+
+@pytest.fixture(autouse=True)
+def fake_surreal(tmp_path_factory, monkeypatch):
+    """A SurrealDB 3 stand-in, first on PATH: it only answers `surreal version`."""
+    path = tmp_path_factory.mktemp('surreal') / 'surreal'
+    path.write_text('#!/bin/sh\necho "3.2.4 for linux on x86_64"\n')
+    path.chmod(0o755)
+    monkeypatch.setenv('PATH', f"{path.parent}{os.pathsep}{os.environ.get('PATH', '')}")
+    return path
 
 
 @pytest.fixture
@@ -567,10 +579,27 @@ def test_dsh_itself_composes_the_planned_patch(tmp_path, capsys):
 
 # --- install flow -----------------------------------------------------------------
 
-def test_preview_writes_nothing(tmp_path, capsys, fake_binary):
+def test_preview_writes_nothing(tmp_path, capsys, fake_binary, fake_surreal):
     code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p'))
     assert code == 0 and 'preview only' in output and 'config.toml' in output
+    assert f'[plan] surreal={fake_surreal}:' in output
     assert not (tmp_path / '.codex').exists() and not (tmp_path / '.local').exists()
+
+
+def test_apply_needs_surrealdb_3_before_anything_else(tmp_path, capsys, fake_binary, offline, monkeypatch):
+    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
+    argv = install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply')
+    code, output = run(capsys, *argv)
+    assert code == 1 and 'SurrealDB is not installed' in output and 'install.surrealdb.com' in output, output
+    code, output = run(capsys, *argv[:-1])  # the preview names what is missing
+    assert code == 0 and '[plan] surreal=<required: install SurrealDB 3.x' in output, output
+    older = tmp_path / 'older/surreal'
+    older.parent.mkdir()
+    older.write_text('#!/bin/sh\necho "2.3.7 for linux on x86_64"\n')
+    older.chmod(0o755)
+    code, output = run(capsys, *argv, '--surreal-bin', older)
+    assert code == 1 and 'is SurrealDB 2.3.7; the daemon needs SurrealDB 3.2 or a later 3.x' in output, output
+    assert offline == [] and not (tmp_path / '.workbuddy').exists()
 
 
 def test_apply_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary, offline):
@@ -882,7 +911,7 @@ def test_the_key_comes_from_a_file_the_environment_or_a_hidden_prompt(tmp_path, 
             runtime.read_key(types.SimpleNamespace(**dict(vars(args), non_interactive=False)))
 
 
-def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys, service_binary):
+def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys, service_binary, fake_surreal):
     argv = service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply',
                                 '--key-file', session / 'key.txt')
     code, output = run(capsys, *argv)
@@ -893,6 +922,7 @@ def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys,
     (call,) = service_calls(service_binary)
     assert call[:4] == ['service', 'install', '--apply', '--start'] and call[-1] == '--restart'  # a new key
     assert flag(call, '--binary') == str(service_binary) and flag(call, '--env-file') == str(env)
+    assert flag(call, '--surreal-bin') == str(fake_surreal)  # the unit records the SurrealDB found on PATH
     assert flag(call, '--port') == '8765' and flag(call, '--home') == str(session)
     assert flag(call, '--outbox') == str(session / core.OUTBOX)  # the daemon uploads what capture writes
     assert flag(call, '--data-dir') is None  # service default
@@ -1041,7 +1071,8 @@ def test_rollback_and_uninstall_keep_the_shared_runtime(tmp_path, capsys, fake_b
 
 # --- real offline verification ------------------------------------------------------
 
-@pytest.mark.skipif(not BINARY.is_file(), reason='needs `make build` (target/fast/agent-memoryd)')
+@pytest.mark.skipif(not BINARY.is_file() or not SURREAL,
+                    reason='needs `make build` (target/fast/agent-memoryd) and SurrealDB (`surreal` on PATH)')
 @pytest.mark.parametrize('host,flags', [(host, ['--recall'] if core.load_host(host).RECALL else []) for host in core.HOSTS]
                          + [('workbuddy', ['--no-capture', '--recall']), ('codex', [])])
 def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
@@ -1051,7 +1082,7 @@ def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     extra = ['--workspace', str(workspace)] if host == 'claude-code' else []
     extra += ['--project', 'install-test'] if capture else []
     result = subprocess.run(['bash', str(ROOT / 'scripts/install.sh'), *map(str, install_args(
-        host, tmp_path, BINARY, '--apply', *flags, *extra))],
+        host, tmp_path, BINARY, '--apply', '--surreal-bin', SURREAL, *flags, *extra))],
         capture_output=True, text=True, timeout=300, env={'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable})
     assert result.returncode == 0, result.stdout + result.stderr
     check = next(line for line in result.stdout.splitlines() if line.startswith('[check] offline mock daemon'))
@@ -1063,7 +1094,8 @@ def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     assert not (tmp_path / core.RECALL_STATE).exists()  # and a temporary recall record
 
 
-@pytest.mark.skipif(not BINARY.is_file(), reason='needs `make build` (target/fast/agent-memoryd)')
+@pytest.mark.skipif(not BINARY.is_file() or not SURREAL,
+                    reason='needs `make build` (target/fast/agent-memoryd) and SurrealDB (`surreal` on PATH)')
 def test_end_to_end_codex_moves_capture_from_notify_to_hooks(tmp_path):
     """A rerun over a notify-based install gives notify back; the installed hooks then capture a turn."""
     record = tmp_path / 'record'
@@ -1076,7 +1108,7 @@ def test_end_to_end_codex_moves_capture_from_notify_to_hooks(tmp_path):
     config.write_text(f'notify = {json.dumps(earlier)}\n')
     env = {'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable, 'HOME': str(tmp_path)}
     result = subprocess.run(['bash', str(ROOT / 'scripts/install.sh'), *map(str, install_args(
-        'codex', tmp_path, BINARY, '--apply', '--project', 'install-test'))],
+        'codex', tmp_path, BINARY, '--apply', '--surreal-bin', SURREAL, '--project', 'install-test'))],
         capture_output=True, text=True, timeout=300, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'capture -> outbox -> uploader -> formation -> search' in result.stdout

@@ -5,7 +5,8 @@ install flow. Standard library only (Python 3.11+). Each agent host is one modul
 (see hosts/__init__.py for the interface); runtime.py owns the binary, env file and service the
 hosts share; this module owns everything else. Entry point: `scripts/install.sh --host <id>`.
 
-With --apply the installer builds `agent-memoryd` and installs it in ~/.local/bin, writes the
+With --apply the installer checks the user's SurrealDB 3.x (the daemon starts their `surreal` to serve its
+store; SurrealDB is never installed here), builds `agent-memoryd` and installs it in ~/.local/bin, writes the
 model key into a private env file (asked for hidden, never taken from an argument), verifies the
 exact commands it will register against a temporary mock daemon (checks.py), registers the stdio
 MCP bridge, the dialogue collector and, with --recall, the automatic recall hooks in the host's
@@ -540,6 +541,9 @@ def arguments(argv=None):
     parser.add_argument('--binary', type=absolute,
                         help='use this agent-memoryd as is (bridge, hooks and service) instead of building one '
                              'and installing it in ~/.local/bin')
+    parser.add_argument('--surreal-bin', type=absolute, metavar='PATH',
+                        help='SurrealDB 3.x `surreal` the daemon starts to serve its store (default: the first '
+                             '`surreal` on PATH); SurrealDB is installed separately')
     parser.add_argument('--no-service', action='store_true',
                         help='register the platform only: no env file, model key or daemon service '
                              '(run the daemon yourself)')
@@ -588,6 +592,7 @@ def context(host, args):
         raise InstallError('--recall needs a loopback daemon --url, for example http://127.0.0.1:8765')
     import runtime
     ctx.binary = args.binary or home / runtime.BINARY
+    ctx.surreal = runtime.find_surreal(args)
     ctx.port = runtime.service_port(ctx.url)
     ctx.manage_service = not args.no_service and ctx.port is not None
     ctx.service_started = False
@@ -718,6 +723,7 @@ def install(host, args):
         return
     import checks
     import runtime
+    runtime.check_surreal(ctx)
     runtime.prepare(args, ctx)  # the key prompt comes before the build, so the rest runs unattended
     source = build_binary(args, ctx.manage_service)
     service = runtime.plan_service(args, ctx, source)

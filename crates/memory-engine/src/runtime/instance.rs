@@ -34,8 +34,14 @@ pub struct Instance {
 }
 
 impl Instance {
-    /// Open the store under `root/store`. Earlier versions kept it under `root/tenants/default`; it is moved here.
-    pub async fn open(root: &Path, dim: usize, algorithm_schema: &str) -> Result<Self> {
+    /// Open the store under `root/store`, served by `surreal` (see `Store::open`). Earlier versions kept
+    /// it under `root/tenants/default`; it is moved here.
+    pub async fn open(
+        root: &Path,
+        surreal: &Path,
+        dim: usize,
+        algorithm_schema: &str,
+    ) -> Result<Self> {
         let dir = root.join("store");
         let earlier = root.join("tenants").join("default");
         if !dir.exists() && earlier.is_dir() {
@@ -50,7 +56,7 @@ impl Instance {
                 tracing::warn!(dir = %fulltext.display(), "removing the unused full-text index: {e}");
             }
         }
-        let store = Store::open(&dir.join("db"), dim, algorithm_schema).await?;
+        let store = Store::open(&dir, surreal, dim, algorithm_schema).await?;
         Ok(Self {
             dir,
             store,

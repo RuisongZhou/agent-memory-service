@@ -37,6 +37,8 @@ jobs:
           targets: ${{ matrix.target }}
       # No build cache: release binaries are built from a clean state.
       - run: cargo build --locked --release -p memory-service --bin agent-memoryd --target ${{ matrix.target }}
+      # The self-test's stores run on SurrealDB, which users install themselves; it is not in the archive.
+      - uses: ./.github/actions/setup-surrealdb
       - name: Self-test
         run: MEMORY_MOCK_MODELS=1 target/${{ matrix.target }}/release/agent-memoryd selftest
       - name: Package

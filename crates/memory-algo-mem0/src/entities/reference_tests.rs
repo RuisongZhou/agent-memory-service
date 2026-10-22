@@ -207,7 +207,7 @@ fn fact_doc(mid: &str, text: &str, mode: Option<&str>, time: &str) -> Value {
 async fn instance(eng: &Engine) -> (Arc<Instance>, std::path::PathBuf) {
     let root = std::env::temp_dir().join(util::new_id("mem0_entities_test"));
     let t = Arc::new(
-        Instance::open(&root, eng.models.dim, crate::SCHEMA)
+        Instance::open(&root, &eng.cfg.surreal_bin, eng.models.dim, crate::SCHEMA)
             .await
             .unwrap(),
     );
@@ -418,20 +418,9 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
         )
         .await?;
     drop(t);
-    let mut reopened = None;
-    for _ in 0..40 {
-        match Instance::open(&root, eng.models.dim, crate::SCHEMA).await {
-            Ok(instance) => {
-                reopened = Some(Arc::new(instance));
-                break;
-            }
-            Err(error) if error.to_string() == "open surrealkv" => {
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    let reopened = reopened.expect("SurrealKV release after dropping the instance");
+    // Dropping the instance stops its database server; reopening waits until the datastore is released.
+    let reopened =
+        Arc::new(Instance::open(&root, &eng.cfg.surreal_bin, eng.models.dim, crate::SCHEMA).await?);
     assert!(reopened
         .algorithm_state::<ProjectionCache>()
         .lock()
