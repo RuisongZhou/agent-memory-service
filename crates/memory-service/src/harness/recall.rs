@@ -1,9 +1,11 @@
 //! Bounded automatic recall: inject shared memory into an agent through its hooks.
 //!
 //! SessionStart injects get_context; UserPromptSubmit injects search_memories results for the
-//! prompt, skipping memories this session was already shown. The daemon must be on loopback.
-//! A hook never blocks or fails its host: every outcome prints exactly one JSON object and exits
-//! 0 (exit 2 would block the prompt). Contract and recall record match `scripts/harness_recall.py`.
+//! prompt that this session was not shown yet, packed into its own token budget. The daemon must
+//! be on loopback. A hook never blocks or fails its host: every outcome prints exactly one JSON
+//! object and exits 0 (exit 2 would block the prompt). Contract and recall record match
+//! `scripts/harness_recall.py`.
+use memory_rules::util;
 use regex::Regex;
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde_json::{json, Map, Value};
@@ -14,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::{expand, private_file, Daemon, Error};
+use super::{expand, private_file, CallError, Daemon, Error};
 
 /// Default record of shown memories, relative to the home directory.
 pub const DEFAULT_STATE: &str = ".local/state/agent-memory-service/recall-state.sqlite3";
@@ -23,6 +25,17 @@ const TAG: &str = "shared-memory";
 pub const MAX_QUERY: usize = 2000;
 /// Shown-memory records older than this are pruned.
 const KEEP_SECONDS: f64 = 30.0 * 86400.0;
+/// UserPromptSubmit searches for three times --top-k results, within 15 and the daemon's default
+/// maxTopK, with --search-budget tokens for each: room to skip what the session was shown, and
+/// for the longest records to arrive whole and be cut here.
+const FETCH_FACTOR: usize = 3;
+const MIN_FETCH: usize = 15;
+const MAX_FETCH: usize = 50;
+/// Tokens the daemon counts for each result on top of its text; recall packs the same way.
+const RESULT_TOKENS: usize = 8;
+/// Fewest text tokens worth injecting as an excerpt.
+const MIN_EXCERPT: usize = 32;
+const EXCERPT: &str = "excerpt, full text via get_memory; ";
 const TRUNCATED: &str = "[truncated]\n";
 pub const START_NOTE: &str =
     "Loaded automatically at session start from the shared memory service (get_context). \
@@ -248,12 +261,7 @@ async fn prompt_submit(
     if query.is_empty() {
         return Ok((None, None)); // an image-only or empty prompt has nothing to search for
     }
-    let body = json!({"query": query, "scope": {"project": args.project},
-                      "topK": args.top_k, "tokenBudget": args.search_budget});
-    let found = daemon
-        .post("search_memories", &body, &args.tenant, &args.platform)
-        .await
-        .map_err(|e| e.kind())?;
+    let found = search(args, daemon, &query).await.map_err(|e| e.kind())?;
     let mut memories: Vec<&Map<String, Value>> = found
         .get("results")
         .and_then(Value::as_array)
@@ -281,20 +289,85 @@ async fn prompt_submit(
             }
         }
     }
-    let lines: Vec<String> = memories.iter().map(|m| fact_line(m)).collect();
+    let (lines, mut shown): (Vec<String>, Vec<String>) = pack(args, &memories).into_iter().unzip();
     let (text, kept) = wrap(args, "UserPromptSubmit", PROMPT_NOTE, &lines);
     let (Some(text), Some(session)) = (text.clone(), session) else {
         return Ok((text, None));
     };
+    shown.truncate(kept);
     let record = Record {
         session,
-        memories: memories[..kept]
-            .iter()
-            .filter_map(|m| id(m).map(str::to_string))
-            .collect(),
+        memories: shown,
         reset: false,
     };
     Ok((Some(text), Some(record)))
+}
+
+/// search_memories for the prompt, asking for more than recall injects. A daemon whose maxTopK
+/// refuses that gets the plain request.
+async fn search(args: &RecallArgs, daemon: &Daemon, query: &str) -> Result<Value, CallError> {
+    let fetch = args
+        .top_k
+        .saturating_mul(FETCH_FACTOR)
+        .clamp(MIN_FETCH, MAX_FETCH);
+    let body = |top_k: usize, budget: usize| {
+        json!({"query": query, "scope": {"project": args.project},
+               "topK": top_k, "tokenBudget": budget})
+    };
+    let wide = body(fetch, args.search_budget.saturating_mul(fetch));
+    match daemon
+        .post("search_memories", &wide, &args.tenant, &args.platform)
+        .await
+    {
+        Err(CallError::Status(400)) if fetch > args.top_k => {
+            let plain = body(args.top_k, args.search_budget);
+            daemon
+                .post("search_memories", &plain, &args.tenant, &args.platform)
+                .await
+        }
+        found => found,
+    }
+}
+
+/// (line, memory ID) for at most --top-k results in rank order, each costing its text as the
+/// daemon estimates it plus RESULT_TOKENS, within --search-budget. The first result too long for
+/// the tokens left becomes an excerpt that ends the list, unless less than MIN_EXCERPT would fit.
+fn pack(args: &RecallArgs, memories: &[&Map<String, Value>]) -> Vec<(String, String)> {
+    let mut left = args.search_budget;
+    let mut lines = Vec::new();
+    for memory in memories {
+        let Some(id) = id(memory) else { continue };
+        if lines.len() == args.top_k {
+            break;
+        }
+        let text = one_line(memory);
+        let cost = util::est_tokens(&text) + RESULT_TOKENS;
+        if cost <= left {
+            left -= cost;
+            lines.push((fact_line(memory, &text, ""), id.to_string()));
+        } else if left >= RESULT_TOKENS + MIN_EXCERPT {
+            let cut = format!("{}…", excerpt(&text, left - RESULT_TOKENS));
+            lines.push((fact_line(memory, &cut, EXCERPT), id.to_string()));
+            break;
+        }
+    }
+    lines
+}
+
+/// The longest start of `text` within `tokens`, estimated as the daemon does.
+fn excerpt(text: &str, tokens: usize) -> &str {
+    let (mut cjk, mut other) = (0usize, 0usize);
+    for (at, c) in text.char_indices() {
+        if util::is_cjk(c) {
+            cjk += 1;
+        } else {
+            other += 1;
+        }
+        if cjk + other.div_ceil(4) > tokens {
+            return text[..at].trim_end();
+        }
+    }
+    text
 }
 
 fn id(memory: &Map<String, Value>) -> Option<&str> {
@@ -404,7 +477,14 @@ fn text_of(value: Option<&Value>) -> String {
     }
 }
 
-fn fact_line(memory: &Map<String, Value>) -> String {
+/// A memory's text on one line, unable to close the wrapper.
+fn one_line(memory: &Map<String, Value>) -> String {
+    let text = text_of(memory.get("text"));
+    clean(&text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// `text` (from `one_line`, maybe cut) with the memory's status, date, platform and ID.
+fn fact_line(memory: &Map<String, Value>, text: &str, note: &str) -> String {
     let day = |key: &str| {
         text_of(memory.get(key))
             .chars()
@@ -434,13 +514,8 @@ fn fact_line(memory: &Map<String, Value>) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" · ");
-    let text = text_of(memory.get("text"))
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
     format!(
-        "- {} ({status}{details}; id {})",
-        clean(&text),
+        "- {text} ({note}{status}{details}; id {})",
         id(memory).unwrap_or_default()
     )
 }
@@ -513,6 +588,7 @@ fn remember(args: &RecallArgs, record: &Record) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
     use axum::routing::post;
     use axum::{Json, Router};
     use std::sync::{Arc, Mutex};
@@ -531,17 +607,56 @@ mod tests {
                "recordedAt": "2026-10-03T00:00:00Z", "source": {"platform": "claude-code"}})
     }
 
+    fn memory(id: &str, text: &str) -> Value {
+        let mut m = gate();
+        m["id"] = json!(id);
+        m["text"] = json!(text);
+        json!({"memory": m})
+    }
+
     type Requests = Arc<Mutex<Vec<(String, Value)>>>;
 
-    /// A loopback daemon answering get_context and search_memories with `search` results.
+    /// What the daemon returns for a search `body` from ranked `results`: the first topK, skipping
+    /// any that would overflow tokenBudget; a topK above `max_top_k` is refused. Other replies are
+    /// returned as they are.
+    fn ranked(results: Value, body: &Value, max_top_k: u64) -> Result<Value, StatusCode> {
+        let Some(results) = results.get("results").and_then(Value::as_array) else {
+            return Ok(results);
+        };
+        let top_k = body["topK"].as_u64().unwrap();
+        if top_k > max_top_k {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let mut left = body["tokenBudget"].as_u64().unwrap() as usize;
+        let mut kept = Vec::new();
+        for result in results.iter().take(top_k as usize) {
+            let cost = util::est_tokens(result["memory"]["text"].as_str().unwrap_or("")) + 8;
+            if cost <= left {
+                left -= cost;
+                kept.push(result.clone());
+            }
+        }
+        Ok(json!({"results": kept}))
+    }
+
+    /// A loopback daemon answering get_context, and search_memories from `search` results.
     async fn daemon(search: Value) -> (String, Requests) {
+        daemon_with(search, 50).await
+    }
+
+    async fn daemon_with(search: Value, max_top_k: u64) -> (String, Requests) {
         let requests: Requests = Arc::default();
         let log = |name: &'static str, requests: Requests, reply: Value| {
             move |Json(body): Json<Value>| {
                 let (requests, reply) = (requests.clone(), reply.clone());
                 async move {
+                    let reply = if name == "search_memories" {
+                        ranked(reply, &body, max_top_k)
+                    } else {
+                        Ok(reply)
+                    };
                     requests.lock().unwrap().push((name.to_string(), body));
-                    Json(reply)
+                    reply.map(Json)
                 }
             }
         };
@@ -601,6 +716,14 @@ mod tests {
         json!({"hook_event_name": "UserPromptSubmit", "session_id": session, "prompt": text})
     }
 
+    /// Memory IDs on the result lines of injected context, in order.
+    fn shown(text: &str) -> Vec<&str> {
+        text.lines()
+            .filter(|line| line.starts_with("- "))
+            .map(|line| line.rsplit("; id ").next().unwrap().trim_end_matches(')'))
+            .collect()
+    }
+
     #[tokio::test]
     async fn session_start_injects_get_context_framed_and_scoped() {
         let (url, requests) = daemon(json!({"results": []})).await;
@@ -633,7 +756,7 @@ mod tests {
         assert_eq!(
             last,
             json!({"query": "How do deploys work?", "scope": {"project": "proj"},
-                                "topK": 5, "tokenBudget": 400})
+                                "topK": 15, "tokenBudget": 6000})
         );
         assert_eq!(inject(&a, prompt("How do deploys work?", "s1")).await, "");
         let other = inject(&a, prompt("How do deploys work?", "s2")).await;
@@ -643,6 +766,86 @@ mod tests {
         assert!(inject(&a, prompt("How do deploys work?", "s1"))
             .await
             .contains("id m2"));
+    }
+
+    #[tokio::test]
+    async fn later_prompts_get_results_the_session_was_not_shown() {
+        let results: Vec<Value> = (0..8)
+            .map(|i| memory(&format!("m{i}"), &format!("Note {i}.")))
+            .collect();
+        let (url, _) = daemon(json!({ "results": results })).await;
+        let dir = tempfile::tempdir().unwrap();
+        let a = args(&dir, &url);
+        // At most --top-k: the daemon's best five, now shown.
+        let first = inject(&a, prompt("notes", "s1")).await;
+        assert_eq!(shown(&first), ["m0", "m1", "m2", "m3", "m4"]);
+        // The wider search still finds new ones.
+        let second = inject(&a, prompt("notes", "s1")).await;
+        assert_eq!(shown(&second), ["m5", "m6", "m7"]);
+        assert_eq!(inject(&a, prompt("notes", "s1")).await, "");
+    }
+
+    #[tokio::test]
+    async fn a_record_too_long_for_the_budget_becomes_an_excerpt() {
+        // One token per CJK character, as the daemon estimates.
+        let results = [
+            memory("big", &"部".repeat(1000)),
+            memory("small", "Short note."),
+        ];
+        let (url, _) = daemon(json!({ "results": results })).await;
+        let dir = tempfile::tempdir().unwrap();
+        let a = args(&dir, &url);
+        let text = inject(&a, prompt("notes", "s1")).await;
+        let excerpt = format!(
+            "\n- {}… (excerpt, full text via get_memory; since 2026-10-01 · codex; id big)\n",
+            "部".repeat(400 - 8)
+        );
+        assert!(text.contains(&excerpt), "{text}");
+        assert_eq!(shown(&text), ["big"]); // the excerpt fills the budget and ends the list
+        let next = inject(&a, prompt("notes", "s1")).await;
+        assert_eq!(shown(&next), ["small"]); // the excerpt counts as shown
+    }
+
+    #[tokio::test]
+    async fn an_excerpt_takes_the_tokens_left_when_a_sentence_fits() {
+        let long = "部".repeat(1000);
+        let dir = tempfile::tempdir().unwrap();
+        let results = [
+            memory("a", &"部".repeat(300)),
+            memory("big", &long),
+            memory("c", "Short note."),
+        ];
+        let (url, _) = daemon(json!({ "results": results })).await;
+        let text = inject(&args(&dir, &url), prompt("notes", "s1")).await;
+        assert_eq!(shown(&text), ["a", "big"]);
+        let rest = 400 - (300 + 8) - 8;
+        assert!(text.contains(&format!("- {}… (excerpt", "部".repeat(rest))));
+        // 22 tokens left after d are too few for an excerpt: big waits, and e still fits.
+        let results = [
+            memory("d", &"部".repeat(370)),
+            memory("big", &long),
+            memory("e", "ok"),
+        ];
+        let (url, _) = daemon(json!({ "results": results })).await;
+        let a = args(&dir, &url);
+        assert_eq!(shown(&inject(&a, prompt("notes", "s2")).await), ["d", "e"]);
+        assert_eq!(shown(&inject(&a, prompt("notes", "s2")).await), ["big"]);
+    }
+
+    #[tokio::test]
+    async fn a_daemon_with_a_lower_max_top_k_gets_the_plain_request() {
+        let (url, requests) = daemon_with(json!({"results": [{"memory": gate()}]}), 10).await;
+        let dir = tempfile::tempdir().unwrap();
+        assert!(inject(&args(&dir, &url), prompt("q", "s1"))
+            .await
+            .contains("id m1"));
+        let sent: Vec<(Value, Value)> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, body)| (body["topK"].clone(), body["tokenBudget"].clone()))
+            .collect();
+        assert_eq!(sent, [(json!(15), json!(6000)), (json!(5), json!(400))]);
     }
 
     #[tokio::test]
@@ -692,6 +895,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut a = args(&dir, &url);
         a.max_chars = 1200;
+        a.top_k = 20;
         let text = inject(&a, prompt("notes", "s1")).await;
         assert!(text.chars().count() <= 1200);
         assert_eq!(text.to_lowercase().matches("</shared-memory").count(), 1);
@@ -756,6 +960,15 @@ mod tests {
         ] {
             assert!(loopback_url(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn excerpts_count_tokens_as_the_daemon_does() {
+        assert_eq!(excerpt("abcd efgh", 1), "abcd");
+        assert_eq!(excerpt("abcd efgh", 2), "abcd efg");
+        assert_eq!(excerpt("部署 staging", 2), "部署");
+        assert_eq!(excerpt("部署 staging", 3), "部署 sta");
+        assert_eq!(excerpt("部署 staging", 4), "部署 staging");
     }
 
     #[test]
