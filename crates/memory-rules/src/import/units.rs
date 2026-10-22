@@ -250,8 +250,14 @@ pub fn unit_key(host: &str, native_id: &str, locator: &str) -> String {
     format!("{}:{}#{}", quote(host), quote(native_id), quote(locator))
 }
 
-/// Python's `quote(part, safe='')`, as `quote` in memory-service's `harness/outbox.rs` (which this crate
-/// cannot depend on).
+/// The turn id dialogue capture gives a host's turn, `project/session/native_id` with each part quoted as in
+/// `unit_key`: the dialogue outbox and session import (design §6.10) share it, so the daemon's `platform +
+/// turnId` deduplication finds an imported turn that capture already sent.
+pub fn turn_key(project: &str, session: &str, native_id: &str) -> String {
+    [project, session, native_id].map(quote).join("/")
+}
+
+/// Python's `quote(part, safe='')`, as the dialogue outbox and `scripts/harness_memory.py` quote turn keys.
 fn quote(part: &str) -> String {
     let mut out = String::with_capacity(part.len());
     for byte in part.bytes() {
@@ -463,6 +469,8 @@ mod tests {
             "a%3Ab:c%23d#%E5%8F%91%E5%B8%83~"
         );
         assert_ne!(unit_key("a", "b:c", "d"), unit_key("a:b", "c", "d"));
+        assert_eq!(turn_key("p", "s 1", "a/b?"), "p/s%201/a%2Fb%3F");
+        assert_eq!(turn_key("名", "-_.~", "x"), "%E5%90%8D/-_.~/x");
     }
 
     #[test]

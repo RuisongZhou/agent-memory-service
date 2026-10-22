@@ -298,6 +298,7 @@ fn main() -> anyhow::Result<()> {
                 memory_service::consolidation_tests::selftest().await;
                 memory_service::consolidation_apply_tests::selftest().await;
                 memory_service::import_tests::selftest().await;
+                memory_service::import_session_tests::selftest().await;
             }
             Cmd::Mcp { url, platform } => {
                 memory_service::mcp::run_stdio(&url, &platform).await?;

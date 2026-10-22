@@ -4,17 +4,20 @@
 //! person may edit before proposing it: delete unit lines, or set a `decision` to `skip`.
 use chrono::{DateTime, Utc};
 use memory_domain::import::{
-    ImportLimits, ImportUnit, MAX_EXTRACT_BYTES, MODE_EXTRACT, MODE_SPLIT, MODE_VERBATIM,
+    session_turn_problem, ImportLimits, ImportUnit, SessionTurn, MAX_EXTRACT_BYTES, MODE_EXTRACT,
+    MODE_SESSION_TURN, MODE_SPLIT, MODE_VERBATIM,
 };
+use memory_domain::types::InMessage;
 use memory_rules::import::redact::redact;
 use memory_rules::import::units::{
-    chunk_bytes, content_hash, record_cost, split_to_fit, unit_key, UnitLimits,
+    chunk_bytes, content_hash, record_cost, split_to_fit, turn_key, unit_key, UnitLimits,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use super::session::{SessionDoc, Turn};
 use super::source::{display, Issue, Policy, ScanOutput, Segment, SourceDoc};
 use super::{shown, write_private};
 use crate::harness::{invalid, Error};
@@ -42,6 +45,32 @@ pub struct PlanOptions {
     pub no_extract: bool,
     /// RFC3339 UTC.
     pub created_at: String,
+    /// Which session turns to plan, when sessions are included.
+    pub sessions: Option<SessionOptions>,
+}
+
+/// The session turns a plan takes (design §6.14): from `since` on, at most `limit`, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOptions {
+    /// RFC3339 UTC.
+    pub since: Option<String>,
+    pub limit: usize,
+}
+
+/// What the plan did with the sessions it read; turns before `since`, over the limit and the copies of a turn
+/// another session holds get no line.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionsSummary {
+    pub sessions: usize,
+    pub since: Option<String>,
+    pub limit: usize,
+    pub before_since: usize,
+    pub over_limit: usize,
+    /// Turns a forked or resumed session repeats from the session it continues.
+    pub copies: usize,
+    /// The `--since` that plans the turns over the limit.
+    pub next_since: Option<String>,
 }
 
 /// The recall parameters and the unit sizes they give (design §6.5).
@@ -73,6 +102,8 @@ pub struct Counts {
     pub split: usize,
     pub extract: usize,
     pub skipped: usize,
+    #[serde(default, rename = "sessionTurns")]
+    pub session_turns: usize,
 }
 
 /// What proposing and applying the plan send to the model services. Propose embeds each verbatim text
@@ -108,6 +139,8 @@ pub struct Summary {
     pub redactions: BTreeMap<String, usize>,
     pub estimates: Estimates,
     pub issues: Vec<Issue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<SessionsSummary>,
     /// blake3 of the unit lines as written.
     pub plan_hash: String,
 }
@@ -120,7 +153,7 @@ pub struct PlannedUnit {
     pub line: String,
     /// `import` or `skip`.
     pub decision: String,
-    /// Why this mode (`fits`, `over-cap`, `always-extract`) or why skipped.
+    /// Why this mode (`fits`, `over-cap`, `always-extract`, `session-turn`) or why skipped.
     pub reason: String,
     /// Record cost of the unit text.
     pub cost: usize,
@@ -160,7 +193,8 @@ pub fn decide(policy: Policy, fits: bool, no_extract: bool) -> (&'static str, &'
     }
 }
 
-/// Plan every segment of `scan`, oldest statement first so apply writes older statements first.
+/// Plan every segment of `scan`, oldest statement first so apply writes older statements first, then the
+/// session turns it selects, oldest first.
 pub fn build(scan: ScanOutput, opts: &PlanOptions) -> Result<Plan, Error> {
     let limits = UnitLimits::from(opts.limits);
     let mut keyed = Vec::new();
@@ -183,9 +217,24 @@ pub fn build(scan: ScanOutput, opts: &PlanOptions) -> Result<Plan, Error> {
         }
     }
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut sessions = None;
+    let turns = match &opts.sessions {
+        Some(options) => {
+            let mut summary = SessionsSummary {
+                sessions: scan.sessions.len(),
+                since: options.since.clone(),
+                limit: options.limit,
+                ..SessionsSummary::default()
+            };
+            let turns = session_units(&scan.sessions, opts, options, &mut summary);
+            sessions = Some(summary);
+            turns
+        }
+        None => vec![],
+    };
     let mut seen = HashSet::new();
-    let mut units = Vec::with_capacity(keyed.len());
-    for (_, mut unit) in keyed {
+    let mut units = Vec::with_capacity(keyed.len() + turns.len());
+    for mut unit in keyed.into_iter().map(|(_, unit)| unit).chain(turns) {
         if !seen.insert(unit.unit.unit.clone()) && unit.decision == IMPORT {
             unit.decision = SKIP.into();
             unit.reason = "duplicate-unit".into();
@@ -211,6 +260,17 @@ pub fn build(scan: ScanOutput, opts: &PlanOptions) -> Result<Plan, Error> {
         }
         let unit = &planned.unit;
         match unit.mode.as_str() {
+            MODE_SESSION_TURN => {
+                // Mem0 formation: one generation call per turn; the facts it writes are embedded then.
+                counts.session_turns += 1;
+                estimates.generation_calls += 1;
+                estimates.chars_to_generation += unit.turn.as_ref().map_or(0, |turn| {
+                    turn.messages
+                        .iter()
+                        .map(|m| m.content.chars().count())
+                        .sum()
+                });
+            }
             MODE_VERBATIM => {
                 counts.verbatim += 1;
                 estimates.embedding_texts += 2;
@@ -250,6 +310,7 @@ pub fn build(scan: ScanOutput, opts: &PlanOptions) -> Result<Plan, Error> {
         redactions,
         estimates,
         issues: scan.issues,
+        sessions,
         plan_hash: content_hash(&unit_lines(&units)?),
     };
     Ok(Plan { summary, units })
@@ -362,6 +423,7 @@ fn plan_unit(
                 .instruction_candidate
                 .unwrap_or(doc.instruction_candidate),
             source,
+            turn: None,
         },
     }
 }
@@ -393,6 +455,129 @@ fn source(doc: &SourceDoc, segment: &Segment, home: &Path, redactor: &mut Redact
         }
     }
     Value::Object(map)
+}
+
+/// The units of the session turns (design §6.10, §6.14): every turn a person asked, oldest first from
+/// `--since`, at most `--limit`, with lines for the turns of that window the adapters skipped. A turn found in
+/// two sessions (a forked or resumed session repeats the turns it continues) belongs to the session that
+/// started first, as capture filed it there.
+fn session_units(
+    sessions: &[SessionDoc],
+    opts: &PlanOptions,
+    options: &SessionOptions,
+    summary: &mut SessionsSummary,
+) -> Vec<PlannedUnit> {
+    let mut docs: Vec<&SessionDoc> = sessions.iter().collect();
+    docs.sort_by(|a, b| {
+        (&a.started_at, &a.session, &a.display_path).cmp(&(
+            &b.started_at,
+            &b.session,
+            &b.display_path,
+        ))
+    });
+    type Key = (String, String, String, usize);
+    let mut seen = HashSet::new();
+    let (mut eligible, mut skipped): (Vec<(Key, &SessionDoc, &Turn)>, Vec<_>) = (vec![], vec![]);
+    for doc in docs {
+        for (order, turn) in doc.turns.iter().enumerate() {
+            if !turn.native_id.is_empty() && !seen.insert(turn.native_id.as_str()) {
+                summary.copies += 1;
+                continue;
+            }
+            let key = (
+                turn.prompt_at.clone(),
+                doc.started_at.clone(),
+                doc.session.clone(),
+                order,
+            );
+            match turn.skip {
+                None => eligible.push((key, doc, turn)),
+                Some(_) => skipped.push((key, doc, turn)),
+            }
+        }
+    }
+    let since = options.since.as_deref().unwrap_or("");
+    let before = eligible.len();
+    eligible.retain(|(key, ..)| key.0.as_str() >= since);
+    summary.before_since = before - eligible.len();
+    eligible.sort_by(|a, b| a.0.cmp(&b.0));
+    if eligible.len() > options.limit {
+        summary.over_limit = eligible.len() - options.limit;
+        summary.next_since = Some(eligible[options.limit].0 .0.clone());
+        eligible.truncate(options.limit);
+    }
+    let until = summary.next_since.clone();
+    skipped.retain(|(key, ..)| {
+        key.0.as_str() >= since && until.as_ref().is_none_or(|until| key.0 < *until)
+    });
+    let mut all: Vec<_> = eligible.into_iter().chain(skipped).collect();
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    all.into_iter()
+        .map(|(key, doc, turn)| turn_unit(doc, turn, key.3, opts))
+        .collect()
+}
+
+/// One session turn as a unit: its prompt is the unit text, and the turn goes with it as capture would queue it,
+/// both messages redacted. Skipped when the adapter said so, or when it holds a private key.
+fn turn_unit(doc: &SessionDoc, turn: &Turn, order: usize, opts: &PlanOptions) -> PlannedUnit {
+    let mut redactor = Redactor::default();
+    let prompt = redactor.clean(&turn.prompt).trim().to_string();
+    let reply = redactor.clean(&turn.reply).trim().to_string();
+    let locator = match turn.native_id.is_empty() {
+        true => format!("turn-{}", order + 1),
+        false => turn.native_id.clone(),
+    };
+    let (decision, reason) = match &turn.skip {
+        Some(reason) => (SKIP, reason.clone()),
+        None if redactor.private_key => (SKIP, "private-key".into()),
+        None if prompt.is_empty() || reply.is_empty() => (SKIP, "empty".into()),
+        None => (IMPORT, MODE_SESSION_TURN.into()),
+    };
+    let message = |role: &str, content: &str, timestamp: &str| InMessage {
+        role: role.into(),
+        content: content.into(),
+        timestamp: timestamp.into(),
+    };
+    // Formation takes a batch's messages in time order; a reply never predates its prompt.
+    let reply_at = turn.reply_at.as_str().max(turn.prompt_at.as_str());
+    let mut source = Map::new();
+    source.insert("via".into(), json!(doc.via));
+    source.insert("path".into(), json!(doc.display_path));
+    source.insert("nativeId".into(), json!(turn.native_id));
+    source.insert("session".into(), json!(doc.session));
+    source.insert("cwd".into(), json!(display(&opts.home, &doc.cwd)));
+    if let Value::Object(fields) = &doc.extra {
+        for (key, value) in fields.iter().filter(|(_, v)| !v.is_null()) {
+            source.insert(key.clone(), value.clone());
+        }
+    }
+    PlannedUnit {
+        line: "unit".into(),
+        decision: decision.into(),
+        reason,
+        cost: record_cost(&prompt),
+        redactions: redactor.counts,
+        unit: ImportUnit {
+            unit: unit_key(&doc.host, &format!("session:{}", doc.session), &locator),
+            host: doc.host.clone(),
+            mode: MODE_SESSION_TURN.into(),
+            unit_hash: content_hash(&prompt),
+            stated_at: turn.prompt_at.clone(),
+            file_hash: doc.file_hash.clone(),
+            source: Value::Object(source),
+            turn: Some(SessionTurn {
+                turn_id: turn_key(&opts.project, &doc.session, &turn.native_id),
+                session: doc.session.clone(),
+                native_id: turn.native_id.clone(),
+                messages: vec![
+                    message("user", &prompt, &turn.prompt_at),
+                    message("assistant", &reply, reply_at),
+                ],
+            }),
+            text: prompt,
+            ..ImportUnit::default()
+        },
+    }
 }
 
 fn unit_lines(units: &[PlannedUnit]) -> Result<String, Error> {
@@ -502,7 +687,9 @@ pub fn parse(text: &str) -> Result<Plan, Error> {
                 unit.decision
             )));
         }
-        if ![MODE_VERBATIM, MODE_SPLIT, MODE_EXTRACT].contains(&unit.unit.mode.as_str()) {
+        if ![MODE_VERBATIM, MODE_SPLIT, MODE_EXTRACT, MODE_SESSION_TURN]
+            .contains(&unit.unit.mode.as_str())
+        {
             return Err(invalid(format!(
                 "line {n}: unknown mode {:?}",
                 unit.unit.mode
@@ -511,6 +698,15 @@ pub fn parse(text: &str) -> Result<Plan, Error> {
         if unit.decision == IMPORT {
             if unit.unit.mode == MODE_SPLIT && unit.unit.pieces.is_empty() {
                 return Err(invalid(format!("line {n}: a split unit needs its pieces")));
+            }
+            if unit.unit.mode == MODE_SESSION_TURN {
+                let problem = match &unit.unit.turn {
+                    Some(turn) => session_turn_problem(turn, &summary.project),
+                    None => Some("a session turn needs its turn".into()),
+                };
+                if let Some(problem) = problem {
+                    return Err(invalid(format!("line {n}: {problem}")));
+                }
             }
             if !proposed.insert(unit.unit.unit.clone()) {
                 return Err(invalid(format!(
@@ -565,6 +761,7 @@ mod tests {
             limits: ImportLimits::default(),
             no_extract,
             created_at: "2026-10-22T12:00:00Z".into(),
+            sessions: None,
         }
     }
 
@@ -575,6 +772,7 @@ mod tests {
                 path: "~/MEMORY.md".into(),
                 reason: "derived".into(),
             }],
+            sessions: vec![],
         }
     }
 
@@ -862,7 +1060,8 @@ mod tests {
                 verbatim: 1,
                 split: 0,
                 extract: 2,
-                skipped: 0
+                skipped: 0,
+                session_turns: 0
             }
         );
         let long_chars = long.chars().count();
@@ -1026,5 +1225,234 @@ mod tests {
         assert!(next.ends_with("claude-code-team_app_x-20261022T120000Z-2.plan.jsonl"));
         assert_eq!(file_part(".."), "_");
         assert_eq!(file_part("项目"), "__");
+    }
+
+    fn session(id: &str, started: &str, turns: Vec<Turn>) -> SessionDoc {
+        SessionDoc {
+            host: "claude-code".into(),
+            via: "claude-transcript",
+            path: PathBuf::from(format!("/home/u/.claude/projects/-app/{id}.jsonl")),
+            display_path: format!("~/.claude/projects/-app/{id}.jsonl"),
+            session: id.into(),
+            cwd: PathBuf::from("/home/u/code/app"),
+            file_hash: content_hash(id),
+            started_at: started.into(),
+            turns,
+            extra: json!({"version": "2.1.306", "unset": null}),
+        }
+    }
+
+    fn turn(native: &str, at: &str, skip: Option<&str>) -> Turn {
+        Turn {
+            native_id: native.into(),
+            prompt: format!("Prompt {native}."),
+            reply: format!("Reply {native}."),
+            prompt_at: at.into(),
+            reply_at: at.into(),
+            skip: skip.map(str::to_string),
+        }
+    }
+
+    fn with_sessions(sessions: Vec<SessionDoc>, since: Option<&str>, limit: usize) -> Plan {
+        let mut opts = options(false);
+        opts.host = "claude-code".into();
+        opts.sessions = Some(SessionOptions {
+            since: since.map(str::to_string),
+            limit,
+        });
+        let scan = ScanOutput {
+            sessions,
+            ..ScanOutput::default()
+        };
+        build(scan, &opts).unwrap()
+    }
+
+    #[test]
+    fn session_turns_come_oldest_first_from_since_up_to_the_limit() {
+        let at = |t: &str| format!("2026-01-01T{t}:00Z");
+        let sessions = vec![
+            // A fork of s1 repeats its turn t2, then goes on.
+            session(
+                "s2",
+                &at("03:00"),
+                vec![
+                    turn("t2", &at("02:00"), None),
+                    turn("t4", &at("03:30"), None),
+                    turn("x2", &at("05:00"), Some("no-reply")),
+                ],
+            ),
+            session(
+                "s1",
+                &at("01:00"),
+                vec![
+                    turn("t1", &at("01:00"), None),
+                    turn("t2", &at("02:00"), None),
+                    turn("x1", &at("02:30"), Some("turnOrigin:sdk")),
+                    turn("t3", &at("04:00"), None),
+                ],
+            ),
+            session(
+                "s0",
+                "2025-12-31T22:00:00Z",
+                vec![turn("t0", "2025-12-31T23:00:00Z", None)],
+            ),
+        ];
+        let plan = with_sessions(sessions, Some("2026-01-01T00:00:00Z"), 3);
+        let got: Vec<(&str, &str, &str)> = plan
+            .units
+            .iter()
+            .map(|u| {
+                (
+                    u.unit.turn.as_ref().unwrap().native_id.as_str(),
+                    u.decision.as_str(),
+                    u.reason.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("t1", IMPORT, MODE_SESSION_TURN),
+                ("t2", IMPORT, MODE_SESSION_TURN),
+                ("x1", SKIP, "turnOrigin:sdk"),
+                ("t4", IMPORT, MODE_SESSION_TURN),
+            ]
+        );
+        // The repeated turn is filed under the session that started first, as capture filed it.
+        let t2 = &plan.units[1].unit;
+        assert_eq!(t2.turn.as_ref().unwrap().session, "s1");
+        assert_eq!(t2.unit, "claude-code:session%3As1#t2");
+        assert_eq!(
+            plan.summary.sessions,
+            Some(SessionsSummary {
+                sessions: 3,
+                since: Some("2026-01-01T00:00:00Z".into()),
+                limit: 3,
+                before_since: 1,
+                over_limit: 1,
+                copies: 1,
+                next_since: Some(at("04:00")),
+            })
+        );
+        let s = &plan.summary;
+        assert_eq!((s.counts.session_turns, s.counts.skipped), (3, 1));
+        assert_eq!(
+            s.skip_reasons,
+            BTreeMap::from([("turnOrigin:sdk".to_string(), 1)])
+        );
+        assert_eq!(s.estimates.generation_calls, 3);
+        let chars: usize = ["t1", "t2", "t4"]
+            .iter()
+            .map(|t| format!("Prompt {t}.").len() + format!("Reply {t}.").len())
+            .sum();
+        assert_eq!(s.estimates.chars_to_generation, chars);
+        assert_eq!(s.estimates.embedding_texts, 0);
+        // The unit carries the turn as capture would queue it, under capture's turn id.
+        let t1 = &plan.units[0].unit;
+        assert_eq!(t1.mode, MODE_SESSION_TURN);
+        assert_eq!(t1.text, "Prompt t1.");
+        assert_eq!(t1.unit_hash, content_hash("Prompt t1."));
+        assert_eq!(t1.stated_at, at("01:00"));
+        assert_eq!(t1.file_hash, content_hash("s1"));
+        let queued = t1.turn.as_ref().unwrap();
+        assert_eq!(queued.turn_id, turn_key("my-project", "s1", "t1"));
+        assert_eq!(
+            queued.turn_id,
+            crate::harness::outbox::turn_key("my-project", "s1", "t1")
+        );
+        let roles: Vec<(&str, &str)> = queued
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(roles, [("user", "Prompt t1."), ("assistant", "Reply t1.")]);
+        assert_eq!(
+            t1.source,
+            json!({"via": "claude-transcript", "path": "~/.claude/projects/-app/s1.jsonl",
+                   "nativeId": "t1", "session": "s1", "cwd": "~/code/app", "version": "2.1.306"})
+        );
+        // Without --since and with room, every turn is planned and none is left out.
+        let all = with_sessions(
+            vec![session(
+                "s1",
+                &at("01:00"),
+                vec![turn("t1", &at("01:00"), None)],
+            )],
+            None,
+            200,
+        );
+        let summary = all.summary.sessions.unwrap();
+        assert_eq!((summary.over_limit, summary.next_since), (0, None));
+        assert_eq!(parse(&render(&plan).unwrap()).unwrap(), plan);
+    }
+
+    #[test]
+    fn session_turns_are_redacted_and_checked_when_read_back() {
+        let token: String = "Fake0Key9".chars().cycle().take(30).collect();
+        let pem = |edge: &str| ["-----", edge, " RSA PRIVATE KEY-----"].concat();
+        let mut leaky = turn("t1", "2026-01-01T01:00:00Z", None);
+        leaky.reply = format!("Use sk-{token} for staging.");
+        let mut keyed = turn("t2", "2026-01-01T02:00:00Z", None);
+        keyed.prompt = format!("Store this:\n{}\nMIIfake\n{}", pem("BEGIN"), pem("END"));
+        let plan = with_sessions(
+            vec![session("s1", "2026-01-01T01:00:00Z", vec![leaky, keyed])],
+            None,
+            200,
+        );
+        let (a, b) = (&plan.units[0], &plan.units[1]);
+        assert_eq!(a.decision, IMPORT);
+        assert_eq!(
+            a.unit.turn.as_ref().unwrap().messages[1].content,
+            "Use [redacted:api-key] for staging."
+        );
+        assert_eq!(a.redactions, BTreeMap::from([("api-key".to_string(), 1)]));
+        assert_eq!(
+            (b.decision.as_str(), b.reason.as_str()),
+            (SKIP, "private-key")
+        );
+        let text = render(&plan).unwrap();
+        assert!(!text.contains(&token) && !text.contains("MIIfake"));
+        // A session line edited to another project's turn id, or stripped of its turn, is refused by line.
+        let lines: Vec<&str> = text.lines().collect();
+        let moved = lines[1].replace("my-project/s1/t1", "other/s1/t1");
+        let error = parse(&[lines[0], &moved].join("\n"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("line 2") && error.contains("capture turn key"),
+            "{error}"
+        );
+        let mut bare: Value = serde_json::from_str(lines[1]).unwrap();
+        bare.as_object_mut().unwrap().remove("turn");
+        let error = parse(&[lines[0].to_string(), bare.to_string()].join("\n"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("needs its turn"), "{error}");
+        // A skipped line may lack a reply; it is never proposed.
+        assert!(parse(&[lines[0], lines[2]].join("\n")).is_ok());
+    }
+
+    #[test]
+    fn notes_come_before_session_turns() {
+        let mut opts = options(false);
+        opts.sessions = Some(SessionOptions {
+            since: None,
+            limit: 10,
+        });
+        let mut scan = scan(vec![doc(
+            "n.md",
+            "2026-06-01T00:00:00Z",
+            vec![segment("note", "A later note.", Policy::VerbatimIfFits)],
+        )]);
+        scan.sessions = vec![session(
+            "s1",
+            "2026-01-01T01:00:00Z",
+            vec![turn("t1", "2026-01-01T01:00:00Z", None)],
+        )];
+        let plan = build(scan, &opts).unwrap();
+        let modes: Vec<&str> = plan.units.iter().map(|u| u.unit.mode.as_str()).collect();
+        assert_eq!(modes, [MODE_VERBATIM, MODE_SESSION_TURN]);
+        assert_eq!(plan.summary.counts.units, 2);
+        assert_eq!(plan.summary.issues.len(), 1);
     }
 }

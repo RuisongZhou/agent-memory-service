@@ -4,8 +4,8 @@
 //! `Daemon::admin` request; nothing here reads host files except to check that the sources of a plan, or
 //! of a run's proposals, are still as they were.
 use memory_domain::import::{
-    ImportProposal, ImportProposeReq, ImportRun, ImportRunReq, ImportRunsReq, ImportUnit, ACCEPT,
-    PROPOSED, REJECT,
+    is_session_turn, ImportProposal, ImportProposeReq, ImportRun, ImportRunReq, ImportRunsReq,
+    ImportUnit, ACCEPT, MODE_SESSION_TURN, PROPOSED, REJECT,
 };
 use memory_rules::import::units::content_hash;
 use serde::Serialize;
@@ -77,11 +77,16 @@ fn source_hash(home: &Path, path: &str) -> Result<String, &'static str> {
 }
 
 /// The plan's units to propose, those whose source file still hashes as when the plan was made, and the
-/// stale ones (`stale-plan`). Each file is read once.
+/// stale ones (`stale-plan`). Each file is read once. A session turn is always fresh: its messages travel in
+/// the plan, and a transcript keeps growing while its session runs.
 pub fn fresh_units(plan: &Plan, home: &Path) -> (Vec<ImportUnit>, Vec<Stale>) {
     let mut hashes: HashMap<String, Result<String, &'static str>> = HashMap::new();
     let (mut fresh, mut stale) = (Vec::new(), Vec::new());
     for unit in plan.import_units() {
+        if unit.mode == MODE_SESSION_TURN {
+            fresh.push(unit.clone());
+            continue;
+        }
         let path = unit
             .source
             .get("path")
@@ -111,11 +116,14 @@ pub fn fresh_units(plan: &Plan, home: &Path) -> (Vec<ImportUnit>, Vec<Stale>) {
 
 /// The source files, read again under `home` as `fresh_units` reads them, whose hash is no longer the
 /// `fileHash` of their still-proposed proposals, in the proposals' order. Each file is read once; a
-/// proposal without `source.path` is not checked.
+/// proposal without `source.path`, and a session turn, is not checked.
 pub fn changed_sources(proposals: &[ImportProposal], home: &Path) -> Vec<ChangedSource> {
     let mut hashes: HashMap<&str, Result<String, &'static str>> = HashMap::new();
     let mut changed: Vec<ChangedSource> = Vec::new();
-    for proposal in proposals.iter().filter(|p| p.status == PROPOSED) {
+    for proposal in proposals
+        .iter()
+        .filter(|p| p.status == PROPOSED && !is_session_turn(p))
+    {
         let Some(path) = proposal
             .source
             .get("path")
@@ -403,7 +411,8 @@ pub fn run_view(answer: Value) -> Result<RunView, Error> {
 /// The decisions and scopes apply sends for a review: every proposal still proposed gets the review's
 /// decision, or `reject` when the review no longer lists it (deleting a line declines a proposal, as it
 /// skips a unit in a plan). A scope goes only with a proposal the run has as an instruction and that is
-/// accepted. A review naming a proposal the run does not have belongs to something else.
+/// accepted. A review naming a proposal the run does not have belongs to something else. Session turns are
+/// not reviewed (the plan chose them): they keep their default.
 pub fn complete(listed: Review, proposals: &[ImportProposal]) -> Result<Review, Error> {
     let known: HashSet<&str> = proposals.iter().map(|p| p.proposal_id.as_str()).collect();
     if let Some(unknown) = listed
@@ -416,7 +425,10 @@ pub fn complete(listed: Review, proposals: &[ImportProposal]) -> Result<Review, 
         )));
     }
     let mut review = Review::default();
-    for proposal in proposals.iter().filter(|p| p.status == PROPOSED) {
+    for proposal in proposals
+        .iter()
+        .filter(|p| p.status == PROPOSED && !is_session_turn(p))
+    {
         let id = &proposal.proposal_id;
         let decision = listed.decisions.get(id).map_or(REJECT, String::as_str);
         review.decisions.insert(id.clone(), decision.to_string());
@@ -602,6 +614,7 @@ pub(crate) mod tests {
                 path: "~/x".into(),
                 reason: "derived".into(),
             }],
+            sessions: vec![],
         };
         let opts = PlanOptions {
             host: "codex".into(),
@@ -611,6 +624,7 @@ pub(crate) mod tests {
             limits: ImportLimits::default(),
             no_extract: false,
             created_at: "2026-10-22T12:00:00Z".into(),
+            sessions: None,
         };
         build(scan, &opts).unwrap()
     }
@@ -938,6 +952,31 @@ pub(crate) mod tests {
                 ("~/c.md", "vanished")
             ]
         );
+    }
+
+    #[test]
+    fn session_turns_skip_the_source_checks_and_keep_their_default() {
+        let home = tempfile::tempdir().unwrap();
+        let mut plan = plan_over(home.path());
+        let mut turn = plan.units[0].clone();
+        turn.decision = crate::harness::import::plan::IMPORT.into();
+        turn.unit.mode = MODE_SESSION_TURN.into();
+        turn.unit.unit = "codex:session%3As1#t1".into();
+        turn.unit.source = json!({"path": "~/.codex/sessions/rollout-gone.jsonl"});
+        plan.units.push(turn);
+        // The transcript is gone (or grew): the turn's messages travel in the plan.
+        let (fresh, stale) = fresh_units(&plan, home.path());
+        assert!(stale.is_empty());
+        assert_eq!(fresh.last().unwrap().unit, "codex:session%3As1#t1");
+        let mut row = crate::harness::import::review::tests::turn_row("ip9", "t1", PROPOSED);
+        row.source = json!({"path": "~/.codex/sessions/rollout-gone.jsonl"});
+        assert!(changed_sources(&[row.clone()], home.path()).is_empty());
+        // A review never lists a turn, and does not decline it either.
+        let mut proposals = stub_proposals();
+        proposals.push(row);
+        let review = complete(Review::default(), &proposals).unwrap();
+        assert!(!review.decisions.contains_key("ip9"));
+        assert_eq!(review.decisions.len(), 3);
     }
 
     #[tokio::test]

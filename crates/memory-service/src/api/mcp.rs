@@ -195,8 +195,12 @@ impl Shim {
         }
     }
 
-    /// Forward one tool call; returns (ok, body text).
-    pub async fn forward(&self, name: &str, args: Value) -> (bool, String) {
+    /// Forward one tool call; returns (ok, body text). A model never submits the turns of an import run: only
+    /// `agent-memoryd import apply` does, through the dialogue outbox, so `importRunId` is dropped here.
+    pub async fn forward(&self, name: &str, mut args: Value) -> (bool, String) {
+        if let Value::Object(fields) = &mut args {
+            fields.remove("importRunId");
+        }
         let mut req = self
             .http
             .post(format!("{}/v1/{name}", self.url))
@@ -338,6 +342,34 @@ mod tests {
         .await;
         assert_eq!(replies[0]["result"]["protocolVersion"], "2025-11-25");
         assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 8);
+    }
+
+    #[tokio::test]
+    async fn the_bridge_never_forwards_an_import_run_id() {
+        use axum::{routing::post, Json, Router};
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let app = Router::new().route(
+            "/v1/{name}",
+            post(move |Json(body): Json<Value>| {
+                let record = record.clone();
+                async move {
+                    record.lock().unwrap().push(body);
+                    Json(json!({"requestId": "rq1"}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let shim = Shim::new(&url, "codex");
+        let args = json!({"scope": {"project": "p", "session": "s"}, "turnId": "p/s/t1",
+            "messages": [], "importRunId": "ir1"});
+        let (ok, _) = shim.forward("add_memories", args).await;
+        assert!(ok);
+        let body = seen.lock().unwrap()[0].clone();
+        assert_eq!(body["turnId"], "p/s/t1");
+        assert!(body.get("importRunId").is_none(), "{body}");
     }
 
     #[test]

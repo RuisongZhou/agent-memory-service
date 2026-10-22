@@ -392,6 +392,7 @@ Status output includes identifiers, receipts, and errors without dumping chat te
 | `completed` | Receipt satisfies the API completion contract |
 | `rejected` | Permanent HTTP request error; input retained for investigation |
 | `failed` | Formation failed; input and request ID retained |
+| `cancelled` | An [import rollback](#import-past-sessions) cancelled the turn before it was submitted; never sent |
 
 Transient connection errors, lost responses, HTTP 408/429, and 5xx retry the same payload and turn ID. The service deduplicates by `platform + turnId` within a tenant; retries preserve the first input and timestamps. After acceptance, the uploader polls instead of resubmitting. Failed/rejected records are not automatically resubmitted, and terminal records are not automatically deleted.
 
@@ -487,9 +488,10 @@ once the daemon uploads.
 ## Import existing memories
 
 `agent-memoryd import` copies what a host already remembers into the shared store, so other hosts and later
-sessions can recall it. The [design](design/memory-import.md) explains the choices and
-[architecture](architecture.md#import) the daemon side. Session transcripts, rule files such as `CLAUDE.md` and
-`AGENTS.md`, and an installer option are not imported yet.
+sessions can recall it: the memory files it keeps and, for Claude Code and Codex, the turns of
+[past sessions](#import-past-sessions). The [design](design/memory-import.md) explains the choices and
+[architecture](architecture.md#import) the daemon side. Rule files such as `CLAUDE.md` and `AGENTS.md`, and an
+installer option, are not imported yet.
 
 | Host | Reads | One unit | Mode |
 |---|---|---|---|
@@ -536,6 +538,45 @@ agent-memoryd import rollback RUN
 5. **`rollback`** retires a run's records and restores what they replaced; records changed since, or held by
    another unit, stay.
 
+### Import past sessions
+
+Capture only sees turns after its hooks were installed. With `--include sessions` (for `--host claude-code` and
+`--host codex`), `plan` reads the turns of earlier sessions from the host's transcripts, and Mem0 forms them as it
+forms captured turns. `--include notes,sessions` plans both.
+
+```sh
+agent-memoryd import plan --host claude-code --project my-project --workspace /path/to/repo --include sessions --since 2026-09-01
+agent-memoryd import propose ~/.local/state/agent-memory-service/imports/<plan>.plan.jsonl
+agent-memoryd import apply RUN --yes
+agent-memoryd import status RUN
+```
+
+| Host | Reads | A turn | Skipped |
+|---|---|---|---|
+| Claude Code | `~/.claude/projects/*/*.jsonl` whose `cwd` is in a workspace's repository (worktrees included) | a prompt with `turnOrigin: human` and the text of the turn's last assistant message | `sdk`, `task_notification` and `peer` turns, sidechains, tool results and hook context, turns without a reply or ending in an API error; transcripts without `turnOrigin` (`unknown-format`) |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl` and `.jsonl.zst`, and `~/.codex/archived_sessions/`, whose `cwd` is in a workspace | the text of a turn's `UserMessage` items and its `task_complete` final message | threads whose `thread_source` is not `user` (subagents, guardian reviews, handoffs), rollouts without it (Codex before 0.131, `unknown-format`), aborted turns and turns without a final message |
+
+- A turn keeps capture's identity: the host's platform label and the turn ID capture gives it
+  (`project/session/turn`), so use the `--project` of your capture hooks. The daemon deduplicates by
+  `platform + turnId`: a turn capture already sent, or an earlier import, comes back `duplicate:true` and is not
+  formed again, and overlapping imports are harmless.
+- `plan` takes the oldest turns from `--since` (default: all) up to `--limit` (default 200), and its report names
+  the `--since` of the next batch. It strips this service's `<shared-memory>` recall blocks and Claude Code's
+  `<system-reminder>` context, redacts credentials and skips a turn holding a private key; each skipped turn of the
+  window is a plan line with its reason. Transcripts are read without following symlinks, up to 512 MiB each.
+- `propose` stores the turns on the run without a model call; there is nothing to review. `apply RUN --yes` queues
+  them, oldest first in each session, into the dialogue outbox the uploader drains (`--outbox`, default as for
+  capture): at most `--rate` turns a minute (default 20, `0` queues them all at once), and only while that outbox
+  holds fewer than `--max-pending` turns not yet formed (default 4), live captures included, so newly captured turns
+  are not held up behind an import. A turn already in that outbox, such as one captured live, is left alone.
+  `apply` can be interrupted: run it again to queue the rest.
+- Each turn costs one Mem0 formation call with the session's earlier turns as context, plus embeddings for the
+  facts it forms; the plan summary counts the calls and characters.
+- `rollback RUN [--outbox FILE]` cancels the run's turns still waiting in the outbox, refuses any later submission
+  of them, and retires the facts formed only from the run's own turns; a fact that a captured turn also formed
+  stays. A turn still forming is left for another `rollback`. The daemon keeps the turn IDs of rolled-back turns,
+  so importing them again forms nothing.
+
 The unit cap keeps every imported record small enough for [automatic recall](#automatic-recall). A record
 may cost at most half the recall budget (`--recall-budget`, default 400; cost is estimated tokens + 8), and
 extraction aims at the budget divided by `--recall-top-k` (default 5). Pass the values of your recall hook when
@@ -571,5 +612,7 @@ captured turns. Propose a plan in parts if that matters.
 | `import plan` finds no Claude Code notes | Pass the repository (or a worktree of it) as `--workspace`: Claude Code keeps one memory directory per repository. `--all` also finds directories by their transcripts' `cwd` |
 | `import propose` fails with HTTP 503 | Extract units need the daemon's generation key; set it, or plan with `--no-extract` |
 | `import propose` reports `failed` units | The run continues without them; propose them again in a new run after fixing the cause the unit's `error` names |
+| `import plan --include sessions` skips sessions as `unknown-format` | The transcript predates the fields the import filters on (Claude Code `turnOrigin`; Codex `thread_source`, from 0.131); such sessions are never guessed at |
+| `import apply` keeps waiting on the outbox | No uploader drains it, or formation is slow: start the daemon with `--outbox` on that file or run `outbox drain`, and pass the uploader's outbox as `--outbox` |
 
 For daemon, model and storage problems, see [deployment troubleshooting](deployment.md#common-problems).

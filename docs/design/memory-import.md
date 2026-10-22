@@ -1,9 +1,9 @@
 # 宿主已有记忆的导入
 
-> 状态：笔记导入已实现，覆盖 Claude Code、Codex、WorkBuddy 和宿主 Agent 导出的 JSONL，用法见
-> [MCP 与宿主集成](../mcp-harness.md#import-existing-memories)。尚未实现：会话导入（6.10，以及 6.14、6.16 里与会话有关的部分）、
-> 规则文件的指令候选（`--include rules`）、`--prune` 和安装器的 `--import`（6.18）。实现和下文不一致的地方见第 0 节。
-> 当前行为以 [API 与配置](../api.md#import-runs)、[架构](../architecture.md#import) 和代码为准。
+> 状态：笔记导入已实现，覆盖 Claude Code、Codex、WorkBuddy 和宿主 Agent 导出的 JSONL；Claude Code 和 Codex 的会话导入
+> （6.10、6.14、6.16）也已实现。用法见 [MCP 与宿主集成](../mcp-harness.md#import-existing-memories)。尚未实现：规则文件的
+> 指令候选（`--include rules`）、`--prune`、安装器的 `--import`（6.18）和 DeepSeek Harness 的会话导入（第 9 节第 4 阶段）。
+> 实现和下文不一致的地方见第 0 节。当前行为以 [API 与配置](../api.md#import-runs)、[架构](../architecture.md#import) 和代码为准。
 
 日期：2026-10-22。范围：Codex、Claude Code、WorkBuddy 和 DeepSeek Harness 在接入本服务之前已经积累的记忆文件和
 会话记录。第 4 节的格式来自一台 macOS 开发机：Claude Code 2.1.293–2.1.306 的 transcript 和 auto memory，
@@ -40,6 +40,40 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 - 抽取没有实现"有待处理的形成任务时让出"，和形成按到达顺序共用生成并发（6.14）。
 - Codex memories 目录的 commit 只记在出处里（`memoriesHead`），没有用来跳过文件，判断是否变化只看单元哈希。
 - `diverged`、`source-missing` 和 `--prune` 没有实现：单元旧文本产生的记录在审核时只通过 `previousMemoryIds` 列出来。
+
+会话导入按 6.3、6.10、6.14 和 6.16 实现，下面这些地方做了调整或补充：
+
+- 第 10 节第 1 条已经核对：Claude Code hook 的 `prompt_id` 就是 transcript 的 `promptId`，所以导入的轮次和捕获的轮次
+  turnId 相同。
+- `plan --include notes,sessions`（默认只有 `notes`）。`--limit`（默认 200）取 `--since` 之后最早的若干轮，`--since` 包含边界；
+  超出的部分在报告里给出下一批的 `--since`。只为选中时间窗口内被跳过的轮次写计划行；早于 `--since`、超出 `--limit` 的轮次，
+  以及分叉或恢复的会话重复的前面轮次只计数。同一轮次出现在两个会话里时，归先开始的会话，和捕获时一致。
+- 会话轮次不检查文件哈希：消息随计划一起走，而进行中的会话的 transcript 一直在增长。单轮提问加回复超过 256 KiB 时跳过
+  （`too-large`），单个 transcript 解压后最多读 512 MiB。
+- 提问和回复都去掉本服务的 `<shared-memory>` 块和 Claude Code 注入的 `<system-reminder>` 块。Claude Code 的一轮从一条带
+  `turnOrigin` 的 user 记录开始，到下一条带 `turnOrigin` 的 user 记录（不论来源）之前结束，而不是到下一条 `human` 记录之前：
+  否则 `sdk` 或 `task_notification` 轮次的回复会被算到前面那个人工提问上。提问是那条 user 记录的文本，回复是这一轮最后一条带
+  文本的 assistant 消息（同一 `message.id` 的文本块合并）；以 API 错误结束的轮次跳过（`api-error`）。没有任何一条提问带 `turnOrigin` 的 transcript 是 `unknown-format`，子目录（子代理 transcript）不读。项目目录先看
+  第一个 transcript 前 16 KiB 里的 `cwd`，属于 workspace 才完整读取。
+- Codex 读 `sessions/` 和 `archived_sessions/` 下的 `rollout-*.jsonl` 和 zstd 压缩的 `rollout-*.jsonl.zst`，以第一条 `session_meta`
+  为准（后面的属于分叉来源的历史）。Codex 0.131 之前的 rollout 没有 `thread_source`，按 `unknown-format` 跳过；`chatgpt_handoff`
+  等非 `user` 取值都跳过（第 10 节第 6 条仍待定）。一轮里的多条 UserMessage 合并成一个提问。
+- 会话轮次在 propose 时登记成 run 的行：共享 `proposals` 表里 `itemKind: session-turn` 的行，ID 由 run 和 turnId 决定，带着整轮
+  消息；不进评审文件，没有台账行（daemon 按 `platform + turnId` 去重），单独计数（`sessionTurns`、`turnsQueued`、
+  `turnsRolledBack`）。apply 把它们标成已排队。
+- outbox 由 CLI 写入：`import apply` 把这些轮次按计划顺序写进 `--outbox`，消息体带 `importRunId`，由现有上传器提交。同一个
+  outbox 里已经有这一轮的作业（实时捕获的，或更早的 run 的）时不替换。中断后对已 apply 的 run 再执行 `apply` 只补写还没写进去
+  的轮次。
+- `--rate` 是每分钟最多写入的轮数（默认 20，`0` 表示一次写完、不等待），另加 `--max-pending`（默认 4）：outbox 里还没形成完的
+  作业（`pending` 或 `accepted`，包括实时捕获的）达到这个数时等待。待处理数取自 outbox 而不是 `/admin/stats`：后者要统计每张表，
+  而 outbox 正好反映上传器和形成的进度。
+- `add_memories` 多了 `importRunId`。daemon 只接受这个 run 已经 apply 的轮次，而且平台、项目、会话和消息都要和登记的一致；
+  新建的请求记下 `importRunId`，run 的行记下 `requestId` 和 `duplicate`。是否属于这次导入以请求上的 `importRunId` 为准，
+  所以响应丢失后的重发仍算这次导入的。MCP 桥会去掉这个字段，模型不能提交导入的轮次。
+- rollback 先把 outbox 里这个 run 还没上传的作业标为 `cancelled`（上传器不会发送），daemon 再关闭这个 run：之后带它的
+  `importRunId` 的提交一律拒绝。只撤回来源请求全部属于这次导入的事实（`superseded` 并标记 `importRollback`），请求也标记
+  `importRollback`；还在形成中的请求留到下一次 rollback（`partially_rolled_back`）。原始输入保留，turnId 也仍被占用，所以回滚
+  过的轮次再导入只会被当作重复，不会再形成一次。
 
 ## 1. 现在的情况
 
@@ -100,8 +134,13 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 - `~/.codex/memories/` 本身是一个 git 仓库。`raw_memories.md` 和 `memory_summary.md` 都是派生文件。
 - Claude Code 会在 `cleanupPeriodDays` 之后删除旧 transcript，记忆文件不受影响，所以能导入的会话历史有限。
 - 已经拿一条 Codex 实时捕获的轮次核对过：hook 的 `session_id` 等于 rollout 的 `session_meta.id`，hook 的 `turn_id`
-  出现在同一个 rollout 的事件里，`task_complete` 带最终回复。Claude Code 的 hook `prompt_id` 是否等于 transcript 的
-  `promptId` 还没有核对，因为本机 outbox 里没有 Claude Code 的捕获记录（见第 10 节）。
+  出现在同一个 rollout 的事件里，`task_complete` 带最终回复。Claude Code 也核对过（2.1.305，给临时项目装上捕获后用
+  `claude -p` 跑一轮）：outbox 里的 native id 就是 transcript 的 `promptId`，会话 ID 就是 `sessionId`。这一轮的 `turnOrigin` 是
+  `sdk`，导入本身会跳过它；`human` 记录同样带 `promptId`，标识的取法相同。
+- Claude transcript 里，工具结果、`isMeta` 记录和 `<command-name>` 记录都是没有 `turnOrigin` 的 user 记录（工具结果带
+  `promptId`）；assistant 记录不带 `promptId`，每条记录一个内容块，同一次 API 响应的记录共用 `message.id`。`claude -p` 的提问是
+  `turnOrigin: sdk`。
+- Codex 的 rollout 较旧时会压缩成 `.jsonl.zst`。每条记录是 `{timestamp, type, payload}`；`thread_source` 从 0.131 开始才有。
 - Claude transcript 的 `turnOrigin` 观察到 `human`、`sdk`、`task_notification`、`peer` 四种取值，`origin.kind` 和它
   对应。`promptSource` 不能用来区分人工输入：桌面端发给模型的人工提问也记成 `sdk`。Codex 的 `thread_source` 观察到
   `user`、`subagent`、`guardian_review`、`chatgpt_handoff`。按来源筛选靠的就是这些字段。
@@ -410,18 +449,19 @@ run 的状态：`proposing` → `proposed`（或 `failed`）→ `applying` → `
 
 ```sh
 agent-memoryd import plan --host claude-code|codex|workbuddy|jsonl --project my-project [--workspace DIR]... \
+  [--include notes,sessions] [--since TIME] [--limit 200] \
   [--all] [--from FILE] [--label LABEL] [--no-extract] [--recall-budget 400] [--recall-top-k 5] [--home DIR] \
   [--claude-config-dir DIR] [--codex-home DIR] [--workbuddy-home DIR] [--out PLAN.jsonl]
 agent-memoryd import propose PLAN.jsonl [--url http://127.0.0.1:8765] [--tenant default] [--batch 8] [--timeout 900] \
   [--home DIR] [--reconsider]
 agent-memoryd import show RUN [--out REVIEW.jsonl] [--force]
-agent-memoryd import apply RUN (--review REVIEW.jsonl | --yes) [--home DIR]
+agent-memoryd import apply RUN (--review REVIEW.jsonl | --yes) [--home DIR] [--outbox FILE] [--rate 20] [--max-pending 4]
 agent-memoryd import status [RUN] [--project ID]
-agent-memoryd import rollback RUN
+agent-memoryd import rollback RUN [--outbox FILE]
 agent-memoryd import prompt --project my-project [--lang zh|en]
 ```
 
-以上是已实现的形式；会话导入需要的 `--include`、`--since`、`--limit` 和 `--rate` 还没有实现。
+以上是已实现的形式（会话导入的选项见第 0 节）。
 
 - `plan` 只读宿主文件，不访问网络，也不需要 daemon。默认只包含 `notes`。
 - 计划是 JSONL 文件。第一行是汇总：各处理方式（`verbatim`、`extract`、`split`、`session-turn`）的单元数、跳过原因的统计、
@@ -536,13 +576,13 @@ global fact 的可见性，以及 consolidation 只按项目选候选的规则�
    原样采用和 `--no-extract` 切分，Claude 和 Codex 的笔记适配器。
 2. 已完成：抽取（含校验和缓存）、指令候选的确认、回滚、宿主 Agent 导出和通用 JSONL 输入、WorkBuddy 适配器、导入后的
    consolidation 提示（写在文档里）。未完成：安装器的 `--import`。
-3. Claude 和 Codex 的会话导入，带限速和续传。
+3. 已完成：Claude 和 Codex 的会话导入，带限速和续传。
 4. DeepSeek Harness 的会话导入。它的日志是压缩的私有格式（`session.v4`），但它没有自动捕获，会话导入是它唯一的自动来源。
 
 ## 10. 待定问题
 
-1. Claude Code hook 的 `prompt_id` 和 transcript 的 `promptId` 是否是同一个值。核对方法：给一个临时项目装上捕获，跑一轮，
-   比较 outbox 里的 native id 和 transcript 里的 `promptId`。
+1. 已解决：Claude Code hook 的 `prompt_id` 和 transcript 的 `promptId` 是同一个值（2026-10-22 用 Claude Code 2.1.305 核对：
+   给临时项目装上捕获，跑一轮，outbox 里的 native id 等于 transcript 的 `promptId`）。
 2. Codex 的 memories 和 rollout、Claude Code 的 transcript 都没有官方格式说明。适配器按版本字段（Codex 的
    `cli_version`、Claude 的 `version`）和文件结构识别，遇到不认识的结构就整体跳过并报告。要支持哪些版本范围还没定。
 3. Codex `MEMORY.md` 里跨线程的总结（如 "Reusable knowledge"、"Failures and how to do differently"）要不要导入，导入的话

@@ -11,7 +11,7 @@ and [HTTP dispatcher](../crates/memory-service/src/api/http.rs) define the accep
 
 | Interface | Main arguments | MCP | Purpose |
 |---|---|---|---|
-| `add_memories` | `scope`, `messages`/`text`, `turnId`, `sync`, `infer`, `memoryType`, `memoryScope`, `sessionEnded` | yes | Submit facts, raw input or explicit instructions |
+| `add_memories` | `scope`, `messages`/`text`, `turnId`, `sync`, `infer`, `memoryType`, `memoryScope`, `sessionEnded`; `importRunId` (HTTP only) | yes | Submit facts, raw input or explicit instructions |
 | `get_task` | `requestId` | yes | Inspect a durable write request |
 | `search_memories` | `query`, `scope`, `topK`, `tokenBudget`, `types`, `rerank`, `includeEvidence`, `touch` | yes | Retrieve bounded memories; facts by default |
 | `get_context` | `scope`, `tokenBudget` | yes | Assemble project/session context and explicit instructions |
@@ -70,6 +70,13 @@ For an explicit behavior requirement, use `memoryType:"instruction"` with `text`
 verbatim and generation-free; it rejects messages/session-end, empty text, over 4 KB or over 1024 Unicode
 characters. Optional `memoryScope` selects global, the current project or the caller's platform; project
 is the default. It is rejected for fact writes. An optional turn ID makes instruction writes idempotent.
+
+`importRunId` names the [import run](#import-runs) a past session turn belongs to. Only
+`agent-memoryd import apply` sets it, through the dialogue outbox; the MCP bridge drops it. The daemon accepts it
+only on an asynchronous message batch that is a turn the run applied (same platform, project, session, `turnId`
+and messages) while the run is `applying` or `applied`, and refuses it otherwise (`INVALID_ARGUMENT`, or
+`NOT_FOUND` for an unknown run). The turn is then deduplicated like any other by `platform + turnId`; a request it
+creates records the run's ID.
 
 ## Tasks and completion
 
@@ -227,11 +234,22 @@ field. They are not gated by a configuration flag and are not MCP tools.
 | `POST /admin/import_rollback` | `{runId}` | `{run, proposals}` |
 
 A unit is `{unit, host, mode, text, pieces?, statedAt, kindHint?, headingPath, fileHash, unitHash,
-instructionCandidate, source}`: `mode` is `verbatim` (the text is one proposal), `split` (each piece is one) or
-`extract` (one generation call; the text is at most 8 KB). The first batch omits `runId` and creates the run;
-later batches name it, one at a time; the batch with `finish:true` makes the run `proposed`. `recallBudget` must
-be at least 40 and `recallTopK` positive. `unitHash` must be the blake3 hex of `text`, unit keys are unique
-within a run, and an `extract` batch needs the generation key.
+instructionCandidate, source, turn?}`: `mode` is `verbatim` (the text is one proposal), `split` (each piece is one),
+`extract` (one generation call; the text is at most 8 KB) or `session-turn`. The first batch omits `runId` and
+creates the run; later batches name it, one at a time; the batch with `finish:true` makes the run `proposed`.
+`recallBudget` must be at least 40 and `recallTopK` positive. `unitHash` must be the blake3 hex of `text`, unit
+keys are unique within a run, and an `extract` batch needs the generation key.
+
+A `session-turn` unit is a past session turn: `turn` is `{turnId, session, nativeId, messages}`, one user message
+and then one assistant message with RFC3339 times in order, and `turnId` must be the capture turn key
+`project/session/nativeId`. It is registered without a model call as a row of the run's proposals with
+`itemKind:"session-turn"` and the `turn`, at most once per `turnId`. `import_apply` marks it `applied` with
+`applied:{"queued":true}` and writes nothing: the client queues it into the dialogue outbox with `importRunId`
+(see [Writes](#writes)), and when it is submitted the row gains `applied.requestId` and `applied.duplicate`
+(whether the daemon already had the turn). `import_rollback` closes the run to further turns, then retires each
+fact formed only from the run's own requests (`superseded`, marked `importRollback`); a turn the daemon had before,
+or never received, needs nothing, and one still forming stays `applied` with `rollbackSkipReason` until another
+rollback. Run counts keep session turns apart from proposals: `sessionTurns`, `turnsQueued`, `turnsRolledBack`.
 
 | Status | Values |
 |---|---|

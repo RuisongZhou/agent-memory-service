@@ -2662,6 +2662,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "blake3",
  "chrono",
  "clap",
  "memory-algo-mem0",
@@ -2683,6 +2684,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

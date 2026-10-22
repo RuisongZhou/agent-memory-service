@@ -190,6 +190,36 @@ pub fn rollback_patches(
     Ok(patches)
 }
 
+/// The logical rollback of `rec`, a fact formed from a session turn that run `run_id` imported, when every
+/// request it was formed from is the run's (the caller's check: this plan only sees the record). `rec` becomes
+/// `superseded`, marked `importRollback {runId, at}`, as an imported record does. Refused, with the reason, once
+/// it is no longer the current fact formation wrote: corrected, merged, disputed, deleted or replaced since.
+pub fn turn_fact_rollback_patch(
+    rec: &MemoryRec,
+    run_id: &str,
+    now: &str,
+) -> Result<FieldPatch, String> {
+    if rec.status != S_CURRENT {
+        return Err(match &rec.superseded_by {
+            Some(next) => format!("{} was replaced by {next}", rec.id),
+            None => format!("{} is {}", rec.id, rec.status),
+        });
+    }
+    if let Some(next) = &rec.superseded_by {
+        return Err(format!("{} is superseded by {next}", rec.id));
+    }
+    if rec.mtype != T_FACT {
+        return Err(format!("{} is a {}, not a formed fact", rec.id, rec.mtype));
+    }
+    Ok(FieldPatch::over(
+        rec,
+        &[
+            ("status", json!(S_SUPERSEDED)),
+            ("importRollback", json!({"runId": run_id, "at": now})),
+        ],
+    ))
+}
+
 /// Return `previous` to `current` (without `supersededBy` and `validUntil`) while `successor` is still what
 /// supersedes it; `None` once a person or a later run changed that.
 pub fn restore_patch(previous: &MemoryRec, successor: &str) -> Option<FieldPatch> {
@@ -486,5 +516,50 @@ mod tests {
                 .unwrap_err()
                 .contains("now replaces mx")
         );
+    }
+
+    #[test]
+    fn a_formed_fact_is_retired_unless_changed_since() {
+        let fact = MemoryRec {
+            id: "mf".into(),
+            mtype: T_FACT.into(),
+            text: "Releases go to the staging bucket.".into(),
+            status: S_CURRENT.into(),
+            source: Source {
+                platform: "claude-code".into(),
+                turn_ids: vec!["proj/s/p1".into()],
+                origin: ORIGIN_USER.into(),
+            },
+            ..Default::default()
+        };
+        let patch = turn_fact_rollback_patch(&fact, "ir1", NOW).unwrap();
+        assert_eq!(patch.after["status"], S_SUPERSEDED);
+        assert_eq!(
+            patch.after["importRollback"],
+            json!({"runId": "ir1", "at": NOW})
+        );
+        assert_eq!(patch.before["status"], S_CURRENT);
+        let merged = MemoryRec {
+            status: S_SUPERSEDED.into(),
+            superseded_by: Some("mmerged".into()),
+            ..fact.clone()
+        };
+        assert!(turn_fact_rollback_patch(&merged, "ir1", NOW)
+            .unwrap_err()
+            .contains("replaced by mmerged"));
+        let disputed = MemoryRec {
+            status: S_CONFLICT.into(),
+            ..fact.clone()
+        };
+        assert!(turn_fact_rollback_patch(&disputed, "ir1", NOW)
+            .unwrap_err()
+            .contains("is conflict"));
+        let instruction = MemoryRec {
+            mtype: T_INSTRUCTION.into(),
+            ..fact
+        };
+        assert!(turn_fact_rollback_patch(&instruction, "ir1", NOW)
+            .unwrap_err()
+            .contains("not a formed fact"));
     }
 }

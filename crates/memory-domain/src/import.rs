@@ -1,7 +1,9 @@
 //! Importing memories an agent host already holds (docs/design/memory-import.md): the request, run and
 //! proposal shapes shared by the `agent-memoryd import` client and the daemon's `/admin/import_*`
 //! endpoints. Pure data and small pure mappings; the use cases live in `memory_engine::app::import`.
-use memory_rules::import::units::UnitLimits;
+use crate::types::InMessage;
+use memory_rules::import::units::{turn_key, UnitLimits};
+use memory_rules::util;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -18,6 +20,11 @@ pub const MAX_EXTRACT_BYTES: usize = 8 * 1024;
 pub const MODE_VERBATIM: &str = "verbatim";
 pub const MODE_SPLIT: &str = "split";
 pub const MODE_EXTRACT: &str = "extract";
+/// A past session turn (design §6.10): no proposal text to review and no model call at propose; apply
+/// queues it into the dialogue outbox, and Mem0 formation turns it into facts like a captured turn.
+pub const MODE_SESSION_TURN: &str = "session-turn";
+/// The `itemKind` of a session turn's proposal row.
+pub const ITEM_SESSION_TURN: &str = "session-turn";
 
 /// Run statuses. Batches of a plan arrive while the run is `proposing`; only a `proposed` run can be
 /// applied, and an interrupted apply or rollback resumes from its in-progress status.
@@ -115,6 +122,60 @@ pub struct ImportUnit {
     /// Provenance copied into the record's `detail.import`: path, nativeId, title, cwd, via, line, ...
     #[serde(default)]
     pub source: Value,
+    /// Session-turn mode only: the turn as dialogue capture would queue it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<SessionTurn>,
+}
+
+/// One past session turn (design §6.10): the user's prompt and the final reply, with the host's original
+/// times, under the turn id capture gives the same turn (`turn_key(project, session, nativeId)`), so the
+/// daemon's `platform + turnId` deduplication finds a turn capture already sent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTurn {
+    pub turn_id: String,
+    pub session: String,
+    pub native_id: String,
+    pub messages: Vec<InMessage>,
+}
+
+/// Why `turn` cannot be queued as a turn of `project`: it must be the user's prompt and then the final reply,
+/// both nonblank with RFC3339 times in order, under the turn id capture would give it. `None` when it can.
+pub fn session_turn_problem(turn: &SessionTurn, project: &str) -> Option<String> {
+    let parts = [&turn.session, &turn.native_id];
+    if parts.iter().any(|part| part.trim().is_empty()) {
+        return Some("a session turn needs its session and nativeId".into());
+    }
+    if turn.turn_id != turn_key(project, &turn.session, &turn.native_id) {
+        return Some(format!(
+            "turnId must be the capture turn key {:?}",
+            turn_key(project, &turn.session, &turn.native_id)
+        ));
+    }
+    let roles: Vec<&str> = turn.messages.iter().map(|m| m.role.as_str()).collect();
+    if roles != ["user", "assistant"] {
+        return Some("a session turn is one user message and then one assistant message".into());
+    }
+    if turn.messages.iter().any(|m| m.content.trim().is_empty()) {
+        return Some("a session turn's messages must not be blank".into());
+    }
+    let times: Option<Vec<_>> = turn
+        .messages
+        .iter()
+        .map(|m| util::parse_ts_fixed(&m.timestamp))
+        .collect();
+    match times {
+        None => Some("message timestamps must be RFC3339".into()),
+        Some(times) if times[0] > times[1] => {
+            Some("the reply must not be older than the prompt".into())
+        }
+        Some(_) => None,
+    }
+}
+
+/// Whether `p` is a session turn's row rather than a proposal to review.
+pub fn is_session_turn(p: &ImportProposal) -> bool {
+    p.mode == MODE_SESSION_TURN
 }
 
 /// `POST /admin/import_propose`: one batch of a plan's units. The first batch omits `runId` and
@@ -272,6 +333,9 @@ pub struct ImportProposal {
     /// What rollback changed: the field patches it wrote, or the ledger link it removed.
     #[serde(default)]
     pub rollback: Option<Value>,
+    /// A session turn's row: the turn apply queues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<SessionTurn>,
 }
 
 /// What propose did with one unit.
@@ -332,6 +396,14 @@ pub struct RunCounts {
     /// Units whose extraction failed; they have no proposals and are proposed again next time.
     #[serde(default)]
     pub failed: usize,
+    /// Session turns registered, queued by apply and rolled back. They are counted here only, not as
+    /// proposals: whether the daemon formed one is on its row (`applied.requestId`, `applied.duplicate`).
+    #[serde(default)]
+    pub session_turns: usize,
+    #[serde(default)]
+    pub turns_queued: usize,
+    #[serde(default)]
+    pub turns_rolled_back: usize,
 }
 
 /// One import run (`import_runs` table).
@@ -405,6 +477,48 @@ mod tests {
     fn instructions_need_a_yes() {
         assert_eq!(default_decision("instruction"), REJECT);
         assert_eq!(default_decision("fact"), ACCEPT);
+    }
+
+    fn turn() -> SessionTurn {
+        let message = |role: &str, content: &str, timestamp: &str| InMessage {
+            role: role.into(),
+            content: content.into(),
+            timestamp: timestamp.into(),
+        };
+        SessionTurn {
+            turn_id: "proj/s%201/p1".into(),
+            session: "s 1".into(),
+            native_id: "p1".into(),
+            messages: vec![
+                message("user", "Where do releases go?", "2026-05-03T09:00:00Z"),
+                message(
+                    "assistant",
+                    "To the staging bucket.",
+                    "2026-05-03T09:00:05+00:00",
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn session_turns_must_be_a_prompt_and_its_reply_under_the_capture_key() {
+        assert_eq!(session_turn_problem(&turn(), "proj"), None);
+        let problem = |edit: &dyn Fn(&mut SessionTurn)| {
+            let mut t = turn();
+            edit(&mut t);
+            session_turn_problem(&t, "proj").unwrap()
+        };
+        assert!(session_turn_problem(&turn(), "other")
+            .unwrap()
+            .contains("other/s%201/p1"));
+        assert!(problem(&|t| t.native_id = " ".into()).contains("nativeId"));
+        assert!(problem(&|t| t.messages.reverse()).contains("one user message"));
+        assert!(problem(&|t| t.messages.truncate(1)).contains("one user message"));
+        assert!(problem(&|t| t.messages[1].content = "\n".into()).contains("blank"));
+        assert!(problem(&|t| t.messages[0].timestamp = "yesterday".into()).contains("RFC3339"));
+        assert!(
+            problem(&|t| t.messages[0].timestamp = "2026-05-03T10:00:00Z".into()).contains("older")
+        );
     }
 
     #[test]

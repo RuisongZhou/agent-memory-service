@@ -272,7 +272,8 @@ Runs are started by hand only; there is no scheduler.
 ## Import
 
 `agent-memoryd import` copies the memories a host already keeps (Claude Code auto memory, Codex rollout
-summaries, WorkBuddy memory files, JSONL a host's agent exported) into the store; the
+summaries, WorkBuddy memory files, JSONL a host's agent exported, and past Claude Code and Codex sessions) into the
+store; the
 [design](design/memory-import.md) explains the choices and the [harness guide](mcp-harness.md#import-existing-memories)
 the commands. Like consolidation it proposes first and changes records only on request, and evaluation
 protocols never call it.
@@ -304,6 +305,14 @@ protocols never call it.
    return to the rows they replaced. A record a person or a later run changed, or another unit holds, stays,
    with `rollbackSkipReason`.
 
+Past session turns (`--include sessions`, Claude Code and Codex) take another path. Transcript adapters keep only
+the turns a person asked (by the host's own provenance fields), and each turn keeps the turn ID capture gives it.
+Propose registers a turn as a row of the run without a model call; apply marks it queued, and the client puts it
+into the dialogue outbox with the run's `importRunId`. The uploader submits it like a captured turn: the daemon
+admits it only as a turn the run applied, deduplicates it by `platform + turnId`, and Mem0 formation forms it with
+the session's earlier turns as context. The request records the run, so rollback, after closing the run to further
+turns under an import gate, retires only the facts whose every source request is the run's own.
+
 `imported` is not in `context_origins`, so `get_context` never presents imported facts as established; search
 and recall find them. They are consolidation candidates, and a merge with an imported input is never `user`.
 The entity projection leaves them out: they are not formation output. Run statuses are `proposing`, `proposed`,
@@ -323,7 +332,7 @@ records `error` and resumes.
 | Where do transaction integrity and revision checks live? | [memory-store](../crates/memory-store/src/), [domain integrity](../crates/memory-domain/src/integrity.rs) |
 | How are consolidation proposals selected, generated and validated? | [rules](../crates/memory-rules/src/consolidation.rs), [domain](../crates/memory-domain/src/consolidation.rs), [Mem0 prompt and provenance](../crates/memory-algo-mem0/src/consolidation.rs), [run storage](../crates/memory-engine/src/app/consolidation.rs) |
 | How are runs applied, rolled back and deleted? | [domain plans](../crates/memory-domain/src/consolidation/apply.rs), [Mem0 keys and sources](../crates/memory-algo-mem0/src/consolidation/apply.rs), [run use cases](../crates/memory-engine/src/app/consolidation.rs), [deletion](../crates/memory-engine/src/app/management/deletion.rs) |
-| How are a host's existing memories imported? | [host adapters and planner](../crates/memory-service/src/harness/import/), [pure rules](../crates/memory-rules/src/import/), [wire types and record plans](../crates/memory-domain/src/import.rs), [use cases](../crates/memory-engine/src/app/import/), [Mem0 extraction](../crates/memory-algo-mem0/src/import.rs) |
+| How are a host's existing memories imported? | [host adapters and planner](../crates/memory-service/src/harness/import/), [pure rules](../crates/memory-rules/src/import/), [wire types and record plans](../crates/memory-domain/src/import.rs), [use cases](../crates/memory-engine/src/app/import/), [session turns](../crates/memory-engine/src/app/import/turns.rs), [Mem0 extraction](../crates/memory-algo-mem0/src/import.rs) |
 
 The [evaluation guide](../eval/README.md) owns SDK comparison commands and evidence locations.
 Its deterministic SDK comparison tests processing/score equivalence, not real-model answer quality or

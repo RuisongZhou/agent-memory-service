@@ -372,7 +372,7 @@ pub struct RequestRec {
 
 // ---------------------------------------------------------------- API payloads (ch.2)
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InMessage {
     pub role: String,
@@ -403,6 +403,10 @@ pub struct AddMemoriesReq {
     pub session_ended: Option<bool>,
     #[serde(default)]
     pub sync: Option<bool>,
+    /// Set by `agent-memoryd import apply` on a past session turn it queues: the import run the turn
+    /// belongs to (docs/design/memory-import.md §6.10). Accepted only for a turn that run applied.
+    #[serde(default)]
+    pub import_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -2,23 +2,25 @@
 //! hash matches its ledger row is `unchanged` and skipped; a verbatim or split unit offers its text or pieces without
 //! a model call; an extract unit costs one generation call through the algorithm, cached by project, unit text,
 //! prompt and model, and every item it returns is checked by the pure provenance rules of
-//! `memory_rules::import::validate`. The run and its proposal rows commit together; no lock is held during model
-//! calls and no memory record is written.
+//! `memory_rules::import::validate`. A session turn becomes one row without a model call (`turns::register`). The
+//! run and its proposal rows commit together; no lock is held during model calls and no memory record is written.
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{
-    count, invalid, ledger, ledger_id, live_records, load_run, other_units_naming, LEDGER_APPLIED,
+    count, invalid, ledger, ledger_id, live_records, load_run, other_units_naming, run_proposals,
+    turns, LEDGER_APPLIED,
 };
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
 use memory_domain::import::apply::{self as plan, INSTRUCTION};
 use memory_domain::import::{
-    default_decision, item_kind_for_hint, ExtractedUnit, ImportProposal, ImportProposeReq,
-    ImportRun, ImportUnit, RecordRef, SimilarMemory, UnitOutcome, KIND, MAX_BATCH_UNITS,
-    MAX_EXTRACT_BYTES, MODE_EXTRACT, MODE_SPLIT, MODE_VERBATIM, PROPOSED, REJECTED, RUN_PROPOSED,
-    RUN_PROPOSING, UNIT_CHANGED, UNIT_FAILED, UNIT_NEW, UNIT_RECONSIDERED, UNIT_UNCHANGED,
+    default_decision, is_session_turn, item_kind_for_hint, session_turn_problem, ExtractedUnit,
+    ImportProposal, ImportProposeReq, ImportRun, ImportUnit, RecordRef, SimilarMemory, UnitOutcome,
+    KIND, MAX_BATCH_UNITS, MAX_EXTRACT_BYTES, MODE_EXTRACT, MODE_SESSION_TURN, MODE_SPLIT,
+    MODE_VERBATIM, PROPOSED, REJECTED, RUN_PROPOSED, RUN_PROPOSING, UNIT_CHANGED, UNIT_FAILED,
+    UNIT_NEW, UNIT_RECONSIDERED, UNIT_UNCHANGED,
 };
 use memory_domain::types::*;
 use memory_rules::import::markdown;
@@ -68,8 +70,8 @@ fn check_limits(limits: &UnitLimits) -> ApiResult<()> {
     Ok(())
 }
 
-/// Shape checks of one unit; the unit hash is filled in when the client left it empty.
-fn checked_unit(unit: &ImportUnit, host: &str) -> ApiResult<ImportUnit> {
+/// Shape checks of one unit of `project`; the unit hash is filled in when the client left it empty.
+fn checked_unit(unit: &ImportUnit, host: &str, project: &str) -> ApiResult<ImportUnit> {
     let name = unit.unit.as_str();
     if name.trim().is_empty() {
         return Err(invalid("every unit needs its unit key"));
@@ -80,10 +82,18 @@ fn checked_unit(unit: &ImportUnit, host: &str) -> ApiResult<ImportUnit> {
             unit.host
         )));
     }
-    if ![MODE_VERBATIM, MODE_SPLIT, MODE_EXTRACT].contains(&unit.mode.as_str()) {
+    if ![MODE_VERBATIM, MODE_SPLIT, MODE_EXTRACT, MODE_SESSION_TURN].contains(&unit.mode.as_str()) {
         return Err(invalid(format!(
-            "unit {name}: mode must be verbatim, split or extract"
+            "unit {name}: mode must be verbatim, split, extract or session-turn"
         )));
+    }
+    if unit.mode == MODE_SESSION_TURN {
+        let Some(turn) = &unit.turn else {
+            return Err(invalid(format!("session-turn unit {name} needs its turn")));
+        };
+        if let Some(problem) = session_turn_problem(turn, project) {
+            return Err(invalid(format!("unit {name}: {problem}")));
+        }
     }
     if unit.text.trim().is_empty() {
         return Err(invalid(format!("unit {name} has no text")));
@@ -212,6 +222,9 @@ impl Proposer<'_> {
         unit: &ImportUnit,
         index: usize,
     ) -> ApiResult<(UnitOutcome, Vec<ImportProposal>)> {
+        if unit.mode == MODE_SESSION_TURN {
+            return Ok(turns::register(self.run, unit, index, &self.now));
+        }
         let project = self.run.project.as_str();
         let mut outcome = UnitOutcome {
             unit: unit.unit.clone(),
@@ -578,7 +591,7 @@ pub async fn propose(
     let batch = req
         .units
         .iter()
-        .map(|unit| checked_unit(unit, host))
+        .map(|unit| checked_unit(unit, host, project))
         .collect::<ApiResult<Vec<_>>>()?;
     let algorithm = eng.algorithm();
     let prompt = algorithm.import_prompt();
@@ -595,6 +608,7 @@ pub async fn propose(
         }
     }
     let now = util::now_str();
+    let created = req.run_id.is_none();
     let mut run = match req.run_id.as_deref() {
         Some(id) => {
             let run = load_run(t, id).await?;
@@ -643,7 +657,23 @@ pub async fn propose(
             )));
         }
     }
-    let created = req.run_id.is_none();
+    // A turn's row is found by run and turn id: one row per turn.
+    let mut turn_ids = HashSet::new();
+    if !created {
+        for p in run_proposals(t, &run.run_id).await? {
+            if let Some(turn) = p.turn {
+                turn_ids.insert(turn.turn_id);
+            }
+        }
+    }
+    for turn in batch.iter().filter_map(|unit| unit.turn.as_ref()) {
+        if !turn_ids.insert(turn.turn_id.clone()) {
+            return Err(invalid(format!(
+                "turn {} appears twice in run {}",
+                turn.turn_id, run.run_id
+            )));
+        }
+    }
     let base = run.units.len();
     let mut proposer = Proposer {
         eng,
@@ -672,7 +702,9 @@ pub async fn propose(
         .filter(|o| o.outcome == UNIT_UNCHANGED)
         .count();
     counts.failed += outcomes.iter().filter(|o| o.outcome == UNIT_FAILED).count();
-    counts.proposals += proposals.len();
+    let turn_rows = proposals.iter().filter(|p| is_session_turn(p)).count();
+    counts.proposals += proposals.len() - turn_rows;
+    counts.session_turns += turn_rows;
     counts.rejected += count(&proposals, REJECTED);
     counts.instruction_candidates += proposals
         .iter()
@@ -713,6 +745,7 @@ pub async fn propose(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use memory_domain::import::SessionTurn;
 
     #[test]
     fn units_are_checked_and_hashed() {
@@ -722,10 +755,14 @@ mod tests {
             text: "Use tabs.".into(),
             ..Default::default()
         };
-        let checked = checked_unit(&unit, "codex").unwrap();
+        let checked = checked_unit(&unit, "codex", "proj").unwrap();
         assert_eq!(checked.unit_hash, units::content_hash("Use tabs."));
         assert_eq!(checked.host, "codex");
-        let bad = |unit: ImportUnit| checked_unit(&unit, "codex").unwrap_err().to_string();
+        let bad = |unit: ImportUnit| {
+            checked_unit(&unit, "codex", "proj")
+                .unwrap_err()
+                .to_string()
+        };
         assert!(bad(ImportUnit {
             unit: " ".into(),
             ..unit.clone()
@@ -764,11 +801,45 @@ mod tests {
         assert!(checked_unit(
             &ImportUnit {
                 stated_at: "2026-01-02".into(),
-                ..unit
+                ..unit.clone()
             },
-            "codex"
+            "codex",
+            "proj"
         )
         .is_ok());
+        // A session turn needs its turn, under the capture key of the run's project.
+        let turn = SessionTurn {
+            turn_id: units::turn_key("proj", "s1", "p1"),
+            session: "s1".into(),
+            native_id: "p1".into(),
+            messages: vec![
+                InMessage {
+                    role: "user".into(),
+                    content: "Where do releases go?".into(),
+                    timestamp: "2026-01-02T03:04:05Z".into(),
+                },
+                InMessage {
+                    role: "assistant".into(),
+                    content: "To staging.".into(),
+                    timestamp: "2026-01-02T03:04:09Z".into(),
+                },
+            ],
+        };
+        let session = ImportUnit {
+            mode: MODE_SESSION_TURN.into(),
+            turn: Some(turn.clone()),
+            ..unit.clone()
+        };
+        assert!(checked_unit(&session, "codex", "proj").is_ok());
+        assert!(checked_unit(&session, "codex", "other")
+            .unwrap_err()
+            .to_string()
+            .contains("capture turn key"));
+        assert!(bad(ImportUnit {
+            turn: None,
+            ..session
+        })
+        .contains("needs its turn"));
     }
 
     #[test]

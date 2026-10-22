@@ -22,6 +22,11 @@ pub async fn add_memories(
             "memoryType must be fact or instruction".into(),
         ));
     }
+    if req.import_run_id.is_some() && req.memory_type.is_some() {
+        return Err(ApiError::InvalidArgument(
+            "importRunId goes only with a queued messages batch and its turnId".into(),
+        ));
+    }
     if req.memory_type.as_deref() == Some(T_INSTRUCTION) {
         return crate::app::instructions::store(t, c, &req, project, session).await;
     }
@@ -50,6 +55,9 @@ pub async fn add_memories(
         return Err(ApiError::InvalidArgument(
             "messages, text or sessionEnded required".into(),
         ));
+    }
+    if req.import_run_id.is_some() {
+        return crate::app::import::submit_turn(eng, t, c, req).await;
     }
     eng.add_memories(t, c, req).await
 }

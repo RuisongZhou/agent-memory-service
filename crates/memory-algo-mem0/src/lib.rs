@@ -218,6 +218,14 @@ impl MemoryAlgorithm for Mem0 {
         Box::pin(async move { import::written(rec, run_id, tx) })
     }
 
+    fn import_fact_requests<'a>(
+        &'a self,
+        t: &'a Tenant,
+        memory_id: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<Option<Vec<String>>>> {
+        Box::pin(import::fact_requests(t, memory_id))
+    }
+
     fn import_retired<'a>(
         &'a self,
         _t: &'a Tenant,

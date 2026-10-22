@@ -4,8 +4,8 @@
 //! (correct a record after apply with `correct_memory`). `previous` lines list, after a changed unit's
 //! proposals, the records its earlier text became; they are for reading only.
 use memory_domain::import::{
-    default_decision, ImportProposal, ImportRun, SimilarMemory, UnitOutcome, ACCEPT, PROPOSED,
-    REJECT, REJECTED,
+    default_decision, is_session_turn, ImportProposal, ImportRun, SimilarMemory, UnitOutcome,
+    ACCEPT, PROPOSED, REJECT, REJECTED,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -147,8 +147,14 @@ fn previous_lines(unit: &UnitOutcome) -> Result<String, Error> {
 }
 
 /// The review file of a run: its header line, then one line per proposal in the run's order, each unit's
-/// earlier records after its last proposal. Units with earlier records and no proposal come last.
+/// earlier records after its last proposal. Units with earlier records and no proposal come last. Session turns
+/// are not listed: the plan chose them, and there is no text of the daemon's to review.
 pub fn render(run: &ImportRun, proposals: &[ImportProposal]) -> Result<String, Error> {
+    let proposals: Vec<ImportProposal> = proposals
+        .iter()
+        .filter(|p| !is_session_turn(p))
+        .cloned()
+        .collect();
     let header = Header {
         line: "review".into(),
         version: VERSION,
@@ -331,6 +337,43 @@ pub(crate) mod tests {
             created_at: "2026-10-22T12:00:00Z".into(),
             ..ImportProposal::default()
         }
+    }
+
+    /// The row of session turn `native` of codex session `s1`, as run `ir1` holds it.
+    pub(crate) fn turn_row(id: &str, native: &str, status: &str) -> ImportProposal {
+        let message = |role: &str, content: String| memory_domain::types::InMessage {
+            role: role.into(),
+            content,
+            timestamp: "2026-01-02T03:04:05Z".into(),
+        };
+        ImportProposal {
+            mode: memory_domain::import::MODE_SESSION_TURN.into(),
+            item_kind: memory_domain::import::ITEM_SESSION_TURN.into(),
+            unit: format!("codex:session%3As1#{native}"),
+            text: format!("Prompt {native}."),
+            evidence: String::new(),
+            turn: Some(memory_domain::import::SessionTurn {
+                turn_id: format!("my-project/s1/{native}"),
+                session: "s1".into(),
+                native_id: native.into(),
+                messages: vec![
+                    message("user", format!("Prompt {native}.")),
+                    message("assistant", format!("Reply {native}.")),
+                ],
+            }),
+            ..proposal(id, memory_domain::import::ITEM_SESSION_TURN, status)
+        }
+    }
+
+    #[test]
+    fn session_turns_are_not_reviewed() {
+        let proposals = vec![
+            proposal("ip1", "fact", PROPOSED),
+            turn_row("ip2", "t1", PROPOSED),
+        ];
+        let text = render(&run("ir1"), &proposals).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(!text.contains("Prompt t1."));
     }
 
     #[test]

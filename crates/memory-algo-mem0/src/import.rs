@@ -2,8 +2,10 @@
 //! `extract` unit under a strict JSON contract, with the project's nearest existing facts shown so known
 //! content is left out, and history rows for the records import apply writes and retires. Imported records
 //! get no content key and no source batch: they are not formation output, so formation never deduplicates
-//! into them and the entity projection, which needs inferred provenance, leaves them out. This deviates from
-//! the pinned Mem0 algorithm, so it runs only on request and never inside evaluation protocols.
+//! into them and the entity projection, which needs inferred provenance, leaves them out. Past session turns
+//! are not imported records: formation forms them like captured turns, and `fact_requests` tells import rollback
+//! which requests a fact came from. This deviates from the pinned Mem0 algorithm, so it runs only on request and
+//! never inside evaluation protocols.
 use super::config::Mem0Config;
 use super::HISTORY;
 use anyhow::{anyhow, ensure, Result};
@@ -228,6 +230,17 @@ fn history(
 /// History of a record import apply wrote. No content key or source batch: see the module documentation.
 pub fn written(rec: &MemoryRec, run_id: &str, tx: &mut Tx) -> Result<()> {
     history(tx, &rec.id, "IMPORT", run_id, Some(&rec.text))
+}
+
+/// The input requests formation made the fact `memory_id` from (its source batch); `None` without one, as for
+/// a record import wrote.
+pub async fn fact_requests(t: &Tenant, memory_id: &str) -> Result<Option<Vec<String>>> {
+    let Some(source) = t.store.get_doc(super::SOURCES, memory_id).await? else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_value(
+        source["inputRequestIds"].clone(),
+    )?))
 }
 
 /// History of a record import apply superseded or import rollback retired.

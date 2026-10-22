@@ -3,17 +3,22 @@
 //! proposals (`propose`: writes no memory), review the proposals (`show`), write the accepted ones
 //! (`apply`), and inspect or undo runs (`status`, `rollback`). `prompt` prints the request that has a
 //! host's own agent export its memories as JSONL. Host knowledge lives in the adapters (`claude`, `codex`,
-//! `workbuddy`, `jsonl`), generic policy in `plan`, the commands' work and reports in `commands`. Every
-//! command prints to stdout and exits 0; an error is one `[error] …` line on stderr and exit 1.
+//! `workbuddy`, `jsonl`), generic policy in `plan`, the commands' work and reports in `commands`. Past session
+//! transcripts (`--include sessions`) come from `claude_session` and `codex_session`; their turns are queued into
+//! the dialogue outbox at apply, so Mem0 formation forms them as it forms captured turns. Every command prints to
+//! stdout and exits 0; an error is one `[error] …` line on stderr and exit 1.
 pub mod claude;
+pub mod claude_session;
 pub mod client;
 pub mod codex;
+pub mod codex_session;
 pub mod commands;
 pub mod jsonl;
 pub mod plan;
 pub mod project;
 pub mod prompt;
 pub mod review;
+pub mod session;
 pub mod source;
 pub mod workbuddy;
 
@@ -24,13 +29,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use self::prompt::Lang;
-use self::source::{display, Adapter};
-use super::{expand, home, invalid, loopback, positive_seconds, private_file, Error};
+use self::session::SessionAdapter;
+use self::source::{display, timestamp, Adapter};
+use super::{expand, home, invalid, loopback, outbox, positive_seconds, private_file, Error};
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8765";
 const DEFAULT_TENANT: &str = "default";
 /// Units per `import_propose` request at most.
 const MAX_BATCH: usize = 64;
+/// Session turns a plan takes by default (design §6.14): enough for a first look, few enough not to hold up
+/// newly captured turns for long.
+const DEFAULT_TURN_LIMIT: usize = 200;
 
 /// Where the memories come from.
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +65,16 @@ impl Host {
         }
     }
 
+    /// The reader of the host's session transcripts, for the hosts whose turns capture files under ids the
+    /// transcripts hold.
+    fn session_adapter(self) -> Option<Box<dyn SessionAdapter>> {
+        match self {
+            Host::ClaudeCode => Some(Box::new(claude_session::ClaudeSessions)),
+            Host::Codex => Some(Box::new(codex_session::CodexSessions)),
+            Host::Workbuddy | Host::Jsonl => None,
+        }
+    }
+
     /// The platform label the memories are filed under.
     fn label(self, label: Option<&str>) -> String {
         match self {
@@ -65,6 +84,15 @@ impl Host {
             Host::Jsonl => label.unwrap_or(jsonl::DEFAULT_LABEL).into(),
         }
     }
+}
+
+/// What a plan reads.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Include {
+    /// The memory files the host keeps
+    Notes,
+    /// Past session transcripts (claude-code, codex): each turn a person asked, formed by Mem0 like a captured one
+    Sessions,
 }
 
 /// The daemon an import command talks to.
@@ -97,6 +125,15 @@ pub struct PlanArgs {
     /// jsonl: platform label of the host that exported [default: agent-export]
     #[arg(long, value_parser = platform_label)]
     pub label: Option<String>,
+    /// What to read, comma-separated: notes, sessions
+    #[arg(long, value_enum, value_delimiter = ',', default_value = "notes")]
+    pub include: Vec<Include>,
+    /// sessions: only turns asked at or after this time (RFC3339, or YYYY-MM-DD in UTC)
+    #[arg(long, value_parser = since_time)]
+    pub since: Option<String>,
+    /// sessions: at most this many turns, the oldest first; the report names the --since of the next batch
+    #[arg(long, default_value_t = DEFAULT_TURN_LIMIT, value_parser = positive)]
+    pub limit: usize,
     /// Call no generation model: split units over the cap instead of extracting them
     #[arg(long)]
     pub no_extract: bool,
@@ -123,9 +160,24 @@ pub struct PlanArgs {
     pub out: Option<PathBuf>,
 }
 
+/// Where `apply` queues a run's session turns, and how fast.
+#[derive(clap::Args, Debug, Clone, PartialEq)]
+pub struct TurnArgs {
+    /// Dialogue outbox the uploader drains, as the capture hooks use it
+    #[arg(long, default_value_os_t = outbox::default_path())]
+    pub outbox: PathBuf,
+    /// Session turns queued per minute at most; 0 queues them all at once, without waiting
+    #[arg(long, default_value_t = 20.0, value_parser = rate)]
+    pub rate: f64,
+    /// Wait while the outbox holds this many turns not yet formed (live capture's too), so newly captured
+    /// turns are not held up behind the import
+    #[arg(long, default_value_t = 4, value_parser = positive)]
+    pub max_pending: usize,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ImportCmd {
-    /// Read a host's memory files into a plan file to review; reads files only, no network
+    /// Read a host's memory files, or its past sessions, into a plan file to review; reads files only, no network
     Plan(PlanArgs),
     /// Send a plan's units to the daemon as one run of proposals; writes no memory
     Propose {
@@ -179,6 +231,8 @@ pub enum ImportCmd {
         /// proposals whose source file changed since propose are declined [default: $HOME]
         #[arg(long, value_name = "DIR")]
         home: Option<PathBuf>,
+        #[command(flatten)]
+        turns: TurnArgs,
     },
     /// One run's summary, or the newest runs
     Status {
@@ -196,6 +250,9 @@ pub enum ImportCmd {
         run: String,
         #[command(flatten)]
         daemon: DaemonArgs,
+        /// Dialogue outbox the run's session turns were queued into; those not yet submitted are cancelled
+        #[arg(long, default_value_os_t = outbox::default_path())]
+        outbox: PathBuf,
     },
     /// Print the prompt that has a host's agent export its memories for `plan --host jsonl`
     Prompt {
@@ -260,17 +317,33 @@ async fn execute(cmd: ImportCmd) -> Result<(), Error> {
             yes: _,
             daemon,
             home: plan_home,
+            turns,
         } => {
             let review = review.as_deref().map(expand);
             let plan_home = plan_home.as_deref().map(expand).unwrap_or_else(home);
-            commands::apply(&run, review.as_deref(), &daemon, &plan_home).await?
+            let pace = commands::Pace::new(turns.rate, turns.max_pending);
+            let mut say = |line: &str| println!("{line}");
+            commands::apply(
+                &run,
+                review.as_deref(),
+                &daemon,
+                &plan_home,
+                &expand(&turns.outbox),
+                &pace,
+                &mut say,
+            )
+            .await?
         }
         ImportCmd::Status {
             run,
             project,
             daemon,
         } => commands::status(run.as_deref(), project.as_deref(), &daemon).await?,
-        ImportCmd::Rollback { run, daemon } => commands::rollback(&run, &daemon).await?,
+        ImportCmd::Rollback {
+            run,
+            daemon,
+            outbox,
+        } => commands::rollback(&run, &daemon, &expand(&outbox)).await?,
         ImportCmd::Prompt { project, lang } => prompt::text(&project, lang),
     };
     print!("{output}");
@@ -320,6 +393,19 @@ fn recall_budget(value: &str) -> Result<usize, String> {
             "must be an integer of at least {}",
             UnitLimits::MIN_RECALL_BUDGET
         )),
+    }
+}
+
+/// A `--since` time, normalized to RFC3339 UTC.
+fn since_time(value: &str) -> Result<String, String> {
+    timestamp(value).ok_or_else(|| "must be an RFC3339 time or a YYYY-MM-DD date".into())
+}
+
+/// Turns per minute: 0 (no pacing) or a positive number.
+fn rate(value: &str) -> Result<f64, String> {
+    match value.parse::<f64>() {
+        Ok(n) if n >= 0.0 && n.is_finite() => Ok(n),
+        _ => Err("must be 0 or a positive number of turns per minute".into()),
     }
 }
 
@@ -391,6 +477,29 @@ mod tests {
         assert_eq!(plan.workspaces, [PathBuf::from("/a"), PathBuf::from("/b")]);
         assert_eq!((plan.recall_budget, plan.recall_top_k), (400, 5));
         assert!(!plan.all && !plan.no_extract && plan.out.is_none());
+        assert_eq!(plan.include, [Include::Notes]);
+        assert_eq!((plan.since.as_deref(), plan.limit), (None, 200));
+        let ImportCmd::Plan(plan) = parse(&[
+            "plan",
+            "--host",
+            "claude-code",
+            "--project",
+            "p",
+            "--include",
+            "notes,sessions",
+            "--since",
+            "2026-03-01",
+            "--limit",
+            "50",
+        ])
+        .unwrap() else {
+            panic!("plan")
+        };
+        assert_eq!(plan.include, [Include::Notes, Include::Sessions]);
+        assert_eq!(
+            (plan.since.as_deref(), plan.limit),
+            (Some("2026-03-01T00:00:00Z"), 50)
+        );
         let ImportCmd::Plan(plan) = parse(&[
             "plan",
             "--host",
@@ -459,6 +568,25 @@ mod tests {
                 "--label",
                 "two words",
             ],
+            &[
+                "plan",
+                "--host",
+                "codex",
+                "--project",
+                "p",
+                "--include",
+                "rules",
+            ],
+            &[
+                "plan",
+                "--host",
+                "codex",
+                "--project",
+                "p",
+                "--since",
+                "last week",
+            ],
+            &["plan", "--host", "codex", "--project", "p", "--limit", "0"],
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
@@ -535,15 +663,49 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(
-            parse(&["apply", "ir1", "--yes"]).unwrap(),
-            ImportCmd::Apply {
-                yes: true,
-                review: None,
-                home: None,
-                ..
+        let ImportCmd::Apply {
+            yes: true,
+            review: None,
+            home: None,
+            turns,
+            ..
+        } = parse(&["apply", "ir1", "--yes"]).unwrap()
+        else {
+            panic!("apply")
+        };
+        assert_eq!(
+            turns,
+            TurnArgs {
+                outbox: outbox::default_path(),
+                rate: 20.0,
+                max_pending: 4
             }
-        ));
+        );
+        let ImportCmd::Apply { turns, .. } = parse(&[
+            "apply",
+            "ir1",
+            "--yes",
+            "--outbox",
+            "/o.sqlite3",
+            "--rate",
+            "0",
+            "--max-pending",
+            "1",
+        ])
+        .unwrap() else {
+            panic!("apply")
+        };
+        assert_eq!(
+            (turns.outbox, turns.rate, turns.max_pending),
+            (PathBuf::from("/o.sqlite3"), 0.0, 1)
+        );
+        for bad in [
+            &["apply", "ir1", "--yes", "--rate", "-1"][..],
+            &["apply", "ir1", "--yes", "--rate", "inf"],
+            &["apply", "ir1", "--yes", "--max-pending", "0"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
         let ImportCmd::Apply { home, .. } =
             parse(&["apply", "ir1", "--yes", "--home", "/h"]).unwrap()
         else {
@@ -583,10 +745,10 @@ mod tests {
             }
         ));
         assert!(parse(&["status", "ir1", "--project", "p"]).is_err());
-        assert!(matches!(
-            parse(&["rollback", "ir1"]).unwrap(),
-            ImportCmd::Rollback { .. }
-        ));
+        let ImportCmd::Rollback { outbox: path, .. } = parse(&["rollback", "ir1"]).unwrap() else {
+            panic!("rollback")
+        };
+        assert_eq!(path, outbox::default_path());
         assert!(parse(&["rollback"]).is_err());
         assert!(matches!(
             parse(&["prompt", "--project", "p"]).unwrap(),
