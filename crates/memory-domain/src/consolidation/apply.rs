@@ -132,8 +132,9 @@ fn merged_record(inputs: &[&MemoryRec], text: &str, ctx: &ApplyContext) -> Memor
         }
         _ => STAGE.into(),
     };
-    // A merge is presented no more firmly than its weakest input: an assistant suggestion stays one.
-    let origin = [ORIGIN_ASSISTANT, ORIGIN_INFERRED]
+    // A merge is presented no more firmly than its weakest input: an assistant suggestion stays one,
+    // and a note copied from another host is never promoted to something the user said.
+    let origin = [ORIGIN_ASSISTANT, ORIGIN_IMPORTED, ORIGIN_INFERRED]
         .into_iter()
         .find(|origin| inputs.iter().any(|m| m.source.origin == *origin))
         .unwrap_or(ORIGIN_USER);
@@ -476,6 +477,23 @@ mod tests {
         );
         assert_eq!(plan.patches[0].after["supersededBy"], "m1");
         assert!(is_merge(merged));
+    }
+
+    #[test]
+    fn a_merge_with_an_imported_input_is_never_presented_as_user() {
+        let disputed = HashSet::new();
+        let origin = |a: &str, b: &str| {
+            let mut inputs = records();
+            inputs[0].source.origin = a.into();
+            inputs[1].source.origin = b.into();
+            let plan = plan_apply(&merge(), &inputs, &ctx("m1", &disputed)).unwrap();
+            plan.created.unwrap().source.origin
+        };
+        assert_eq!(origin(ORIGIN_USER, ORIGIN_IMPORTED), ORIGIN_IMPORTED);
+        assert_eq!(origin(ORIGIN_IMPORTED, ORIGIN_INFERRED), ORIGIN_IMPORTED);
+        // An assistant suggestion is weaker still.
+        assert_eq!(origin(ORIGIN_IMPORTED, ORIGIN_ASSISTANT), ORIGIN_ASSISTANT);
+        assert_eq!(origin(ORIGIN_USER, ORIGIN_USER), ORIGIN_USER);
     }
 
     #[test]

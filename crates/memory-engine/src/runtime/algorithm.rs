@@ -10,7 +10,9 @@ use crate::runtime::tenant::Tenant;
 use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::consolidation::apply::OpOutcome;
 use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
+use memory_domain::import::{ExtractedUnit, ImportUnit};
 use memory_domain::types::*;
+use memory_rules::import::units::UnitLimits;
 use memory_store::store::Tx;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -134,6 +136,66 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
         _t: &'a Tenant,
         _merged: &'a MemoryRec,
         _restored: &'a [String],
+        _tx: &'a mut Tx,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Import: one generation call for an `extract` unit (design §6.6), its items not yet validated.
+    /// `existing` are the project's nearest memories, shown so the model omits what is already known.
+    /// `None`: the algorithm has no import prompt.
+    fn import_extract<'a>(
+        &'a self,
+        _eng: &'a Arc<Engine>,
+        _t: &'a Arc<Tenant>,
+        _project: &'a str,
+        _unit: &'a ImportUnit,
+        _limits: &'a UnitLimits,
+        _existing: &'a [MemoryRec],
+    ) -> BoxFuture<'a, anyhow::Result<Option<ExtractedUnit>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Import: the existing memories of `project` nearest to `text`, best first, for the extraction
+    /// context and the reviewer.
+    fn import_similar<'a>(
+        &'a self,
+        _eng: &'a Arc<Engine>,
+        _t: &'a Arc<Tenant>,
+        _project: &'a str,
+        _platform: &'a str,
+        _text: &'a str,
+        _limit: usize,
+    ) -> BoxFuture<'a, anyhow::Result<Vec<(MemoryRec, f32)>>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+
+    /// The import prompt's identity, recorded on runs and part of the extraction cache key: its format
+    /// and the blake3 hex of its system prompt. `None` when the algorithm cannot extract.
+    fn import_prompt(&self) -> Option<(&'static str, String)> {
+        None
+    }
+
+    /// Algorithm-private writes when import apply writes `rec` for run `run_id`. Added to `tx`, which
+    /// the engine commits with the record.
+    fn import_written<'a>(
+        &'a self,
+        _t: &'a Tenant,
+        _rec: &'a MemoryRec,
+        _run_id: &'a str,
+        _tx: &'a mut Tx,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Algorithm-private writes when import apply or rollback retires `memory_id` (`event`:
+    /// `IMPORT_SUPERSEDED` or `IMPORT_ROLLBACK`). Added to `tx`, which the engine commits.
+    fn import_retired<'a>(
+        &'a self,
+        _t: &'a Tenant,
+        _memory_id: &'a str,
+        _run_id: &'a str,
+        _event: &'a str,
         _tx: &'a mut Tx,
     ) -> BoxFuture<'a, anyhow::Result<()>> {
         Box::pin(async { Ok(()) })

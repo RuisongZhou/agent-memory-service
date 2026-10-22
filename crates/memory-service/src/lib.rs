@@ -27,5 +27,5 @@ pub use algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrie
 #[cfg(feature = "selftest")]
 pub use diagnostics::{
     consolidation as consolidation_tests, consolidation_apply as consolidation_apply_tests,
-    integrity as integrity_tests, mem0 as mem0_tests, selftest,
+    import as import_tests, integrity as integrity_tests, mem0 as mem0_tests, selftest,
 };

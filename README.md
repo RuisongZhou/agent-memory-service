@@ -176,6 +176,22 @@ curl -fsS http://127.0.0.1:8765/health          # 健康检查：记忆策略、
   详见 [存储、备份与升级](docs/deployment.md#storage-backups-and-upgrades)。
 - **排查**：见 [部署排查](docs/deployment.md#common-problems) 和 [客户端排查](docs/mcp-harness.md#troubleshooting)。
 
+### 导入宿主已有的记忆
+
+接入之前，宿主自己已经记下的内容（Claude Code 的 auto memory、Codex 的会话总结、WorkBuddy 的 `MEMORY.md`）可以导入共享记忆。
+先离线生成计划，再提议、审核，最后写入，整次导入可以撤销：
+
+```bash
+~/.local/bin/agent-memoryd import plan --host codex --project my-project --workspace /absolute/path/to/project
+~/.local/bin/agent-memoryd import propose <plan 打印的计划文件>   # 不写记忆；超长的笔记由模型抽取成短事实
+~/.local/bin/agent-memoryd import show RUN                        # 生成评审文件，逐条改 accept / reject
+~/.local/bin/agent-memoryd import apply RUN --review <评审文件>
+```
+
+导入的事实来源记为 `imported`，只作为历史参考，自动召回能找到它们；需要人确认的行为要求不会自动写入。读不到存储的平台
+（ChatGPT 等）可以用 `import prompt` 生成一段提示词，让那边的 Agent 导出 JSONL 后再导入。完整说明见
+[导入已有记忆](docs/mcp-harness.md#import-existing-memories)。
+
 ### 手动部署与其他平台
 
 不想用一键安装，或要自定义数据目录、端口、自托管模型时，按 [部署与运维](docs/deployment.md) 逐步操作。
@@ -191,11 +207,12 @@ curl -fsS http://127.0.0.1:8765/health          # 健康检查：记忆策略、
 | 一键安装的细节、手动接入 Codex / Claude Code / WorkBuddy / DeepSeek Harness、对话捕获与自动召回 | [MCP 与宿主集成](docs/mcp-harness.md) |
 | 请求字段、完成状态、作用域和配置默认值 | [API 与配置](docs/api.md) |
 | 写入与读取路径、存储、实体投影、与 SDK 的差异 | [架构](docs/architecture.md) |
+| 把宿主已有的记忆导入共享记忆（笔记导入已实现，会话导入待做） | [导入已有记忆](docs/mcp-harness.md#import-existing-memories)、[记忆导入设计](docs/design/memory-import.md) |
 | 构建、校验和提交改动 | [贡献指南](CONTRIBUTING.md) |
 | 与 Mem0 SDK 的受控对比和历史评测证据 | [评测](eval/README.md) |
 | 运维与校验脚本清单 | [脚本清单](scripts/README.md) |
 
-除本 README 外，文档目前都是英文。
+除本 README 和 `docs/design/` 下的设计文档外，文档目前都是英文。
 
 ## 开发与验证
 
@@ -213,7 +230,7 @@ make check-arch check-public
 | 位置 | 内容 |
 |---|---|
 | `crates/` | 服务实现，各层职责见架构文档 |
-| `docs/` | 当前服务的文档，每个主题一篇 |
+| `docs/` | 当前服务的文档，每个主题一篇；`docs/design/` 放设计文档，其中可能有尚未实现的部分 |
 | `examples/` | 可编辑的服务配置、MCP 与捕获模板 |
 | `scripts/` | 服务运维与校验脚本，包括一键安装器 `scripts/install.sh` |
 | `eval/` | SDK 基线、数据集、评测协议、实验和历史报告 |

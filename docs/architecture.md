@@ -221,8 +221,9 @@ values they replaced. The algorithm adds its private tables.
   [domain integrity](../crates/memory-domain/src/integrity.rs) stales a current view whose inputs are
   superseded, and they are superseded in the same transaction. `supersedes` holds one predecessor, so N→1
   lineage lives in the derivation.
-  - Origin is `assistant` if any input is, otherwise `inferred` if any input is, otherwise `user`. This
-    keeps `get_context` from presenting a suggestion as established.
+  - Origin is `assistant` if any input is, otherwise `imported` if any input is, otherwise `inferred` if
+    any input is, otherwise `user`. This keeps `get_context` from presenting a suggestion or a copied
+    note as established.
   - `statedAt` is the latest input's. `ingestionMode` is `inferred` and `contentHash` is M's own key.
   - The indexer embeds M (an embedding call, not generation).
   - `mem0_sources.inputRequestIds` is the union of the inputs' requests in input order. Formation's
@@ -268,6 +269,47 @@ statuses. Op statuses: `proposed`, `rejected`, `aborted` or `failed` at proposal
 at apply; `rolled_back` at rollback. History rows record each change in `mem0_history`.
 Runs are started by hand only; there is no scheduler.
 
+## Import
+
+`agent-memoryd import` copies the memories a host already keeps (Claude Code auto memory, Codex rollout
+summaries, WorkBuddy memory files, JSONL a host's agent exported) into the store; the
+[design](design/memory-import.md) explains the choices and the [harness guide](mcp-harness.md#import-existing-memories)
+the commands. Like consolidation it proposes first and changes records only on request, and evaluation
+protocols never call it.
+
+1. **Plan, in the client.** Host adapters only read files; a host-agnostic planner turns each section into a
+   unit, redacts credentials, and picks its mode from the unit cap: the record cost (`est_tokens + 8`) may be at
+   most half the recall budget (default 400), so every imported record fits automatic recall beside another.
+   A unit that fits stays one record (`verbatim`); a longer one is extracted, or split deterministically
+   with `--no-extract`. Codex sections are always extracted, and an extraction input over 8 KB is cut into parts.
+2. **Propose.** Units arrive in batches of at most 64 on a `proposing` run. A unit whose hash matches its
+   ledger row (`import_ledger`, one per project and unit) is `unchanged`. An extract unit costs one generation
+   call (`prompts/import.txt`, shown the project's ten nearest facts so known content is left out), cached in
+   `import_extractions` by project, unit text, prompt and model. Every item is checked by pure rules in
+   [memory-rules](../crates/memory-rules/src/import/validate.rs): its `evidence` must quote the unit, its numbers and
+   named entities must occur in the unit or its metadata, and it must fit the cap; a failing item is stored as
+   `rejected` with the reason. Proposals are rows of the shared `proposals` table with `kind: "import"`; nothing
+   is written to `memories`, and no lock is held during model calls.
+3. **Apply**, under the formation lock, one proposal per transaction. A declined proposal is `dropped`. An accepted
+   fact becomes a `fact` with origin `imported`, project scope, the source's `statedAt`, `ingestionMode:
+   imported`, `detail.import` provenance and an `evidence` row; the indexer embeds it. A current record of the
+   same text is linked instead of duplicated, and an instruction a person accepted becomes an explicit
+   instruction (global only when the person chose so). A ledger row holds the unit's live links, carried from
+   import to import: a changed one-record unit's new fact, and its new accepted instruction, supersede the ones
+   its earlier import wrote, unless another unit's row still holds them. A unit of which nothing was applied gets
+   a `declined` row that keeps its earlier links, so the same text is not offered again unless proposed with
+   `reconsider`.
+4. **Rollback** inverts applied proposals newest first: a written record becomes `superseded` with
+   `importRollback`, the record it replaced returns to `current` (also when a link replaced it), and ledger rows
+   return to the rows they replaced. A record a person or a later run changed, or another unit holds, stays,
+   with `rollbackSkipReason`.
+
+`imported` is not in `context_origins`, so `get_context` never presents imported facts as established; search
+and recall find them. They are consolidation candidates, and a merge with an imported input is never `user`.
+The entity projection leaves them out: they are not formation output. Run statuses are `proposing`, `proposed`,
+`applying`, `applied`, `rolling_back`, `rolled_back` and `partially_rolled_back`; an interrupted apply or rollback
+records `error` and resumes.
+
 ## Code map and evidence
 
 | Question | Entry point |
@@ -281,6 +323,7 @@ Runs are started by hand only; there is no scheduler.
 | Where do transaction integrity and revision checks live? | [memory-store](../crates/memory-store/src/), [domain integrity](../crates/memory-domain/src/integrity.rs) |
 | How are consolidation proposals selected, generated and validated? | [rules](../crates/memory-rules/src/consolidation.rs), [domain](../crates/memory-domain/src/consolidation.rs), [Mem0 prompt and provenance](../crates/memory-algo-mem0/src/consolidation.rs), [run storage](../crates/memory-engine/src/app/consolidation.rs) |
 | How are runs applied, rolled back and deleted? | [domain plans](../crates/memory-domain/src/consolidation/apply.rs), [Mem0 keys and sources](../crates/memory-algo-mem0/src/consolidation/apply.rs), [run use cases](../crates/memory-engine/src/app/consolidation.rs), [deletion](../crates/memory-engine/src/app/management/deletion.rs) |
+| How are a host's existing memories imported? | [host adapters and planner](../crates/memory-service/src/harness/import/), [pure rules](../crates/memory-rules/src/import/), [wire types and record plans](../crates/memory-domain/src/import.rs), [use cases](../crates/memory-engine/src/app/import/), [Mem0 extraction](../crates/memory-algo-mem0/src/import.rs) |
 
 The [evaluation guide](../eval/README.md) owns SDK comparison commands and evidence locations.
 Its deterministic SDK comparison tests processing/score equivalence, not real-model answer quality or

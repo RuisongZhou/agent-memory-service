@@ -50,7 +50,8 @@ async fn inferred(t: &Tenant, doc: &Value) -> Result<bool> {
     for _ in 0..128 {
         match doc["ingestionMode"].as_str() {
             Some("inferred") => return Ok(true),
-            Some("raw") => return Ok(false),
+            // Imported records copy a host's own notes; they are not formation output (see import.rs).
+            Some("raw" | "imported") => return Ok(false),
             _ => {}
         }
         let mid = doc["mid"].as_str().unwrap_or("");

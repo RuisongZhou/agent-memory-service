@@ -4,11 +4,12 @@
 //!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 8 tools)
 //!   agent-memoryd hook   capture | codex-notify | recall ...   (commands agent hosts run as hooks)
 //!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
+//!   agent-memoryd import plan | propose | show | apply | status | rollback | prompt ...   (a host's existing memories)
 //!   agent-memoryd service install | uninstall | status ...     (LaunchAgent / systemd user unit for serve)
 //!   agent-memoryd reindex --vector | --fulltext | --all [--url ...]
 //!   agent-memoryd consolidate --project P --dry-run | --apply RUN | --rollback RUN [--url ...]
 use clap::{error::ErrorKind, Parser, Subcommand};
-use memory_service::harness::{self, outbox::Outbox, HookCmd, OutboxCmd};
+use memory_service::harness::{self, import::ImportCmd, outbox::Outbox, HookCmd, OutboxCmd};
 use memory_service::service::{self, ServiceCmd};
 use memory_service::{config::ServiceConfig, envfile, http, llm::Llm, models::ModelHub, Engine};
 use std::ffi::OsString;
@@ -95,6 +96,9 @@ enum Cmd {
     /// Local dialogue outbox: receipts, a standalone uploader and manual enqueue
     #[command(subcommand)]
     Outbox(OutboxCmd),
+    /// Import the memories a host already keeps: plan from its files, propose, review, apply or roll back
+    #[command(subcommand)]
+    Import(ImportCmd),
     /// Run `serve` as a LaunchAgent (macOS) or systemd user unit (Linux); writes only with --apply
     #[command(subcommand)]
     Service(ServiceCmd),
@@ -293,12 +297,14 @@ fn main() -> anyhow::Result<()> {
                 memory_service::mem0_tests::selftest().await;
                 memory_service::consolidation_tests::selftest().await;
                 memory_service::consolidation_apply_tests::selftest().await;
+                memory_service::import_tests::selftest().await;
             }
             Cmd::Mcp { url, platform } => {
                 memory_service::mcp::run_stdio(&url, &platform).await?;
             }
             Cmd::Hook(cmd) => std::process::exit(harness::hook(cmd).await),
             Cmd::Outbox(cmd) => std::process::exit(harness::outbox(cmd).await),
+            Cmd::Import(cmd) => std::process::exit(harness::import::run(cmd).await),
             Cmd::Service(cmd) => std::process::exit(service::run(cmd).await),
             Cmd::Reindex {
                 url,

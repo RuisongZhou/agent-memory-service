@@ -2,7 +2,9 @@
 //! hooks, and the uploader that submits captured dialogue to the daemon. They keep the files,
 //! schemas and hook contracts of `scripts/harness_memory.py` and `scripts/harness_recall.py`, so
 //! either implementation can share one outbox and one recall record while installations migrate.
-//! See docs/mcp-harness.md.
+//! See docs/mcp-harness.md. `import` reads the memories a host already keeps into a reviewable plan
+//! and drives the daemon's import runs (docs/design/memory-import.md).
+pub mod import;
 pub mod outbox;
 pub mod recall;
 pub mod uploader;
@@ -16,6 +18,10 @@ use std::time::Duration;
 
 /// Daemon response bytes read before giving up.
 const MAX_RESPONSE: usize = 1 << 20;
+/// Admin response bytes read before giving up: an import run lists every proposal.
+const MAX_ADMIN_RESPONSE: usize = 32 << 20;
+/// Bytes of a refused admin call read for the daemon's `message`.
+const MAX_ERROR_BODY: usize = 64 << 10;
 
 #[derive(Subcommand, Debug)]
 pub enum HookCmd {
@@ -353,6 +359,22 @@ impl From<reqwest::Error> for CallError {
     }
 }
 
+/// A failed admin call: why it failed, and the daemon's own `message` when it refused the call with one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminError {
+    pub error: CallError,
+    pub message: Option<String>,
+}
+
+impl From<CallError> for AdminError {
+    fn from(error: CallError) -> Self {
+        Self {
+            error,
+            message: None,
+        }
+    }
+}
+
 /// JSON client for the daemon's public interface (`POST {base}/v1/{name}`).
 pub struct Daemon {
     client: reqwest::Client,
@@ -381,28 +403,66 @@ impl Daemon {
         tenant: &str,
         platform: &str,
     ) -> Result<Value, CallError> {
-        let mut response = self
+        let url = format!("{}/v1/{name}", self.base);
+        let response = self.send(url, body, tenant, platform).await?;
+        if !response.status().is_success() {
+            return Err(CallError::Status(response.status().as_u16()));
+        }
+        json_object(response, MAX_RESPONSE).await
+    }
+
+    /// One admin call (`POST {base}/admin/{name}`); the response must be a JSON object of at most 32 MiB.
+    /// A refused call keeps the daemon's `message`, which says what to change.
+    pub async fn admin(
+        &self,
+        name: &str,
+        body: &Value,
+        tenant: &str,
+        platform: &str,
+    ) -> Result<Value, AdminError> {
+        let url = format!("{}/admin/{name}", self.base);
+        let response = self.send(url, body, tenant, platform).await?;
+        if !response.status().is_success() {
+            let error = CallError::Status(response.status().as_u16());
+            let message = json_object(response, MAX_ERROR_BODY)
+                .await
+                .ok()
+                .and_then(|body| body.get("message")?.as_str().map(str::to_string));
+            return Err(AdminError { error, message });
+        }
+        Ok(json_object(response, MAX_ADMIN_RESPONSE).await?)
+    }
+
+    async fn send(
+        &self,
+        url: String,
+        body: &Value,
+        tenant: &str,
+        platform: &str,
+    ) -> Result<reqwest::Response, CallError> {
+        Ok(self
             .client
-            .post(format!("{}/v1/{name}", self.base))
+            .post(url)
             .header("X-Memory-Tenant", tenant)
             .header("X-Memory-Platform", platform)
             .json(body)
             .send()
-            .await?;
-        if !response.status().is_success() {
-            return Err(CallError::Status(response.status().as_u16()));
+            .await?)
+    }
+}
+
+/// The body of `response` as a JSON object of at most `max` bytes.
+async fn json_object(mut response: reqwest::Response, max: usize) -> Result<Value, CallError> {
+    let mut data = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        data.extend_from_slice(&chunk);
+        if data.len() > max {
+            return Err(CallError::Invalid);
         }
-        let mut data = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            data.extend_from_slice(&chunk);
-            if data.len() > MAX_RESPONSE {
-                return Err(CallError::Invalid);
-            }
-        }
-        match serde_json::from_slice(&data) {
-            Ok(value @ Value::Object(_)) => Ok(value),
-            _ => Err(CallError::Invalid),
-        }
+    }
+    match serde_json::from_slice(&data) {
+        Ok(value @ Value::Object(_)) => Ok(value),
+        _ => Err(CallError::Invalid),
     }
 }
 

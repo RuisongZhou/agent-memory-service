@@ -128,10 +128,12 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /admin/consolidate` | Propose consolidation ops for one project and store the run; requires `consolidationEnabled` and `dryRun:true` |
 | `POST /admin/consolidation_apply` | Apply a proposed run's ops, one transaction per op; requires `consolidationEnabled` |
 | `POST /admin/consolidation_rollback` | Undo an applied run's ops, newest first; ops changed since stay applied |
+| `POST /admin/import_propose`, `import_run`, `import_runs`, `import_apply`, `import_rollback` | [Import runs](#import-runs): a host's existing memories as reviewable proposals, applied and rolled back on request |
 | `POST /admin/seed` | Direct fixture admission, available only with mock models |
 
 Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `requests`,
-`store_revisions`, `uncertainties`, `proposals`, `consolidation_runs` and [Mem0 private tables](architecture.md#entity-projection-and-storage).
+`store_revisions`, `uncertainties`, `proposals`, `consolidation_runs`, `import_runs`, `import_ledger`,
+`import_extractions` and [Mem0 private tables](architecture.md#entity-projection-and-storage).
 Embedding token usage is approximate, not provider billing. Reindex HTTP errors produce a nonzero CLI exit.
 
 ### Consolidation proposals
@@ -209,6 +211,42 @@ and `--rollback` are mutually exclusive.
 `delete_memory` also follows merges. Deleting a merged record leaves its inputs superseded. Deleting one
 of its inputs deletes the merged record too and returns the other inputs to `current`; these are listed
 in `restoredInputs`.
+
+### Import runs
+
+`agent-memoryd import` drives these endpoints ([commands](mcp-harness.md#import-existing-memories),
+[processing](architecture.md#import)); the [Rust types](../crates/memory-domain/src/import.rs) define every
+field. They are not gated by a configuration flag and are not MCP tools.
+
+| Endpoint | Body | Answer |
+|---|---|---|
+| `POST /admin/import_propose` | `{project, host, runId?, finish, limits: {recallBudget, recallTopK}, planHash?, reconsider?, units: [...]}`, at most 64 units | `{run, proposals, units}` of this batch |
+| `POST /admin/import_run` | `{runId}` | `{run, proposals}` |
+| `POST /admin/import_runs` | `{project?, limit?}` (1–200, default 20) | `{runs}`, newest first |
+| `POST /admin/import_apply` | `{runId, decisions: {proposalId: "accept" \| "reject"}, scopes?: {proposalId: "project" \| "global"}}` | `{run, proposals}` |
+| `POST /admin/import_rollback` | `{runId}` | `{run, proposals}` |
+
+A unit is `{unit, host, mode, text, pieces?, statedAt, kindHint?, headingPath, fileHash, unitHash,
+instructionCandidate, source}`: `mode` is `verbatim` (the text is one proposal), `split` (each piece is one) or
+`extract` (one generation call; the text is at most 8 KB). The first batch omits `runId` and creates the run;
+later batches name it, one at a time; the batch with `finish:true` makes the run `proposed`. `recallBudget` must
+be at least 40 and `recallTopK` positive. `unitHash` must be the blake3 hex of `text`, unit keys are unique
+within a run, and an `extract` batch needs the generation key.
+
+| Status | Values |
+|---|---|
+| Run | `proposing` → `proposed` → `applying` → `applied` → `rolling_back` → `rolled_back` or `partially_rolled_back` |
+| Proposal | `proposed` or `rejected` (with `rejectReason`); then `dropped`, `applied` or `skipped` (with `skipReason`); then `rolled_back`, or still `applied` with `rollbackSkipReason` |
+| Unit outcome | `new`, `changed`, `unchanged`, `reconsidered` or `failed` (with `error`; the run continues); a changed unit lists the current records its earlier import left in `previousRecords` |
+
+Each proposal carries `itemKind` (`fact`, `preference`, `instruction`, `reference`), `scopeHint`, `evidence`,
+`defaultDecision` (`reject` for instructions), `duplicateOf` (accepting it links the unit to that record),
+`supersedes` (the record the unit's earlier import wrote that this one replaces) and up to three `similar`
+memories. `import_apply` takes each proposal's decision from `decisions` or its default; an accepted instruction
+is global only when `scopes` says so. `reconsider` proposes again the units whose last import applied nothing
+although their text is unchanged. Errors are `INVALID_ARGUMENT` (400) for validation, a bad `runId` or a run in the
+wrong status, `NOT_FOUND` (404), `MODEL_UNAVAILABLE` (503) for extract units without a generation key, and
+`INTERNAL` (500) during apply or rollback, which is recorded on `run.error`; repeating the call resumes.
 
 ## Configuration
 
