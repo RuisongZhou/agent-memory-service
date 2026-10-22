@@ -894,7 +894,8 @@ def test_a_hand_made_unit_and_a_daemon_started_by_hand_are_left_alone(session, c
     monkeypatch.setattr(checks, 'daemon_health', lambda url: {'memoryStrategy': 'mem0'})
     code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply'))
     assert code == 0 and 'started by hand' in output, output
-    assert service_calls(service_binary) == [] and not (session / '.config').exists()  # no key was needed
+    # No key was needed: nothing under the env file's directory (on Linux the unit above lived in ~/.config too).
+    assert service_calls(service_binary) == [] and not (session / runtime.ENV_FILE).parent.exists()
 
 
 def test_the_installed_binary_and_env_file_come_back_when_a_check_fails(session, capsys, service_binary, monkeypatch):
