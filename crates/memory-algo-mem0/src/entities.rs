@@ -44,15 +44,16 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 /// Missing ingestionMode is reconstructed only from existing Mem0 provenance or a
 /// correction predecessor. Unknown legacy facts are excluded rather than treating raw
 /// facts as inferred. Corrections of inferred facts inherit entity-index eligibility.
+/// Any recorded mode but `inferred` (raw text, or a record another use case wrote) is not
+/// formation inference.
 async fn inferred(t: &Tenant, doc: &Value) -> Result<bool> {
     let mut doc = doc.clone();
     let mut seen = HashSet::new();
     for _ in 0..128 {
         match doc["ingestionMode"].as_str() {
             Some("inferred") => return Ok(true),
-            // Imported records copy a host's own notes; they are not formation output (see import.rs).
-            Some("raw" | "imported") => return Ok(false),
-            _ => {}
+            Some(_) => return Ok(false),
+            None => {}
         }
         let mid = doc["mid"].as_str().unwrap_or("");
         if !seen.insert(mid.to_owned()) {

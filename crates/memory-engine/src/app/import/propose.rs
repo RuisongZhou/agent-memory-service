@@ -1,7 +1,7 @@
 //! `propose`: one batch of a plan's units becomes unit outcomes and proposals on a `proposing` run. A unit whose
 //! hash matches its ledger row is `unchanged` and skipped; a verbatim or split unit offers its text or pieces without
-//! a model call; an extract unit costs one generation call through the algorithm, cached by project, unit text,
-//! prompt and model, and every item it returns is checked by the pure provenance rules of
+//! a model call; an extract unit costs one generation call (`extract`), cached by project, unit text, prompt and
+//! model, and every item it returns is checked by the pure provenance rules of
 //! `memory_rules::import::validate`. A session turn becomes one row without a model call (`turns::register`). The
 //! run and its proposal rows commit together; no lock is held during model calls and no memory record is written.
 use serde_json::{json, Value};
@@ -9,8 +9,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{
-    count, invalid, ledger, ledger_id, live_records, load_run, other_units_naming, run_proposals,
-    turns, LEDGER_APPLIED,
+    count, extract, invalid, ledger, ledger_id, live_records, load_run, other_units_naming,
+    run_proposals, turns, LEDGER_APPLIED,
 };
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
@@ -170,7 +170,7 @@ struct Proposer<'a> {
     t: &'a Arc<Tenant>,
     run: &'a ImportRun,
     limits: UnitLimits,
-    prompt_hash: Option<String>,
+    prompt_hash: String,
     /// The tenant's prompt variant (`zh`, `en`), part of the extraction input.
     variant: String,
     reconsider: bool,
@@ -216,7 +216,7 @@ impl Proposer<'_> {
         })
     }
 
-    /// The unit's outcome and proposals. Errors of the algorithm's model calls fail the unit only.
+    /// The unit's outcome and proposals. Errors of the model calls fail the unit only.
     async fn unit(
         &mut self,
         unit: &ImportUnit,
@@ -432,7 +432,7 @@ impl Proposer<'_> {
             unit,
             &self.limits,
             &self.variant,
-            self.prompt_hash.as_deref().unwrap_or_default(),
+            &self.prompt_hash,
             &self.eng.llm.model,
         )
     }
@@ -481,9 +481,10 @@ impl Proposer<'_> {
                 return Ok(Some((extracted, true)));
             }
         }
-        let algorithm = self.eng.algorithm();
-        let existing = match algorithm
-            .import_similar(
+        let existing = match self
+            .eng
+            .algorithm()
+            .nearest_facts(
                 self.eng,
                 self.t,
                 project,
@@ -501,17 +502,17 @@ impl Proposer<'_> {
             }
         };
         self.generation_calls += 1;
-        let extracted = match algorithm
-            .import_extract(self.eng, self.t, project, unit, &self.limits, &existing)
-            .await
+        let extracted = match extract::extract(
+            self.eng,
+            self.t,
+            project,
+            unit,
+            &self.limits,
+            &existing,
+        )
+        .await
         {
-            Ok(Some(extracted)) => extracted,
-            Ok(None) => {
-                outcome.outcome = UNIT_FAILED.into();
-                outcome.error =
-                    Some("the active memory algorithm does not support import extraction".into());
-                return Ok(None);
-            }
+            Ok(extracted) => extracted,
             Err(e) => {
                 outcome.outcome = UNIT_FAILED.into();
                 outcome.error = Some(format!("extraction: {e:#}"));
@@ -545,7 +546,7 @@ impl Proposer<'_> {
         match self
             .eng
             .algorithm()
-            .import_similar(self.eng, self.t, &p.project, &p.host, &p.text, SIMILAR)
+            .nearest_facts(self.eng, self.t, &p.project, &p.host, &p.text, SIMILAR)
             .await
         {
             Ok(similar) => {
@@ -593,19 +594,10 @@ pub async fn propose(
         .iter()
         .map(|unit| checked_unit(unit, host, project))
         .collect::<ApiResult<Vec<_>>>()?;
-    let algorithm = eng.algorithm();
-    let prompt = algorithm.import_prompt();
-    if batch.iter().any(|unit| unit.mode == MODE_EXTRACT) {
-        if prompt.is_none() {
-            return Err(invalid(
-                "the active memory algorithm does not support import extraction",
-            ));
-        }
-        if !eng.llm.is_configured() {
-            return Err(ApiError::ModelUnavailable(
-                "generation model API key not configured".into(),
-            ));
-        }
+    if batch.iter().any(|unit| unit.mode == MODE_EXTRACT) && !eng.llm.is_configured() {
+        return Err(ApiError::ModelUnavailable(
+            "generation model API key not configured".into(),
+        ));
     }
     let now = util::now_str();
     let created = req.run_id.is_none();
@@ -629,7 +621,6 @@ pub async fn propose(
         None => {
             let limits: UnitLimits = req.limits.into();
             check_limits(&limits)?;
-            let (prompt_format, prompt_hash) = prompt.clone().unzip();
             ImportRun {
                 run_id: util::new_id("ir"),
                 kind: KIND.into(),
@@ -642,8 +633,8 @@ pub async fn propose(
                 plan_hash: req.plan_hash.clone(),
                 llm_model: eng.llm.model.clone(),
                 embedding_model: eng.models.embed_model_id.clone(),
-                prompt_format: prompt_format.map(str::to_string),
-                prompt_hash,
+                prompt_format: Some(extract::FORMAT.into()),
+                prompt_hash: Some(extract::prompt_hash()),
                 ..Default::default()
             }
         }
@@ -680,7 +671,7 @@ pub async fn propose(
         t,
         run: &run,
         limits: run.limits.into(),
-        prompt_hash: prompt.map(|(_, hash)| hash),
+        prompt_hash: extract::prompt_hash(),
         variant: eng.prompt_variant_for(t).to_string(),
         reconsider: req.reconsider,
         now: now.clone(),

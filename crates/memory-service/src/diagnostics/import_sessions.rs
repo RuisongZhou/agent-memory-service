@@ -235,7 +235,7 @@ pub async fn selftest() {
     let live_request = live["requestId"].as_str().unwrap().to_string();
 
     // ---- 4. apply queues every turn and writes no record
-    let applied = import::apply(&eng, &t, run_req(&r1)).await.unwrap();
+    let applied = import::apply(&t, run_req(&r1)).await.unwrap();
     assert_eq!(applied["run"]["status"], RUN_APPLIED);
     assert_eq!(applied["run"]["counts"]["turnsQueued"], 4);
     assert_eq!(applied["run"]["counts"]["applied"], 0);
@@ -449,7 +449,7 @@ async fn through_outboxes(url: &str) {
         .as_str()
         .unwrap()
         .to_string();
-    import::apply(&eng, &t, run_req(&run_id)).await.unwrap();
+    import::apply(&t, run_req(&run_id)).await.unwrap();
     let view = run_view(import::get_run(&t, run_req(&run_id)).await.unwrap()).unwrap();
     let path = dir.join("import.sqlite3");
     let queue = queue_turns(&view, &path, name, &Pace::new(0.0, 4), &mut |_| {})

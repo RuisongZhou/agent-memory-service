@@ -5,19 +5,16 @@ use std::sync::Arc;
 use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::consolidation::apply::OpOutcome;
 use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
-use memory_domain::import::{ExtractedUnit, ImportUnit};
 use memory_domain::types::*;
 use memory_engine::runtime::algorithm::{BoxFuture, MemoryAlgorithm};
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::tenant::Tenant;
-use memory_rules::import::units::UnitLimits;
 use memory_store::store::Tx;
 
 pub mod config;
 pub mod consolidation;
 pub mod entities;
 pub mod formation;
-pub mod import;
 pub mod repo;
 pub mod retrieval;
 pub mod runtime;
@@ -99,6 +96,20 @@ impl MemoryAlgorithm for Mem0 {
         Box::pin(retrieval::search(eng, t, c, req))
     }
 
+    fn nearest_facts<'a>(
+        &'a self,
+        eng: &'a Arc<Engine>,
+        t: &'a Arc<Tenant>,
+        project: &'a str,
+        platform: &'a str,
+        text: &'a str,
+        limit: usize,
+    ) -> BoxFuture<'a, anyhow::Result<Vec<(MemoryRec, f32)>>> {
+        Box::pin(retrieval::nearest_facts(
+            eng, t, project, platform, text, limit,
+        ))
+    }
+
     fn list_turns<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
@@ -123,6 +134,14 @@ impl MemoryAlgorithm for Mem0 {
         memory_id: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Value>>> {
         Box::pin(t.store.get_doc(SOURCES, memory_id))
+    }
+
+    fn source_requests<'a>(
+        &'a self,
+        t: &'a Tenant,
+        memory_id: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<Option<Vec<String>>>> {
+        Box::pin(repo::source_requests(t, memory_id))
     }
 
     fn consolidation_snapshot<'a>(
@@ -174,66 +193,5 @@ impl MemoryAlgorithm for Mem0 {
         Box::pin(consolidation::apply::inputs_restored(
             t, merged, restored, tx,
         ))
-    }
-
-    fn import_extract<'a>(
-        &'a self,
-        eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
-        project: &'a str,
-        unit: &'a ImportUnit,
-        limits: &'a UnitLimits,
-        existing: &'a [MemoryRec],
-    ) -> BoxFuture<'a, anyhow::Result<Option<ExtractedUnit>>> {
-        Box::pin(async move {
-            import::extract(eng, t, project, unit, limits, existing)
-                .await
-                .map(Some)
-        })
-    }
-
-    fn import_similar<'a>(
-        &'a self,
-        eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
-        project: &'a str,
-        platform: &'a str,
-        text: &'a str,
-        limit: usize,
-    ) -> BoxFuture<'a, anyhow::Result<Vec<(MemoryRec, f32)>>> {
-        Box::pin(import::similar(eng, t, project, platform, text, limit))
-    }
-
-    fn import_prompt(&self) -> Option<(&'static str, String)> {
-        Some((import::FORMAT, import::prompt_hash()))
-    }
-
-    fn import_written<'a>(
-        &'a self,
-        _t: &'a Tenant,
-        rec: &'a MemoryRec,
-        run_id: &'a str,
-        tx: &'a mut Tx,
-    ) -> BoxFuture<'a, anyhow::Result<()>> {
-        Box::pin(async move { import::written(rec, run_id, tx) })
-    }
-
-    fn import_fact_requests<'a>(
-        &'a self,
-        t: &'a Tenant,
-        memory_id: &'a str,
-    ) -> BoxFuture<'a, anyhow::Result<Option<Vec<String>>>> {
-        Box::pin(import::fact_requests(t, memory_id))
-    }
-
-    fn import_retired<'a>(
-        &'a self,
-        _t: &'a Tenant,
-        memory_id: &'a str,
-        run_id: &'a str,
-        event: &'a str,
-        tx: &'a mut Tx,
-    ) -> BoxFuture<'a, anyhow::Result<()>> {
-        Box::pin(async move { import::retired(memory_id, run_id, event, tx) })
     }
 }

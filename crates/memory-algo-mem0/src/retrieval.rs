@@ -105,6 +105,29 @@ pub async fn dense_with_vector(
         .collect())
 }
 
+/// The existing facts visible to `project` and `platform` nearest to `text`, by pure vector recall as formation
+/// recalls existing facts.
+pub async fn nearest_facts(
+    eng: &Arc<Engine>,
+    t: &Arc<Tenant>,
+    project: &str,
+    platform: &str,
+    text: &str,
+    limit: usize,
+) -> Result<Vec<(MemoryRec, f32)>> {
+    dense(
+        eng,
+        t,
+        text,
+        project,
+        platform,
+        &[T_FACT.into()],
+        -1.0,
+        limit,
+    )
+    .await
+}
+
 pub async fn search(
     eng: &Arc<Engine>,
     t: &Arc<Tenant>,

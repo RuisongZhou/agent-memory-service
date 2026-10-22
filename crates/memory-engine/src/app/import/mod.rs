@@ -1,12 +1,16 @@
 //! Memory import runs (docs/design/memory-import.md), in the shape of consolidation runs: `propose` takes a plan's
 //! units in batches of at most `MAX_BATCH_UNITS` and offers proposals without writing a memory record; `apply` and
 //! `rollback` then change records one proposal per transaction under the formation lock, through the pure plans of
-//! `memory_domain::import::apply` and the algorithm's import hooks. The import ledger keeps one row per unit of a
-//! project: the run that last imported it, its hash and the records it became, with the row it replaced kept for
-//! rollback. Session turns (`turns`) are rows of the run too, but go through Mem0 formation instead: they have no
-//! ledger rows, since the daemon deduplicates turns by `platform + turnId`. This module holds the ledger and run
-//! reads the steps share.
+//! `memory_domain::import::apply`. The import ledger keeps one row per unit of a project: the run that last imported
+//! it, its hash and the records it became, with the row it replaced kept for rollback. Session turns (`turns`) are
+//! rows of the run too, but go through the algorithm's formation instead: they have no ledger rows, since the daemon
+//! deduplicates turns by `platform + turnId`. This module holds the ledger and run reads the steps share.
+//!
+//! Import knows no algorithm and no algorithm knows import: notes are extracted here (`extract`) and written as
+//! plain records, and the algorithm is asked only generic questions, the facts nearest to a text
+//! (`MemoryAlgorithm::nearest_facts`) and the requests a fact was formed from (`MemoryAlgorithm::source_requests`).
 mod apply;
+mod extract;
 mod propose;
 mod rollback;
 mod turns;
@@ -33,9 +37,6 @@ use memory_store::store::{hashed_id, safe_id, Tx};
 /// `import_runs` page size: default and largest.
 const DEFAULT_RUNS: usize = 20;
 const MAX_RUNS: usize = 200;
-/// Events passed to the algorithm when import apply or rollback retires a record.
-pub const EVENT_SUPERSEDED: &str = "IMPORT_SUPERSEDED";
-pub const EVENT_ROLLBACK: &str = "IMPORT_ROLLBACK";
 
 /// Ledger status of a unit whose last import wrote or linked a record. The other value, `DECLINED`, means
 /// every proposal of that import was declined or rejected, or nothing was extracted: the text is recorded so a

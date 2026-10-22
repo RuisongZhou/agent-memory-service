@@ -134,6 +134,17 @@ pub async fn content_keys_of(t: &Tenant, memory_id: &str) -> Result<Vec<String>>
         .collect())
 }
 
+/// The input requests formation made the fact `memory_id` from (its source batch); `None` without one, as for
+/// a record formation did not write.
+pub async fn source_requests(t: &Tenant, memory_id: &str) -> Result<Option<Vec<String>>> {
+    let Some(source) = t.store.get_doc(super::SOURCES, memory_id).await? else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_value(
+        source["inputRequestIds"].clone(),
+    )?))
+}
+
 /// Canonical entity rows without their vectors: `{mid, entityType, linkedMemoryIds}`.
 pub async fn entity_links(t: &Tenant) -> Result<Vec<Value>> {
     t.store

@@ -285,7 +285,8 @@ protocols never call it.
    with `--no-extract`. Codex sections are always extracted, and an extraction input over 8 KB is cut into parts.
 2. **Propose.** Units arrive in batches of at most 64 on a `proposing` run. A unit whose hash matches its
    ledger row (`import_ledger`, one per project and unit) is `unchanged`. An extract unit costs one generation
-   call (`prompts/import.txt`, shown the project's ten nearest facts so known content is left out), cached in
+   call ([the engine's import prompt](../crates/memory-engine/src/app/import/extract.txt), shown the project's ten
+   nearest facts so known content is left out), cached in
    `import_extractions` by project, unit text, prompt and model. Every item is checked by pure rules in
    [memory-rules](../crates/memory-rules/src/import/validate.rs): its `evidence` must quote the unit, its numbers and
    named entities must occur in the unit or its metadata, and it must fit the cap; a failing item is stored as
@@ -313,6 +314,13 @@ admits it only as a turn the run applied, deduplicates it by `platform + turnId`
 the session's earlier turns as context. The request records the run, so rollback, after closing the run to further
 turns under an import gate, retires only the facts whose every source request is the run's own.
 
+Import is a shared use case, not part of an algorithm: the engine owns its prompt and its record writes, and asks the
+algorithm two generic questions through `MemoryAlgorithm`: `nearest_facts`, the facts formation would recall for a
+text (the extraction context and the reviewer's `similar`), and `source_requests`, the requests a fact was formed
+from (rolling back session turns). An algorithm's `add_memories` keeps `importRunId` on the request row it commits.
+Import writes no algorithm history; its runs' proposals record what each one wrote, superseded and rolled back. The
+[architecture checker](../scripts/check_architecture.py) keeps import modules out of algorithm crates.
+
 `imported` is not in `context_origins`, so `get_context` never presents imported facts as established; search
 and recall find them. They are consolidation candidates, and a merge with an imported input is never `user`.
 The entity projection leaves them out: they are not formation output. Run statuses are `proposing`, `proposed`,
@@ -332,7 +340,7 @@ records `error` and resumes.
 | Where do transaction integrity and revision checks live? | [memory-store](../crates/memory-store/src/), [domain integrity](../crates/memory-domain/src/integrity.rs) |
 | How are consolidation proposals selected, generated and validated? | [rules](../crates/memory-rules/src/consolidation.rs), [domain](../crates/memory-domain/src/consolidation.rs), [Mem0 prompt and provenance](../crates/memory-algo-mem0/src/consolidation.rs), [run storage](../crates/memory-engine/src/app/consolidation.rs) |
 | How are runs applied, rolled back and deleted? | [domain plans](../crates/memory-domain/src/consolidation/apply.rs), [Mem0 keys and sources](../crates/memory-algo-mem0/src/consolidation/apply.rs), [run use cases](../crates/memory-engine/src/app/consolidation.rs), [deletion](../crates/memory-engine/src/app/management/deletion.rs) |
-| How are a host's existing memories imported? | [host adapters and planner](../crates/memory-service/src/harness/import/), [pure rules](../crates/memory-rules/src/import/), [wire types and record plans](../crates/memory-domain/src/import.rs), [use cases](../crates/memory-engine/src/app/import/), [session turns](../crates/memory-engine/src/app/import/turns.rs), [Mem0 extraction](../crates/memory-algo-mem0/src/import.rs) |
+| How are a host's existing memories imported? | [host adapters and planner](../crates/memory-service/src/harness/import/), [pure rules](../crates/memory-rules/src/import/), [wire types and record plans](../crates/memory-domain/src/import.rs), [use cases](../crates/memory-engine/src/app/import/), [session turns](../crates/memory-engine/src/app/import/turns.rs), [extraction](../crates/memory-engine/src/app/import/extract.rs) |
 
 The [evaluation guide](../eval/README.md) owns SDK comparison commands and evidence locations.
 Its deterministic SDK comparison tests processing/score equivalence, not real-model answer quality or

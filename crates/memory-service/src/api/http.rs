@@ -117,7 +117,7 @@ async fn admin(
             "consolidation_apply" => consolidation::apply(&eng, &t, parse(body)?).await,
             "consolidation_rollback" => consolidation::rollback(&eng, &t, parse(body)?).await,
             "import_propose" => import::propose(&eng, &t, parse(body)?).await,
-            "import_apply" => import::apply(&eng, &t, parse(body)?).await,
+            "import_apply" => import::apply(&t, parse(body)?).await,
             "import_rollback" => import::rollback(&eng, &t, parse(body)?).await,
             "import_run" => import::get_run(&t, parse(body)?).await,
             "import_runs" => import::list_runs(&t, parse(body)?).await,

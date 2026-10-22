@@ -182,7 +182,7 @@ pub async fn selftest() {
     assert_eq!(run["status"], RUN_PROPOSED, "{run}");
     assert_eq!(run["kind"], KIND);
     assert_eq!(run["llmModel"], "stub-model");
-    assert_eq!(run["promptFormat"], "mem0-import-v1");
+    assert_eq!(run["promptFormat"], "import-v1");
     assert_eq!(run["planHash"], "plan-1");
     assert_eq!(run["units"].as_array().unwrap().len(), 5);
     assert_eq!(
@@ -255,16 +255,15 @@ pub async fn selftest() {
         vec![("ipmissing", ACCEPT)],
     ] {
         assert!(matches!(
-            import::apply(&eng, &t, run_req(&r1, &decisions)).await,
+            import::apply(&t, run_req(&r1, &decisions)).await,
             Err(ApiError::InvalidArgument(_))
         ));
     }
     assert!(matches!(
-        import::apply(&eng, &t, run_req("irmissing", &[])).await,
+        import::apply(&t, run_req("irmissing", &[])).await,
         Err(ApiError::NotFound(_))
     ));
     let out = import::apply(
-        &eng,
         &t,
         run_req(
             &r1,
@@ -451,7 +450,7 @@ pub async fn selftest() {
     let late = propose(&eng, &t, None, true, vec![tuesday]).await;
     let r2b = str_of(&late["run"]["runId"]);
 
-    let out = import::apply(&eng, &t, run_req(&r2, &[])).await.unwrap();
+    let out = import::apply(&t, run_req(&r2, &[])).await.unwrap();
     assert_eq!(out["run"]["counts"]["applied"], 4, "{out}");
     let monday_id = str_of(&find(&out["proposals"], monday)["memoryId"]);
     let nightly = str_of(&find(&out["proposals"], NIGHTLY)["memoryId"]);
@@ -470,7 +469,7 @@ pub async fn selftest() {
     let copied = pick(&out["proposals"], 1, PIECE_KEPT);
     assert_eq!(copied["status"], APPLIED, "{copied}");
     assert_eq!(copied["applied"]["dedupedInto"], kept.as_str());
-    let out = import::apply(&eng, &t, run_req(&r2b, &[])).await.unwrap();
+    let out = import::apply(&t, run_req(&r2b, &[])).await.unwrap();
     let skipped = &out["proposals"][0];
     assert_eq!(skipped["status"], SKIPPED, "{out}");
     assert!(
@@ -554,16 +553,30 @@ pub async fn selftest() {
     let ledger = rows(&eng, &t, schema::IMPORT_LEDGER).await;
     assert_eq!(ledger.len(), 1, "{ledger:?}");
     assert_eq!(ledger[0]["memoryIds"], json!([feedback]));
+    // The runs' proposals are the audit trail: records written, superseded and rolled back. Import writes no
+    // algorithm history.
     let history = rows(&eng, &t, memory_algo_mem0::HISTORY).await;
-    let events = |event: &str| history.iter().filter(|h| h["event"] == event).count();
-    assert_eq!(
-        (
-            events("IMPORT"),
-            events("IMPORT_SUPERSEDED"),
-            events("IMPORT_ROLLBACK")
-        ),
-        (7, 1, 6)
+    assert!(
+        !history
+            .iter()
+            .any(|h| h["event"].as_str().is_some_and(|e| e.starts_with("IMPORT"))),
+        "{history:?}"
     );
+    let mut audit = (0, 0, 0);
+    let runs = import::list_runs(&t, ImportRunsReq::default())
+        .await
+        .unwrap();
+    for run in runs["runs"].as_array().unwrap() {
+        let run = import::get_run(&t, run_req(run["runId"].as_str().unwrap(), &[]))
+            .await
+            .unwrap();
+        for p in run["proposals"].as_array().unwrap() {
+            audit.0 += usize::from(p["applied"]["memoryId"].is_string());
+            audit.1 += usize::from(p["applied"]["superseded"].is_object());
+            audit.2 += usize::from(p["rollback"]["patches"].is_array());
+        }
+    }
+    assert_eq!(audit, (7, 1, 6));
 
     // ---- 7. proposing the extract unit again reuses the cached extraction
     let before = calls(&eng);
@@ -636,7 +649,7 @@ async fn round(
         decisions: decide(&proposed["proposals"]).into_iter().collect(),
         scopes: scopes(&proposed["proposals"]).into_iter().collect(),
     };
-    let applied = import::apply(eng, t, req).await.unwrap();
+    let applied = import::apply(t, req).await.unwrap();
     (proposed, applied)
 }
 
