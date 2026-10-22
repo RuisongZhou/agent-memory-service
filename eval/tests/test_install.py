@@ -341,17 +341,39 @@ def test_codex_config_edit_handles_empty_header_only_and_crlf_files(text):
     assert codex.edit_config(edited, None, None).strip() == text.strip()
 
 
-def test_codex_replaces_multiline_notify_it_owns_and_refuses_another_program():
+def test_codex_replaces_multiline_notify_it_owns():
     owned = 'notify = [\n  "python3",\n  "/old/scripts/harness_memory.py",\n  "--project", "old",\n  "codex-notify",\n]\n\n[tui]\nx = 1\n'
     edited = codex.edit_config(owned, SERVER, NOTIFY)
     assert tomllib.loads(edited)['notify'] == NOTIFY and edited.count('notify =') == 1
     assert '/old/' not in edited and edited.endswith('[tui]\nx = 1\n\n' + codex.server_block(SERVER, '\n'))
     without_capture = codex.edit_config(edited, SERVER, None)
     assert 'notify' not in tomllib.loads(without_capture)
-    foreign = 'notify = ["terminal-notifier", "-message"]\n'
-    with pytest.raises(core.InstallError, match='another program'):
-        codex.edit_config(foreign, SERVER, NOTIFY)
-    assert tomllib.loads(codex.edit_config(foreign, SERVER, None))['notify'] == ['terminal-notifier', '-message']
+
+
+CLIENT = '/Users/me/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/Client'
+
+
+def test_codex_wraps_another_notify_program_and_puts_it_back():
+    foreign = f'# mine\nnotify = ["{CLIENT}", "turn-ended"]  # Computer Use\nmodel = "x"\n'
+    wrapped = codex.edit_config(foreign, SERVER, NOTIFY)
+    assert tomllib.loads(wrapped)['notify'] == NOTIFY + ['--', CLIENT, 'turn-ended']
+    assert wrapped.startswith('# mine\nnotify = [') and 'model = "x"' in wrapped
+    assert codex.wrapped_notify(tomllib.loads(wrapped)['notify']) == [CLIENT, 'turn-ended']
+    assert codex.edit_config(wrapped, SERVER, NOTIFY) == wrapped  # a rerun changes nothing
+    other = NOTIFY[:4] + ['q'] + NOTIFY[5:]  # another project keeps the wrapped program
+    assert tomllib.loads(codex.edit_config(wrapped, SERVER, other))['notify'] == other + ['--', CLIENT, 'turn-ended']
+    # Without capture (or on --uninstall) the wrapped program is put back as it was.
+    restored = codex.edit_config(wrapped, None, None)
+    assert tomllib.loads(restored) == tomllib.loads(foreign) and restored.count('notify =') == 1
+    assert codex.edit_config(foreign, None, None) == foreign
+    assert tomllib.loads(codex.edit_config(foreign, SERVER, None))['notify'] == [CLIENT, 'turn-ended']
+
+
+@pytest.mark.parametrize('text', ['notify = "terminal-notifier"\n', 'notify = []\n', 'notify = [1]\n'])
+def test_codex_refuses_a_notify_that_is_not_a_command(text):
+    with pytest.raises(core.InstallError, match='command array'):
+        codex.edit_config(text, SERVER, NOTIFY)
+    assert codex.edit_config(text, SERVER, None).startswith(text)  # MCP only leaves it alone
 
 
 @pytest.mark.parametrize('text', [
@@ -364,10 +386,13 @@ def test_codex_refuses_forms_it_cannot_edit_safely(text):
 
 
 def test_codex_leaves_a_chained_notify_dispatcher_alone():
+    """A program of the user's that already runs the collector is neither wrapped nor replaced."""
     chained = ('notify = ["/Users/me/bin/notify-fanout", "terminal-notifier", "--", "/usr/bin/python3", '
                '"/opt/ams/scripts/harness_memory.py", "--project", "p", "codex-notify"]\nmodel = "x"\n')
-    with pytest.raises(core.InstallError, match='another program'):
+    with pytest.raises(core.InstallError, match='runs the shared-memory collector'):
         codex.edit_config(chained, SERVER, NOTIFY)
+    with pytest.raises(core.InstallError, match='runs the shared-memory collector'):
+        codex.edit_config('notify = ["/bin/fanout", "/opt/agent-memoryd", "hook", "codex-notify"]\n', SERVER, NOTIFY)
     assert codex.edit_config(chained, None, None) == chained
     assert tomllib.loads(codex.edit_config(chained, SERVER, None))['notify'][0] == '/Users/me/bin/notify-fanout'
 
@@ -698,6 +723,25 @@ def test_installed_commands_stay_recognizable(tmp_path):
         assert core.owned_handler({'command': core.hook_command(ctx)})
         assert core.owned_recall({'command': core.recall_command(ctx)})
     assert codex.owned_notify(codex.notify_argv(ctx))
+    wrapping = codex.notify_argv(ctx, wrapped=[CLIENT, '--', 'turn-ended'])
+    assert codex.owned_notify(wrapping) and codex.wrapped_notify(wrapping) == [CLIENT, '--', 'turn-ended']
+
+
+def test_codex_install_wraps_an_existing_notify_and_uninstall_restores_it(tmp_path, capsys, fake_binary, offline):
+    config = tmp_path / '.codex/config.toml'
+    config.parent.mkdir()
+    config.write_text(f'notify = ["{CLIENT}", "turn-ended"]\n')
+    original = config.read_bytes()
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    assert code == 0, output
+    notify = tomllib.loads(config.read_text())['notify']
+    assert codex.owned_notify(notify) and codex.wrapped_notify(notify) == [CLIENT, 'turn-ended']
+    assert 'notify keeps running' in output and 'passes each event on to the notify program it wraps (Client)' in output
+    code, output = run(capsys, '--host', 'codex', '--home', tmp_path, '--rollback')
+    assert code == 0 and config.read_bytes() == original, output
+    run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, '--host', 'codex', '--home', tmp_path, '--uninstall')
+    assert code == 0 and tomllib.loads(config.read_text()) == {'notify': [CLIENT, 'turn-ended']}, output
 
 
 def test_a_binary_without_hook_commands_is_refused(tmp_path, capsys, offline):
@@ -1001,3 +1045,31 @@ def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     assert check.endswith(' passed')
     assert not (tmp_path / core.OUTBOX).exists()  # verification used a temporary outbox
     assert not (tmp_path / core.RECALL_STATE).exists()  # and a temporary recall record
+
+
+@pytest.mark.skipif(not BINARY.is_file(), reason='needs `make build` (target/fast/agent-memoryd)')
+def test_end_to_end_codex_notify_wraps_the_program_it_replaces(tmp_path):
+    """The check passes the event to a stand-in; the installed notify then runs the real program."""
+    record = tmp_path / 'record'
+    program = [sys.executable, '-I', '-c', 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[-1])',
+               str(record)]
+    config = tmp_path / '.codex/config.toml'
+    config.parent.mkdir()
+    config.write_text(f'notify = {json.dumps(program)}\n')
+    env = {'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable, 'HOME': str(tmp_path)}
+    result = subprocess.run(['bash', str(ROOT / 'scripts/install.sh'), *map(str, install_args(
+        'codex', tmp_path, BINARY, '--apply', '--project', 'install-test'))],
+        capture_output=True, text=True, timeout=300, env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'capture -> outbox -> uploader -> formation -> search' in result.stdout
+    assert not record.exists()  # the check never ran the user's program
+    notify = tomllib.loads(config.read_text())['notify']
+    assert codex.wrapped_notify(notify) == program
+    event = json.dumps({'type': 'agent-turn-complete', 'thread-id': 's1', 'turn-id': 't1',
+                        'input-messages': ['Keep the source.'], 'last-assistant-message': 'Kept.'})
+    ran = subprocess.run([*notify, event], capture_output=True, text=True, timeout=30, env=env)
+    assert ran.returncode == 0, ran.stderr
+    assert record.read_text() == event
+    status = subprocess.run([str(BINARY), 'outbox', 'status', '--outbox', str(tmp_path / core.OUTBOX)],
+                            capture_output=True, text=True, timeout=30, env=env)
+    assert [row['status'] for row in json.loads(status.stdout)] == ['pending']

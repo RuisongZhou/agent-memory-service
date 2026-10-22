@@ -2,6 +2,8 @@
 # MCP tables can also go in a trusted project's .codex/config.toml; notify cannot.
 # Optional automatic dialogue capture: remove notify if you only want MCP tools.
 # This fixes the capture project; use a dispatcher if you work across projects.
+# To keep a notify program you already have, append "--" and its command: the collector passes
+# each event on to it (docs/mcp-harness.md#codex-notifications-and-session-end).
 notify = ["/absolute/path/agent-memory-service/target/fast/agent-memoryd", "hook", "codex-notify", "--project", "agent-memory-service", "--platform", "codex"]
 
 [mcp_servers.shared-memory]
