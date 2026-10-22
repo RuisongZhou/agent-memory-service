@@ -2,9 +2,12 @@
 
 Completed turns are captured by the user-level `notify` program (Codex's
 agent-turn-complete event); hooks.json only adds the session-close marker.
-config.toml is edited as text so comments and ordering stay; the result is
-accepted only when it parses to the original document with exactly our
-entries changed.
+Codex runs one notify program, so a program already there (such as Codex
+Computer Use's) is wrapped: `agent-memoryd hook codex-notify ... -- <program>`
+queues the turn and passes the event on, and removing our entry puts the
+program back. config.toml is edited as text so comments and ordering stay; the
+result is accepted only when it parses to the original document with exactly
+our entries changed.
 """
 
 import copy
@@ -12,7 +15,9 @@ import json
 import os
 import re
 import select
+import shlex
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -32,6 +37,11 @@ RECALL = True
 EVENTS = ('SessionEnd',)
 TOOL_TIMEOUT_SEC = 180
 MANUAL = 'edit it by hand as in docs/mcp-harness.md#use-with-codex'
+# Takes the place of a wrapped notify program in the offline check, which never runs the user's
+# program: it exits 0 only when it gets its own argument and then the event, as that program will.
+WRAPPED_CHECK = ("import json, sys; event = json.loads(sys.argv[-1]); "
+                 "sys.exit(0 if sys.argv[1:-1] == ['wrapped-check'] "
+                 "and event.get('type') == 'agent-turn-complete' else 3)")
 
 
 def add_arguments(parser):
@@ -42,6 +52,7 @@ def host_paths(args, ctx):
     ctx.host_home = args.codex_home or ctx.home / '.codex'
     ctx.config_toml = ctx.host_home / 'config.toml'
     ctx.hooks_json = ctx.host_home / 'hooks.json'
+    ctx.notify_wrapped = []  # the notify program the planned entry wraps; set by changes()
 
 
 def managed_files(args, ctx):
@@ -57,13 +68,44 @@ def server_entry(ctx):
             'tool_timeout_sec': TOOL_TIMEOUT_SEC, 'env': {'MEMORY_TENANT': ctx.tenant}}
 
 
-def notify_argv(ctx, outbox=None):
-    return core.collector_argv(ctx, 'codex-notify', outbox)
+def notify_argv(ctx, outbox=None, wrapped=()):
+    """The notify command: the collector, then after `--` the program it wraps; Codex appends the event."""
+    argv = core.collector_argv(ctx, 'codex-notify', outbox)
+    return [*argv, '--', *wrapped] if wrapped else argv
 
 
 def owned_notify(value):
     return (isinstance(value, list) and all(isinstance(word, str) for word in value)
             and core.ours(value, 'codex-notify'))
+
+
+def wrapped_notify(value):
+    """The program an owned notify command wraps: its words after `--`, or []."""
+    return value[value.index('--', 3) + 1:] if '--' in value[3:] else []
+
+
+def notify_plan(current, notify):
+    """The notify value to write: the collector `notify` (None: no collector) around what `current` runs.
+
+    Our own entry keeps the program it wraps, and dropping the collector puts that program back.
+    Another program is wrapped, unless it already runs the collector itself.
+    """
+    if current is None:
+        return notify
+    if owned_notify(current):
+        wrapped = wrapped_notify(current)
+        if notify is None:
+            return wrapped or None
+        return [*notify, '--', *wrapped] if wrapped else notify
+    if notify is None:
+        return current
+    if not (isinstance(current, list) and current and all(isinstance(word, str) for word in current)
+            and current[0]):
+        raise InstallError(f'config.toml sets notify to something other than a command array; {MANUAL}')
+    if any(Path(word).name in ('agent-memoryd', core.LEGACY_COLLECTOR) for word in current):
+        raise InstallError('config.toml already sets notify to a program that runs the shared-memory collector; '
+                           'edit it by hand, or rerun with --no-capture')
+    return [*notify, '--', *current]
 
 
 # --- config.toml --------------------------------------------------------------
@@ -137,7 +179,11 @@ def server_block(entry, newline):
 
 
 def edit_config(text, server, notify):
-    """Set (value) or remove our (None) MCP server and notify program; keep every other byte."""
+    """Set (value) or remove our (None) MCP server and collector `notify`; keep every other byte.
+
+    The collector wraps a notify program already set, and removing it puts that program back
+    (notify_plan).
+    """
     original = text
     bom = '\ufeff' if text.startswith('\ufeff') else ''  # Codex accepts a BOM; tomllib does not
     text = text[len(bom):]
@@ -149,12 +195,10 @@ def edit_config(text, server, notify):
     if server is not None:
         core.check_server_slot(servers, 'config.toml: mcp_servers')
     current_notify = before.get('notify')
-    if notify is not None and current_notify is not None and not owned_notify(current_notify):
-        raise InstallError('config.toml already sets notify to another program; chain it to '
-                           '`agent-memoryd hook codex-notify` yourself, or rerun with --no-capture')
+    final_notify = notify_plan(current_notify, notify)
+    edit_notify = final_notify != current_notify
     drop_server = existing is not None and core.owned_server(existing)
-    drop_notify = current_notify is not None and owned_notify(current_notify)
-    if server is None and notify is None and not drop_server and not drop_notify:
+    if server is None and not drop_server and not edit_notify:
         return original
     newline = '\r\n' if '\r\n' in text else '\n'
     if text and not text.endswith('\n'):
@@ -188,7 +232,7 @@ def edit_config(text, server, notify):
             skipped.append((kind, chunk))
             continue
         if in_root and kind == 'pair':
-            if path[:1] == ['notify'] and drop_notify:
+            if path[:1] == ['notify'] and edit_notify:
                 notify_at = len(out)
             root_end = len(out) + 1
         out.append(chunk)
@@ -206,12 +250,12 @@ def edit_config(text, server, notify):
             follows = server_at < len(out) and out[server_at].strip()
             out.insert(server_at, block + (newline if follows else ''))
     if notify_at is not None:
-        if notify is None:
+        if final_notify is None:
             del out[notify_at]
         else:
-            out[notify_at] = f'notify = {toml_value(notify)}{newline}'
-    elif notify is not None:
-        line = f'notify = {toml_value(notify)}{newline}'
+            out[notify_at] = f'notify = {toml_value(final_notify)}{newline}'
+    elif edit_notify and final_notify is not None:
+        line = f'notify = {toml_value(final_notify)}{newline}'
         # At the very top, keep a blank line before whatever comment or table follows.
         if root_end == 0 and out and out[0].strip():
             line += newline
@@ -223,10 +267,10 @@ def edit_config(text, server, notify):
         expected.setdefault('mcp_servers', {})[SERVER] = server
     elif drop_server:
         del expected['mcp_servers'][SERVER]
-    if notify is not None:
-        expected['notify'] = notify
-    elif drop_notify:
-        del expected['notify']
+    if final_notify is None:
+        expected.pop('notify', None)
+    else:
+        expected['notify'] = final_notify
     try:
         after = tomllib.loads(result)
     except tomllib.TOMLDecodeError:
@@ -256,7 +300,12 @@ def changes(args, ctx, uninstall):
     capture = ctx.capture and not uninstall
     if capture or (ctx.recall and not uninstall):
         refuse_toml_hooks(text)
-    config = edit_config(text, None if uninstall else server_entry(ctx), notify_argv(ctx) if capture else None)
+    notify = notify_argv(ctx) if capture else None
+    config = edit_config(text, None if uninstall else server_entry(ctx), notify)
+    if capture:
+        ctx.notify_wrapped = wrapped_notify(notify_plan(parse(text.removeprefix('﻿')).get('notify'), notify))
+        if ctx.notify_wrapped:
+            print(f'[plan] notify keeps running {shlex.join(ctx.notify_wrapped)}: the collector passes each event on')
     hooks = core.merge_hooks(core.read_json(ctx.hooks_json), EVENTS if capture else (),
                              lambda _: core.hook_handler(ctx), str(ctx.hooks_json))
     hooks = core.merge_recall_hooks(hooks, ctx, uninstall, str(ctx.hooks_json))
@@ -270,7 +319,9 @@ def capture_events(ctx, outbox):
              'last-assistant-message': checks.ASSISTANT}
     end = {'hook_event_name': 'SessionEnd', 'session_id': checks.SESSION, 'transcript_path': None,
            'cwd': str(ctx.home), 'model': 'installer', 'permission_mode': 'default', 'reason': 'other'}
-    return [(notify_argv(ctx, outbox) + [json.dumps(event)], None, False),
+    # A wrapped program is never run here: a stand-in checks that it would get the event.
+    wrapped = [sys.executable, '-I', '-c', WRAPPED_CHECK, 'wrapped-check'] if ctx.notify_wrapped else ()
+    return [(notify_argv(ctx, outbox, wrapped) + [json.dumps(event)], None, False),
             (core.hook_command(ctx, outbox), json.dumps(end), True)], 2
 
 
@@ -390,8 +441,11 @@ def host_check(args, ctx, planned):
 def post_install(args, ctx):
     lines = ['[result] installed for Codex. Restart Codex (CLI and App share ~/.codex) and check /mcp.']
     if ctx.capture:
-        lines += [f'         notify captures every completed Codex turn on this machine under project "{ctx.project}".',
-                  '         Codex runs no new hook until you trust it: run /hooks (App: Settings -> Hooks) and',
+        lines += [f'         notify captures every completed Codex turn on this machine under project "{ctx.project}".']
+        if ctx.notify_wrapped:
+            lines += [f'         It passes each event on to the notify program it wraps ({Path(ctx.notify_wrapped[0]).name});',
+                      '         if something rewrites notify (a Computer Use reinstall, say), rerun this installer.']
+        lines += ['         Codex runs no new hook until you trust it: run /hooks (App: Settings -> Hooks) and',
                   '         trust the SessionEnd collector hook; without it sessions just get no close marker.']
     if ctx.recall:
         lines += [f'         Recall hooks inject project "{ctx.project}" memory into every Codex session once you',

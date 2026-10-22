@@ -28,11 +28,15 @@ pub enum HookCmd {
         #[arg(long, value_enum)]
         turn_id_field: Option<outbox::TurnIdField>,
     },
-    /// Capture the Codex agent-turn-complete JSON argument that `notify` appends
+    /// Capture the Codex agent-turn-complete JSON argument that `notify` appends. After `--`, the
+    /// notify program this one wraps, which also runs with the event appended
     CodexNotify {
         #[command(flatten)]
         at: outbox::Target,
-        event: String,
+        /// [-- PROGRAM [ARGS...]] EVENT: the wrapped notify program, then the event JSON Codex appends
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true,
+              value_name = "EVENT")]
+        args: Vec<String>,
     },
     /// Inject shared memory on SessionStart and UserPromptSubmit; always prints one JSON object and exits 0
     Recall(recall::RecallArgs),
@@ -89,16 +93,68 @@ pub async fn hook(cmd: HookCmd) -> i32 {
             println!("{{}}");
             Ok(0)
         }),
-        HookCmd::CodexNotify { at, event } => adapter(|| {
-            let event: Value = serde_json::from_str(&event).map_err(|_| Error::Json)?;
-            outbox::Outbox::open(&at.outbox)?.capture_notify(
-                &event,
-                &at.project,
-                &at.tenant,
-                &at.platform,
-            )?;
-            Ok(0)
-        }),
+        HookCmd::CodexNotify { at, mut args } => {
+            // clap requires one value: the event Codex appends comes last.
+            let event = args.pop().unwrap_or_default();
+            // The wrapped program starts first, so a capture failure never keeps the event from it.
+            let wrapped = (!args.is_empty()).then(|| forward(&args, &event));
+            let captured = adapter(|| {
+                let event: Value = serde_json::from_str(&event).map_err(|_| Error::Json)?;
+                outbox::Outbox::open(&at.outbox)?.capture_notify(
+                    &event,
+                    &at.project,
+                    &at.tenant,
+                    &at.platform,
+                )?;
+                Ok(0)
+            });
+            let forwarded = match wrapped.map(|child| child.and_then(settle)) {
+                None | Some(Ok(None)) => true,
+                Some(Ok(Some(status))) if status.success() => true,
+                Some(Ok(Some(status))) => {
+                    eprintln!("memory adapter: wrapped notify program exited with {status}");
+                    false
+                }
+                Some(Err(e)) => {
+                    eprintln!(
+                        "memory adapter: wrapped notify program failed: OSError ({:?})",
+                        e.kind()
+                    );
+                    false
+                }
+            };
+            if captured == 0 && forwarded {
+                0
+            } else {
+                1
+            }
+        }
+    }
+}
+
+/// Start the notify program a `codex-notify` command wraps, with the event appended as Codex would.
+fn forward(program: &[String], event: &str) -> std::io::Result<std::process::Child> {
+    std::process::Command::new(&program[0])
+        .args(&program[1..])
+        .arg(event)
+        .spawn()
+}
+
+/// How long `codex-notify` waits for the program it wraps before leaving it running.
+const WRAPPED_WAIT: Duration = Duration::from_secs(10);
+
+/// The wrapped program's exit status, or None when it still runs after WRAPPED_WAIT; it is
+/// never killed, so a slow program finishes on its own while the collector exits.
+fn settle(mut child: std::process::Child) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let deadline = std::time::Instant::now() + WRAPPED_WAIT;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -371,6 +427,117 @@ mod tests {
         ] {
             assert!(!loopback(&reqwest::Url::parse(url).unwrap()), "{url}");
         }
+    }
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        cmd: HookCmd,
+    }
+
+    fn codex_notify(argv: &[&str]) -> Result<(outbox::Target, Vec<String>), clap::Error> {
+        let argv = ["agent-memoryd", "codex-notify"].iter().chain(argv);
+        match <Cli as clap::Parser>::try_parse_from(argv)?.cmd {
+            HookCmd::CodexNotify { at, args } => Ok((at, args)),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn codex_notify_takes_the_event_last_and_a_wrapped_program_after_double_dash() {
+        let (at, args) = codex_notify(&["--project", "p", "{\"type\":\"x\"}"]).unwrap();
+        assert_eq!(
+            (at.project.as_str(), args),
+            ("p", vec!["{\"type\":\"x\"}".to_string()])
+        );
+        // The wrapped program's own options stay its own, and the event still comes last.
+        let (at, args) = codex_notify(&[
+            "--project",
+            "p",
+            "--tenant",
+            "t",
+            "--",
+            "/apps/Client",
+            "--flag",
+            "turn-ended",
+            "{}",
+        ])
+        .unwrap();
+        assert_eq!(at.tenant, "t");
+        assert_eq!(args, ["/apps/Client", "--flag", "turn-ended", "{}"]);
+        assert!(codex_notify(&["--project", "p"]).is_err());
+    }
+
+    /// A wrapped notify program that records its arguments, as `<file>`: `<arg>|<event>`.
+    fn recorder(file: &Path) -> Vec<String> {
+        let script = r#"printf '%s|%s' "$1" "$2" > "$0""#;
+        [
+            "/bin/sh",
+            "-c",
+            script,
+            file.to_str().unwrap(),
+            "turn-ended",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    fn turn_event() -> String {
+        serde_json::json!({"type": "agent-turn-complete", "thread-id": "s1", "turn-id": "t1",
+                           "input-messages": ["Keep the source."], "last-assistant-message": "Kept."})
+        .to_string()
+    }
+
+    fn notify_cmd(dir: &Path, wrapped: Vec<String>, event: String) -> HookCmd {
+        let at = outbox::Target {
+            outbox: dir.join("outbox.sqlite3"),
+            project: "p".into(),
+            platform: "codex".into(),
+            tenant: "default".into(),
+        };
+        let mut args = wrapped;
+        args.push(event);
+        HookCmd::CodexNotify { at, args }
+    }
+
+    fn queued(dir: &Path) -> usize {
+        outbox::Outbox::open(&dir.join("outbox.sqlite3"))
+            .unwrap()
+            .status()
+            .unwrap()
+            .len()
+    }
+
+    #[tokio::test]
+    async fn codex_notify_passes_the_event_to_the_wrapped_program_and_captures_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("record");
+        let code = hook(notify_cmd(dir.path(), recorder(&record), turn_event())).await;
+        assert_eq!(code, 0);
+        assert_eq!(
+            std::fs::read_to_string(&record).unwrap(),
+            format!("turn-ended|{}", turn_event())
+        );
+        assert_eq!(queued(dir.path()), 1);
+    }
+
+    #[tokio::test]
+    async fn codex_notify_forwards_even_when_capture_fails_and_reports_either_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("record");
+        let code = hook(notify_cmd(dir.path(), recorder(&record), "not json".into())).await;
+        assert_eq!(code, 1);
+        assert_eq!(
+            std::fs::read_to_string(&record).unwrap(),
+            "turn-ended|not json"
+        );
+
+        let missing = vec![dir.path().join("gone").to_str().unwrap().to_string()];
+        assert_eq!(hook(notify_cmd(dir.path(), missing, turn_event())).await, 1);
+        assert_eq!(queued(dir.path()), 1); // the turn is captured all the same
+
+        let failing = ["/bin/sh", "-c", "exit 3"].map(String::from).to_vec();
+        assert_eq!(hook(notify_cmd(dir.path(), failing, turn_event())).await, 1);
     }
 
     #[test]

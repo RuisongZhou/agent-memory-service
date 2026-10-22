@@ -54,6 +54,10 @@ bash scripts/install.sh --host codex --apply --project my-project --recall
 之后给其他宿主安装时复用同一个二进制、密钥和 daemon，不会再问。想让几个宿主共享同一份项目记忆，
 就给它们传同一个 `--project`。`--recall` 让 hook 在会话开始和每次提问时自动注入相关记忆；不需要时可以去掉。
 
+Codex 只能设置一个 `notify` 程序。已经有一个时（例如 Codex Computer Use 的客户端），安装器会把它包装起来：
+采集器记下每一轮对话后，把同一事件原样转交给原程序，两者都照常工作；`--uninstall` 或 `--no-capture`
+会恢复原来的 `notify`。Computer Use 重装或更新后如果改写了 `notify`，自动捕获会停止，重新运行安装命令即可。
+
 ### 这条命令做了什么
 
 1. 有需要时先询问 API key（输入不回显），之后的步骤无需值守。密钥依次从 `--key-file`、环境变量

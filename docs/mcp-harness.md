@@ -62,7 +62,7 @@ installer itself (the only component that needs Python), Rust/Cargo to build the
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
 |---|---|---|---|---|
-| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]` and `notify`; `~/.codex/hooks.json`: `SessionEnd` | `notify` on each completed turn; `SessionEnd` close marker | Restart Codex; trust the `SessionEnd` hook in `/hooks` (App: Settings → Hooks) |
+| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]` and `notify`, [wrapping](#codex-notifications-and-session-end) a notify program already there; `~/.codex/hooks.json`: `SessionEnd` | `notify` on each completed turn; `SessionEnd` close marker | Restart Codex; trust the `SessionEnd` hook in `/hooks` (App: Settings → Hooks) |
 | Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project` | `<project>/.mcp.json` and `<project>/.claude/settings.local.json`; `--scope user`: `~/.claude.json` and `~/.claude/settings.json` | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; approve the project MCP server (`/mcp`) |
 | WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
 | DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness); `--project` is refused | Restart DeepSeek Harness and start a new session |
@@ -118,6 +118,8 @@ reaches a model provider or the real store:
 2. With capture, platform-shaped events run through the installed collector command into a temporary
    outbox; the temporary daemon's own uploader (`serve --outbox`) submits them; a local generation stub
    forms one fact; the bridge finds it with `search_memories` under the configured tenant and project.
+   When the Codex `notify` wraps a program of yours, a stand-in takes that program's place and must
+   receive the event; the check never runs your program.
 3. With recall (after forming the fact through the bridge when capture is off), platform-shaped
    `SessionStart` and `UserPromptSubmit` events run through the installed recall command. Each output
    must be one JSON object of the shape Codex's hook schema allows, and both injected contexts must
@@ -143,8 +145,9 @@ as the installer's only when it runs `agent-memoryd hook capture`, `codex-notify
 the Python script an earlier installer wrote instead (see [migration](#migrate-from-the-python-hook-scripts)),
 so a dispatcher that forwards to them stays yours. Reruns with the same options write nothing, and a file
 that removing the installer's entries leaves empty is deleted. The installer refuses, without writing, a different server already named
-`shared-memory`, a Codex `notify` that runs another program (chain it to `codex-notify` yourself or use
-`--no-capture`), Codex hooks defined under `[hooks]` in `config.toml`, TOML forms it cannot edit safely,
+`shared-memory`, a Codex `notify` that is not a command array or that already runs the collector through a
+program of yours (edit it yourself or use `--no-capture`), Codex hooks defined under `[hooks]` in
+`config.toml`, TOML forms it cannot edit safely,
 symlinked configuration files, a Claude Code local-scope `shared-memory` for the workspace, which
 would take precedence, and a DeepSeek Harness `cordis.patch.yml` that is not a plain top-level YAML list,
 has damaged installer markers or already holds another `shared-memory` row. It cannot see a trusted
@@ -314,7 +317,23 @@ Merge the optional `notify` setting from [examples/codex.toml](../examples/codex
 notify = ["/absolute/path/agent-memory-service/target/fast/agent-memoryd", "hook", "codex-notify", "--project", "my-project", "--platform", "codex"]
 ```
 
-Install the supplied notification template at user level; keep project-scoped MCP registration separate. Preserve an existing notification program by having it forward the event to the collector. This notification command fixes the project ID, so enable it for sessions belonging to that project, or use a dispatcher that explicitly maps projects; otherwise unrelated sessions will be filed under the same project. See [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+Install the supplied notification template at user level; keep project-scoped MCP registration separate.
+
+Codex runs one `notify` program. To keep one you already have, such as the Codex Computer Use client,
+let the collector wrap it: append `--` and that program's command to the collector's. The collector
+starts the wrapped program with the same event appended, as Codex would, queues the turn, and exits 1
+when either fails; a capture failure never keeps the event from the wrapped program. It waits up to
+10 seconds for that program and then leaves it running. The installer
+does this for any notify program it finds, and `--uninstall` or `--no-capture` puts the program back:
+
+```toml
+notify = ["/Users/me/.local/bin/agent-memoryd", "hook", "codex-notify", "--project", "my-project", "--platform", "codex", "--tenant", "default",
+          "--", "/Users/me/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
+```
+
+Whatever installed that program may write `notify` again, for example when Computer Use is reinstalled
+or updated; capture then stops until you rerun the installer, which wraps the program once more. This
+notification command fixes the project ID, so enable it for sessions belonging to that project, or use a dispatcher that explicitly maps projects; otherwise unrelated sessions will be filed under the same project. See [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
 Codex sends an `agent-turn-complete` event as a single JSON argument containing thread/turn IDs, user inputs, and the last assistant message. The collector joins multiple user inputs into one user text and records the observed completion time because the event supplies no source message timestamps. See [official notification documentation](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications).
 
@@ -473,7 +492,7 @@ once the daemon uploads.
 |---|---|
 | Installer refuses to write | Read the `[error]` line: it names the conflicting entry; nothing was changed. Fix it or edit the configuration by hand as in the sections above |
 | MCP is listed but calls fail | Check daemon `/health`, absolute binary path, port, and stdio transport; the bridge does not start the daemon |
-| Codex captures no turns | Put `notify` in user-level config, verify the `agent-memoryd` path, preserve existing notification dispatch, and inspect the selected outbox |
+| Codex captures no turns | Put `notify` in user-level config, verify the `agent-memoryd` path, check that nothing rewrote `notify` without the collector (rerun the installer to wrap it again), and inspect the selected outbox |
 | Session-end hook is skipped | Review/trust Codex hooks with `/hooks`; restart the client after edits |
 | Claude Stop pairing fails | Start a new turn with capture hooks installed; verify required event fields and the matching project/platform |
 | Outbox stays `pending` | Start the daemon with `--outbox` (or run `outbox drain`) on the same outbox path; inspect `outbox status` errors |
