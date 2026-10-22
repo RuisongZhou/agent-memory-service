@@ -321,9 +321,9 @@ installer does, replacing the binary path and project ID:
 Codex runs a hook only after you trust it: review and trust the three collector hooks with `/hooks`
 (App: Settings → Hooks). `/hooks` lists a hook under its `statusMessage`; the installer names the
 collector hooks `shared-memory capture` and the [recall hooks](#automatic-recall) `shared-memory recall`,
-and a hook without one shows as Unnamed hook. The installer cannot trust them for you: `/hooks` records your
-review in `config.toml` (`[hooks.state]`), Codex offers no other way to trust a hook, and the installer
-never writes those records, which would skip that review. Its closing output lists the hooks to trust. Codex records trust per command, so changing `--project`, the binary path or
+and a hook without one shows as Unnamed hook. The installer cannot trust them for you: Codex has no command for it, and
+`/hooks` records your review in `config.toml` (`[hooks.state]`) through the app-server's generic config
+write. The installer never writes those records itself, which would skip that review. Its closing output lists the hooks to trust. Codex records trust per command, so changing `--project`, the binary path or
 another option needs trust again, and untrusted or changed hooks are skipped. Start a new turn after
 installing; a `Stop` from a turn whose prompt was not captured cannot be paired. The payload fields come
 from the hook input schemas embedded in Codex CLI 0.163.0 (`turn_id` is Codex's extension). See the

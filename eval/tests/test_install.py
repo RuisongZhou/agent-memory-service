@@ -736,7 +736,7 @@ def test_codex_install_ends_with_the_steps_only_the_user_can_take(tmp_path, caps
     assert f'"{codex.CAPTURE_NAME}" on UserPromptSubmit, Stop and SessionEnd' in todo
     assert f'"{codex.RECALL_NAME}" on SessionStart and UserPromptSubmit' in todo
     assert 'this installer cannot trust them for you' in todo
-    assert f'outbox status --outbox {tmp_path / core.OUTBOX} lists it' in todo  # an isolated home names its outbox
+    assert f'outbox status --outbox {shlex.quote(str(tmp_path / core.OUTBOX))} lists it' in todo  # an isolated home names its outbox
     code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--no-capture', '--apply'))
     assert code == 0 and '[todo] 1.' in output and '[todo] 2.' not in output, output  # MCP only: nothing to trust
 

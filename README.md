@@ -68,9 +68,9 @@ Codex 和 Claude Code 一样用 hooks 捕获对话（`UserPromptSubmit`、`Stop`
      `UserPromptSubmit`、`Stop`、`SessionEnd` 上的 `shared-memory capture`，以及 `SessionStart`、`UserPromptSubmit` 上的 `shared-memory recall`。
   3. 信任之前它们不会运行：不捕获对话，也不自动召回；MCP 工具不受影响。
 
-  **为什么不能自动化**：hook 会在你每次提问时以你的身份执行命令，Codex 要求你本人看过之后才运行。信任记录由 `/hooks`
-  写进 `~/.codex/config.toml` 的 `[hooks.state]`，Codex 没有提供让别的程序代为信任的命令或接口。安装器如果自己写这些
-  记录，就绕过了这道审阅，还依赖 Codex 的内部格式，所以不这样做。
+  **为什么不能自动化**：hook 会在你每次提问时以你的身份执行命令，Codex 要求你本人看过之后才运行。Codex 没有用来信任
+  hook 的命令；`/hooks` 在你确认后，通过通用的配置写入接口把记录写进 `~/.codex/config.toml` 的 `[hooks.state]`。
+  安装器如果自己写这些记录，就绕过了这道审阅，还依赖 Codex 的内部格式，所以不这样做。
 
   **什么时候要重新信任**：Codex 按 hook 的内容记录信任。重跑安装时换了 `--project`、二进制路径或其他选项，或者升级后
   hook 的内容变了，这些 hook 会显示为 modified，需要再信任一次。
