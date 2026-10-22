@@ -45,7 +45,7 @@ bash scripts/install.sh --host codex --apply --project my-project --recall
 
 | 宿主 | 接入方式 | 命令 | 安装后还需手动做 |
 |---|---|---|---|
-| Codex CLI / App | MCP + 自动捕获（3 个 hooks）+ 自动召回 | `bash scripts/install.sh --host codex --apply --project my-project --recall` | 重启 Codex；在 `/hooks`（App：Settings → Hooks）中信任 3 个捕获 hook 和 2 个召回 hook，信任之前不会捕获 |
+| Codex CLI / App | MCP + 自动捕获（3 个 hooks）+ 自动召回 | `bash scripts/install.sh --host codex --apply --project my-project --recall` | 重启 Codex；在 `/hooks`（App：Settings → Hooks）中信任名为 `shared-memory capture` 的 3 个捕获 hook 和 `shared-memory recall` 的 2 个召回 hook，信任之前不会捕获 |
 | Claude Code | MCP + 自动捕获（4 个 hooks）+ 自动召回 | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project --recall` | 在该项目中重启 Claude Code，按提示批准项目 MCP server（用 `/mcp` 查看） |
 | WorkBuddy | MCP + 自动捕获（3 个 hooks）+ 自动召回 | `bash scripts/install.sh --host workbuddy --apply --project my-project --recall` | 重启 WorkBuddy，在「连接器 → 自定义连接器」中信任 `shared-memory`，确认 8 个工具都已启用 |
 | DeepSeek Harness（桌面版与 `dsh`） | 仅 MCP 工具，由模型主动调用 | `bash scripts/install.sh --host deepseek-harness --apply` | 重启 DeepSeek Harness，新建会话 |
