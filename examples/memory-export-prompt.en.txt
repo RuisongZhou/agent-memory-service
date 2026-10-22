@@ -1,0 +1,13 @@
+I am moving the memories you keep for me to another memory service. List every memory you have saved for me, and the information about the project {project} that you have learned from our past conversations.
+
+Requirements:
+1. Output a single code block and nothing outside it. Each memory takes one line and is one JSON object.
+2. Fields:
+   - text: the memory. Keep the original wording where you can; one thing per line.
+   - kind: one of instruction (how I asked you to work), preference (what I prefer), fact (a fact or decision) or reference (where to find information).
+   - date: the date it was saved or learned, as YYYY-MM-DD; leave it empty if you do not know.
+   - source: the memory file it comes from; write conversation if it comes from a conversation.
+   - scope: project if it concerns only this project, global if it applies across projects.
+3. Do not merge, summarize, rewrite or leave out entries, and do not add anything you are not sure of.
+4. Do not output keys, tokens, passwords or other credentials; write [redacted] in their place.
+5. If there are more than 100 entries, output them in parts: end each part with the line {"continued": true} and wait for my reply "continue" before the next part.

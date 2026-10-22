@@ -25,8 +25,35 @@ fn section<'a>(prompt: &'a str, header: &str) -> &'a str {
 }
 
 /// Formation: every user message line becomes one fact. Consolidation: a fixed decision per topic.
+/// Import: every `- ` line of the note becomes one quoted memory; a `TRAP` line gains a number the note
+/// does not contain, and an `Always` line is an instruction.
 fn reply(system: &str, prompt: &str) -> Value {
-    if system.contains("Memory Consolidator") {
+    if system.contains("Memory Importer") {
+        let start = prompt
+            .find("<note>\n")
+            .map_or(prompt.len(), |i| i + "<note>\n".len());
+        let end = prompt[start..]
+            .find("\n</note>")
+            .map_or(prompt.len(), |i| start + i);
+        let memories: Vec<Value> = prompt[start..end]
+            .lines()
+            .filter_map(|line| line.strip_prefix("- "))
+            .map(|line| {
+                let text = if line.contains("TRAP") {
+                    format!("{line} in 2031")
+                } else {
+                    line.to_string()
+                };
+                let kind = if line.starts_with("Always") {
+                    "instruction"
+                } else {
+                    "fact"
+                };
+                json!({"text": text, "kind": kind, "scope": "project", "evidence": line})
+            })
+            .collect();
+        json!({ "memories": memories })
+    } else if system.contains("Memory Consolidator") {
         let facts: Vec<Value> = serde_json::from_str(section(prompt, "## Facts\n")).unwrap();
         let ids: Vec<&Value> = facts.iter().map(|f| &f["id"]).collect();
         let texts: String = facts.iter().filter_map(|f| f["text"].as_str()).collect();

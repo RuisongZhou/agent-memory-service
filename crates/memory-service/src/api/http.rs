@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use memory_domain::types::*;
 use memory_engine::app::management;
-use memory_engine::app::{consolidation, ingest};
+use memory_engine::app::{consolidation, import, ingest};
 use memory_engine::retrieval;
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
@@ -116,6 +116,11 @@ async fn admin(
             "consolidate" => consolidation::consolidate(&eng, &t, parse(body)?).await,
             "consolidation_apply" => consolidation::apply(&eng, &t, parse(body)?).await,
             "consolidation_rollback" => consolidation::rollback(&eng, &t, parse(body)?).await,
+            "import_propose" => import::propose(&eng, &t, parse(body)?).await,
+            "import_apply" => import::apply(&eng, &t, parse(body)?).await,
+            "import_rollback" => import::rollback(&eng, &t, parse(body)?).await,
+            "import_run" => import::get_run(&t, parse(body)?).await,
+            "import_runs" => import::list_runs(&t, parse(body)?).await,
             "seed" if eng.models.is_mock() => management::seed(&eng, &t, body).await,
             "reindex" => {
                 let v = body.get("vector").and_then(|x| x.as_bool()).unwrap_or(true);

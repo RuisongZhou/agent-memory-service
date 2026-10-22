@@ -49,6 +49,9 @@ pub const ORIGIN_EXPLICIT: &str = "explicit";
 pub const ORIGIN_USER: &str = "user";
 pub const ORIGIN_ASSISTANT: &str = "assistant";
 pub const ORIGIN_INFERRED: &str = "inferred";
+/// Copied from a host's own memory by `agent-memoryd import` (docs/design/memory-import.md). Never
+/// presented as established by default, and a consolidation candidate like inferred facts.
+pub const ORIGIN_IMPORTED: &str = "imported";
 
 /// Durable attribution attached to a stored memory.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

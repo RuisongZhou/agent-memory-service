@@ -1,0 +1,164 @@
+//! Typed queries over memory import runs, the import ledger and the records an import wrote. A run's
+//! proposals are read with `proposals_for_run`: import rows use `cluster` for the unit index and
+//! `position` for the item's place in the unit.
+use anyhow::Result;
+use serde_json::{json, Value};
+
+use super::store::Store;
+use memory_domain::types::MemoryRec;
+
+impl Store {
+    /// At most `limit` import runs, newest first, of `project` when one is given.
+    pub async fn import_runs(&self, project: Option<&str>, limit: usize) -> Result<Vec<Value>> {
+        let (filter, binds) = match project {
+            Some(project) => ("WHERE project = $p ", vec![("p", json!(project))]),
+            None => ("", vec![]),
+        };
+        self.select(
+            &format!(
+                "SELECT * OMIT id FROM import_runs {filter}ORDER BY createdNs DESC, createdAt DESC LIMIT {limit}"
+            ),
+            binds,
+        )
+        .await
+    }
+
+    /// The current record of type `mtype` (`fact` or `instruction`) that an import wrote for `project` with
+    /// import key `key`: a fact of the project, or an instruction of the project or global scope (the key
+    /// already names the project). The oldest one when several exist.
+    pub async fn current_imported(
+        &self,
+        project: &str,
+        mtype: &str,
+        key: &str,
+    ) -> Result<Option<MemoryRec>> {
+        Ok(self
+            .find_memories(
+                "importKey = $key AND type = $type AND status = 'current' AND \
+                 ((scope.kind = 'project' AND scope.project = $p) OR scope.kind = 'global') \
+                 ORDER BY recordedTs ASC, mid ASC LIMIT 1",
+                vec![
+                    ("key", json!(key)),
+                    ("type", json!(mtype)),
+                    ("p", json!(project)),
+                ],
+            )
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    /// Import ledger rows whose `memoryIds` name `memory_id`.
+    pub async fn ledger_rows_naming(&self, memory_id: &str) -> Result<Vec<Value>> {
+        self.select(
+            "SELECT * OMIT id FROM import_ledger WHERE memoryIds CONTAINS $id",
+            vec![("id", json!(memory_id))],
+        )
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema;
+    use crate::store::{to_doc, Tx};
+    use memory_domain::types::*;
+    use memory_rules::util;
+
+    fn record(id: &str, mtype: &str, scope: MemScope, status: &str) -> Value {
+        let mut doc = to_doc(&MemoryRec {
+            id: id.into(),
+            mtype: mtype.into(),
+            text: "Deploys use Nomad.".into(),
+            scope,
+            status: status.into(),
+            recorded_at: format!("2026-10-0{}T00:00:00Z", id.len()),
+            ..Default::default()
+        })
+        .unwrap();
+        doc["importKey"] = json!("key1");
+        doc
+    }
+
+    #[tokio::test]
+    async fn import_runs_records_and_ledger_rows() -> Result<()> {
+        let dir = std::env::temp_dir().join(util::new_id("store_import_test"));
+        let store = Store::open(&dir, 2, "").await?;
+        let mut tx = Tx::new();
+        for (id, project, ns) in [("ir1", "a", 1), ("ir2", "b", 2), ("ir3", "a", 3)] {
+            tx.put(
+                schema::IMPORT_RUNS,
+                id,
+                json!({"runId": id, "project": project, "createdNs": ns,
+                    "createdAt": "2026-10-22T10:00:00Z"}),
+            )?;
+        }
+        tx.put(
+            schema::MEMORIES,
+            "m",
+            record("m", T_FACT, MemScope::project("a"), S_CURRENT),
+        )?;
+        tx.put(
+            schema::MEMORIES,
+            "mm",
+            record("mm", T_FACT, MemScope::project("a"), S_SUPERSEDED),
+        )?;
+        tx.put(
+            schema::MEMORIES,
+            "mmm",
+            record("mmm", T_INSTRUCTION, MemScope::global(), S_CURRENT),
+        )?;
+        tx.put(
+            schema::MEMORIES,
+            "mmmm",
+            record("mmmm", T_FACT, MemScope::project("b"), S_CURRENT),
+        )?;
+        tx.put(
+            schema::IMPORT_LEDGER,
+            "il1",
+            json!({"project": "a", "runId": "ir1", "memoryIds": ["m", "x"]}),
+        )?;
+        tx.put(
+            schema::IMPORT_LEDGER,
+            "il2",
+            json!({"project": "a", "runId": "ir3", "memoryIds": ["y"]}),
+        )?;
+        store.commit(tx).await?;
+
+        let ids = |rows: Vec<Value>| -> Vec<String> {
+            rows.iter()
+                .map(|r| r["runId"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(
+            ids(store.import_runs(None, 20).await?),
+            ["ir3", "ir2", "ir1"]
+        );
+        assert_eq!(ids(store.import_runs(Some("a"), 20).await?), ["ir3", "ir1"]);
+        assert_eq!(ids(store.import_runs(None, 1).await?), ["ir3"]);
+
+        let found = store.current_imported("a", T_FACT, "key1").await?.unwrap();
+        assert_eq!(found.id, "m");
+        let instruction = store.current_imported("a", T_INSTRUCTION, "key1").await?;
+        assert_eq!(instruction.unwrap().id, "mmm");
+        assert!(store.current_imported("a", T_FACT, "key2").await?.is_none());
+        assert_eq!(
+            store
+                .current_imported("b", T_FACT, "key1")
+                .await?
+                .unwrap()
+                .id,
+            "mmmm"
+        );
+        assert!(store.current_imported("c", T_FACT, "key1").await?.is_none());
+
+        let rows = store.ledger_rows_naming("m").await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["runId"], "ir1");
+        assert!(store.ledger_rows_naming("z").await?.is_empty());
+        drop(store);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+}

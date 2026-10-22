@@ -16,6 +16,13 @@ pub const LLM_RESPONSES: &str = "llm_responses";
 pub const PROPOSALS: &str = "proposals";
 /// One record per consolidation run; its ops are `proposals` rows carrying the run id.
 pub const CONSOLIDATION_RUNS: &str = "consolidation_runs";
+/// One record per memory import run; its proposals are `proposals` rows with `kind: "import"`.
+pub const IMPORT_RUNS: &str = "import_runs";
+/// One row per imported unit of a project: its hash, the run that imported it, the records it became and
+/// the row it replaced, so a rerun skips unchanged units and a rollback restores the previous row.
+pub const IMPORT_LEDGER: &str = "import_ledger";
+/// Import extraction results by unit text, prompt and model, so unchanged text is never extracted twice.
+pub const IMPORT_EXTRACTIONS: &str = "import_extractions";
 
 /// Shared tables in stats order; algorithm-private tables are listed by each algorithm module.
 pub const SHARED_TABLES: &[&str] = &[
@@ -35,6 +42,9 @@ pub const SHARED_TABLES: &[&str] = &[
     LLM_RESPONSES,
     PROPOSALS,
     CONSOLIDATION_RUNS,
+    IMPORT_RUNS,
+    IMPORT_LEDGER,
+    IMPORT_EXTRACTIONS,
 ];
 
 /// Values of the `kind` field of a `requests` document.

@@ -484,6 +484,75 @@ exit 2 and block prompts. Rerun the installer with the same options to replace e
 through the outbox lock, so either can finish the queue the other started; stop the Python uploader
 once the daemon uploads.
 
+## Import existing memories
+
+`agent-memoryd import` copies what a host already remembers into the shared store, so other hosts and later
+sessions can recall it. The [design](design/memory-import.md) explains the choices and
+[architecture](architecture.md#import) the daemon side. Session transcripts, rule files such as `CLAUDE.md` and
+`AGENTS.md`, and an installer option are not imported yet.
+
+| Host | Reads | One unit | Mode |
+|---|---|---|---|
+| Claude Code: `--host claude-code --workspace DIR` | `~/.claude/projects/<dir>/memory/*.md` of the workspace's repository (worktrees share it); `--all` also finds directories by the `cwd` of their transcripts | a note, its `description` first | as is when it fits the unit cap, else extracted; `feedback` notes are also offered as instructions |
+| Codex: `--host codex --workspace DIR` | `~/.codex/memories/rollout_summaries/*.md` whose `cwd` is in a workspace | the intro and each `## Task` section | always extracted: they mix lasting knowledge with task progress |
+| WorkBuddy: `--host workbuddy` | `~/.workbuddy/MEMORY.md`, `USER.md`, `memory/*_memory.md`, `user-*-personal/MEMORY.md`; user-level, persona files skipped | a section | as is when it fits, else extracted |
+| Any agent: `--host jsonl --from FILE --label LABEL` | the JSONL that `import prompt` asks a host's agent for | a line | as is when it fits, else extracted; `instruction` lines are offered as instructions |
+
+```sh
+agent-memoryd import plan --host codex --project my-project --workspace /path/to/repo
+agent-memoryd import propose ~/.local/state/agent-memory-service/imports/<plan>.plan.jsonl
+agent-memoryd import show RUN        # writes ~/.local/state/agent-memory-service/imports/RUN.review.jsonl
+agent-memoryd import apply RUN --review ~/.local/state/agent-memory-service/imports/RUN.review.jsonl
+agent-memoryd import status RUN
+agent-memoryd import rollback RUN
+```
+
+1. **`plan`** reads files only, with no network access and no daemon. Reads stay inside the host's directory and
+   never follow symlinks; it skips the `MEMORY.md` index, files over 64 KiB (Claude Code) or 256 KiB (Codex),
+   Codex's derived files (`MEMORY.md`, `memory_summary.md`, `raw_memories.md`, `skills/`) and other projects'
+   summaries. It redacts credentials and skips any unit holding a private key, then writes a private plan file
+   (0600). Its summary lists counts, skip reasons, issues, and the model calls and characters the next step sends.
+   Delete unit lines or set a `decision` to `skip` to leave units out. With `--no-extract`, nothing calls a
+   generation model: units over the cap are split at list items, paragraphs and sentences instead.
+2. **`propose`** skips units whose source file changed since the plan, sends the rest in batches, and prints the
+   run ID. The daemon writes no memory. A unit imported before with the same text is `unchanged`, and so is one
+   whose last import you declined entirely; `--reconsider` offers those again. Every extracted item must quote
+   its unit (a quote of at least 8 characters sharing the item's words), name no number or entity the unit lacks,
+   and fit the cap, or it is kept as `rejected` with the reason.
+3. **`show`** writes the review file and refuses to replace an existing one unless you pass `--force`. Each
+   proposal is one line with its `decision`, preset to its default, plus the evidence, any rejection reason, a
+   duplicate, the record it would replace (`supersedes`) and the nearest existing memories. Change `decision` to
+   `accept` or `reject`; a proposal the file no longer lists is declined. An instruction also has `scope`
+   (`project`, or `global` to apply it to every project) and the extraction's `scopeHint`. Lines of type
+   `previous` list the current records an earlier import of a changed unit left: they stay current unless a
+   proposal replaces them; retract one with the MCP tool `correct_memory` (no text). `apply --yes` takes the
+   defaults instead: facts and links to existing records of the same text are written, instructions are not.
+4. **`apply`** first rereads every source (`--home` as for `propose`) and declines the proposals of files changed
+   since propose. It writes accepted facts with origin `imported`. They are reference material: `get_context`
+   does not present them as established, while search and automatic recall find them. An instruction you accepted
+   becomes an explicit instruction. A proposal whose text is already a current record links the unit to that
+   record; a changed unit's new fact and new instruction replace the ones its earlier import wrote, unless
+   another unit still holds them.
+5. **`rollback`** retires a run's records and restores what they replaced; records changed since, or held by
+   another unit, stay.
+
+The unit cap keeps every imported record small enough for [automatic recall](#automatic-recall). A record
+may cost at most half the recall budget (`--recall-budget`, default 400; cost is estimated tokens + 8), and
+extraction aims at the budget divided by `--recall-top-k` (default 5). Pass the values of your recall hook when
+you changed them. After an import, `agent-memoryd consolidate --project ID --dry-run` proposes merges of facts
+that several hosts remembered; imported facts are candidates.
+
+For a host whose memory is not on disk, such as ChatGPT, Gemini or Cursor, `agent-memoryd import prompt
+--project ID [--lang en]` prints a request for that host's agent. Save its JSONL answer and plan it with
+`--host jsonl --from FILE --label chatgpt`. The prompt asks the agent to list entries verbatim, not to
+organize them: extraction and consolidation do that here.
+
+Privacy: plan and review files stay under `~/.local/state/agent-memory-service/imports/`. With the default
+hosted models, `propose` sends unit texts to the embedding API and extract units to the generation model, after
+redaction; the plan summary says how many characters go to each. Extraction shares the daemon's generation
+concurrency with formation (one call at a time with `service install`), so a large import can delay newly
+captured turns. Propose a plan in parts if that matters.
+
 ## Troubleshooting
 
 | Symptom | Check or action |
@@ -499,5 +568,8 @@ once the daemon uploads.
 | DeepSeek Harness lists no `mcp__shared-memory__*` tools | Restart it and start a new session; rerun the installer, which reports whether `dsh --dump-config` reads the row; check the daemon URL |
 | Cross-agent recall is empty | Check the same daemon, tenant/project IDs, record scope, completion state, token budget, and explicit cross-platform raw-input scope |
 | Automatic recall injects nothing | Check the daemon at the loopback `--url`, trust the recall hooks in Codex, and run the hook by hand as in [automatic recall](#automatic-recall); stderr names the error type |
+| `import plan` finds no Claude Code notes | Pass the repository (or a worktree of it) as `--workspace`: Claude Code keeps one memory directory per repository. `--all` also finds directories by their transcripts' `cwd` |
+| `import propose` fails with HTTP 503 | Extract units need the daemon's generation key; set it, or plan with `--no-extract` |
+| `import propose` reports `failed` units | The run continues without them; propose them again in a new run after fixing the cause the unit's `error` names |
 
 For daemon, model and storage problems, see [deployment troubleshooting](deployment.md#common-problems).
