@@ -62,7 +62,7 @@ hooks all run `agent-memoryd`, so the agent host needs no Python. Run from the c
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
 |---|---|---|---|---|
-| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]`; `~/.codex/hooks.json`: `UserPromptSubmit`, `Stop`, `SessionEnd` | [Hooks](#codex-hooks) paired by `turn_id`; `notify` is left to other programs | Restart Codex; trust the three collector hooks in `/hooks` (App: Settings → Hooks); nothing is captured before that |
+| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]`; `~/.codex/hooks.json`: `UserPromptSubmit`, `Stop`, `SessionEnd` | [Hooks](#codex-hooks) paired by `turn_id`; `notify` is left to other programs | Restart Codex; trust the three `shared-memory capture` hooks in `/hooks` (App: Settings → Hooks); nothing is captured before that |
 | Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project` | `<project>/.mcp.json` and `<project>/.claude/settings.local.json`; `--scope user`: `~/.claude.json` and `~/.claude/settings.json` | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; approve the project MCP server (`/mcp`) |
 | WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
 | DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness); `--project` is refused | Restart DeepSeek Harness and start a new session |
@@ -319,7 +319,9 @@ installer does, replacing the binary path and project ID:
 | `SessionEnd` | Clears incomplete input and queues a close marker for a captured session |
 
 Codex runs a hook only after you trust it: review and trust the three collector hooks with `/hooks`
-(App: Settings → Hooks). Codex records trust per command, so changing `--project`, the binary path or
+(App: Settings → Hooks). `/hooks` lists a hook under its `statusMessage`; the installer names the
+collector hooks `shared-memory capture` and the [recall hooks](#automatic-recall) `shared-memory recall`,
+and a hook without one shows as Unnamed hook. Codex records trust per command, so changing `--project`, the binary path or
 another option needs trust again, and untrusted or changed hooks are skipped. Start a new turn after
 installing; a `Stop` from a turn whose prompt was not captured cannot be paired. The payload fields come
 from the hook input schemas embedded in Codex CLI 0.163.0 (`turn_id` is Codex's extension). See the

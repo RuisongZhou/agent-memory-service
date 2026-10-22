@@ -36,6 +36,9 @@ RECALL = True
 EVENTS = ('UserPromptSubmit', 'Stop', 'SessionEnd')
 TOOL_TIMEOUT_SEC = 180
 MANUAL = 'edit it by hand as in docs/mcp-harness.md#use-with-codex'
+# The names /hooks lists our hooks under (`statusMessage`); unnamed hooks show as "Unnamed hook".
+CAPTURE_NAME = 'shared-memory capture'
+RECALL_NAME = 'shared-memory recall'
 
 
 def add_arguments(parser):
@@ -271,8 +274,8 @@ def changes(args, ctx, uninstall):
         print('[plan] notify: remove the collector an earlier install set'
               + (f'; it runs {ctx.notify_released} again' if wrapped else ''))
     hooks = core.merge_hooks(core.read_json(ctx.hooks_json), EVENTS if capture else (),
-                             lambda _: core.hook_handler(ctx), str(ctx.hooks_json))
-    hooks = core.merge_recall_hooks(hooks, ctx, uninstall, str(ctx.hooks_json))
+                             lambda _: core.hook_handler(ctx, name=CAPTURE_NAME), str(ctx.hooks_json))
+    hooks = core.merge_recall_hooks(hooks, ctx, uninstall, str(ctx.hooks_json), RECALL_NAME)
     return [core.text_change(ctx.config_toml, config, 0o600),
             core.json_change(ctx.hooks_json, hooks, 0o600)]
 
@@ -396,14 +399,16 @@ def host_check(args, ctx, planned):
     entries = (responses[2].get('result', {}).get('data') or [{}])[0]
     for problem in entries.get('errors', []) + entries.get('warnings', []):
         print(f'[note] codex reports: {problem}')
-    loaded = lambda command: {h.get('eventName'): h.get('timeoutSec') for h in entries.get('hooks', [])
-                              if h.get('command') == command}
-    collector = loaded(core.hook_command(ctx))
+    # The name is compared only where the listing reports one, so a Codex that omits it still installs.
+    loaded = lambda command, name: {h.get('eventName'): (h.get('timeoutSec'), h.get('statusMessage', name))
+                                    for h in entries.get('hooks', []) if h.get('command') == command}
     # hooks/list names events in camelCase: UserPromptSubmit -> userPromptSubmit.
-    if collector != ({event[0].lower() + event[1:]: core.HOOK_TIMEOUT for event in EVENTS} if ctx.capture else {}):
+    expected = lambda events, timeout, name: {event[0].lower() + event[1:]: (timeout, name) for event in events}
+    collector = loaded(core.hook_command(ctx), CAPTURE_NAME)
+    if collector != (expected(EVENTS, core.HOOK_TIMEOUT, CAPTURE_NAME) if ctx.capture else {}):
         raise InstallError('Codex did not load the collector hooks as written')
-    recall = loaded(core.recall_command(ctx))
-    if recall != ({'sessionStart': core.RECALL_TIMEOUT, 'userPromptSubmit': core.RECALL_TIMEOUT} if ctx.recall else {}):
+    recall = loaded(core.recall_command(ctx), RECALL_NAME)
+    if recall != (expected(core.RECALL_EVENTS, core.RECALL_TIMEOUT, RECALL_NAME) if ctx.recall else {}):
         raise InstallError('Codex did not load the recall hooks as written')
     print(f'[check] codex app-server loaded {len(collector)} collector and {len(recall)} recall hook(s) '
           'from the planned hooks.json')
@@ -414,13 +419,13 @@ def post_install(args, ctx):
     if ctx.capture:
         lines += [f'         Capture hooks file every completed Codex turn on this machine under project "{ctx.project}"',
                   '         once you trust them: Codex runs no new or changed hook until then. Run /hooks (App:',
-                  '         Settings -> Hooks) and trust the UserPromptSubmit, Stop and SessionEnd collector hooks.']
+                  f'         Settings -> Hooks) and trust "{CAPTURE_NAME}" on UserPromptSubmit, Stop and SessionEnd.']
     if ctx.notify_released is not None:
         lines += ['         notify no longer runs the collector' + (f'; it runs {ctx.notify_released} again.'
                                                                  if ctx.notify_released else '.')]
     if ctx.recall:
         lines += [f'         Recall hooks inject project "{ctx.project}" memory into every Codex session once you',
-                  '         trust its SessionStart and UserPromptSubmit hooks in /hooks (App: Settings -> Hooks).']
+                  f'         trust "{RECALL_NAME}" on SessionStart and UserPromptSubmit in /hooks (App: Settings -> Hooks).']
     lines += [f'[next] add the shared memory workflow for project "{ctx.project or "<id>"}" to AGENTS.md:',
               '       docs/mcp-harness.md#shared-memory-workflow']
     return lines

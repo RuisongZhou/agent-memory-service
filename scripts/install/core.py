@@ -291,10 +291,10 @@ def merge_hooks(current, events, make_handler, where, owned=owned_handler):
     return result
 
 
-def merge_recall_hooks(current, ctx, uninstall, where):
-    """Add (ctx.recall) or remove the recall group of every RECALL_EVENTS event."""
+def merge_recall_hooks(current, ctx, uninstall, where, name=None):
+    """Add (ctx.recall) or remove the recall group of every RECALL_EVENTS event, named `name`."""
     events = RECALL_EVENTS if ctx.recall and not uninstall else ()
-    return merge_hooks(current, events, lambda _: recall_handler(ctx), where, owned_recall)
+    return merge_hooks(current, events, lambda _: recall_handler(ctx, name), where, owned_recall)
 
 
 # --- commands ---------------------------------------------------------------
@@ -317,8 +317,13 @@ def hook_command(ctx, outbox=None, extra=()):
     return shlex.join(collector_argv(ctx, 'capture', outbox, extra))
 
 
-def hook_handler(ctx, extra=()):
-    return {'type': 'command', 'command': hook_command(ctx, extra=extra), 'timeout': HOOK_TIMEOUT}
+def named(handler, name):
+    """A hook handler with `statusMessage`, the name a host such as Codex lists it under (None: unnamed)."""
+    return dict(handler, statusMessage=name) if name else handler
+
+
+def hook_handler(ctx, extra=(), name=None):
+    return named({'type': 'command', 'command': hook_command(ctx, extra=extra), 'timeout': HOOK_TIMEOUT}, name)
 
 
 def recall_argv(ctx, url=None, state=None):
@@ -335,8 +340,8 @@ def recall_command(ctx, url=None, state=None):
     return shlex.join(recall_argv(ctx, url, state))
 
 
-def recall_handler(ctx):
-    return {'type': 'command', 'command': recall_command(ctx), 'timeout': RECALL_TIMEOUT}
+def recall_handler(ctx, name=None):
+    return named({'type': 'command', 'command': recall_command(ctx), 'timeout': RECALL_TIMEOUT}, name)
 
 
 def drain_argv(ctx):
