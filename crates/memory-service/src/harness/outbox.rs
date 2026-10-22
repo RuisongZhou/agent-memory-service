@@ -311,6 +311,19 @@ impl Outbox {
                 }
             }
             _ => {
+                // Codex sends a null final message for a turn that ended without one: nothing to pair.
+                if fields
+                    .get("last_assistant_message")
+                    .is_some_and(Value::is_null)
+                {
+                    if pending
+                        .as_ref()
+                        .is_some_and(|p| id_field == TurnIdField::None || p.0 == native_id)
+                    {
+                        forget(&tx)?;
+                    }
+                    return Ok(tx.commit()?);
+                }
                 if id_field == TurnIdField::None {
                     match &pending {
                         // A repeated or continued Stop: its turn was already queued.
@@ -752,6 +765,61 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("prompt_id"), "{error}");
+    }
+
+    #[test]
+    fn codex_hooks_pair_by_turn_id_and_skip_a_turn_without_a_final_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut o = outbox(&dir);
+        let event = |name: &str, turn: &str, extra: Value| {
+            let mut e = json!({"hook_event_name": name, "session_id": "s1", "turn_id": turn,
+                               "transcript_path": null, "cwd": "/w", "model": "m",
+                               "permission_mode": "default"});
+            e.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            e
+        };
+        for e in [
+            event(
+                "UserPromptSubmit",
+                "t1",
+                json!({"prompt": "only run the tool"}),
+            ),
+            event(
+                "Stop",
+                "t1",
+                json!({"stop_hook_active": false, "last_assistant_message": null}),
+            ),
+            event(
+                "UserPromptSubmit",
+                "t2",
+                json!({"prompt": "Keep the source."}),
+            ),
+            event(
+                "Stop",
+                "t2",
+                json!({"stop_hook_active": false, "last_assistant_message": "Kept."}),
+            ),
+            event("SessionEnd", "t2", json!({"reason": "other"})),
+        ] {
+            o.capture_hook(&e, "project", "default", "codex", None)
+                .unwrap();
+        }
+        let jobs = bodies(&o);
+        assert_eq!(contents(&jobs[0]), ["Keep the source.", "Kept."]);
+        assert_eq!(jobs[0]["turnId"], "project/s1/t2");
+        assert_eq!(jobs[1]["sessionEnded"], true);
+        assert_eq!(jobs.len(), 2);
+        // A Stop without the field at all is still a broken event.
+        let missing = o.capture_hook(
+            &event("Stop", "t3", json!({"stop_hook_active": false})),
+            "project",
+            "default",
+            "codex",
+            None,
+        );
+        assert!(missing.is_err());
     }
 
     #[test]
