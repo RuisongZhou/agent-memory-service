@@ -8,6 +8,13 @@ Building the daemon needs a current stable Rust toolchain, a native C compiler a
 itself runs without Python. Python 3.11+ is needed only for the installer (`scripts/install.sh`), the service
 script tests (with pytest) and evaluation.
 
+The store runs on SurrealDB, which this repository neither builds nor installs: the daemon starts the
+user's `surreal`. Every check that opens a store, the store tests in `test-workspace`, `selftest`, `smoke`,
+`install-check` and the end-to-end installer tests, needs SurrealDB 3.x's `surreal` on PATH; install it as in
+[deployment](docs/deployment.md#install-surrealdb). Without it those tests fail with that hint, and the
+end-to-end installer tests are skipped. CI installs the official 3.2.4 release with the
+[setup-surrealdb action](.github/actions/setup-surrealdb/action.yml), checked against its SHA-256.
+
 ## Checks
 
 For changes to service behavior, run the existing local/CI workflow. None of it needs the evaluation environment
@@ -26,7 +33,8 @@ For changes under `eval/`, install the evaluation dependencies and dataset once 
 `test-rust` (pure crates) and `test-service` (domain/store/engine/algorithm/service crates) run each half alone,
 and `selftest` runs the daemon with `MEMORY_MOCK_MODELS=1`; `install-check` runs the
 one-command installer with capture and recall for every platform into a temporary home, with `--no-service`
-so that it needs no key and starts no service. HTTP/MCP smoke checks use temporary stores,
+so that it needs no key and starts no service. Each temporary store runs on its own SurrealDB server, which the
+daemon or test starts and stops. HTTP/MCP smoke checks use temporary stores,
 mock retrieval and local deterministic generation stubs or raw writes. They never call paid providers.
 `serve.py --mock` does not supply a generation stub and is not a substitute for these checks.
 See the [CI workflow](.github/workflows/ci.yml) and [script inventory](scripts/README.md).

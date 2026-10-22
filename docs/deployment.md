@@ -1,7 +1,7 @@
 # Deployment and operations
 
-Install and operate the service from the repository root. The
-[one-command installer](mcp-harness.md#one-command-install) performs steps 2–5 of
+Install and operate the service from the repository root. Install [SurrealDB](#install-surrealdb)
+first; the [one-command installer](mcp-harness.md#one-command-install) checks it and performs steps 2–5 of
 [install and deploy](#install-and-deploy) for you: it builds the binary into `~/.local/bin`, writes the
 model key into `~/.config/agent-memory-service/.env` and runs the daemon as a service, then connects an
 agent platform:
@@ -19,6 +19,7 @@ the daemon. For client registration and dialogue capture by hand, continue with
 | Component | How it runs | Default address or location |
 |---|---|---|
 | Memory daemon | One shared `agent-memoryd serve` process, in a terminal or as a LaunchAgent/systemd user service (`agent-memoryd service install`) | `http://127.0.0.1:8765` |
+| SurrealDB | Your own `surreal` (SurrealDB 3.2 or later 3.x), which the daemon starts on its store and stops with it; this repository does not build or ship it | A random loopback port; data in `<data root>/store/db` |
 | Embedding model | Hosted `qwen3.7-text-embedding-flash` through an API key (default), or your own `llama-server` | `https://maas.qianwenaiapi.com/compatible-mode/v1` |
 | Reranker (optional) | Hosted `qwen3.7-text-rerank` (default), or your own `llama-server` | `https://maas.qianwenaiapi.com/compatible-api/v1` |
 | MCP bridge | Each agent client launches `agent-memoryd mcp` as a stdio child process | Forwards tools to the daemon |
@@ -34,7 +35,7 @@ The service runs Mem0 only. Its reranker is optional and disabled by default. Se
 
 ## Install and deploy
 
-The daemon needs the `agent-memoryd` binary and a model API key; no Python, model servers or weights.
+The daemon needs the `agent-memoryd` binary, SurrealDB and a model API key; no Python, model servers or weights.
 The binaries and scripts target macOS and Linux. On Windows, run this workflow in WSL. Commands in this
 section run from the repository root unless stated otherwise.
 
@@ -73,6 +74,40 @@ cargo --version
 
 For the installer or evaluation, also install Python 3.11+ (`brew install python`, or the distribution's
 `python3` and `python3-venv` packages) and check `python3 --version`.
+
+#### Install SurrealDB
+
+The store runs on SurrealDB, which you install yourself from SurrealDB's official distribution; this
+repository does not build, bundle or install it. Install SurrealDB 3.2 or a later 3.x release, either with
+Homebrew on macOS:
+
+```sh
+brew install surrealdb/tap/surreal
+```
+
+or with the official install script on macOS or Linux:
+
+```sh
+curl -sSf https://install.surrealdb.com | sh
+```
+
+The script installs to `/usr/local/bin`, or to `~/.surrealdb` when it cannot write there; add that directory to
+PATH. Then check the version:
+
+```sh
+surreal version
+```
+
+You do not run or configure SurrealDB yourself. The daemon starts `surreal start` on its store's datastore
+(`<data root>/store/db`, SurrealKV), bound to a random port on 127.0.0.1, signs in as root with a password it
+generates for that datastore, and stops it when the daemon stops; a small shell watchdog stops it as well
+when the daemon dies without stopping it. If SurrealDB exits, the daemon exits too, so that its service
+manager restarts both. The daemon looks `surreal` up on PATH unless `--surreal-bin PATH` (or
+`MEMORY_SURREAL_BIN`) names it; `service install` records the absolute path in the unit, because service
+managers start the daemon with a minimal PATH. The daemon refuses, before starting it, a `surreal` older than
+3.2 or from another major release, and so does the one-command installer before it writes anything. CI tests
+3.2.4. SurrealDB is distributed under its own license (Business Source
+License 1.1 with an additional use grant); see [third-party notes](../THIRD_PARTY.md).
 
 ### 2. Get the daemon binary
 
@@ -191,6 +226,8 @@ target/fast/agent-memoryd serve --env-file .env \
 ```
 
 This runs in the foreground. Keep the terminal open or [run it as a service](#keep-services-running).
+Before it listens, the daemon starts [SurrealDB](#install-surrealdb) on the store; add
+`--surreal-bin /path/to/surreal` when `surreal` is not on PATH. Ctrl-C or SIGTERM stops SurrealDB, then the daemon.
 `--llm-concurrency 1` sends one generation request at a time instead of the binary's default of 24; the
 service setup keeps it. It belongs to this deployment, not to the binary's defaults. `--env-file` reads only the keys listed in
 [configuration](api.md#configuration); a non-empty environment variable still wins. An explicit data
@@ -289,6 +326,7 @@ a unit under another `--home`. The [one-command installer](mcp-harness.md#one-co
 | `--port` | Daemon port (8765) |
 | `--llm-concurrency N` | `serve --llm-concurrency` (1) |
 | `--binary PATH` | The executable the unit runs (default: the `agent-memoryd` you invoked) |
+| `--surreal-bin PATH` | The SurrealDB `surreal` the daemon starts (`serve --surreal-bin`); the unit records its absolute path (default: the first `surreal` on PATH, refused when there is none) |
 | `--manager launchd\|systemd`, `--home DIR` | Service manager (launchd on macOS, systemd elsewhere) and the home directory for the unit and default paths (tests) |
 | `--apply` | Write the unit (default: preview) |
 | `--start`, `--restart` | With `--apply`: load (or reload) the service and wait until the daemon answers; also restart an unchanged, loaded service |
@@ -308,15 +346,18 @@ systemctl --user enable --now agent-memory.service
 ```
 
 `agent-memoryd service status` shows the installed file, the command it runs, whether its env file
-exists and is private, on Linux whether the unit is enabled, and whether a daemon answers on its port.
-`service status --json` prints the unit's settings (binary, env file, data directory, outbox, port,
-concurrency) as one JSON object for scripts, without the health check.
+exists and is private, whether its SurrealDB executable is still installed, on Linux whether the unit is
+enabled, and whether a daemon answers on its port. `service status --json` prints the unit's settings
+(binary, env file, data directory, SurrealDB executable, outbox, port, concurrency) as one JSON object for
+scripts, without the health check.
 To remove the service, stop it first, with `launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"`
 or `systemctl --user disable --now agent-memory.service`, then run
 `agent-memoryd service uninstall --apply`. It backs up and deletes the unit file and leaves the data,
 outbox, logs and env file alone; on Linux it refuses while the unit is still enabled.
 
-The service runs the binary at the recorded path. In a checkout, `make build` replaces
+The service runs the binary and `surreal` at the recorded paths. A Homebrew or install-script upgrade of
+SurrealDB keeps its path, so a restart picks up the new version; after moving `surreal`, rerun
+`service install`. In a checkout, `make build` replaces
 `target/fast/agent-memoryd` in place and a restart picks up the new build, while `cargo clean` removes
 it; install a release binary's upgrades to the same path. The one-command installer records its
 `~/.local/bin/agent-memoryd` instead, and a rerun that builds a new binary replaces it and restarts the
@@ -332,7 +373,8 @@ create the definition and log directories:
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/agent-memory-service"
 ```
 
-and save this template there. Replace `/absolute/path` and `/Users/YOUR_USER` with real absolute paths;
+and save this template there. Replace `/absolute/path` and `/Users/YOUR_USER` with real absolute paths, and
+the SurrealDB path with the output of `command -v surreal`;
 launchd does not expand `$HOME` or `~` inside plist strings.
 
 ```xml
@@ -349,6 +391,8 @@ launchd does not expand `$HOME` or `~` inside plist strings.
     <string>/absolute/path/agent-memory-service/.env</string>
     <string>--data-dir</string>
     <string>/Users/YOUR_USER/.local/share/agent-memory-service/mem0</string>
+    <string>--surreal-bin</string>
+    <string>/opt/homebrew/bin/surreal</string>
     <string>--port</string>
     <string>8765</string>
     <string>--llm-concurrency</string>
@@ -387,7 +431,8 @@ Validate each additional plist before loading it. LaunchAgents run during the us
 ### Linux user-systemd services
 
 `service install` writes `~/.config/systemd/user/agent-memory.service`, which supervises the daemon; the
-daemon also uploads captured dialogue. For a manual setup, replace every `/absolute/path` and
+daemon also uploads captured dialogue. For a manual setup, replace the SurrealDB path with the output of
+`command -v surreal`, and every `/absolute/path` and
 `/home/YOUR_USER` in this template. For self-hosted model servers, add their units from
 [self-hosted retrieval models](self-hosted-models.md#4-keep-the-servers-running).
 
@@ -402,7 +447,7 @@ Create `~/.config/systemd/user/agent-memory.service`:
 Description=Agent Memory daemon
 
 [Service]
-ExecStart=/absolute/path/agent-memory-service/target/fast/agent-memoryd serve --env-file /absolute/path/agent-memory-service/.env --data-dir /home/YOUR_USER/.local/share/agent-memory-service/mem0 --port 8765 --llm-concurrency 1 --outbox /home/YOUR_USER/.local/share/agent-memory-service/harness-outbox.sqlite3
+ExecStart=/absolute/path/agent-memory-service/target/fast/agent-memoryd serve --env-file /absolute/path/agent-memory-service/.env --data-dir /home/YOUR_USER/.local/share/agent-memory-service/mem0 --surreal-bin /usr/local/bin/surreal --port 8765 --llm-concurrency 1 --outbox /home/YOUR_USER/.local/share/agent-memory-service/harness-outbox.sqlite3
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -432,11 +477,20 @@ To run user services after logout, enable lingering according to the host's admi
 
 ### Storage, backups, and upgrades
 
-Within the selected data root, the store keeps its embedded database at `store/db`. Earlier versions kept it under `tenants/default`, which the daemon moves to `store` when it starts, and an unused full-text index at `store/fulltext`, which it removes. Primary inputs, memories, provenance, request receipts, and durable index work belong in the database; search indexes are rebuildable. The capture outbox is a separate database and also needs a retention/backup policy.
+Within the selected data root, the store keeps its SurrealDB datastore (SurrealKV) at `store/db`, the
+datastore's root password at `store/db.password` (mode 0600, created with the datastore) and `store/db.lock`,
+which a running daemon holds so that a second daemon on the same data directory is refused. Only the daemon
+uses the password, to sign in to the SurrealDB server it starts; nothing else needs that server's port.
+Earlier versions kept the store under `tenants/default`, which the daemon moves to `store` when it starts, and
+an unused full-text index at `store/fulltext`, which it removes. Versions before SurrealDB became an external
+dependency ran SurrealDB 3.2 inside the daemon on the same `store/db`: it opens in place with SurrealDB 3.2 or a
+later 3.x, and its first start creates the root user and the password file. Primary inputs, memories,
+provenance, request receipts, and durable index work belong in the database; search indexes are rebuildable.
+The capture outbox is a separate database and also needs a retention/backup policy.
 
-For a consistent backup, pause new submissions, stop the uploader and daemon, then copy the **entire data root** and the outbox database with any `-wal`/`-shm` companions while no collector is writing. A copy of an active database directory is not a documented snapshot method. Preserve the matching configuration, strategy, source revision, and model identities. `/admin/export` provides selected audit tables; it is not a complete restore backup.
+For a consistent backup, pause new submissions, stop the uploader and daemon (which stops its SurrealDB server), then copy the **entire data root** and the outbox database with any `-wal`/`-shm` companions while no collector is writing. Keep `store/db.password` with `store/db`: the daemon cannot sign in to a datastore without its password. A copy of an active database directory is not a documented snapshot method. Preserve the matching configuration, strategy, source revision, and model identities. `/admin/export` provides selected audit tables; it is not a complete restore backup.
 
-Before upgrading, make that backup, rebuild the binary from the updated source or install the new release binary at the same path, restart with the same data path/strategy, and check health and a known record. Do not run two daemons against one data directory. Restore with services stopped and a matching version/configuration. For unfinished legacy jobs, use the preserved version or a fresh store; see [compatibility](api.md#compatibility).
+Before upgrading, make that backup, rebuild the binary from the updated source or install the new release binary at the same path, restart with the same data path/strategy, and check health and a known record. Upgrade SurrealDB the way you installed it (`brew upgrade surrealdb/tap/surreal`, or the install script again), within 3.x and while the daemon is stopped, after the same backup; the daemon starts the new `surreal` at its next start. Do not run two daemons against one data directory; the second one refuses to start. Restore with services stopped and a matching version/configuration. For unfinished legacy jobs, use the preserved version or a fresh store; see [compatibility](api.md#compatibility).
 
 To re-embed every record on a running daemon:
 
@@ -448,7 +502,7 @@ target/fast/agent-memoryd reindex --all --url http://127.0.0.1:8765
 
 ### Stop and restart
 
-With the terminal/script setup, stop the foreground daemon (and a standalone uploader, if you run one) with Ctrl-C, then any self-hosted model servers with `scripts/self_hosted_models.sh stop`. Restart self-hosted models first, then the daemon with the same arguments/data directory. Accepted outbox jobs resume polling; pending ones retain their payloads for retry. Durable unfinished server jobs resume when the daemon starts.
+With the terminal/script setup, stop the foreground daemon (and a standalone uploader, if you run one) with Ctrl-C, which also stops its SurrealDB server, then any self-hosted model servers with `scripts/self_hosted_models.sh stop`. Restart self-hosted models first, then the daemon with the same arguments/data directory. Accepted outbox jobs resume polling; pending ones retain their payloads for retry. Durable unfinished server jobs resume when the daemon starts.
 
 With the LaunchAgent setup, use `launchctl bootout` for the selected service labels and `launchctl bootstrap` to start them again. With systemd, stop the daemon and any model units using `systemctl --user stop` and start them with `systemctl --user start`. Use the process manager's logs instead of `results/llama/`, which belongs to the self-hosted helper script.
 
@@ -463,6 +517,11 @@ With the LaunchAgent setup, use `launchctl bootout` for the selected service lab
 | Service restarts repeatedly or never answers | Run `agent-memoryd service status`; read `~/Library/Logs/agent-memory-service/daemon.stderr.log` or `journalctl --user -u agent-memory.service`. A missing env file, a missing key or a port already in use stops startup |
 | `LLM API key not configured` or provider 401 | Check the env file, exported overrides, and provider access; direct binary launches read a dotenv file only with `--env-file` |
 | Legacy jobs at startup | Complete them with the preserved version or use a fresh store; see [compatibility](api.md#compatibility) |
+| `SurrealDB is not installed` or `not an executable SurrealDB` | [Install SurrealDB](#install-surrealdb), or name it with `--surreal-bin`. A service runs the path it was installed with; after moving `surreal`, rerun `service install` (or the one-command installer) |
+| `SurrealDB (...) did not start on ...` | The lines after it are SurrealDB's own output. Check `surreal version` (3.2 or a later 3.x) and that the data directory is writable |
+| `... is in use by another agent-memoryd` | Another daemon serves that data directory; stop it first (`agent-memoryd service status` shows the service's) |
+| `cannot sign in to SurrealDB as root` | `store/db.password` does not belong to `store/db`; restore both from the same backup |
+| `the store's SurrealDB server stopped` in the daemon log | SurrealDB exited under the daemon, which then exits so its service restarts both; the log line carries SurrealDB's last output |
 
 Inspect a daemon task through HTTP using the actual receipt ID:
 

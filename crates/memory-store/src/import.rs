@@ -105,7 +105,7 @@ mod tests {
     #[tokio::test]
     async fn import_runs_records_and_ledger_rows() -> Result<()> {
         let dir = std::env::temp_dir().join(util::new_id("store_import_test"));
-        let store = Store::open(&dir, 2, "").await?;
+        let store = Store::open(&dir, std::path::Path::new("surreal"), 2, "").await?;
         let mut tx = Tx::new();
         for (id, project, ns) in [("ir1", "a", 1), ("ir2", "b", 2), ("ir3", "a", 3)] {
             tx.put(
@@ -207,6 +207,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["runId"], "ir1");
         assert!(store.ledger_rows_naming("z").await?.is_empty());
+        store.shutdown().await;
         drop(store);
         std::fs::remove_dir_all(dir)?;
         Ok(())

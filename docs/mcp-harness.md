@@ -20,18 +20,24 @@ DeepSeek Harness, and installs and starts the daemon they share.
 `scripts/install.sh` deploys the daemon and connects one agent platform to it. It registers the stdio
 bridge, unless `--no-capture` is given the [dialogue collector](#automatically-save-conversations), and
 with `--recall` the [automatic recall](#automatic-recall) hooks; DeepSeek Harness gets the bridge only.
-Without `--apply` it only previews. With `--apply`, in this order:
+Without `--apply` it only previews; the preview names the SurrealDB it found, or says it is missing. With
+`--apply`, in this order:
 
-1. It asks for the model API key, hidden, when the daemon's env file has none yet (see below).
-2. It builds `agent-memoryd` (as `make build`) and copies it to `~/.local/bin/agent-memoryd`, so the
+1. It checks SurrealDB: `--surreal-bin PATH`, else the first `surreal` on PATH, must be SurrealDB 3.2 or a
+   later 3.x. The daemon starts it to serve its store; the installer never installs it, and stops here,
+   with the official install commands, when it is missing ([install SurrealDB](deployment.md#install-surrealdb)).
+2. It asks for the model API key, hidden, when the daemon's env file has none yet (see below).
+3. It builds `agent-memoryd` (as `make build`) and copies it to `~/.local/bin/agent-memoryd`, so the
    installed commands survive `cargo clean` or a moved checkout. `--binary PATH` uses an existing
    executable as is, such as a [release binary](deployment.md#release-archive) of the same version.
-3. It checks the exact commands it will register, run from the installed binary, against a temporary
-   mock daemon and the platform's own CLI ([checks](#installer-checks)).
-4. It backs up and writes the platform's configuration.
-5. It installs the daemon as a LaunchAgent or systemd user service with
+4. It checks the exact commands it will register, run from the installed binary, against a temporary
+   mock daemon (on a temporary store with its own SurrealDB server) and the platform's own CLI
+   ([checks](#installer-checks)).
+5. It backs up and writes the platform's configuration.
+6. It installs the daemon as a LaunchAgent or systemd user service with
    [`agent-memoryd service install --apply --start`](deployment.md#install-the-service), with `--outbox`
-   when the platform captures dialogue, and waits until `/health` answers.
+   when the platform captures dialogue and `--surreal-bin` set to the SurrealDB it checked, and waits until
+   `/health` answers.
 
 If a step before the last fails, the installer puts back the configuration files, the binary and the
 env file it changed. A service that does not start leaves the written configuration in place: the
@@ -55,9 +61,10 @@ and a daemon started by hand are left alone and used as they are. `--no-service`
 only, as for a daemon you run yourself; the installer then needs no key. A `--url` other than a loopback
 `http://` URL with a port is never served by the installed service.
 
-Requirements: macOS or Linux (on Windows, WSL), a checkout of this repository, Python 3.11+ to run the
-installer itself (the only component that needs Python), Rust/Cargo to build the binary unless
-`--binary` is given, and a model API key unless `--no-service` is given. The MCP bridge and the
+Requirements: macOS or Linux (on Windows, WSL), a checkout of this repository, SurrealDB 3.2 or a later 3.x
+([installed by you](deployment.md#install-surrealdb), also with `--no-service`: the checks run a temporary
+daemon), Python 3.11+ to run the installer itself (the only component that needs Python), Rust/Cargo to build
+the binary unless `--binary` is given, and a model API key unless `--no-service` is given. The MCP bridge and the
 hooks all run `agent-memoryd`, so the agent host needs no Python. Run from the checkout:
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
@@ -107,7 +114,8 @@ MCP tools are not tied to the installed project.
 ### Installer checks
 
 Every `--apply` runs these checks before writing the platform's configuration; none of the first four
-reaches a model provider or the real store:
+reaches a model provider or the real store. The temporary daemon starts the checked SurrealDB on its
+temporary store and stops it when the checks end:
 
 1. The bridge, started exactly as configured, completes the MCP handshake, lists the
    [eight tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.

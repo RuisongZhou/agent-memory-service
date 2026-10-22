@@ -282,6 +282,7 @@ OpenAI-compatible chat-completions/JSON contract and `enable_thinking:false`.
 | Startup value | CLI / environment | Direct-daemon default |
 |---|---|---|
 | Data root | `--data-dir` / `MEMORY_DATA_DIR` | `./memory-data`; `service install` defaults to `~/.local/share/agent-memory-service/mem0`, the Python launcher to checkout `daemon-data` |
+| SurrealDB executable | `--surreal-bin` / `MEMORY_SURREAL_BIN` (JSON `surrealBin`) | `surreal` on PATH; the daemon starts it on `<data root>/store/db` ([install SurrealDB](deployment.md#install-surrealdb)); `service install` records an absolute path |
 | Retrieval-model provider | `--model-provider` / `MEMORY_MODEL_PROVIDER` | `api`; `self-hosted` uses [your own llama-server](self-hosted-models.md) |
 | Retrieval-model API key | `MEMORY_MODEL_API_KEY` (environment only) | Falls back to `QWEN_API_KEY`; required for `api` |
 | Embedding base URL | `--embed-url` / `MEMORY_EMBED_URL` | `api`: `https://maas.qianwenaiapi.com/compatible-mode/v1` (`/embeddings`); `self-hosted`: `http://127.0.0.1:8081` |
@@ -339,6 +340,11 @@ Only Mem0 is available on main. The previous dual-strategy implementation is pre
 [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos),
 starting at `971ac13`. Retired strategies and buffer/batch/maintenance tunables are rejected;
 `/admin/run_jobs` has been removed and returns HTTP 404.
+
+SurrealDB is no longer compiled into the daemon: install SurrealDB 3.2 or a later 3.x
+([install SurrealDB](deployment.md#install-surrealdb)). An existing `store/db` opens in place; its first start
+creates the datastore's root user and `store/db.password`. Without `surreal` on PATH or `--surreal-bin`, the
+daemon does not start.
 
 Existing Mem0 stores retain their schema and historical records. Startup rejects unfinished legacy
 formation work; finish it with the matching preserved binary or use a fresh store. Switching branches

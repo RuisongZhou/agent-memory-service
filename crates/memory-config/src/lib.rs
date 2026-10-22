@@ -47,6 +47,9 @@ pub struct ServiceConfig {
     #[serde(default = "default_mem0_top_k")]
     pub mem0_top_k: usize,
     pub data_dir: PathBuf,
+    /// The SurrealDB 3.x `surreal` executable that serves the store; a bare name is looked up on PATH.
+    #[serde(default = "default_surreal_bin")]
+    pub surreal_bin: PathBuf,
     #[serde(default)]
     pub model_provider: ModelProvider,
     /// Embedding and rerank base URLs; unset selects the provider's default (see `embed_url()`).
@@ -89,6 +92,7 @@ impl Default for ServiceConfig {
             mem0_max_tokens: default_mem0_max_tokens(),
             mem0_top_k: default_mem0_top_k(),
             data_dir: PathBuf::from("./memory-data"),
+            surreal_bin: default_surreal_bin(),
             model_provider: ModelProvider::Api,
             embed_url: None,
             rerank_url: None,
@@ -144,6 +148,10 @@ impl ServiceConfig {
             anyhow::ensure!(value > 0, "{name} must be positive");
         }
         anyhow::ensure!(self.llm_timeout_secs > 0, "LLM timeout must be positive");
+        anyhow::ensure!(
+            !self.surreal_bin.as_os_str().is_empty(),
+            "surrealBin must name the SurrealDB executable"
+        );
         for (name, url) in [
             ("embedUrl", self.embed_url()),
             ("rerankUrl", self.rerank_url()),
@@ -169,6 +177,10 @@ fn default_mem0_threshold() -> f32 {
 
 fn default_mem0_max_tokens() -> u32 {
     2000
+}
+
+fn default_surreal_bin() -> PathBuf {
+    PathBuf::from("surreal")
 }
 
 fn default_embed_model() -> String {

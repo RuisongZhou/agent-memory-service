@@ -48,9 +48,14 @@ pub(crate) async fn fresh_store(
     platform: &str,
 ) -> (Arc<Instance>, Caller, PathBuf) {
     let dir = std::env::temp_dir().join(memory_rules::util::new_id(&format!("memory-{name}-")));
-    let t = Instance::open(&dir, eng.models.dim, eng.algorithm().schema())
-        .await
-        .unwrap();
+    let t = Instance::open(
+        &dir,
+        &eng.cfg.surreal_bin,
+        eng.models.dim,
+        eng.algorithm().schema(),
+    )
+    .await
+    .unwrap();
     let caller = Caller {
         platform: platform.into(),
     };

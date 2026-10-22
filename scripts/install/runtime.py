@@ -2,6 +2,8 @@
 
 The one-command install sets these up while it registers a platform, and reuses them on later runs:
 
+- SurrealDB is the user's own: the daemon starts their `surreal` (SurrealDB 3.x; `--surreal-bin`, else the
+  first on PATH) to serve its store. The installer checks it before anything else runs, never installs it;
 - the binary is copied to `~/.local/bin/agent-memoryd`, so the entries survive `cargo clean` or a moved
   checkout (`--binary` uses a given executable as is);
 - the env file (`~/.config/agent-memory-service/.env`, mode 0600) holds the model key, which comes from
@@ -38,6 +40,10 @@ BINARY = Path('.local/bin/agent-memoryd')  # relative to home
 ENV_FILE = Path('.config/agent-memory-service/.env')  # relative to home
 TEMPLATE = core.ROOT / '.env.example'
 KEY = 'QWEN_API_KEY'
+# Earlier versions embedded SurrealDB 3.2; their datastores open with 3.2 or a later 3.x.
+SURREAL_VERSIONS = ((3, 2), (4, 0))
+INSTALL_SURREAL = ('install SurrealDB 3.x: `brew install surrealdb/tap/surreal` on macOS, or '
+                   '`curl -sSf https://install.surrealdb.com | sh` (docs/deployment.md#install-surrealdb)')
 SERVICE_TIMEOUT = 240  # seconds; `--start` waits up to 60 s for the daemon and 10 s for launchd
 
 
@@ -52,6 +58,37 @@ def unit_path(home):
     if sys.platform == 'darwin':
         return home / 'Library/LaunchAgents/local.agent-memory-daemon.plist'
     return home / '.config/systemd/user/agent-memory.service'
+
+
+# --- SurrealDB ----------------------------------------------------------------------
+
+def find_surreal(args):
+    """The `surreal` the daemon starts for its store: --surreal-bin, else the first on PATH; None when missing."""
+    if args.surreal_bin:
+        return args.surreal_bin
+    found = shutil.which('surreal')
+    return core.absolute(found) if found else None
+
+
+def check_surreal(ctx):
+    """Refuse a missing SurrealDB, or one older than 3.2 or newer than 3.x, before anything is asked for, built or
+    written."""
+    if ctx.surreal is None:
+        raise InstallError(f'SurrealDB is not installed (no `surreal` on PATH); {INSTALL_SURREAL}, '
+                           'or pass --surreal-bin PATH')
+    try:
+        result = subprocess.run([str(ctx.surreal), 'version'], stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=30)
+    except OSError as error:
+        raise InstallError(f'Cannot run {ctx.surreal} ({error}); {INSTALL_SURREAL}') from error
+    version = re.search(r'\b(\d+)\.(\d+)\.\d+\S*', result.stdout)
+    if result.returncode or not version:
+        raise InstallError(f'{ctx.surreal} is not SurrealDB (`surreal version` failed); {INSTALL_SURREAL}')
+    oldest, newer = SURREAL_VERSIONS
+    if not oldest <= (int(version.group(1)), int(version.group(2))) < newer:
+        raise InstallError(f'{ctx.surreal} is SurrealDB {version.group(0)}; the daemon needs SurrealDB 3.2 or a later '
+                           f'3.x: {INSTALL_SURREAL}')
+    print(f'[check] SurrealDB {version.group(0)} at {ctx.surreal}')
 
 
 # --- env file -----------------------------------------------------------------------
@@ -125,6 +162,8 @@ def print_plan(args, ctx):
         print(f'[plan] binary={ctx.binary} (--binary, used as is)')
     else:
         print(f'[plan] binary={ctx.binary}, copied from {core.DEFAULT_BINARY.relative_to(core.ROOT)} after the build')
+    surreal = ctx.surreal or f'<required: {INSTALL_SURREAL}>'
+    print(f'[plan] surreal={surreal}: SurrealDB, installed by you; the daemon starts it to serve its store')
     if not ctx.manage_service:
         reason = '--no-service' if args.no_service else f'--url {ctx.url} is not a loopback http URL with a port'
         print(f'[plan] daemon service not managed ({reason}); run the daemon yourself (docs/deployment.md)')
@@ -320,7 +359,8 @@ def write_env(ctx, path, data):
 def start_service(ctx, plan):
     """`service install --apply --start` with the planned options; fails unless the daemon answers."""
     argv = [str(ctx.binary), 'service', 'install', '--apply', '--start', '--home', str(ctx.home),
-            '--binary', str(ctx.binary), '--env-file', str(plan.env_file), '--port', str(ctx.port)]
+            '--binary', str(ctx.binary), '--surreal-bin', str(ctx.surreal), '--env-file', str(plan.env_file),
+            '--port', str(ctx.port)]
     for flag, value in (('--data-dir', plan.data_dir), ('--outbox', plan.outbox),
                         ('--llm-concurrency', plan.llm_concurrency)):
         if value is not None:

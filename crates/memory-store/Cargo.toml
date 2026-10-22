@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "SurrealDB persistence for the memory service: transactions, schema, repositories and integrity glue"
+description = "SurrealDB persistence for the memory service: the database server, transactions, schema, repositories and integrity glue"
 publish = false
 
 [dependencies]
@@ -12,7 +12,12 @@ memory-domain = { path = "../memory-domain" }
 memory-rules = { path = "../memory-rules" }
 anyhow = "1"
 blake3 = "1"
+bytes = "1"
+chrono = "0.4"
+# SurrealDB RPC bodies; SurrealDB itself is the user's `surreal` executable, not a dependency.
+ciborium = "0.2"
+reqwest = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-surrealdb = { version = "3.0", default-features = false, features = ["kv-surrealkv", "rustls"] }
 tokio = { version = "1", features = ["full"] }
+tracing = "0.1"

@@ -133,10 +133,11 @@ def free_port():
 
 
 @contextmanager
-def mock_daemon(binary, root, generation_url, outbox=None):
+def mock_daemon(binary, surreal, root, generation_url, outbox=None):
     """A daemon with mock retrieval models and a stub generation endpoint in `root`; it uploads `outbox`."""
     env = dict(check_env(root), MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline-installer-check')
-    serve = ['--llm-base-url', generation_url, *(['--outbox', str(outbox)] if outbox else [])]
+    serve = ['--surreal-bin', str(surreal), '--llm-base-url', generation_url,
+             *(['--outbox', str(outbox)] if outbox else [])]
     with temporary_daemon(binary, root, serve, env) as url:
         yield url
 
@@ -145,7 +146,8 @@ def mock_daemon(binary, root, generation_url, outbox=None):
 def temporary_daemon(binary, root, serve, env, wait=60, secret=None):
     """`agent-memoryd serve [serve...]` on a free loopback port with its data in `root`; yields its URL.
 
-    A start failure shows the end of its log, with `secret` masked.
+    A start failure shows the end of its log, with `secret` masked. Stopping it stops the SurrealDB server
+    the daemon started for the temporary store.
     """
     port = free_port()
     url = f'http://127.0.0.1:{port}'
@@ -325,7 +327,8 @@ def verify_local(host, ctx):
         root = Path(temporary)
         env = check_env(root)
         outbox = root / 'outbox.sqlite3' if ctx.capture else None
-        with generation_stub() as (generation, calls), mock_daemon(ctx.binary, root, generation, outbox) as url:
+        with (generation_stub() as (generation, calls),
+              mock_daemon(ctx.binary, ctx.surreal, root, generation, outbox) as url):
             argv = [str(ctx.binary), *core.bridge_args(url, ctx.platform)]
             verify_discover(argv, env)
             bridge = Bridge(argv, env)
@@ -375,7 +378,7 @@ def verify_model(ctx, env_file):
         root = Path(temporary)
         # The check environment drops provider variables: only the env file configures the models.
         env = check_env(root)
-        serve = ['--env-file', str(env_file), '--llm-concurrency', '1']
+        serve = ['--env-file', str(env_file), '--surreal-bin', str(ctx.surreal), '--llm-concurrency', '1']
         with temporary_daemon(ctx.binary, root, serve, env, wait=120, secret=secret) as url:
             stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             scope = {'project': 'installer-model-check', 'session': SESSION}

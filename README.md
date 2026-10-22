@@ -10,7 +10,8 @@
   stdio MCP 桥（8 个工具）、宿主 hooks 用来捕获对话和注入记忆的命令，以及把捕获的对话上传给 daemon 的上传器。
 - **记忆算法**：目前只支持 **Mem0**。按顺序增量形成记忆，保存原始输入，在作用域内做精确去重，
   检索时综合语义、BM25 和实体打分，与 Mem0 Node SDK 3.3.1 内置 NLP 回退的行为对齐。
-- **存储**：SurrealDB / SurrealKV 嵌入在进程内运行，不需要另外部署数据库或向量库。
+- **存储**：SurrealDB（SurrealKV 存储引擎），由你按官方方式安装，本仓库不编译也不安装它。daemon 在自己的数据目录上
+  启动你的 `surreal`，只监听回环地址上的一个随机端口，并用数据目录里随机生成的 root 密码访问；不需要另外部署向量库。
 - **模型**：嵌入和可选的重排默认用 API key 调用托管模型，也可以换成自己运行的 llama-server；
   从对话中提取记忆的生成模型是单独配置的 OpenAI 兼容服务。
 - **边界**：daemon 只监听本机回环地址，服务一个本地用户。请求头里的 platform 只用于路由，不是认证。一个 daemon 只有一个存储。
@@ -20,7 +21,7 @@
    │ stdio MCP：agent-memoryd mcp        │ hooks：agent-memoryd hook capture / recall
    ▼                                     ▼
  agent-memoryd serve（127.0.0.1:8765，以 LaunchAgent 或 systemd 用户服务运行）
-   ├── 本地存储：SurrealKV 数据库与全文索引（~/.local/share/agent-memory-service）
+   ├── SurrealDB：daemon 启动你安装的 surreal，数据在 ~/.local/share/agent-memory-service
    └── 模型 API：生成（形成记忆）、嵌入与重排（检索）
 ```
 
@@ -30,10 +31,23 @@
 
 - macOS 或 Linux（Windows 请在 WSL 中运行）；
 - Git、Rust stable（含 Cargo）和 C 编译工具链，用来从源码构建；
+- SurrealDB 3.2 或更高的 3.x（`surreal`），用官方方式安装（见下一步）；daemon 用它保存记忆，安装器只检查它，不替你安装；
 - Python 3.11+，只有安装器本身需要，daemon、MCP 桥和 hooks 都不依赖 Python；
 - 一个模型 API key，默认是千问 MaaS 的 key（写入 `QWEN_API_KEY`），同时用于生成和托管的嵌入、重排模型。
 
-克隆仓库后，在仓库根目录为要接入的宿主执行一条命令：
+先用官方方式安装 SurrealDB，二选一。macOS 用 Homebrew：
+
+```bash
+brew install surrealdb/tap/surreal
+```
+
+macOS 或 Linux 也可以用官方安装脚本（装到 `/usr/local/bin`，没有写权限时装到 `~/.surrealdb`，后者要自己加进 PATH）：
+
+```bash
+curl -sSf https://install.surrealdb.com | sh
+```
+
+`surreal version` 应输出 3.2 或更高的 3.x。然后克隆仓库，在仓库根目录为要接入的宿主执行一条命令：
 
 ```bash
 git clone https://github.com/RuisongZhou/agent-memory-service.git
@@ -88,17 +102,20 @@ Codex 和 Claude Code 一样用 hooks 捕获对话（`UserPromptSubmit`、`Stop`
 
 ### 这条命令做了什么
 
-1. 有需要时先询问 API key（输入不回显），之后的步骤无需值守。密钥依次从 `--key-file`、环境变量
+1. 检查 SurrealDB：用 `--surreal-bin` 指定的，或 PATH 上的第一个 `surreal`，确认是 3.2 或更高的 3.x。没有安装或版本不对时
+   直接报错并给出官方安装命令，什么都不写；安装器不会替你安装 SurrealDB。
+2. 有需要时询问 API key（输入不回显），之后的步骤无需值守。密钥依次从 `--key-file`、环境变量
    `QWEN_API_KEY`（可用 `--api-key-env` 改名）和隐藏输入中读取，不会出现在命令行参数或输出里。
-2. 构建 `agent-memoryd`（等同 `make build`），复制到 `~/.local/bin/agent-memoryd`，此后 `cargo clean`
+3. 构建 `agent-memoryd`（等同 `make build`），复制到 `~/.local/bin/agent-memoryd`，此后 `cargo clean`
    或移动仓库都不影响已安装的配置。已有可执行文件（例如 [release 包](docs/deployment.md#release-archive)）
    可用 `--binary` 直接使用，不再构建。
-3. 用临时的 mock daemon 离线验证将要写入的命令：MCP 握手和 8 个工具、捕获 → outbox → 上传 → 形成记忆 → 检索、
+4. 用临时的 mock daemon（连同它启动的临时 SurrealDB）离线验证将要写入的命令：MCP 握手和 8 个工具、捕获 → outbox → 上传 → 形成记忆 → 检索、
    召回注入。本机装有 `codex`、`claude` 或 `dsh` CLI 时，还会让宿主自己在临时目录里解析一遍配置。
-4. 备份并合并宿主配置，保留已有的其他 MCP server、hooks、设置、注释和顺序。在这一步之前失败时，
+5. 备份并合并宿主配置，保留已有的其他 MCP server、hooks、设置、注释和顺序。在这一步之前失败时，
    配置文件、二进制和 env 文件都会恢复原样。
-5. 用 `agent-memoryd service install --apply --start` 把 daemon 安装成 macOS LaunchAgent 或 Linux systemd
-   用户服务并启动，等待 `/health` 响应；宿主需要捕获对话时，服务同时负责上传 outbox。已经安装过的服务
+6. 用 `agent-memoryd service install --apply --start` 把 daemon 安装成 macOS LaunchAgent 或 Linux systemd
+   用户服务并启动，等待 `/health` 响应；宿主需要捕获对话时，服务同时负责上传 outbox。服务文件记下 `surreal`
+   的绝对路径（服务管理器给的 PATH 很短），daemon 每次启动时在数据目录上启动它，停止时一并停止。已经安装过的服务
    保留原来的数据目录、env 文件和端口等选项；不是由它写入的服务文件、以及你手动启动的 daemon 都不会被替换。
 
 加上 `--verify-model` 时，安装器还会用真实模型在临时库里形成并检索一条合成的测试事实，以确认生成和检索
@@ -113,6 +130,7 @@ Codex 和 Claude Code 一样用 hooks 捕获对话（`UserPromptSubmit`、`Stop`
 | `--recall` / `--no-capture` | 加上自动召回 hooks / 不安装对话捕获 |
 | `--no-service` | 只注册宿主，不写密钥、不安装 daemon 服务，适合自己运行 daemon 的情况 |
 | `--binary PATH` | 直接使用已有的 `agent-memoryd`，不构建也不复制 |
+| `--surreal-bin PATH` | daemon 启动的 SurrealDB `surreal`（默认用 PATH 上的第一个），服务记下它的绝对路径 |
 | `--env-file`、`--key-file`、`--api-key-env NAME` | 指定 daemon 的 env 文件、从文件读取（并替换）密钥、从指定环境变量读取密钥 |
 | `--verify-model` | 用真实模型做一次端到端检查（少量模型调用） |
 | `--non-interactive` | 从不提示，缺少项目 ID 或密钥时直接失败 |
@@ -150,7 +168,7 @@ Agent 的执行环境通常没有终端，无法使用隐藏输入，这时安�
 
 ### 验证范围
 
-CI 对四个宿主运行完整的离线安装检查（`make install-check`，使用 `--no-service`）。宿主 CLI 解析检查在 macOS
+CI 装上官方 SurrealDB 3.2.4 后，对四个宿主运行完整的离线安装检查（`make install-check`，使用 `--no-service`）。宿主 CLI 解析检查在 macOS
 上用 Codex CLI 0.163.0、Claude Code 2.1.305 和 DeepSeek Harness 0.2.1-rc.2 的 `dsh` 运行过；WorkBuddy 没有可用的
 CLI，只由安装器检查 JSON 结构。服务启动这一步（`launchctl` / `systemctl`）的命令序列有单元测试，CI 不会真正
 启动服务。目前还没有在真实客户端会话和真实模型下完成端到端验收，可以用 `--verify-model` 和
@@ -198,9 +216,12 @@ curl -fsS http://127.0.0.1:8765/health          # 健康检查：记忆策略、
 - **日志**：macOS 在 `~/Library/Logs/agent-memory-service/daemon.stderr.log`；Linux 用
   `journalctl --user -u agent-memory.service`。
 - **升级**：`git pull` 后，对已安装的宿主重新运行原来的安装命令。二进制有变化时会被替换，服务随之重启。
+- **升级 SurrealDB**：用安装时的方式升级（`brew upgrade surrealdb/tap/surreal`，或重新运行官方脚本），保持在 3.x，
+  然后重启服务。换了 `surreal` 的位置时，重新运行安装命令，让服务记下新路径。
 - **换密钥或模型**：编辑 `~/.config/agent-memory-service/.env`（可用的设置见 [配置参考](docs/api.md#configuration)），
   再重启服务；也可以带上 `--key-file` 重新运行安装命令。
-- **备份**：停掉服务后，复制整个数据目录（默认 `~/.local/share/agent-memory-service/mem0`）和 outbox，
+- **备份**：停掉服务后，复制整个数据目录（默认 `~/.local/share/agent-memory-service/mem0`）和 outbox。数据目录里的
+  `store/db` 是 SurrealDB 的数据，`store/db.password` 是访问它的 root 密码，两者要一起备份，
   详见 [存储、备份与升级](docs/deployment.md#storage-backups-and-upgrades)。
 - **排查**：见 [部署排查](docs/deployment.md#common-problems) 和 [客户端排查](docs/mcp-harness.md#troubleshooting)。
 
@@ -253,7 +274,9 @@ make check-arch check-public
 make setup && make test                           # 只在改动 eval/ 时：创建 .venv、安装评测依赖并下载公开数据集
 ```
 
-所有检查都使用临时存储、mock 检索模型和本地确定性的生成桩，不会调用付费模型。详见 [贡献指南](CONTRIBUTING.md#checks)。
+所有检查都使用临时存储、mock 检索模型和本地确定性的生成桩，不会调用付费模型。临时存储同样跑在 SurrealDB 上，
+所以 `test-workspace`、`selftest`、`smoke` 和 `install-check` 需要 PATH 上有 SurrealDB 3.2 或更高的 3.x。
+详见 [贡献指南](CONTRIBUTING.md#checks)。
 
 ## 仓库结构
 
