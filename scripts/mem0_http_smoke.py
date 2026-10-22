@@ -53,15 +53,14 @@ def main():
         port = sock.getsockname()[1]
     with tempfile.TemporaryDirectory(prefix='mem0-http-smoke-') as temp:
         root = Path(temp)
-        env = dict(os.environ, MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline', MEMORY_LLM_MAX_CALLS='10')
+        env = dict(os.environ, MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline')
         proc = None
         log = (root / 'service.log').open('w')
         base = f'http://127.0.0.1:{port}'
 
         def request(path, body=None):
             req = Request(base + path, data=None if body is None else json.dumps(body).encode(),
-                          headers={'Content-Type': 'application/json', 'X-Memory-Tenant': 'smoke-en',
-                                   'X-Memory-Platform': 'test'})
+                          headers={'Content-Type': 'application/json', 'X-Memory-Platform': 'test'})
             try:
                 with urlopen(req, timeout=30) as response:
                     return json.load(response)
@@ -70,7 +69,7 @@ def main():
 
         def start():
             p = subprocess.Popen([str(args.bin.resolve()), 'serve', '--data-dir', str(root / 'data'),
-                                  '--port', str(port), '--llm-base-url', f'http://127.0.0.1:{stub.server_port}',
+                                  '--port', str(port), '--prompt-variant', 'en', '--llm-base-url', f'http://127.0.0.1:{stub.server_port}',
                                   '--log-level', 'warn'], env=env, stdout=log, stderr=log)
             for _ in range(100):
                 if p.poll() is not None:

@@ -1,12 +1,16 @@
 //! Memory import runs (docs/design/memory-import.md), in the shape of consolidation runs: `propose` takes a plan's
 //! units in batches of at most `MAX_BATCH_UNITS` and offers proposals without writing a memory record; `apply` and
 //! `rollback` then change records one proposal per transaction under the formation lock, through the pure plans of
-//! `memory_domain::import::apply` and the algorithm's import hooks. The import ledger keeps one row per unit of a
-//! project: the run that last imported it, its hash and the records it became, with the row it replaced kept for
-//! rollback. Session turns (`turns`) are rows of the run too, but go through Mem0 formation instead: they have no
-//! ledger rows, since the daemon deduplicates turns by `platform + turnId`. This module holds the ledger and run
-//! reads the steps share.
+//! `memory_domain::import::apply`. The import ledger keeps one row per unit of a project: the run that last imported
+//! it, its hash and the records it became, with the row it replaced kept for rollback. Session turns (`turns`) are
+//! rows of the run too, but go through the algorithm's formation instead: they have no ledger rows, since the daemon
+//! deduplicates turns by `platform + turnId`. This module holds the ledger and run reads the steps share.
+//!
+//! Import knows no algorithm and no algorithm knows import: notes are extracted here (`extract`) and written as
+//! plain records, and the algorithm is asked only generic questions, the facts nearest to a text
+//! (`MemoryAlgorithm::nearest_facts`) and the requests a fact was formed from (`MemoryAlgorithm::source_requests`).
 mod apply;
+mod extract;
 mod propose;
 mod rollback;
 mod turns;
@@ -20,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportRun, ImportRunReq, ImportRunsReq, UnitOutcome, APPLIED,
     KIND,
@@ -33,9 +37,6 @@ use memory_store::store::{hashed_id, safe_id, Tx};
 /// `import_runs` page size: default and largest.
 const DEFAULT_RUNS: usize = 20;
 const MAX_RUNS: usize = 200;
-/// Events passed to the algorithm when import apply or rollback retires a record.
-pub const EVENT_SUPERSEDED: &str = "IMPORT_SUPERSEDED";
-pub const EVENT_ROLLBACK: &str = "IMPORT_ROLLBACK";
 
 /// Ledger status of a unit whose last import wrote or linked a record. The other value, `DECLINED`, means
 /// every proposal of that import was declined or rejected, or nothing was extracted: the text is recorded so a
@@ -70,7 +71,7 @@ fn ledger_id(project: &str, unit: &str) -> String {
 }
 
 /// A ledger row as stored (for `previous`) and parsed.
-async fn ledger(t: &Tenant, id: &str) -> anyhow::Result<Option<(Value, LedgerRow)>> {
+async fn ledger(t: &Instance, id: &str) -> anyhow::Result<Option<(Value, LedgerRow)>> {
     match t.store.get_doc(schema::IMPORT_LEDGER, id).await? {
         Some(doc) => Ok(Some((doc.clone(), serde_json::from_value(doc)?))),
         None => Ok(None),
@@ -78,7 +79,7 @@ async fn ledger(t: &Tenant, id: &str) -> anyhow::Result<Option<(Value, LedgerRow
 }
 
 /// The current records among `ids`, in their order.
-async fn live_records(t: &Tenant, ids: &[String]) -> anyhow::Result<Vec<MemoryRec>> {
+async fn live_records(t: &Instance, ids: &[String]) -> anyhow::Result<Vec<MemoryRec>> {
     let mut found = t.store.get_memories(ids).await?;
     found.retain(|m| m.status == S_CURRENT);
     found.sort_by_key(|m| ids.iter().position(|id| *id == m.id));
@@ -88,7 +89,7 @@ async fn live_records(t: &Tenant, ids: &[String]) -> anyhow::Result<Vec<MemoryRe
 /// The other units of `project` whose ledger rows hold `memory_id`: a record they hold is not one unit's to
 /// replace or retire.
 async fn other_units_naming(
-    t: &Tenant,
+    t: &Instance,
     memory_id: &str,
     project: &str,
     unit: &str,
@@ -108,7 +109,7 @@ async fn other_units_naming(
 /// the same run edit it. `status` is the row's status when the run starts it.
 #[allow(clippy::too_many_arguments)]
 async fn ledger_write(
-    t: &Tenant,
+    t: &Instance,
     tx: &mut Tx,
     id: &str,
     row: Option<(Value, LedgerRow)>,
@@ -158,7 +159,7 @@ fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::InvalidArgument(message.into())
 }
 
-async fn load_run(t: &Tenant, run_id: &str) -> ApiResult<ImportRun> {
+async fn load_run(t: &Instance, run_id: &str) -> ApiResult<ImportRun> {
     safe_id(run_id).map_err(|_| invalid("invalid runId"))?;
     let doc = t
         .store
@@ -169,7 +170,7 @@ async fn load_run(t: &Tenant, run_id: &str) -> ApiResult<ImportRun> {
 }
 
 /// The run's proposals in proposal order: unit index, then position in the unit.
-async fn run_proposals(t: &Tenant, run_id: &str) -> ApiResult<Vec<ImportProposal>> {
+async fn run_proposals(t: &Instance, run_id: &str) -> ApiResult<Vec<ImportProposal>> {
     let mut proposals = Vec::new();
     for row in t.store.proposals_for_run(run_id).await? {
         if row["kind"] == KIND {
@@ -180,7 +181,7 @@ async fn run_proposals(t: &Tenant, run_id: &str) -> ApiResult<Vec<ImportProposal
 }
 
 /// Record an error on the run before returning it; the run keeps its in-progress status and resumes.
-async fn interrupted(t: &Tenant, run_id: &str, error: anyhow::Error) -> ApiError {
+async fn interrupted(t: &Instance, run_id: &str, error: anyhow::Error) -> ApiError {
     let message = format!("{error:#}");
     if let Err(e) = t
         .store
@@ -213,14 +214,14 @@ fn count_turns(proposals: &[ImportProposal], status: &str) -> usize {
 }
 
 /// One run with its proposals.
-pub async fn get_run(t: &Arc<Tenant>, req: ImportRunReq) -> ApiResult<Value> {
+pub async fn get_run(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
     let run = load_run(t, &req.run_id).await?;
     let proposals = run_proposals(t, &req.run_id).await?;
     Ok(json!({"run": run, "proposals": proposals}))
 }
 
 /// Runs, newest first, optionally of one project (default 20, at most 200).
-pub async fn list_runs(t: &Arc<Tenant>, req: ImportRunsReq) -> ApiResult<Value> {
+pub async fn list_runs(t: &Arc<Instance>, req: ImportRunsReq) -> ApiResult<Value> {
     let limit = req.limit.unwrap_or(DEFAULT_RUNS);
     if limit == 0 || limit > MAX_RUNS {
         return Err(invalid(format!("limit must be between 1 and {MAX_RUNS}")));

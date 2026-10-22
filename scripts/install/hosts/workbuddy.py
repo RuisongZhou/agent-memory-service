@@ -46,7 +46,7 @@ def default_project(args, ctx):
 
 def server_entry(ctx):
     return {'type': 'stdio', 'command': str(ctx.binary), 'args': core.bridge_args(ctx.url, PLATFORM),
-            'env': {'MEMORY_TENANT': ctx.tenant}, 'timeout': TOOL_TIMEOUT_MS}
+            'timeout': TOOL_TIMEOUT_MS}
 
 
 def merge_mcp(current, entry, path):

@@ -1,18 +1,18 @@
 //! Session turns of an import run (docs/design/memory-import.md §6.10, §6.16). `propose` registers each turn as a
 //! row of the run without a model call; `apply` marks the accepted rows queued, and `agent-memoryd import apply`
 //! puts them into the dialogue outbox. The uploader submits each with `add_memories` naming the run
-//! (`importRunId`): the turn is admitted only while the run is applied, Mem0 formation deduplicates it against
-//! capture by `platform + turnId`, and the request it creates carries the run's id. The row records that request
-//! and whether it was a duplicate. Rollback retires only the facts every source of which is one of the run's own
-//! requests; the rest belong to capture or to other runs and stay.
+//! (`importRunId`): the turn is admitted only while the run is applied, the algorithm's formation deduplicates it
+//! against capture by `platform + turnId`, and the request it creates carries the run's id. The row records that
+//! request and whether it was a duplicate. Rollback retires only the facts every source of which is one of the run's
+//! own requests (`MemoryAlgorithm::source_requests`); the rest belong to capture or to other runs and stay.
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{invalid, load_run, EVENT_ROLLBACK};
+use super::{invalid, load_run};
 use crate::app::consolidation::write_patch;
 use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::import::apply::turn_fact_rollback_patch;
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportRun, ImportUnit, UnitOutcome, ACCEPT, APPLIED,
@@ -78,7 +78,7 @@ pub(super) fn register(
 /// formed (or found to be a duplicate) like any captured turn, and the row records the request.
 pub async fn submit(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     req: AddMemoriesReq,
 ) -> ApiResult<Value> {
@@ -155,7 +155,7 @@ pub async fn submit(
 
 /// The run's own requests, by id: those its session turns created (`importRunId`).
 pub(super) async fn owned_requests(
-    t: &Tenant,
+    t: &Instance,
     run_id: &str,
 ) -> anyhow::Result<HashMap<String, Value>> {
     Ok(t.store
@@ -172,7 +172,7 @@ pub(super) async fn owned_requests(
 /// changed it since; a fact also formed from another request stays. A request still forming waits.
 pub(super) async fn undo(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     run: &ImportRun,
     p: &ImportProposal,
     owned: &HashMap<String, Value>,
@@ -217,7 +217,7 @@ pub(super) async fn undo(
         if doc["importRollback"]["runId"] == run.run_id.as_str() {
             continue; // retired with an earlier turn of the run that formed it too
         }
-        let others: Vec<String> = match algorithm.import_fact_requests(t, memory_id).await? {
+        let others: Vec<String> = match algorithm.source_requests(t, memory_id).await? {
             Some(sources) => sources
                 .into_iter()
                 .filter(|s| !owned.contains_key(s))
@@ -233,9 +233,6 @@ pub(super) async fn undo(
         match turn_fact_rollback_patch(&rec, &run.run_id, &now) {
             Ok(patch) => {
                 write_patch(tx, &patch)?;
-                algorithm
-                    .import_retired(t, memory_id, &run.run_id, EVENT_ROLLBACK, tx)
-                    .await?;
                 retired.push(memory_id.clone());
             }
             Err(reason) => kept.push(json!({"memoryId": memory_id, "reason": reason})),

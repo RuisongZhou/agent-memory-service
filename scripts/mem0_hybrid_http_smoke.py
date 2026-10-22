@@ -48,16 +48,15 @@ def main():
         proc = None
         evidence = {}
 
-        def api(endpoint, body=None, tenant='hybrid'):
+        def api(endpoint, body=None):
             req = Request(f'http://127.0.0.1:{port}{endpoint}',
                           data=None if body is None else json.dumps(body).encode(),
-                          headers={'Content-Type': 'application/json', 'X-Memory-Tenant': tenant,
-                                   'X-Memory-Platform': 'smoke'})
+                          headers={'Content-Type': 'application/json', 'X-Memory-Platform': 'smoke'})
             with urlopen(req, timeout=30) as result:
                 return json.load(result)
 
         def start():
-            child_env = dict(os.environ, MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline', MEMORY_LLM_MAX_CALLS='10')
+            child_env = dict(os.environ, MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline')
             process = subprocess.Popen([str(args.bin.resolve()), 'serve', '--data-dir', str(root / 'store'),
                 '--port', str(port), '--memory-strategy', 'mem0', '--prompt-variant', 'en',
                 '--llm-base-url', f'http://127.0.0.1:{stub.server_port}', '--log-level', 'warn'],
@@ -77,9 +76,9 @@ def main():
                 'messages': [{'role': 'user', 'content': text, 'timestamp': '2026-10-14T00:00:00Z'}],
                 'infer': infer, 'sync': True})['memoryIds'][0]
 
-        def search(project='p', tenant='hybrid'):
+        def search(project='p'):
             return api('/v1/search_memories', {'query': 'Alice Johnson', 'scope': {'project': project},
-                       'topK': 20, 'tokenBudget': 10000}, tenant)['results']
+                       'topK': 20, 'tokenBudget': 10000})['results']
 
         def entities():
             return api('/admin/export', {'table': 'mem0_entities'})['records']
@@ -95,7 +94,6 @@ def main():
             found = search()
             assert old in {r['memory']['id'] for r in found}
             assert foreign not in {r['memory']['id'] for r in found}
-            assert not search(tenant='separate')
             fixed = api('/v1/correct_memory', {'id': old, 'text': 'Alice Johnson moved to London.'})['memory']['id']
             api('/admin/wait_idle', {})
             found = search()
@@ -116,7 +114,7 @@ def main():
             evidence.update(before=before, afterCorrection=after, afterDelete=remaining)
             report = {'ok': True, 'realModelCalls': 0, 'stubCalls': len(calls),
                       'checks': ['inferred entity persistence', 'raw excludes entity extraction',
-                                 'project isolation', 'tenant isolation', 'correction reprojects links',
+                                 'project isolation', 'correction reprojects links',
                                  'restart projection', 'delete prunes links', 'no generation during search/recovery'],
                       'evidence': evidence}
             if args.output:

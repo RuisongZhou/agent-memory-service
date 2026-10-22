@@ -4,7 +4,7 @@ use super::repo::{self, InputFilter};
 use anyhow::{anyhow, Result};
 use memory_config::MemoryStrategy;
 use memory_domain::types::*;
-use memory_engine::runtime::{engine::Engine, tenant::Tenant};
+use memory_engine::runtime::{engine::Engine, instance::Instance};
 use memory_rules::util;
 use memory_store::schema;
 use serde_json::{json, Value};
@@ -17,7 +17,7 @@ use std::{
 /// Shared vector recall for formation and query retrieval. Scores are normalized cosine.
 pub async fn dense(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     query: &str,
     project: &str,
     platform: &str,
@@ -40,7 +40,7 @@ pub async fn dense(
 }
 
 pub async fn dense_with_vector(
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     query: &[f32],
     project: &str,
     platform: &str,
@@ -105,9 +105,32 @@ pub async fn dense_with_vector(
         .collect())
 }
 
+/// The existing facts visible to `project` and `platform` nearest to `text`, by pure vector recall as formation
+/// recalls existing facts.
+pub async fn nearest_facts(
+    eng: &Arc<Engine>,
+    t: &Arc<Instance>,
+    project: &str,
+    platform: &str,
+    text: &str,
+    limit: usize,
+) -> Result<Vec<(MemoryRec, f32)>> {
+    dense(
+        eng,
+        t,
+        text,
+        project,
+        platform,
+        &[T_FACT.into()],
+        -1.0,
+        limit,
+    )
+    .await
+}
+
 pub async fn search(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     req: SearchReq,
 ) -> ApiResult<Value> {
@@ -281,7 +304,7 @@ pub async fn search(
 /// Default SQLite SDK keyword search scans every filtered record. Its corpus
 /// statistics must not be restricted to the semantic over-fetch pool.
 async fn keyword_documents(
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     project: &str,
     platform: &str,
     types: &[String],
@@ -327,7 +350,7 @@ fn visible(scope: &MemScope, project: &str, platform: &str) -> bool {
 /// Inspect complete raw inputs independently of whether extraction succeeded.
 pub async fn list_inputs(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     req: ListTurnsReq,
 ) -> ApiResult<Value> {

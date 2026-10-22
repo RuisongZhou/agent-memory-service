@@ -4,7 +4,7 @@
 //! another unit, a unit imported by another run after propose, rollback with a corrected record kept, and
 //! the extraction cache. No external model call.
 use super::consolidation::{engine, generation_stub};
-use super::{memory, tenant};
+use super::{fresh_store, memory};
 use memory_algo_mem0::{HASHES, SOURCES};
 use memory_domain::import::*;
 use memory_domain::types::*;
@@ -12,7 +12,7 @@ use memory_engine::app::{import, management};
 use memory_engine::retrieval;
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
-use memory_engine::runtime::tenant::Tenant;
+use memory_engine::runtime::instance::Instance;
 use memory_rules::import::units::{content_hash, unit_key};
 use memory_store::schema;
 use serde_json::{json, Value};
@@ -70,7 +70,7 @@ fn plan() -> Vec<ImportUnit> {
 
 async fn propose(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     run_id: Option<&str>,
     finish: bool,
     units: Vec<ImportUnit>,
@@ -126,7 +126,7 @@ fn str_of(v: &Value) -> String {
     v.as_str().unwrap().to_string()
 }
 
-async fn rows(eng: &Arc<Engine>, t: &Arc<Tenant>, table: &str) -> Vec<Value> {
+async fn rows(eng: &Arc<Engine>, t: &Arc<Instance>, table: &str) -> Vec<Value> {
     management::export(eng, t, json!({ "table": table }))
         .await
         .unwrap()["records"]
@@ -138,7 +138,7 @@ async fn rows(eng: &Arc<Engine>, t: &Arc<Tenant>, table: &str) -> Vec<Value> {
 pub async fn selftest() {
     let url = generation_stub().await;
     let eng = engine(&url, true);
-    let (t, caller, dir) = tenant(&eng, "import-selftest", "test").await;
+    let (t, caller, dir) = fresh_store(&eng, "import-selftest", "test").await;
 
     // ---- requests are checked before anything is written
     let bad = |project: &str, units: Vec<ImportUnit>| ImportProposeReq {
@@ -182,7 +182,7 @@ pub async fn selftest() {
     assert_eq!(run["status"], RUN_PROPOSED, "{run}");
     assert_eq!(run["kind"], KIND);
     assert_eq!(run["llmModel"], "stub-model");
-    assert_eq!(run["promptFormat"], "mem0-import-v1");
+    assert_eq!(run["promptFormat"], "import-v1");
     assert_eq!(run["planHash"], "plan-1");
     assert_eq!(run["units"].as_array().unwrap().len(), 5);
     assert_eq!(
@@ -255,16 +255,15 @@ pub async fn selftest() {
         vec![("ipmissing", ACCEPT)],
     ] {
         assert!(matches!(
-            import::apply(&eng, &t, run_req(&r1, &decisions)).await,
+            import::apply(&t, run_req(&r1, &decisions)).await,
             Err(ApiError::InvalidArgument(_))
         ));
     }
     assert!(matches!(
-        import::apply(&eng, &t, run_req("irmissing", &[])).await,
+        import::apply(&t, run_req("irmissing", &[])).await,
         Err(ApiError::NotFound(_))
     ));
     let out = import::apply(
-        &eng,
         &t,
         run_req(
             &r1,
@@ -451,7 +450,7 @@ pub async fn selftest() {
     let late = propose(&eng, &t, None, true, vec![tuesday]).await;
     let r2b = str_of(&late["run"]["runId"]);
 
-    let out = import::apply(&eng, &t, run_req(&r2, &[])).await.unwrap();
+    let out = import::apply(&t, run_req(&r2, &[])).await.unwrap();
     assert_eq!(out["run"]["counts"]["applied"], 4, "{out}");
     let monday_id = str_of(&find(&out["proposals"], monday)["memoryId"]);
     let nightly = str_of(&find(&out["proposals"], NIGHTLY)["memoryId"]);
@@ -470,7 +469,7 @@ pub async fn selftest() {
     let copied = pick(&out["proposals"], 1, PIECE_KEPT);
     assert_eq!(copied["status"], APPLIED, "{copied}");
     assert_eq!(copied["applied"]["dedupedInto"], kept.as_str());
-    let out = import::apply(&eng, &t, run_req(&r2b, &[])).await.unwrap();
+    let out = import::apply(&t, run_req(&r2b, &[])).await.unwrap();
     let skipped = &out["proposals"][0];
     assert_eq!(skipped["status"], SKIPPED, "{out}");
     assert!(
@@ -554,16 +553,6 @@ pub async fn selftest() {
     let ledger = rows(&eng, &t, schema::IMPORT_LEDGER).await;
     assert_eq!(ledger.len(), 1, "{ledger:?}");
     assert_eq!(ledger[0]["memoryIds"], json!([feedback]));
-    let history = rows(&eng, &t, memory_algo_mem0::HISTORY).await;
-    let events = |event: &str| history.iter().filter(|h| h["event"] == event).count();
-    assert_eq!(
-        (
-            events("IMPORT"),
-            events("IMPORT_SUPERSEDED"),
-            events("IMPORT_ROLLBACK")
-        ),
-        (7, 1, 6)
-    );
 
     // ---- 7. proposing the extract unit again reuses the cached extraction
     let before = calls(&eng);
@@ -608,7 +597,7 @@ pub async fn selftest() {
 #[allow(clippy::too_many_arguments)]
 async fn round(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     units: Vec<ImportUnit>,
     reconsider: bool,
     limits: ImportLimits,
@@ -636,7 +625,7 @@ async fn round(
         decisions: decide(&proposed["proposals"]).into_iter().collect(),
         scopes: scopes(&proposed["proposals"]).into_iter().collect(),
     };
-    let applied = import::apply(eng, t, req).await.unwrap();
+    let applied = import::apply(t, req).await.unwrap();
     (proposed, applied)
 }
 
@@ -670,7 +659,7 @@ fn all(decision: &'static str) -> impl Fn(&Value) -> Vec<(String, String)> {
 }
 
 /// The project's current facts with `text`.
-async fn current_with(t: &Tenant, text: &str) -> Vec<MemoryRec> {
+async fn current_with(t: &Instance, text: &str) -> Vec<MemoryRec> {
     t.store
         .current_project_facts(PROJECT)
         .await
@@ -687,7 +676,7 @@ async fn current_with(t: &Tenant, text: &str) -> Vec<MemoryRec> {
 pub async fn repeated_runs() {
     let url = generation_stub().await;
     let eng = engine(&url, true);
-    let (t, _caller, dir) = tenant(&eng, "import-repeated", "test").await;
+    let (t, _caller, dir) = fresh_store(&eng, "import-repeated", "test").await;
     let limits = ImportLimits::default();
 
     // ---- a duplicate of another unit is linked, and survives that unit's change

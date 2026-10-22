@@ -77,8 +77,6 @@ pub enum OutboxCmd {
         outbox: PathBuf,
         #[arg(long, default_value = "codex")]
         platform: String,
-        #[arg(long, default_value = "default")]
-        tenant: String,
     },
 }
 
@@ -91,7 +89,6 @@ pub async fn hook(cmd: HookCmd) -> i32 {
             outbox::Outbox::open(&at.outbox)?.capture_hook(
                 &event,
                 &at.project,
-                &at.tenant,
                 &at.platform,
                 turn_id_field,
             )?;
@@ -109,7 +106,6 @@ pub async fn hook(cmd: HookCmd) -> i32 {
                 outbox::Outbox::open(&at.outbox)?.capture_notify(
                     &event,
                     &at.project,
-                    &at.tenant,
                     &at.platform,
                 )?;
                 Ok(0)
@@ -172,13 +168,9 @@ pub async fn outbox(cmd: OutboxCmd) -> i32 {
             println!("{}", Value::Array(rows));
             Ok(0)
         }),
-        OutboxCmd::Enqueue {
-            outbox,
-            platform,
-            tenant,
-        } => adapter(|| {
+        OutboxCmd::Enqueue { outbox, platform } => adapter(|| {
             let body = stdin_json()?;
-            outbox::Outbox::open(&outbox)?.enqueue(&tenant, &platform, &body)?;
+            outbox::Outbox::open(&outbox)?.enqueue(&platform, &body)?;
             Ok(0)
         }),
         OutboxCmd::Drain {
@@ -396,15 +388,9 @@ impl Daemon {
     }
 
     /// One call; the response must be a JSON object of at most 1 MiB.
-    pub async fn post(
-        &self,
-        name: &str,
-        body: &Value,
-        tenant: &str,
-        platform: &str,
-    ) -> Result<Value, CallError> {
+    pub async fn post(&self, name: &str, body: &Value, platform: &str) -> Result<Value, CallError> {
         let url = format!("{}/v1/{name}", self.base);
-        let response = self.send(url, body, tenant, platform).await?;
+        let response = self.send(url, body, platform).await?;
         if !response.status().is_success() {
             return Err(CallError::Status(response.status().as_u16()));
         }
@@ -417,11 +403,10 @@ impl Daemon {
         &self,
         name: &str,
         body: &Value,
-        tenant: &str,
         platform: &str,
     ) -> Result<Value, AdminError> {
         let url = format!("{}/admin/{name}", self.base);
-        let response = self.send(url, body, tenant, platform).await?;
+        let response = self.send(url, body, platform).await?;
         if !response.status().is_success() {
             let error = CallError::Status(response.status().as_u16());
             let message = json_object(response, MAX_ERROR_BODY)
@@ -437,13 +422,11 @@ impl Daemon {
         &self,
         url: String,
         body: &Value,
-        tenant: &str,
         platform: &str,
     ) -> Result<reqwest::Response, CallError> {
         Ok(self
             .client
             .post(url)
-            .header("X-Memory-Tenant", tenant)
             .header("X-Memory-Platform", platform)
             .json(body)
             .send()
@@ -510,8 +493,9 @@ mod tests {
             (at.project.as_str(), args),
             ("p", vec!["{\"type\":\"x\"}".to_string()])
         );
-        // The wrapped program's own options stay its own, and the event still comes last.
-        let (at, args) = codex_notify(&[
+        // The wrapped program's own options stay its own, and the event still comes last. `--tenant`, which
+        // hooks of earlier installers pass, is accepted.
+        let (_, args) = codex_notify(&[
             "--project",
             "p",
             "--tenant",
@@ -523,7 +507,6 @@ mod tests {
             "{}",
         ])
         .unwrap();
-        assert_eq!(at.tenant, "t");
         assert_eq!(args, ["/apps/Client", "--flag", "turn-ended", "{}"]);
         assert!(codex_notify(&["--project", "p"]).is_err());
     }
@@ -553,7 +536,7 @@ mod tests {
             outbox: dir.join("outbox.sqlite3"),
             project: "p".into(),
             platform: "codex".into(),
-            tenant: "default".into(),
+            tenant: None,
         };
         let mut args = wrapped;
         args.push(event);

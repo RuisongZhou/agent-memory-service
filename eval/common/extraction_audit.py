@@ -2,7 +2,7 @@
 """Summarize formation rule checks without making generative-model requests.
 
 Read saved /admin/export {"table":"extract_log"} JSON or JSONL files with --input;
-optionally inspect a running daemon using --base-url and repeatable --tenant. Default
+optionally inspect a running daemon's store using --base-url. Default
 output contains counts, protocol metadata and timestamp checks, never source excerpts.
 Rule-valid output is not a measurement of factual correctness or QA effectiveness.
 """
@@ -47,8 +47,8 @@ def records(payload, field="records"):
     raise ValueError("expected an object or list of objects")
 
 
-def api(base_url, tenant, body=None, path="/admin/export"):
-    headers = {"X-Memory-Tenant": tenant, "X-Memory-Platform": "audit", "Content-Type": "application/json"}
+def api(base_url, body=None, path="/admin/export"):
+    headers = {"X-Memory-Platform": "audit", "Content-Type": "application/json"}
     request = Request(base_url.rstrip("/") + path, headers=headers,
                       data=None if body is None else json.dumps(body).encode("utf-8"))
     with urlopen(request, timeout=60) as response:
@@ -199,15 +199,12 @@ def main():
     parser.add_argument("--input", action="append", default=[], help="Saved extract_log JSON/JSONL; repeatable")
     parser.add_argument("--memory-input", action="append", default=[], help="Saved memory export JSON; repeatable")
     parser.add_argument("--base-url", help="Read-only local daemon endpoint; only health and export are requested")
-    parser.add_argument("--tenant", action="append", default=[], help="Tenant to audit from base-url; repeatable")
     parser.add_argument("--as-of", help="Frozen evaluation reference time for detecting future access/write timestamps")
     parser.add_argument("--since", help="Keep log rows created on/after this ISO timestamp")
     parser.add_argument("--output", help="Write the count-only report JSON to this path; default stdout")
     args = parser.parse_args()
-    if not args.input and not (args.base_url and args.tenant):
-        parser.error("provide --input, or --base-url with at least one --tenant")
-    if args.base_url and not args.tenant:
-        parser.error("--base-url requires --tenant")
+    if not args.input and not args.base_url:
+        parser.error("provide --input or --base-url")
     reports = {}
     if args.input:
         logs = [row for path in args.input for row in records(read_json(path))]
@@ -215,16 +212,10 @@ def main():
         reports["files"] = summarize(logs, memories, args.as_of, args.since)
     health = None
     if args.base_url:
-        health = api(args.base_url, args.tenant[0], path="/health")
-        opened = health.get("tenants")
-        if not isinstance(opened, list):
-            raise ValueError("daemon cannot confirm opened tenants; audit saved export files instead")
-        for tenant in args.tenant:
-            if tenant not in opened:
-                raise ValueError(f"refusing to open tenant {tenant!r}: opening can resume background LLM jobs; initialize it explicitly before auditing")
-            logs = records(api(args.base_url, tenant, {"table": "extract_log"}))
-            memories = records(api(args.base_url, tenant, {}), "memories")
-            reports[tenant] = summarize(logs, memories, args.as_of, args.since)
+        health = api(args.base_url, path="/health")
+        logs = records(api(args.base_url, {"table": "extract_log"}))
+        memories = records(api(args.base_url, {}), "memories")
+        reports["daemon"] = summarize(logs, memories, args.as_of, args.since)
     result = {"health": health, "reports": reports}
     output = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.output:

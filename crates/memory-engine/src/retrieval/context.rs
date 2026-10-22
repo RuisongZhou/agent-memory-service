@@ -4,7 +4,7 @@ use super::{
     scoring::pack_prefix,
     visibility::Vis,
 };
-use crate::runtime::{engine::Engine, tenant::Tenant};
+use crate::runtime::{engine::Engine, instance::Instance};
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
@@ -85,7 +85,7 @@ fn skill_name_pre(m: &MemoryRec) -> (String, String) {
 
 pub(crate) async fn assemble_context(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     req: GetContextReq,
     t0: Instant,

@@ -5,7 +5,7 @@ No .env is loaded, no provider key is inherited, and no external generative serv
 contacted. Both llama-server processes must already run (scripts/self_hosted_models.sh start).
 Temporary storage never replaces production stores. This verifies llama-server integration
 and HTTP/storage/index plumbing;
-it does not measure real generative extraction quality or LoCoMo effectiveness.
+it does not measure real generative extraction quality.
 """
 from __future__ import annotations
 
@@ -74,7 +74,6 @@ def sanitized_environment():
     result = {key: value for key, value in os.environ.items() if key in allowed}
     result.update({"QWEN_API_KEY": "localhost-stub-placeholder",
                    "MEMORY_STRATEGY": "mem0",
-                   "MEMORY_LLM_MAX_CALLS": "3",
                    "PYTHONDONTWRITEBYTECODE": "1"})
     return result
 
@@ -145,7 +144,7 @@ def main():
     report = {"status": "started", "realGenerativeCalls": 0, "generationBackend": "localhost-deterministic-stub",
               "realEmbeddingModel": "BAAI/bge-m3", "realRerankerModel": "BAAI/bge-reranker-v2-m3",
               "expectedDevice": EXPECTED_DEVICE,
-              "notLoCoMoEffectiveness": True, "numericalReferenceComparisonNotIncluded": True,
+              "numericalReferenceComparisonNotIncluded": True,
               "providerKeyInherited": False, "dotenvRead": False,
               "startedAt": datetime.now(timezone.utc).isoformat(), "binary": str(binary),
               "embedUrl": embed_url, "rerankUrl": rerank_url, "latencyMs": {}}
@@ -155,7 +154,7 @@ def main():
     # Every HTTP opener ignores inherited proxies. The two possible destinations are hardcoded
     # loopback addresses, and the daemon receives only an explicit loopback LLM base URL.
     def request(base, path, body=None):
-        headers = {"Content-Type": "application/json", "X-Memory-Tenant": "llama-smoke-en", "X-Memory-Platform": "llama-test"}
+        headers = {"Content-Type": "application/json", "X-Memory-Platform": "llama-test"}
         req = Request(base + path, headers=headers, data=None if body is None else json.dumps(body).encode())
         return json.load(build_opener(ProxyHandler({})).open(req, timeout=args.request_timeout))
 

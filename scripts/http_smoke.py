@@ -21,8 +21,7 @@ def main():
     binary = str(args.bin.resolve())
     # No inherited provider connection or strategy can turn this into a paid check.
     env = {k: v for k, v in os.environ.items() if k in ('PATH', 'TMPDIR', 'LANG', 'SYSTEMROOT')}
-    env.update(MEMORY_MOCK_MODELS='1', QWEN_BASE_URL='http://127.0.0.1:1', QWEN_API_KEY='',
-               MEMORY_LLM_MAX_CALLS='1')
+    env.update(MEMORY_MOCK_MODELS='1', QWEN_BASE_URL='http://127.0.0.1:1', QWEN_API_KEY='')
     opener = build_opener(ProxyHandler({}))
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
@@ -35,8 +34,7 @@ def main():
 
         def request(path, body=None, expected=200):
             req = Request(base + path, data=None if body is None else json.dumps(body).encode(),
-                          headers={'Content-Type': 'application/json', 'X-Memory-Tenant': 'api-en',
-                                   'X-Memory-Platform': 'test'})
+                          headers={'Content-Type': 'application/json', 'X-Memory-Platform': 'test'})
             try:
                 with opener.open(req, timeout=30) as response:
                     assert response.status == expected
@@ -48,7 +46,7 @@ def main():
 
         def start():
             child = subprocess.Popen([binary, 'serve', '--data-dir', str(root / 'data'), '--port', str(port),
-                                      '--log-level', 'warn'], env=env, stdout=log, stderr=log)
+                                      '--prompt-variant', 'en', '--log-level', 'warn'], env=env, stdout=log, stderr=log)
             for _ in range(200):
                 if child.poll() is not None:
                     raise AssertionError((root / 'daemon.log').read_text())
@@ -97,7 +95,7 @@ def main():
             assert request('/v1/add_memories', payload)['duplicate']
             assert request('/v1/search_memories', {'scope': scope, 'query': 'database port 8765'})['results'][0]['memory']['id'] == mid
             bridge = subprocess.Popen([binary, 'mcp', '--url', base, '--platform', 'test'],
-                                      env=dict(env, MEMORY_TENANT='api-en'), stdin=subprocess.PIPE,
+                                      env=env, stdin=subprocess.PIPE,
                                       stdout=subprocess.PIPE, stderr=log, text=True)
             def rpc(value, reply=True):
                 bridge.stdin.write(json.dumps(value) + '\n'); bridge.stdin.flush()
@@ -147,7 +145,7 @@ def main():
             report = {'ok': True, 'mockModels': True, 'realLlmCalls': 0,
                       'checks': ['Mem0 default', 'retired strategy/config rejection', 'removed maintenance endpoint',
                                  'raw writes and visibility', 'restart and idempotency', 'eight MCP tools',
-                                 'tenant/platform forwarding', 'instruction context', 'feedback/correction',
+                                 'platform forwarding', 'instruction context', 'feedback/correction',
                                  'HTTP/MCP errors', 'embedding validation', 'zero generation']}
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, indent=2) + '\n')

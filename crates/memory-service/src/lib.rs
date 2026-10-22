@@ -20,7 +20,7 @@ pub use memory_store as storage;
 pub use memory_store::store;
 pub use retrieval as retrieve;
 pub use runtime::engine::Engine;
-pub use runtime::{engine, indexer, llm, models, reference_time, tenant};
+pub use runtime::{engine, indexer, instance, llm, models, reference_time};
 
 // Stable Rust facade for existing clients and diagnostics; implementations live with their algorithm.
 pub use algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};

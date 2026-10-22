@@ -75,7 +75,7 @@ def main() -> None:
         missing = set(a.expected_systems.split(",")) - {s["system"] for s in summaries}
         if missing:
             warnings.append("Missing system results: " + ", ".join(sorted(missing)))
-    warnings.append("Run tags label outputs and usage components; they do not isolate daemon tenants/stores. Inspect the protocol and data-dir before interpreting a reused store as a standalone full run.")
+    warnings.append("Run tags label outputs and usage components; they do not isolate daemon stores. Inspect the protocol and data-dir before interpreting a reused store as a standalone full run.")
     md = ["# LoCoMo observed results (categories 1-4, J/F1/BLEU-1 in %)", "",
           *lines, "",
           "J = LLM-judge accuracy (mem0 ACCURACY_PROMPT, model recorded in each run, non-thinking); F1 / BLEU-1 = mem0 "

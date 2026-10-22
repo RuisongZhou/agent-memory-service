@@ -3,7 +3,7 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use memory_engine::runtime::tenant::Tenant;
+use memory_engine::runtime::instance::Instance;
 use memory_store::schema;
 
 /// Raw-input filters for `list_inputs`; `None` leaves the dimension unconstrained.
@@ -15,7 +15,7 @@ pub struct InputFilter<'a> {
 }
 
 /// The request id already created for the turn with record key `key`.
-pub async fn request_id_for_turn_key(t: &Tenant, key: &str) -> Result<Option<String>> {
+pub async fn request_id_for_turn_key(t: &Instance, key: &str) -> Result<Option<String>> {
     let existing = t
         .store
         .select(
@@ -30,12 +30,12 @@ pub async fn request_id_for_turn_key(t: &Tenant, key: &str) -> Result<Option<Str
 }
 
 /// Queued, running and indexing jobs in input order.
-pub async fn unfinished_jobs(t: &Tenant) -> Result<Vec<Value>> {
+pub async fn unfinished_jobs(t: &Instance) -> Result<Vec<Value>> {
     t.store.select("SELECT * OMIT id FROM requests WHERE kind = 'mem0' AND status IN ['queued','running','indexing'] ORDER BY inputSeq ASC", vec![]).await
 }
 
 /// Number of queued, running and indexing jobs.
-pub async fn unfinished_job_count(t: &Tenant) -> Result<i64> {
+pub async fn unfinished_job_count(t: &Instance) -> Result<i64> {
     t.store
         .count(
             schema::REQUESTS,
@@ -45,7 +45,7 @@ pub async fn unfinished_job_count(t: &Tenant) -> Result<i64> {
 }
 
 /// Number of jobs that exhausted their retries.
-pub async fn failed_job_count(t: &Tenant) -> Result<i64> {
+pub async fn failed_job_count(t: &Instance) -> Result<i64> {
     t.store
         .count(
             schema::REQUESTS,
@@ -55,7 +55,7 @@ pub async fn failed_job_count(t: &Tenant) -> Result<i64> {
 }
 
 /// Unfinished legacy work: reject these stores rather than silently abandoning their jobs.
-pub async fn foreign_unfinished_job_count(t: &Tenant) -> Result<i64> {
+pub async fn foreign_unfinished_job_count(t: &Instance) -> Result<i64> {
     Ok(t.store
         .count(schema::TURNS, Some("extractState = 'pending'"))
         .await?
@@ -72,7 +72,7 @@ pub async fn foreign_unfinished_job_count(t: &Tenant) -> Result<i64> {
 /// with primary memories and sources, including successful extraction of zero memories.
 /// Index publication need not finish before a batch supplies extraction context.
 pub async fn previous_inputs(
-    t: &Tenant,
+    t: &Instance,
     platform: &str,
     project: &str,
     session: &str,
@@ -83,7 +83,7 @@ pub async fn previous_inputs(
 }
 
 /// Raw input jobs matching `filter`, in input order.
-pub async fn list_inputs(t: &Tenant, filter: InputFilter<'_>) -> Result<Vec<Value>> {
+pub async fn list_inputs(t: &Instance, filter: InputFilter<'_>) -> Result<Vec<Value>> {
     let mut sql = "SELECT * OMIT id FROM requests WHERE kind = 'mem0'".to_string();
     let mut binds = Vec::new();
     if let Some(project) = filter.project {
@@ -108,11 +108,11 @@ pub async fn list_inputs(t: &Tenant, filter: InputFilter<'_>) -> Result<Vec<Valu
 
 /// Primary facts used to reconcile the rebuildable entity projection. This deliberately
 /// reads the authoritative table rather than eventual vector/full-text indexes.
-pub async fn entity_memory_inputs(t: &Tenant) -> Result<Vec<Value>> {
+pub async fn entity_memory_inputs(t: &Instance) -> Result<Vec<Value>> {
     t.store.select("SELECT mid, text, type, scope, status, ingestionMode, supersedes, recordedAt, formationPosition FROM memories WHERE type = 'fact' AND status IN ['current','conflict'] ORDER BY mid ASC", vec![]).await
 }
 
-pub async fn entity_rows(t: &Tenant) -> Result<Vec<Value>> {
+pub async fn entity_rows(t: &Instance) -> Result<Vec<Value>> {
     t.store
         .select(
             "SELECT * OMIT id FROM mem0_entities ORDER BY mid ASC",
@@ -122,7 +122,7 @@ pub async fn entity_rows(t: &Tenant) -> Result<Vec<Value>> {
 }
 
 /// Content keys that currently deduplicate into `memory_id`.
-pub async fn content_keys_of(t: &Tenant, memory_id: &str) -> Result<Vec<String>> {
+pub async fn content_keys_of(t: &Instance, memory_id: &str) -> Result<Vec<String>> {
     Ok(t.store
         .select(
             "SELECT mid FROM mem0_hashes WHERE memoryId = $id ORDER BY mid ASC",
@@ -134,8 +134,19 @@ pub async fn content_keys_of(t: &Tenant, memory_id: &str) -> Result<Vec<String>>
         .collect())
 }
 
+/// The input requests formation made the fact `memory_id` from (its source batch); `None` without one, as for
+/// a record formation did not write.
+pub async fn source_requests(t: &Instance, memory_id: &str) -> Result<Option<Vec<String>>> {
+    let Some(source) = t.store.get_doc(super::SOURCES, memory_id).await? else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_value(
+        source["inputRequestIds"].clone(),
+    )?))
+}
+
 /// Canonical entity rows without their vectors: `{mid, entityType, linkedMemoryIds}`.
-pub async fn entity_links(t: &Tenant) -> Result<Vec<Value>> {
+pub async fn entity_links(t: &Instance) -> Result<Vec<Value>> {
     t.store
         .select(
             "SELECT mid, entityType, linkedMemoryIds FROM mem0_entities ORDER BY mid ASC",
@@ -146,14 +157,14 @@ pub async fn entity_links(t: &Tenant) -> Result<Vec<Value>> {
 
 /// Extraction intermediates are rebuildable; a stored text/version must match the
 /// authoritative fact before its extracted entities are reused.
-pub async fn entity_extractions(t: &Tenant) -> Result<Vec<Value>> {
+pub async fn entity_extractions(t: &Instance) -> Result<Vec<Value>> {
     t.store
         .select("SELECT * OMIT id FROM mem0_entity_inputs", vec![])
         .await
 }
 
 pub async fn entity_memory_inputs_by_id(
-    t: &Tenant,
+    t: &Instance,
     ids: &std::collections::BTreeSet<String>,
 ) -> Result<Vec<Value>> {
     if ids.is_empty() {
@@ -168,7 +179,7 @@ pub async fn entity_memory_inputs_by_id(
 }
 
 #[cfg(test)]
-pub async fn reject_entity_manifest(t: &Tenant, reject: bool) -> Result<()> {
+pub async fn reject_entity_manifest(t: &Instance, reject: bool) -> Result<()> {
     if reject {
         t.store
             .query(

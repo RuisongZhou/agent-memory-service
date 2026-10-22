@@ -28,7 +28,8 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 - 指令默认只对项目生效，模型给的 `scope: global` 只作提示，人在评审文件里把 `scope` 改成 `global` 才会全局生效；所有
   指令候选都按 1024 字符的上限检查。
 - 抽取缓存的键包括项目、单元文本、标题路径、`statedAt`、召回预算、提示词变体、提示词和模型；所有条目都没通过校验的
-  回复不缓存，下次重新抽取。抽取的输出 token 上限随原文长度增加，最多 8192。
+  回复不缓存，下次重新抽取。抽取的输出 token 上限是原文估算长度的两倍，至少 2000、最多 8192，不跟随形成的
+  `mem0MaxTokens`。
 - apply 前，CLI 重新读取来源文件，propose 之后改过的文件的提议一律按拒绝处理。
 - 已知限制：重复标题用 `~2`、`~3`，超长节用 `~partN`，都按在文件里的位置编号。在前面插入同名标题、或一节长过 8 KB 时，
   单元键会变。因为重复内容会链接、别的单元持有的记录不会被取代，这不会丢内容，但可能留下一条过时的 current 记录，
@@ -295,8 +296,9 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 
 **缓存**：按单元内容哈希、提示词哈希和模型缓存抽取结果。同一内容再次 propose 不会重新调用模型，内容变了才重新抽取。
 
-**提示词**是新写的，不复用 Mem0 面向对话的 additive 模板，放在 `memory-algo-mem0` 的提示词目录里，和 consolidation 的
-提示词放在一起。
+**提示词**是新写的，不复用 Mem0 面向对话的 additive 模板。它和导入的其他代码一起放在引擎里
+（[extract.txt](../../crates/memory-engine/src/app/import/extract.txt)），不属于任何算法：输出由纯规则校验，由引擎写成普通记录。
+算法只提供已有记忆的召回（`MemoryAlgorithm::nearest_facts`，和形成召回已有事实的方式相同）。
 
 **不用自由的 Agent**：模型不读文件、不调工具，一次只看一个单元。这样每条结果都有明确的出处，能逐条校验和撤销，也不会
 被笔记里嵌入的指令带偏。
@@ -361,7 +363,7 @@ run 的状态：`proposing` → `proposed`（或 `failed`）→ `applying` → `
 
 ### 6.9 导入台账、幂等和更新
 
-台账为每个导入单元保存一行：`(tenant, host, unit) → {fileHash, unitHash, memoryIds, runId, status}`。单元键由宿主、
+台账为每个导入单元保存一行：`(project, unit) → {fileHash, unitHash, memoryIds, runId, status}`。单元键由宿主、
 原生 ID（没有时用相对宿主目录的路径）和单元在文件里的位置组成。
 
 - 以文件为单位比较。文件哈希不变就整文件跳过，计划里标 `unchanged`。
@@ -452,7 +454,7 @@ agent-memoryd import plan --host claude-code|codex|workbuddy|jsonl --project my-
   [--include notes,sessions] [--since TIME] [--limit 200] \
   [--all] [--from FILE] [--label LABEL] [--no-extract] [--recall-budget 400] [--recall-top-k 5] [--home DIR] \
   [--claude-config-dir DIR] [--codex-home DIR] [--workbuddy-home DIR] [--out PLAN.jsonl]
-agent-memoryd import propose PLAN.jsonl [--url http://127.0.0.1:8765] [--tenant default] [--batch 8] [--timeout 900] \
+agent-memoryd import propose PLAN.jsonl [--url http://127.0.0.1:8765] [--batch 8] [--timeout 900] \
   [--home DIR] [--reconsider]
 agent-memoryd import show RUN [--out REVIEW.jsonl] [--force]
 agent-memoryd import apply RUN (--review REVIEW.jsonl | --yes) [--home DIR] [--outbox FILE] [--rate 20] [--max-pending 4]
@@ -478,7 +480,7 @@ agent-memoryd import prompt --project my-project [--lang zh|en]
 | 端点 | 作用 |
 |---|---|
 | `POST /admin/import_propose` | 接收计划里的单元（每次最多 64 个，暂定），原样采用或抽取，存 import run 和提议，不写记忆；会话轮次只登记 |
-| `POST /admin/import_apply` | `{"runId": "ir…", "decisions": {...}}`，逐条复查后写入。每条提议一个事务：记录、台账行、历史行和 `upsert` 索引任务；嵌入交给索引器，和 consolidation 合并结果的写法一样（[app/consolidation.rs](../../crates/memory-engine/src/app/consolidation.rs)）。会话轮次写进 outbox |
+| `POST /admin/import_apply` | `{"runId": "ir…", "decisions": {...}}`，逐条复查后写入。每条提议一个事务：记录、证据行、台账行和 `upsert` 索引任务，提议行本身记下写入、取代了什么；嵌入交给索引器，和 consolidation 合并结果的写法一样（[app/consolidation.rs](../../crates/memory-engine/src/app/consolidation.rs)）。会话轮次写进 outbox |
 | `POST /admin/import_rollback` | `{"runId": "ir…"}`，逆序撤销（6.16） |
 | `POST /admin/import_run`、`import_runs` | 读一个 run 和它的提议，或按时间倒序列出 run |
 
@@ -522,8 +524,8 @@ global fact 的可见性，以及 consolidation 只按项目选候选的规则�
 - 这次导入写入的 instruction 一并撤回；被人更正过的同样不动。
 - 会话轮次：台账记下每一轮的 requestId，以及 daemon 是否返回 `duplicate:true`。回滚只处理这次导入新建的请求，只撤回
   来源请求全部属于这次导入的事实；还有其他来源的事实保留。还在 outbox 里没上传的轮次直接取消。
-- 撤回事实依赖 Mem0 的私有表（`mem0_sources` 记着每条事实的来源请求），所以和 consolidation 一样，在 `MemoryAlgorithm`
-  上加导入用的钩子，由算法处理自己的私有表。
+- 撤回事实要知道它由哪些请求形成，这个出处在算法的私有表里（Mem0 的 `mem0_sources`）。引擎通过通用的
+  `MemoryAlgorithm::source_requests` 询问，算法不需要知道导入。导入不写算法的 history，回滚了什么记在提议行的 `rollback` 里。
 
 ### 6.17 导入之后
 
@@ -547,13 +549,14 @@ global fact 的可见性，以及 consolidation 只按项目选候选的规则�
 | `memory-rules` | 单元大小规则、确定性切分、脱敏规则、单元键和内容哈希、来源筛选规则、抽取结果的校验（复用 consolidation 的专有名词和数字检查），都是纯函数 |
 | `memory-domain` | `ORIGIN_IMPORTED`、导入单元、import run 和提议的类型、合并 origin 规则的修改、写入和回滚的记录计划（仿照 [consolidation apply](../../crates/memory-domain/src/consolidation/apply.rs)） |
 | `memory-store` | `import_runs`、`import_ledger` 和抽取缓存 `import_extractions` 表；提议复用共享的 `proposals` 表（`kind: "import"`） |
-| `memory-engine` | `app/import/`：`propose.rs`、`apply.rs`、`rollback.rs` 三个 admin 用例，`mod.rs` 放共用的台账和 run 读取 |
-| `memory-algo-mem0` | 抽取提示词和调用；`MemoryAlgorithm` 上新增的导入钩子，处理 Mem0 私有表（仿照 `consolidation_apply`），以及实体投影资格的判断 |
+| `memory-engine` | `app/import/`：`propose.rs`、`apply.rs`、`rollback.rs` 三个 admin 用例和会话轮次的 `turns.rs`；`extract.rs` 和 `extract.txt` 是抽取的调用和提示词；`mod.rs` 放共用的台账和 run 读取 |
+| `memory-algo-mem0` | 没有导入代码。导入只用两个通用钩子：`nearest_facts`（形成用的向量召回）和 `source_requests`（`mem0_sources` 里的来源请求）；`add_memories` 把 `importRunId` 和请求一起提交。实体投影只接受 `ingestionMode` 为 `inferred` 的记录，导入的记录因此不进投影 |
 | `memory-service` | `/admin/import_*` 的分发；`harness/import/` 下的宿主适配器、评审文件处理和 `agent-memoryd import` 命令（捕获的适配器也在 `harness/`） |
 | `examples/` | 宿主 Agent 的导出提示词（中文、英文） |
 | `scripts/install/` | 安装器的 `--import` |
 
-新代码沿用现有的依赖方向，不需要放宽 [check_architecture.py](../../scripts/check_architecture.py) 的规则。
+新代码沿用现有的依赖方向，不需要放宽 [check_architecture.py](../../scripts/check_architecture.py) 的规则。检查脚本还规定算法 crate
+不能引用导入的模块（`import::`），导入的代码不会再进到算法里。
 
 ## 8. 验证
 

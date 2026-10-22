@@ -532,7 +532,6 @@ pub struct FeedbackReq {
 /// Connection identity filled by the access layer (2.2: platform comes from the connection).
 #[derive(Debug, Clone)]
 pub struct Caller {
-    pub tenant: String,
     pub platform: String,
 }
 

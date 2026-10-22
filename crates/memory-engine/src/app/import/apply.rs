@@ -8,11 +8,10 @@ use std::sync::Arc;
 
 use super::{
     count, count_turns, interrupted, invalid, ledger, ledger_id, ledger_write, load_run,
-    other_units_naming, run_proposals, LedgerRow, DECLINED, EVENT_SUPERSEDED, LEDGER_APPLIED,
+    other_units_naming, run_proposals, LedgerRow, DECLINED, LEDGER_APPLIED,
 };
 use crate::app::consolidation::write_patch;
-use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::consolidation::apply::FieldPatch;
 use memory_domain::import::apply::{self as plan, EVIDENCE_ROLE};
 use memory_domain::import::{
@@ -65,11 +64,8 @@ enum Accepted {
 /// Retire `old_id`, the record the unit's earlier import was, for `new`, the record the unit holds now
 /// (written by this proposal or linked to). Left alone while another unit still holds it or when the plan
 /// refuses (a person or a later run changed it). Returns the patch written, or why not.
-#[allow(clippy::too_many_arguments)]
 async fn supersede(
-    eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
-    run: &ImportRun,
+    t: &Arc<Instance>,
     p: &ImportProposal,
     old_id: &str,
     new: &MemoryRec,
@@ -89,9 +85,6 @@ async fn supersede(
     };
     if let Ok(patch) = &patch {
         write_patch(tx, patch)?;
-        eng.algorithm()
-            .import_retired(t, old_id, &run.run_id, EVENT_SUPERSEDED, tx)
-            .await?;
     }
     Ok(patch)
 }
@@ -99,8 +92,7 @@ async fn supersede(
 /// The writes of one accepted proposal, added to `tx`. `global`: a person chose global scope for it (an
 /// instruction).
 async fn accept(
-    eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     run: &ImportRun,
     p: &ImportProposal,
     global: bool,
@@ -147,7 +139,7 @@ async fn accept(
     let released = p.supersedes.as_deref().filter(|old| *old != target.id);
     let mut replaced = None;
     if let Some(old_id) = released {
-        match supersede(eng, t, run, p, old_id, &target, tx, &now).await? {
+        match supersede(t, p, old_id, &target, tx, &now).await? {
             Ok(patch) => {
                 applied["superseded"] = serde_json::to_value(&patch)?;
                 replaced = Some(old_id.to_string());
@@ -155,7 +147,6 @@ async fn accept(
             Err(reason) => applied["supersedeSkipped"] = json!(reason),
         }
     }
-    let algorithm = eng.algorithm();
     if written {
         // A linked record keeps its own lineage; a written one names the record it replaced.
         target.supersedes = replaced;
@@ -177,9 +168,6 @@ async fn accept(
             context: None,
         };
         tx.put(schema::EVIDENCE, &evidence.id, to_doc(&evidence)?)?;
-        algorithm
-            .import_written(t, &target, &run.run_id, tx)
-            .await?;
     }
     ledger_write(
         t,
@@ -207,7 +195,7 @@ async fn accept(
 /// unit's earlier import was (`supersedes`) is retired while no other unit holds it, and the unit's ledger row
 /// and the proposal's bookkeeping commit in the same transaction. A unit whose proposals were all declined
 /// gets a `declined` row, so proposing the same text again finds it unchanged unless `reconsider` is asked.
-pub async fn apply(eng: &Arc<Engine>, t: &Arc<Tenant>, req: ImportRunReq) -> ApiResult<Value> {
+pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
     let id = req.run_id.as_str();
     load_run(t, id).await?;
     let ids: HashSet<String> = run_proposals(t, id)
@@ -270,7 +258,7 @@ pub async fn apply(eng: &Arc<Engine>, t: &Arc<Tenant>, req: ImportRunReq) -> Api
             json!({"status": APPLIED, "decision": ACCEPT, "applied": {"queued": true},
                 "appliedAt": util::now_str()})
         } else {
-            match accept(eng, t, &run, &p, global, &mut tx).await {
+            match accept(t, &run, &p, global, &mut tx).await {
                 Ok(Accepted::Applied { memory_id, applied }) => json!({"status": APPLIED,
                     "decision": ACCEPT, "memoryId": memory_id, "applied": applied,
                     "appliedAt": util::now_str()}),

@@ -1,6 +1,6 @@
 //! Consolidation proposals end to end: Mem0 formation and consolidation both answered by a local
 //! generation stub, with mock embeddings. No external model call. `consolidation_apply` reuses the stub.
-use super::tenant;
+use super::fresh_store;
 use axum::routing::post;
 use axum::{Json, Router};
 use memory_config::ServiceConfig;
@@ -114,7 +114,7 @@ pub(crate) fn engine(url: &str, enabled: bool) -> Arc<Engine> {
 
 pub(crate) async fn add(
     eng: &Arc<Engine>,
-    t: &Arc<memory_engine::runtime::tenant::Tenant>,
+    t: &Arc<memory_engine::runtime::instance::Instance>,
     c: &Caller,
     project: &str,
     turn: &str,
@@ -149,7 +149,7 @@ pub(crate) async fn add(
 pub async fn selftest() {
     let url = generation_stub().await;
     let eng = engine(&url, true);
-    let (t, caller, dir) = tenant(&eng, "consolidation-selftest", "test").await;
+    let (t, caller, dir) = fresh_store(&eng, "consolidation-selftest", "test").await;
     let first = add(
         &eng,
         &t,

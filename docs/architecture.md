@@ -26,7 +26,7 @@ and [SQLite vector/BM25 store](https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem
 | `memory-config` | Startup configuration and validation | none |
 | `memory-domain` | Records, request types, errors and pure integrity and consolidation planners | rules |
 | `memory-store` | SurrealDB transactions, repositories, revisions and integrity glue | domain, rules |
-| `memory-engine` | Tenants, workers, model clients, context and application operations | config, domain, store, rules, fulltext |
+| `memory-engine` | The store, workers, model clients, context and application operations | config, domain, store, rules, fulltext |
 | `memory-algo-mem0` | Formation, search, entity projection, consolidation prompt and ordered worker | engine and its dependencies |
 | `memory-service` | HTTP/MCP, composition, diagnostics and daemon | service layers |
 
@@ -41,7 +41,7 @@ SQL placement and the service/evaluation boundary.
    instructions to their synchronous path. Mem0 validates message roles, timestamp order and input shape.
 2. Under the ingest lock, formation checks the platform/turn idempotency key and commits the complete
    input, sequence number and `queued` request. Asynchronous acknowledgement confirms this commit.
-3. One ordered worker per tenant takes the formation lock. It prepares prior messages and retrieves
+3. One ordered worker takes the formation lock. It prepares prior messages and retrieves
    up to ten visible existing facts using **pure vector recall**, not the public hybrid search path.
 4. The prompt combines the vendored additive template, historical messages, existing facts with
    temporary IDs, full new messages, observation/current dates and optional custom instructions.
@@ -67,7 +67,7 @@ Opt-in [consolidation](#consolidation) proposes such rewrites and applies them o
 | View | Rule |
 |---|---|
 | Stored input and current formation batch | Full original messages; no old 8 KB head/tail clipping |
-| Historical prompt context | Latest ten messages from preceding formed, inferred requests in the same tenant/platform/project/session; at most 300 UTF-16 units per message |
+| Historical prompt context | Latest ten messages from preceding formed, inferred requests in the same platform/project/session; at most 300 UTF-16 units per message |
 | Embedding/reranking input | Model adapter token limit; truncating the model input does not alter stored text |
 
 Historical eligibility requires `formed:true` and status `indexing` or `completed`; raw and failed jobs
@@ -123,7 +123,7 @@ state marker publish atomically after checking the dependency revision under the
 Failed projection work leaves the request at `indexing`, never at a false completed checkpoint.
 
 A bounded revision journal supplies changed memory IDs. Warm queries compare in-memory revisions and
-reuse tenant-owned typed entity caches. Ordinary changes point-read affected facts and persist a delta;
+reuse store-owned typed entity caches. Ordinary changes point-read affected facts and persist a delta;
 canonical entity merges still replay cached history in memory, so this is not an O(new records) graph
 update. Restart, an expired journal, opaque writes or projection changes trigger authoritative recovery.
 Malformed intermediate caches are rebuilt. Correction/deletion removes obsolete links and extraction
@@ -285,7 +285,8 @@ protocols never call it.
    with `--no-extract`. Codex sections are always extracted, and an extraction input over 8 KB is cut into parts.
 2. **Propose.** Units arrive in batches of at most 64 on a `proposing` run. A unit whose hash matches its
    ledger row (`import_ledger`, one per project and unit) is `unchanged`. An extract unit costs one generation
-   call (`prompts/import.txt`, shown the project's ten nearest facts so known content is left out), cached in
+   call ([the engine's import prompt](../crates/memory-engine/src/app/import/extract.txt), shown the project's ten
+   nearest facts so known content is left out), cached in
    `import_extractions` by project, unit text, prompt and model. Every item is checked by pure rules in
    [memory-rules](../crates/memory-rules/src/import/validate.rs): its `evidence` must quote the unit, its numbers and
    named entities must occur in the unit or its metadata, and it must fit the cap; a failing item is stored as
@@ -313,6 +314,13 @@ admits it only as a turn the run applied, deduplicates it by `platform + turnId`
 the session's earlier turns as context. The request records the run, so rollback, after closing the run to further
 turns under an import gate, retires only the facts whose every source request is the run's own.
 
+Import is a shared use case, not part of an algorithm: the engine owns its prompt and its record writes, and asks the
+algorithm two generic questions through `MemoryAlgorithm`: `nearest_facts`, the facts formation would recall for a
+text (the extraction context and the reviewer's `similar`), and `source_requests`, the requests a fact was formed
+from (rolling back session turns). An algorithm's `add_memories` keeps `importRunId` on the request row it commits.
+Import writes no algorithm history; its runs' proposals record what each one wrote, superseded and rolled back. The
+[architecture checker](../scripts/check_architecture.py) keeps import modules out of algorithm crates.
+
 `imported` is not in `context_origins`, so `get_context` never presents imported facts as established; search
 and recall find them. They are consolidation candidates, and a merge with an imported input is never `user`.
 The entity projection leaves them out: they are not formation output. Run statuses are `proposing`, `proposed`,
@@ -332,7 +340,7 @@ records `error` and resumes.
 | Where do transaction integrity and revision checks live? | [memory-store](../crates/memory-store/src/), [domain integrity](../crates/memory-domain/src/integrity.rs) |
 | How are consolidation proposals selected, generated and validated? | [rules](../crates/memory-rules/src/consolidation.rs), [domain](../crates/memory-domain/src/consolidation.rs), [Mem0 prompt and provenance](../crates/memory-algo-mem0/src/consolidation.rs), [run storage](../crates/memory-engine/src/app/consolidation.rs) |
 | How are runs applied, rolled back and deleted? | [domain plans](../crates/memory-domain/src/consolidation/apply.rs), [Mem0 keys and sources](../crates/memory-algo-mem0/src/consolidation/apply.rs), [run use cases](../crates/memory-engine/src/app/consolidation.rs), [deletion](../crates/memory-engine/src/app/management/deletion.rs) |
-| How are a host's existing memories imported? | [host adapters and planner](../crates/memory-service/src/harness/import/), [pure rules](../crates/memory-rules/src/import/), [wire types and record plans](../crates/memory-domain/src/import.rs), [use cases](../crates/memory-engine/src/app/import/), [session turns](../crates/memory-engine/src/app/import/turns.rs), [Mem0 extraction](../crates/memory-algo-mem0/src/import.rs) |
+| How are a host's existing memories imported? | [host adapters and planner](../crates/memory-service/src/harness/import/), [pure rules](../crates/memory-rules/src/import/), [wire types and record plans](../crates/memory-domain/src/import.rs), [use cases](../crates/memory-engine/src/app/import/), [session turns](../crates/memory-engine/src/app/import/turns.rs), [extraction](../crates/memory-engine/src/app/import/extract.rs) |
 
 The [evaluation guide](../eval/README.md) owns SDK comparison commands and evidence locations.
 Its deterministic SDK comparison tests processing/score equivalence, not real-model answer quality or

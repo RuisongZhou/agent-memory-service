@@ -135,8 +135,7 @@ def free_port():
 @contextmanager
 def mock_daemon(binary, root, generation_url, outbox=None):
     """A daemon with mock retrieval models and a stub generation endpoint in `root`; it uploads `outbox`."""
-    env = dict(check_env(root), MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline-installer-check',
-               MEMORY_LLM_MAX_CALLS='8')
+    env = dict(check_env(root), MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline-installer-check')
     serve = ['--llm-base-url', generation_url, *(['--outbox', str(outbox)] if outbox else [])]
     with temporary_daemon(binary, root, serve, env) as url:
         yield url
@@ -328,9 +327,8 @@ def verify_local(host, ctx):
         outbox = root / 'outbox.sqlite3' if ctx.capture else None
         with generation_stub() as (generation, calls), mock_daemon(ctx.binary, root, generation, outbox) as url:
             argv = [str(ctx.binary), *core.bridge_args(url, ctx.platform)]
-            bridge_env = dict(env, MEMORY_TENANT=ctx.tenant)
-            verify_discover(argv, bridge_env)
-            bridge = Bridge(argv, bridge_env)
+            verify_discover(argv, env)
+            bridge = Bridge(argv, env)
             try:
                 bridge.request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {},
                                               'clientInfo': {'name': 'agent-memory-installer', 'version': '1'}})
@@ -376,7 +374,7 @@ def verify_model(ctx, env_file):
     with tempfile.TemporaryDirectory(prefix='agent-memory-model-check-') as temporary:
         root = Path(temporary)
         # The check environment drops provider variables: only the env file configures the models.
-        env = dict(check_env(root), MEMORY_LLM_MAX_CALLS='4')
+        env = check_env(root)
         serve = ['--env-file', str(env_file), '--llm-concurrency', '1']
         with temporary_daemon(ctx.binary, root, serve, env, wait=120, secret=secret) as url:
             stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')

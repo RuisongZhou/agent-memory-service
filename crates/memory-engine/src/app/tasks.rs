@@ -1,12 +1,12 @@
 //! Durable receipt inspection for facts and explicit instructions.
-use crate::runtime::{engine::Engine, tenant::Tenant};
+use crate::runtime::{engine::Engine, instance::Instance};
 use memory_domain::types::*;
 use memory_store::schema::{self, request_kind};
 use memory_store::store::{self, from_doc};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-pub async fn get_task(_eng: &Arc<Engine>, t: &Arc<Tenant>, req: GetTaskReq) -> ApiResult<Value> {
+pub async fn get_task(_eng: &Arc<Engine>, t: &Arc<Instance>, req: GetTaskReq) -> ApiResult<Value> {
     store::safe_id(&req.request_id)
         .map_err(|_| ApiError::InvalidArgument("invalid requestId".into()))?;
     let doc = t

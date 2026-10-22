@@ -111,21 +111,6 @@ def test_llama_smoke_environment_pins_mem0_without_inheriting_provider_settings(
     assert environment['QWEN_API_KEY'] == 'localhost-stub-placeholder'
 
 
-@pytest.mark.parametrize('arm,expected', [('current', 'current'), ('mem0-strategy', 'mem0')])
-def test_migration_control_overrides_inherited_strategy(monkeypatch, tmp_path, arm, expected):
-    from common import migration
-    monkeypatch.setenv('MEMORY_STRATEGY', 'mem0' if arm == 'current' else 'memos')
-    class Captured(Exception):
-        pass
-    def launch(command, *, env, **kwargs):
-        assert env['MEMORY_STRATEGY'] == expected
-        raise Captured
-    monkeypatch.setattr(migration.subprocess, 'Popen', launch)
-    with pytest.raises(Captured):
-        with migration.daemon(tmp_path, arm):
-            pytest.fail('must stop before any HTTP requests')
-
-
 def test_wrapper_rejects_retired_strategy(monkeypatch):
     module = script('serve')
     monkeypatch.setattr(sys, 'argv', ['serve.py', '--memory-strategy', 'memos'])

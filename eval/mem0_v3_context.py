@@ -7,7 +7,7 @@ Each arm gets fresh stores and the same frozen cases. No paid model is contacted
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.metadata
@@ -85,51 +85,60 @@ def service(binary, output, workload):
 
     stub = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
     threading.Thread(target=stub.serve_forever, daemon=True).start()
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    child_env = dict(os.environ, MEMORY_MOCK_MODELS="1", QWEN_API_KEY="offline",
-                     MEMORY_LLM_MAX_CALLS="100", MEMORY_STRATEGY="mem0")
+    child_env = dict(os.environ, MEMORY_MOCK_MODELS="1", QWEN_API_KEY="offline", MEMORY_STRATEGY="mem0")
     rows = []
-    with (output / "daemon.log").open("w") as log:
-        proc = subprocess.Popen([str(binary.resolve()), "serve", "--data-dir", str(output / "store"),
-                                 "--port", str(port), "--llm-base-url", f"http://127.0.0.1:{stub.server_port}",
-                                 "--prompt-variant", "en", "--memory-strategy", "mem0", "--log-level", "warn"],
-                                env=child_env, stdout=log, stderr=log)
 
-        def api(path, body=None, tenant="context"):
-            req = Request(f"http://127.0.0.1:{port}{path}",
-                          data=None if body is None else json.dumps(body).encode(),
-                          headers={"Content-Type": "application/json", "X-Memory-Tenant": tenant,
-                                   "X-Memory-Platform": "context"})
-            with urlopen(req, timeout=30) as response:
-                return json.load(response)
+    @contextmanager
+    def daemon(case_id):
+        """A daemon with a fresh store for one case."""
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        with (output / "daemon.log").open("a") as log:
+            proc = subprocess.Popen([str(binary.resolve()), "serve", "--data-dir", str(output / "store" / case_id),
+                                     "--port", str(port), "--llm-base-url", f"http://127.0.0.1:{stub.server_port}",
+                                     "--prompt-variant", "en", "--memory-strategy", "mem0", "--log-level", "warn"],
+                                    env=child_env, stdout=log, stderr=log)
 
-        try:
-            for _ in range(200):
-                if proc.poll() is not None:
-                    raise RuntimeError("daemon exited; inspect daemon.log")
-                try:
-                    api("/health")
-                    break
-                except OSError:
-                    time.sleep(.05)
-            else:
-                raise RuntimeError("startup timeout")
-            for case in workload:
+            def api(path, body=None):
+                req = Request(f"http://127.0.0.1:{port}{path}",
+                              data=None if body is None else json.dumps(body).encode(),
+                              headers={"Content-Type": "application/json", "X-Memory-Platform": "context"})
+                with urlopen(req, timeout=30) as response:
+                    return json.load(response)
+
+            try:
+                for _ in range(200):
+                    if proc.poll() is not None:
+                        raise RuntimeError("daemon exited; inspect daemon.log")
+                    try:
+                        api("/health")
+                        break
+                    except OSError:
+                        time.sleep(.05)
+                else:
+                    raise RuntimeError("startup timeout")
+                yield api
+            finally:
+                proc.terminate()
+                proc.wait(timeout=15)
+
+    try:
+        for case in workload:
+            with daemon(case["id"]) as api:
                 start = len(traces)
                 receipts = []
                 for i, (session, messages, infer) in enumerate(case["steps"]):
                     before = time.perf_counter()
                     receipt = api("/v1/add_memories", {"scope": {"project": "p", "session": session},
                                   "turnId": f"{case['id']}-{i}", "messages": messages, "infer": infer,
-                                  "sync": True}, case["id"])
+                                  "sync": True})
                     receipt["clientMs"] = (time.perf_counter() - before) * 1000
                     receipts.append(receipt)
                     assert receipt["status"] == "completed" and receipt["searchable"], receipt
-                raw = api("/v1/list_turns", {"scope": {"project": "p"}, "tokenBudget": 20000}, case["id"])
+                raw = api("/v1/list_turns", {"scope": {"project": "p"}, "tokenBudget": 20000})
                 inputs = [m for turn in raw["turns"] for m in turn["messages"]]
-                memories = api("/admin/export", {}, case["id"])
+                memories = api("/admin/export", {})
                 checks = evaluate(case, traces[start:], inputs)
                 if case["id"] in ("session", "raw"):
                     checks["no_contaminated_memory_persisted"] = not any(
@@ -137,18 +146,16 @@ def service(binary, output, workload):
                 if case["id"] in ("long", "reference"):
                     query = "TAIL_FACT_完整尾部" if case["id"] == "long" else "Resolved reference: BGE-M3"
                     found = api("/v1/search_memories", {"scope": {"project": "p"}, "query": query,
-                                                       "includeEvidence": True}, case["id"])
+                                                       "includeEvidence": True})
                     checks["formed_memory_searchable"] = any(r["memory"]["text"] == query for r in found["results"])
                     save(output / f"{case['id']}-search.json", found)
                 row = {"id": case["id"], "checks": checks, "receipts": receipts,
                        "traces": traces[start:], "inputs": raw, "memories": memories}
                 rows.append(row)
                 save(output / f"{case['id']}.json", row)
-        finally:
-            proc.terminate()
-            proc.wait(timeout=15)
-            stub.shutdown()
-            stub.server_close()
+    finally:
+        stub.shutdown()
+        stub.server_close()
     return rows
 
 
@@ -210,7 +217,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     workload = cases()
     save(output / "protocol.json", {"cases": workload, "realModelCalls": 0,
-         "scopeMapping": "SDK user_id=project, run_id=session; service tenant per case, fixed platform",
+         "scopeMapping": "SDK user_id=project, run_id=session; service store per case, fixed platform",
          "generation": "deterministic prompt-sensitive double; not an accuracy benchmark",
          "retrieval": "mock vectors; latency is not model/database performance",
          "sourceInspectionTokenBudget": 20000,

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::MAX_TEXT_BYTES;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
@@ -12,7 +12,7 @@ use memory_store::store::{patch, safe_id, Tx};
 
 /// Explicit user confirmation closes the competing assertion; original texts/evidence remain.
 pub async fn resolve_uncertainty(
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     caller: &Caller,
     req: ResolveUncertaintyReq,
 ) -> ApiResult<Value> {

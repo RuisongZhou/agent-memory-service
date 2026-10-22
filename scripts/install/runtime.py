@@ -202,9 +202,7 @@ def plan_service(args, ctx, binary):
     env_file = args.env_file or (Path(status['envFile']) if installed and status['envFile'] else ctx.home / ENV_FILE)
     plan = types.SimpleNamespace(
         env_file=env_file, env_change=None, outbox=outbox,
-        data_dir=status['dataDir'], llm_concurrency=status['llmConcurrency'],
-        # An installed unit without the guard was written with --max-calls 0; keep that.
-        max_calls=(status['maxCalls'] or 0) if installed else None)
+        data_dir=status['dataDir'], llm_concurrency=status['llmConcurrency'])
     if needs_key(args, env_file):
         secret = ctx.secret or read_key(args)
         current = read_file(env_file)
@@ -324,7 +322,7 @@ def start_service(ctx, plan):
     argv = [str(ctx.binary), 'service', 'install', '--apply', '--start', '--home', str(ctx.home),
             '--binary', str(ctx.binary), '--env-file', str(plan.env_file), '--port', str(ctx.port)]
     for flag, value in (('--data-dir', plan.data_dir), ('--outbox', plan.outbox),
-                        ('--llm-concurrency', plan.llm_concurrency), ('--max-calls', plan.max_calls)):
+                        ('--llm-concurrency', plan.llm_concurrency)):
         if value is not None:
             argv += [flag, str(value)]
     if ctx.binary_changed or plan.env_change is not None:

@@ -1,6 +1,6 @@
 //! Full-text index and entity dictionary for the Memory memory daemon (SPEC.md §4, design doc 5.2).
 //!
-//! * [`FullText`]: one Tantivy index per tenant holding both turns and memories (`kind` = `turn` |
+//! * [`FullText`]: one Tantivy index per store holding both turns and memories (`kind` = `turn` |
 //!   `memory`), body analysed with the `memory` analyzer ([`analyze`]), BM25 scoring, exact-term filters.
 //! * [`EntityDict`]: in-memory alias dictionary with normalised exact lookup and leftmost-longest matching.
 

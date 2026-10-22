@@ -1,3 +1,4 @@
+from common import migration
 from common.migration import service_blocks
 import json
 import pytest
@@ -65,3 +66,17 @@ def test_report_rejects_a_corpus_changed_by_search(tmp_path):
     with pytest.raises(ValueError):
         report(tmp_path, protocol)
     assert not (tmp_path / 'comparison.json').exists()
+
+
+@pytest.mark.parametrize('arm,expected', [('current', 'current'), ('mem0-strategy', 'mem0')])
+def test_migration_control_overrides_inherited_strategy(monkeypatch, tmp_path, arm, expected):
+    monkeypatch.setenv('MEMORY_STRATEGY', 'mem0' if arm == 'current' else 'memos')
+    class Captured(Exception):
+        pass
+    def launch(command, *, env, **kwargs):
+        assert env['MEMORY_STRATEGY'] == expected
+        raise Captured
+    monkeypatch.setattr(migration.subprocess, 'Popen', launch)
+    with pytest.raises(Captured):
+        with migration.daemon(tmp_path, arm):
+            pytest.fail('must stop before any HTTP requests')

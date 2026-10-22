@@ -13,7 +13,7 @@
 - **存储**：SurrealDB / SurrealKV 嵌入在进程内运行，不需要另外部署数据库或向量库。
 - **模型**：嵌入和可选的重排默认用 API key 调用托管模型，也可以换成自己运行的 llama-server；
   从对话中提取记忆的生成模型是单独配置的 OpenAI 兼容服务。
-- **边界**：daemon 只监听本机回环地址，服务一个本地用户。请求头里的 tenant、platform 只用于路由，不是认证。
+- **边界**：daemon 只监听本机回环地址，服务一个本地用户。请求头里的 platform 只用于路由，不是认证。一个 daemon 只有一个存储。
 
 ```text
  Codex · Claude Code · WorkBuddy · DeepSeek Harness
@@ -116,7 +116,7 @@ Codex 和 Claude Code 一样用 hooks 捕获对话（`UserPromptSubmit`、`Stop`
 | `--env-file`、`--key-file`、`--api-key-env NAME` | 指定 daemon 的 env 文件、从文件读取（并替换）密钥、从指定环境变量读取密钥 |
 | `--verify-model` | 用真实模型做一次端到端检查（少量模型调用） |
 | `--non-interactive` | 从不提示，缺少项目 ID 或密钥时直接失败 |
-| `--url`、`--tenant`、`--outbox` | daemon 地址（默认 `http://127.0.0.1:8765`，端口也用于服务）、存储租户、outbox 路径 |
+| `--url`、`--outbox` | daemon 地址（默认 `http://127.0.0.1:8765`，端口也用于服务）、outbox 路径 |
 | `--rollback [BACKUP]` / `--uninstall` | 恢复该宿主最近一次（或指定）安装前的配置文件 / 只删除本安装器写入的条目 |
 
 各宿主自己的选项（`--workspace`、`--scope user`、`--codex-home`、`--mcp-target`、`--dsh-home` 等）、

@@ -25,6 +25,9 @@ ALGORITHM_REF = re.compile(r'algorithms::|\bmem0_(?:sources|hashes|history)\b')
 ALGORITHM_CRATES = ('memory-algo-mem0/src/',)
 ALGORITHM_EXEMPT = ALGORITHM_CRATES + ('memory-service/src/bin/', 'memory-service/src/diagnostics/')
 ALGORITHM_EXEMPT_FILES = ('memory-service/src/lib.rs', 'memory-service/src/algorithms.rs')
+# Memory import is a shared use case that asks algorithms only generic questions: algorithm crates must not reach
+# into its modules (memory_domain::import, memory_rules::import, memory_engine::app::import) or keep their own.
+ALGORITHM_IMPORT_REF = re.compile(r'\bimport::|\bmod\s+import\b')
 # Raw SurrealQL belongs to the memory-store crate and to each algorithm crate's own repo persistence module;
 # test-only selftest modules may inspect tables directly. The harness commands keep a local SQLite outbox and
 # recall record shared with the Python hook scripts; that SQL never reaches the memory store.
@@ -70,6 +73,8 @@ def rust_violations():
         text = path.read_text(encoding='utf-8')
         if not rel.startswith(ALGORITHM_EXEMPT) and rel not in ALGORITHM_EXEMPT_FILES and ALGORITHM_REF.search(text):
             found.add(('algorithm-ref', rel))
+        if rel.startswith(ALGORITHM_CRATES) and ALGORITHM_IMPORT_REF.search(text):
+            found.add(('algorithm-import', rel))
         if not is_sql_exempt(rel) and RAW_SQL.search(text):
             found.add(('raw-sql', rel))
         if PATH_ATTR.search(text):
@@ -124,7 +129,7 @@ def script_violations():
 def eval_layout_violations():
     """SDK baselines, datasets and experiments must not leak into service scripts."""
     found = set()
-    for path in sorted(SCRIPTS.glob('*.py')):
+    for path in sorted(SCRIPTS.rglob('*.py')):
         rel = path.relative_to(ROOT).as_posix()
         if path.name in EVAL_ONLY_SCRIPTS:
             found.add(('eval-layout', rel))

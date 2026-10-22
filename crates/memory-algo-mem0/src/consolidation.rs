@@ -9,7 +9,7 @@ use memory_domain::consolidation::{
     self as plan, Cluster, ConsolidationOp, ConsolidationSnapshot, GeneratedOp, GeneratedOps,
 };
 use memory_domain::types::*;
-use memory_engine::runtime::{engine::Engine, llm::JsonContract, tenant::Tenant};
+use memory_engine::runtime::{engine::Engine, instance::Instance, llm::JsonContract};
 use memory_rules::consolidation::NAMED_ENTITY_KINDS;
 use memory_store::schema;
 use serde_json::{json, Value};
@@ -62,7 +62,7 @@ fn contract(members: usize) -> JsonContract {
 /// canonical entity rows are read together under the formation lock; generation happens later without it.
 pub async fn snapshot(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     project: &str,
 ) -> Result<ConsolidationSnapshot> {
     let guard = t.lock_formation().await;
@@ -121,7 +121,7 @@ pub async fn snapshot(
 /// response is persisted before parsing and the parsed output is logged with the prompt hashes.
 pub async fn generate(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     project: &str,
     cluster: &Cluster,
 ) -> Result<GeneratedOps> {
@@ -132,7 +132,7 @@ pub async fn generate(
         .map(|(i, m)| json!({"id":i.to_string(),"text":m.text,"statedAt":m.stated_at}))
         .collect();
     let mut sections = vec![format!("## Facts\n{}", serde_json::to_string(&facts)?)];
-    if eng.prompt_variant_for(t) == "zh" {
+    if eng.cfg.prompt_variant == "zh" {
         sections.push("## Language Requirement\nWrite merged text in the same language and script as the facts it merges.".into());
     }
     sections.push("# Output:".into());
@@ -181,7 +181,7 @@ pub async fn generate(
 /// for a merge also the union of the inputs' source batches in input order (keeps batch provenance and
 /// entity eligibility) and the merged text's content key. Inputs' keys are redirected to a merged record.
 async fn provenance(
-    t: &Tenant,
+    t: &Instance,
     project: &str,
     cluster: &Cluster,
     op: &ConsolidationOp,

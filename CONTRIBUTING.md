@@ -5,18 +5,21 @@ Use a short-lived branch and open a pull request. Describe the concrete problem,
 ## Prerequisites
 
 Building the daemon needs a current stable Rust toolchain, a native C compiler and Make; the service
-itself runs without Python. Python 3.11+ is needed only for the installer (`scripts/install.sh`) and
-evaluation, whose environment also runs the Python verification scripts in the checks below.
+itself runs without Python. Python 3.11+ is needed only for the installer (`scripts/install.sh`), the service
+script tests (with pytest) and evaluation.
 
 ## Checks
 
-Install evaluation/test dependencies once with `make setup` (see [evaluation setup](eval/README.md#setup-and-offline-checks)).
-For changes to service behavior, run the existing local/CI workflow:
+For changes to service behavior, run the existing local/CI workflow. None of it needs the evaluation environment
+or the dataset; `test-scripts` needs only pytest (`python3 -m pip install pytest`):
 
 ```sh
-make fmt test-workspace test build selftest smoke install-check
+make fmt test-workspace test-scripts build selftest smoke install-check
 make check-arch check-public
 ```
+
+For changes under `eval/`, install the evaluation dependencies and dataset once with `make setup` (see
+[evaluation setup](eval/README.md#setup-and-offline-checks)) and run `make test`.
 
 `test-workspace` runs every crate's unit tests in one cargo invocation, so shared dependencies compile once.
 `test-rust` (pure crates) and `test-service` (domain/store/engine/algorithm/service crates) run each half alone,

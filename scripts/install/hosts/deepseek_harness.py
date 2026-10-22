@@ -59,8 +59,7 @@ def default_project(args, ctx):
 
 def server_config(ctx):
     return {'serverName': SERVER, 'transport': 'stdio', 'command': str(ctx.binary),
-            'args': core.bridge_args(ctx.url, PLATFORM), 'env': {'MEMORY_TENANT': ctx.tenant},
-            'toolCallTimeoutMs': TOOL_TIMEOUT_MS}
+            'args': core.bridge_args(ctx.url, PLATFORM), 'toolCallTimeoutMs': TOOL_TIMEOUT_MS}
 
 
 # --- cordis.patch.yml ---------------------------------------------------------------

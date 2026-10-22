@@ -309,7 +309,7 @@ def collector_argv(ctx, subcommand, outbox=None, extra=()):
     outbox = outbox or ctx.outbox_arg
     if outbox:
         argv += ['--outbox', str(outbox)]
-    return argv + ['--project', ctx.project, '--platform', ctx.platform, '--tenant', ctx.tenant, *extra]
+    return argv + ['--project', ctx.project, '--platform', ctx.platform, *extra]
 
 
 def hook_command(ctx, outbox=None, extra=()):
@@ -332,8 +332,7 @@ def recall_argv(ctx, url=None, state=None):
     state = state or ctx.recall_state_arg
     if state:
         argv += ['--state', str(state)]
-    return argv + ['--project', ctx.project, '--platform', ctx.platform, '--tenant', ctx.tenant,
-                   '--url', url or ctx.url]
+    return argv + ['--project', ctx.project, '--platform', ctx.platform, '--url', url or ctx.url]
 
 
 def recall_command(ctx, url=None, state=None):
@@ -532,7 +531,6 @@ def arguments(argv=None):
                       help="remove only this project's MCP and capture entries (backed up)")
     parser.add_argument('--project', help='stable shared project ID recorded with captured dialogue')
     parser.add_argument('--url', default='http://127.0.0.1:8765', help='daemon base URL (default: %(default)s)')
-    parser.add_argument('--tenant', default='default', help='daemon tenant / store (default: %(default)s)')
     parser.add_argument('--no-capture', action='store_true',
                         help='install (or keep) no dialogue collector')
     parser.add_argument('--recall', action='store_true',
@@ -563,10 +561,8 @@ def arguments(argv=None):
     parser.add_argument('--non-interactive', action='store_true', help='never prompt; fail on missing values')
     host.add_arguments(parser)
     args = parser.parse_args(argv)
-    for name in ('project', 'tenant'):
-        value = getattr(args, name)
-        if value is not None and (not value.strip() or value.startswith('-')):
-            parser.error(f'--{name} must be non-empty and must not start with "-"')
+    if args.project is not None and (not args.project.strip() or args.project.startswith('-')):
+        parser.error('--project must be non-empty and must not start with "-"')
     if args.no_service:
         for name in ('env_file', 'key_file', 'verify_model'):
             if getattr(args, name):
@@ -584,8 +580,7 @@ def context(host, args):
         raise InstallError(f'{host.LABEL} gets MCP tools only; the installer writes no recall hooks there, '
                            'so leave out --recall')
     ctx = types.SimpleNamespace(home=home, platform=host.PLATFORM, project=args.project,
-                                tenant=args.tenant, capture=host.CAPTURE and not args.no_capture,
-                                recall=args.recall)
+                                capture=host.CAPTURE and not args.no_capture, recall=args.recall)
     ctx.url = check_url(args.url)
     if ctx.recall and urlsplit(ctx.url).hostname not in LOOPBACK:
         # Every prompt becomes a search query, and the daemon has no authentication: keep it on this
@@ -640,7 +635,7 @@ def plan(host, args, ctx, uninstall=False):
 
 
 def print_plan(host, args, ctx):
-    print(f'[plan] host={host.LABEL} platform={ctx.platform} tenant={ctx.tenant} daemon={ctx.url}')
+    print(f'[plan] host={host.LABEL} platform={ctx.platform} daemon={ctx.url}')
     import runtime
     runtime.print_plan(args, ctx)
     if ctx.capture:

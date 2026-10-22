@@ -22,7 +22,6 @@ def main():
     parser.add_argument('--config', type=Path)
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--mock', action='store_true')
-    parser.add_argument('--max-calls', type=int, default=60, help='attempt guard, including retries; use 0 for unlimited after pilot approval')
     parser.add_argument('--llm-concurrency',type=int,default=1)
     parser.add_argument('--outbox', nargs='?', const='', metavar='PATH',
                         help='also upload captured dialogue from this outbox (the default outbox without PATH)')
@@ -40,12 +39,6 @@ def main():
         env.pop('MEMORY_MODEL_API_KEY', None)
     else:
         env.pop('MEMORY_MOCK_MODELS', None)
-    if args.max_calls < 0:
-        parser.error('max-calls must be nonnegative')
-    if args.max_calls:
-        env['MEMORY_LLM_MAX_CALLS'] = str(args.max_calls)
-    else:
-        env.pop('MEMORY_LLM_MAX_CALLS', None)
     if args.llm_concurrency<1: parser.error('llm-concurrency must be positive')
     command = [str(args.bin.resolve()), 'serve', '--data-dir', str(args.data_dir),
                '--port', str(args.port),'--llm-concurrency',str(args.llm_concurrency)]

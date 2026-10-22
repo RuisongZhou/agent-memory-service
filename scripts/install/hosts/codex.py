@@ -62,7 +62,7 @@ def default_project(args, ctx):
 
 def server_entry(ctx):
     return {'command': str(ctx.binary), 'args': core.bridge_args(ctx.url, PLATFORM),
-            'tool_timeout_sec': TOOL_TIMEOUT_SEC, 'env': {'MEMORY_TENANT': ctx.tenant}}
+            'tool_timeout_sec': TOOL_TIMEOUT_SEC}
 
 
 def owned_notify(value):
@@ -148,8 +148,6 @@ def toml_value(value):
 def server_block(entry, newline):
     lines = [f'[mcp_servers.{SERVER}]']
     lines += [f'{key} = {toml_value(entry[key])}' for key in ('command', 'args', 'tool_timeout_sec')]
-    lines += ['', f'[mcp_servers.{SERVER}.env]']
-    lines += [f'{key} = {toml_value(value)}' for key, value in entry['env'].items()]
     return ''.join(line + newline for line in lines)
 
 
@@ -380,8 +378,7 @@ def host_check(args, ctx, planned):
             except (ValueError, AttributeError):
                 transport = {}
             expected = server_entry(ctx)
-            if (transport.get('command') != expected['command'] or transport.get('args') != expected['args']
-                    or transport.get('env') != expected['env']):
+            if transport.get('command') != expected['command'] or transport.get('args') != expected['args']:
                 raise InstallError(f'codex mcp get did not read [mcp_servers.{SERVER}] as written')
             print(f'[check] codex CLI read the {SERVER} MCP server from the planned config.toml')
         # Hook listing reads hooks.json alone, so the user's other MCP servers never start here.

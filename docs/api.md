@@ -29,11 +29,10 @@ HTTP errors become MCP `isError:true` results. There is no HTTP MCP, SSE or `/mc
 
 | Field | Meaning |
 |---|---|
-| `X-Memory-Tenant` | Independent store; defaults to `default`. MCP sets it through `MEMORY_TENANT` |
 | `X-Memory-Platform` | Calling adapter; MCP sets it through `--platform`, not a model-selected identity |
 | `scope.project` | Stable shared project ID, independent of machine paths |
 | `scope.session` | Actual native session ID; use a stable device prefix if IDs can collide |
-| `turnId` | Retry identity within the tenant and calling platform |
+| `turnId` | Retry identity within the calling platform |
 
 Writes require nonempty project/session. The idempotency key is `platform + turnId`, without
 project/session. Adapters encode `project/session/nativeTurnId` component by component and retain the
@@ -42,7 +41,8 @@ first payload and timestamps on retries. A new turn ID is a new event even if th
 Global and matching project memories are visible across clients; platform-scoped records default to
 the caller's platform. Search defaults to all visible projects when project is omitted or `"*"`.
 Raw input reads default to the caller's platform; explicit `scope.platform:"*"` reads across platforms.
-Use the same daemon, tenant and project to share memory. These labels route requests and do not authenticate users.
+Use the same daemon and project to share memory. These labels route requests and do not authenticate users. A daemon
+serves one store, under its data directory.
 
 ## Writes
 
@@ -122,7 +122,7 @@ is skipped rather than truncated; increase the budget or inspect the stored requ
 
 ## Health and administration
 
-`GET /health` reports strategy, backend/model identity, device/dtype, loaded tenants and process LLM usage.
+`GET /health` reports strategy, backend/model identity, device/dtype and process LLM usage.
 It confirms readiness, not provider-key validity or completion of queued writes.
 
 | Endpoint | Behavior |
@@ -130,7 +130,7 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /v1/embeddings` | OpenAI-compatible embeddings from the daemon's configured model; `input` is a string or a nonempty array of at most 128 strings |
 | `POST /admin/wait_idle` | Drain formation/index work and report remaining or failed requests |
 | `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs |
-| `POST /admin/export` | Read memories or selected audit tables in the current tenant; not a full backup |
+| `POST /admin/export` | Read memories or selected audit tables of the store; not a full backup |
 | `POST /admin/reindex` | Queue vector/full-text rebuild; CLI requires `--all`, `--vector` or `--fulltext` |
 | `POST /admin/consolidate` | Propose consolidation ops for one project and store the run; requires `consolidationEnabled` and `dryRun:true` |
 | `POST /admin/consolidation_apply` | Apply a proposed run's ops, one transaction per op; requires `consolidationEnabled` |
@@ -171,7 +171,7 @@ contract's bounded repair). The response is `{"run": {...}, "proposals": [...]}`
 | `proposals[].status`, `rejectReason` | `proposed`, `rejected` (failed validation, with the reason), or the run's `aborted`/`failed` |
 | `proposals[].detail` | Algorithm provenance for applying: input content keys; for merges the union of input request ids and the merged content key |
 
-`agent-memoryd consolidate --project P --dry-run [--url URL] [--tenant T]` posts the same request to a
+`agent-memoryd consolidate --project P --dry-run [--url URL]` posts the same request to a
 running daemon and prints the run. HTTP errors exit nonzero.
 
 ### Applying and rolling back consolidation runs
@@ -324,11 +324,8 @@ by the model adapter; stored messages remain complete. Startup probes the retrie
 for self-hosted servers to load); a provider, model or quantization change schedules re-embedding.
 Health reports `modelBackend` as `api`, `llama-server` or `mock`, with the embedding base URL as `modelDevice`.
 
-`MEMORY_LLM_MAX_CALLS` guards process-local generation attempts, including retries. The binary sets no
-guard by itself; `agent-memoryd service install --max-calls` and the Python launcher's `--max-calls` set it
-to 60 by default, and zero removes it. Restart resets the counter, so it is not a durable
-spending budget. `MEMORY_MOCK_MODELS=1` selects mock retrieval, not a generation stub. `MEMORY_TENANT`
-sets the MCP store. Deployment commands and process-manager templates live in [deployment](deployment.md).
+`MEMORY_MOCK_MODELS=1` selects mock retrieval, not a generation stub. Deployment commands and
+process-manager templates live in [deployment](deployment.md).
 
 ## Compatibility
 

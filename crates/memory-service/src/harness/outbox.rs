@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     UNIQUE (tenant, platform, turn_id)
 );";
 const SESSION_KEY: &str = "tenant=?1 AND platform=?2 AND project=?3 AND session=?4";
+/// The `tenant` column the schema keeps for the file `scripts/harness_memory.py` shares; it always holds this value.
+const TENANT: &str = "default";
 
 pub fn default_path() -> PathBuf {
     super::home().join(DEFAULT_OUTBOX)
@@ -52,8 +54,9 @@ pub struct Target {
     pub project: String,
     #[arg(long, default_value = "codex")]
     pub platform: String,
-    #[arg(long, default_value = "default")]
-    pub tenant: String,
+    /// Ignored: hooks written by earlier installers pass it.
+    #[arg(long, hide = true)]
+    pub tenant: Option<String>,
 }
 
 /// The hook field holding the host's native turn id.
@@ -129,7 +132,7 @@ fn blank(value: Option<&Value>) -> bool {
     }
 }
 
-fn enqueue_in(db: &Connection, tenant: &str, platform: &str, body: &Value) -> Result<(), Error> {
+fn enqueue_in(db: &Connection, platform: &str, body: &Value) -> Result<(), Error> {
     let Value::Object(fields) = body else {
         return Err(invalid("expected a JSON object"));
     };
@@ -152,7 +155,7 @@ fn enqueue_in(db: &Connection, tenant: &str, platform: &str, body: &Value) -> Re
     // Keep the first payload and its original capture timestamps on every retry.
     db.execute(
         "INSERT OR IGNORE INTO jobs (tenant,platform,turn_id,body,created_at) VALUES (?1,?2,?3,?4,?5)",
-        params![tenant, platform, turn_id, Value::Object(payload).to_string(), now()],
+        params![TENANT, platform, turn_id, Value::Object(payload).to_string(), now()],
     )?;
     Ok(())
 }
@@ -160,7 +163,6 @@ fn enqueue_in(db: &Connection, tenant: &str, platform: &str, body: &Value) -> Re
 #[derive(Debug, Clone)]
 struct Job {
     seq: i64,
-    tenant: String,
     platform: String,
     body: String,
     request_id: Option<String>,
@@ -181,21 +183,16 @@ impl Outbox {
         Ok(Self { db })
     }
 
-    pub fn enqueue(&mut self, tenant: &str, platform: &str, body: &Value) -> Result<(), Error> {
+    pub fn enqueue(&mut self, platform: &str, body: &Value) -> Result<(), Error> {
         let tx = self.db.transaction()?;
-        enqueue_in(&tx, tenant, platform, body)?;
+        enqueue_in(&tx, platform, body)?;
         tx.commit()?;
         Ok(())
     }
 
     /// Queue a past session turn of the import run its body names (`importRunId`), unless a job of the same turn
     /// is there already: one live capture queued, or an earlier run's.
-    pub fn enqueue_import(
-        &mut self,
-        tenant: &str,
-        platform: &str,
-        body: &Value,
-    ) -> Result<Queued, Error> {
+    pub fn enqueue_import(&mut self, platform: &str, body: &Value) -> Result<Queued, Error> {
         let run = required(body, "importRunId")?.to_string();
         let turn_id = required(body, "turnId")?.to_string();
         let tx = self
@@ -204,13 +201,13 @@ impl Outbox {
         let existing: Option<(String, String, Option<String>)> = tx
             .query_row(
                 "SELECT body,status,request_id FROM jobs WHERE tenant=?1 AND platform=?2 AND turn_id=?3",
-                params![tenant, platform, turn_id],
+                params![TENANT, platform, turn_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
         let queued = match existing {
             None => {
-                enqueue_in(&tx, tenant, platform, body)?;
+                enqueue_in(&tx, platform, body)?;
                 Queued::Added
             }
             Some((held, status, request_id)) => {
@@ -256,7 +253,6 @@ impl Outbox {
         &mut self,
         event: &Value,
         project: &str,
-        tenant: &str,
         platform: &str,
     ) -> Result<(), Error> {
         let Value::Object(fields) = event else {
@@ -285,7 +281,7 @@ impl Outbox {
         let body = turn_body(
             project, session, native_id, &user, assistant, &stamp, &stamp,
         );
-        self.enqueue(tenant, platform, &body)
+        self.enqueue(platform, &body)
     }
 
     /// Pair UserPromptSubmit with its Stop into one completed turn. `id_field` names the event's
@@ -294,7 +290,6 @@ impl Outbox {
         &mut self,
         event: &Value,
         project: &str,
-        tenant: &str,
         platform: &str,
         id_field: Option<TurnIdField>,
     ) -> Result<(), Error> {
@@ -309,7 +304,7 @@ impl Outbox {
             return Ok(());
         }
         let session = required(event, "session_id")?;
-        let key = params![tenant, platform, project, session];
+        let key = params![TENANT, platform, project, session];
         let id_field = id_field.unwrap_or(if platform == "codex" {
             TurnIdField::TurnId
         } else {
@@ -343,7 +338,7 @@ impl Outbox {
                 let marker = format!("session-end:{}", uuid::Uuid::new_v4());
                 let body = json!({"scope": {"project": project, "session": session},
                                   "turnId": turn_key(project, session, &marker), "sessionEnded": true});
-                enqueue_in(&tx, tenant, platform, &body)?;
+                enqueue_in(&tx, platform, &body)?;
             }
             tx.commit()?;
             return Ok(());
@@ -365,7 +360,7 @@ impl Outbox {
                         // Replacing an unmatched prompt discards an interrupted/incomplete turn.
                         tx.execute(
                             "INSERT OR REPLACE INTO prompts VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                            params![tenant, platform, project, session, native_id, prompt, now()],
+                            params![TENANT, platform, project, session, native_id, prompt, now()],
                         )?;
                     }
                 }
@@ -403,7 +398,7 @@ impl Outbox {
                 let existing = tx
                     .query_row(
                         "SELECT 1 FROM jobs WHERE tenant=?1 AND platform=?2 AND turn_id=?3",
-                        params![tenant, platform, turn_id],
+                        params![TENANT, platform, turn_id],
                         |_| Ok(()),
                     )
                     .optional()?
@@ -426,7 +421,7 @@ impl Outbox {
                     &started,
                     &now(),
                 );
-                enqueue_in(&tx, tenant, platform, &body)?;
+                enqueue_in(&tx, platform, &body)?;
                 forget(&tx)?;
             }
         }
@@ -437,13 +432,12 @@ impl Outbox {
     /// Identifiers, receipts and errors of every job, without chat text.
     pub fn status(&self) -> Result<Vec<Value>, Error> {
         let mut statement = self.db.prepare(
-            "SELECT seq,tenant,platform,turn_id,status,request_id,error FROM jobs ORDER BY seq",
+            "SELECT seq,platform,turn_id,status,request_id,error FROM jobs ORDER BY seq",
         )?;
         let rows = statement.query_map([], |row| {
-            Ok(json!({"seq": row.get::<_, i64>(0)?, "tenant": row.get::<_, String>(1)?,
-                      "platform": row.get::<_, String>(2)?, "turn_id": row.get::<_, String>(3)?,
-                      "status": row.get::<_, String>(4)?, "request_id": row.get::<_, Option<String>>(5)?,
-                      "error": row.get::<_, Option<String>>(6)?}))
+            Ok(json!({"seq": row.get::<_, i64>(0)?, "platform": row.get::<_, String>(1)?,
+                      "turn_id": row.get::<_, String>(2)?, "status": row.get::<_, String>(3)?,
+                      "request_id": row.get::<_, Option<String>>(4)?, "error": row.get::<_, Option<String>>(5)?}))
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -461,15 +455,14 @@ impl Outbox {
 
     fn jobs(&self, status: &str) -> Result<Vec<Job>, Error> {
         let mut statement = self.db.prepare(
-            "SELECT seq,tenant,platform,body,request_id FROM jobs WHERE status=?1 ORDER BY seq",
+            "SELECT seq,platform,body,request_id FROM jobs WHERE status=?1 ORDER BY seq",
         )?;
         let rows = statement.query_map([status], |row| {
             Ok(Job {
                 seq: row.get(0)?,
-                tenant: row.get(1)?,
-                platform: row.get(2)?,
-                body: row.get(3)?,
-                request_id: row.get(4)?,
+                platform: row.get(1)?,
+                body: row.get(2)?,
+                request_id: row.get(3)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -504,7 +497,6 @@ pub trait Sender {
         &self,
         name: &'static str,
         body: Value,
-        tenant: &str,
         platform: &str,
     ) -> impl Future<Output = Result<Value, CallError>> + Send;
 }
@@ -514,10 +506,9 @@ impl Sender for Daemon {
         &self,
         name: &'static str,
         body: Value,
-        tenant: &str,
         platform: &str,
     ) -> Result<Value, CallError> {
-        self.post(name, &body, tenant, platform).await
+        self.post(name, &body, platform).await
     }
 }
 
@@ -547,10 +538,7 @@ pub async fn drain_once<S: Sender>(
             errors += 1;
             break;
         };
-        match sender
-            .send("add_memories", body, &job.tenant, &job.platform)
-            .await
-        {
+        match sender.send("add_memories", body, &job.platform).await {
             Ok(receipt) => match required(&receipt, "requestId") {
                 Ok(request_id) => {
                     let request_id = request_id.to_string();
@@ -585,10 +573,7 @@ pub async fn drain_once<S: Sender>(
     for job in accepted {
         let seq = job.seq;
         let request = json!({"requestId": job.request_id});
-        let task = match sender
-            .send("get_task", request, &job.tenant, &job.platform)
-            .await
-        {
+        let task = match sender.send("get_task", request, &job.platform).await {
             Ok(task) => task,
             Err(e) => {
                 with(outbox, move |o| o.set_error(seq, e.kind())).await?;
@@ -728,7 +713,6 @@ mod tests {
         o.capture_hook(
             &hook("UserPromptSubmit", json!({"prompt": "live prompt"})),
             "project",
-            "default",
             "claude-code",
             None,
         )
@@ -736,13 +720,12 @@ mod tests {
         o.capture_hook(
             &hook("Stop", json!({"last_assistant_message": "live reply"})),
             "project",
-            "default",
             "claude-code",
             None,
         )
         .unwrap();
         let held = o
-            .enqueue_import("default", "claude-code", &imported("ir1", "t1"))
+            .enqueue_import("claude-code", &imported("ir1", "t1"))
             .unwrap();
         assert_eq!(
             held,
@@ -753,24 +736,23 @@ mod tests {
             }
         );
         assert_eq!(
-            o.enqueue_import("default", "claude-code", &imported("ir1", "t2"))
+            o.enqueue_import("claude-code", &imported("ir1", "t2"))
                 .unwrap(),
             Queued::Added
         );
         // A resumed apply finds its own job; a later run finds the first run's.
         assert_eq!(
-            o.enqueue_import("default", "claude-code", &imported("ir1", "t2"))
+            o.enqueue_import("claude-code", &imported("ir1", "t2"))
                 .unwrap(),
             Queued::Again
         );
         assert!(matches!(
-            o.enqueue_import("default", "claude-code", &imported("ir2", "t2")).unwrap(),
+            o.enqueue_import("claude-code", &imported("ir2", "t2")).unwrap(),
             Queued::Held { run: Some(run), .. } if run == "ir1"
         ));
         // Another platform's turn of the same id is a different turn.
         assert_eq!(
-            o.enqueue_import("default", "codex", &imported("ir1", "t1"))
-                .unwrap(),
+            o.enqueue_import("codex", &imported("ir1", "t1")).unwrap(),
             Queued::Added
         );
         let jobs = bodies(&o);
@@ -778,9 +760,7 @@ mod tests {
         assert_eq!(contents(&jobs[1]), ["Old prompt.", "Old reply."]);
         assert_eq!(jobs[1]["sync"], false);
         assert_eq!(o.backlog().unwrap(), 3);
-        assert!(o
-            .enqueue_import("default", "codex", &json!({"turnId": "x"}))
-            .is_err());
+        assert!(o.enqueue_import("codex", &json!({"turnId": "x"})).is_err());
     }
 
     #[test]
@@ -788,10 +768,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut o = outbox(&dir);
         for (run, turn) in [("ir1", "t1"), ("ir1", "t2"), ("ir2", "t3")] {
-            o.enqueue_import("default", "codex", &imported(run, turn))
-                .unwrap();
+            o.enqueue_import("codex", &imported(run, turn)).unwrap();
         }
-        o.capture_notify(&notify("t4", "reply"), "project", "default", "codex")
+        o.capture_notify(&notify("t4", "reply"), "project", "codex")
             .unwrap();
         let first = o.jobs("pending").unwrap()[0].seq;
         o.accept(first, "rq1").unwrap();
@@ -825,22 +804,12 @@ mod tests {
     fn notify_keeps_the_first_payload_across_reopening() {
         let dir = tempfile::tempdir().unwrap();
         outbox(&dir)
-            .capture_notify(
-                &notify("t1", "I saved the decision."),
-                "project",
-                "default",
-                "codex",
-            )
+            .capture_notify(&notify("t1", "I saved the decision."), "project", "codex")
             .unwrap();
         let original = bodies(&outbox(&dir));
         let mut reopened = outbox(&dir);
         reopened
-            .capture_notify(
-                &notify("t1", "a changed retry"),
-                "project",
-                "default",
-                "codex",
-            )
+            .capture_notify(&notify("t1", "a changed retry"), "project", "codex")
             .unwrap();
         let after = bodies(&reopened);
         assert_eq!(after, original);
@@ -853,7 +822,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut o = outbox(&dir);
         let mut capture = |event: Value| {
-            o.capture_hook(&event, "project", "default", "claude-code", None)
+            o.capture_hook(&event, "project", "claude-code", None)
                 .unwrap()
         };
         let hook = |name: &str, turn: &str, extra: Value| {
@@ -918,14 +887,8 @@ mod tests {
             event("Stop", json!({"last_assistant_message": "second reply"})),
             event("SessionEnd", json!({})),
         ] {
-            o.capture_hook(
-                &e,
-                "project",
-                "default",
-                "workbuddy",
-                Some(TurnIdField::None),
-            )
-            .unwrap();
+            o.capture_hook(&e, "project", "workbuddy", Some(TurnIdField::None))
+                .unwrap();
         }
         let jobs = bodies(&o);
         assert_eq!(contents(&jobs[0]), ["first prompt", "first reply"]);
@@ -942,7 +905,6 @@ mod tests {
             .capture_hook(
                 &event("UserPromptSubmit", json!({"prompt": "x"})),
                 "project",
-                "default",
                 "claude-code",
                 None,
             )
@@ -986,8 +948,7 @@ mod tests {
             ),
             event("SessionEnd", "t2", json!({"reason": "other"})),
         ] {
-            o.capture_hook(&e, "project", "default", "codex", None)
-                .unwrap();
+            o.capture_hook(&e, "project", "codex", None).unwrap();
         }
         let jobs = bodies(&o);
         assert_eq!(contents(&jobs[0]), ["Keep the source.", "Kept."]);
@@ -998,7 +959,6 @@ mod tests {
         let missing = o.capture_hook(
             &event("Stop", "t3", json!({"stop_hook_active": false})),
             "project",
-            "default",
             "codex",
             None,
         );
@@ -1014,14 +974,8 @@ mod tests {
             json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "  "}),
             json!({"hook_event_name": "Stop", "session_id": "s1", "last_assistant_message": "reply to the image"}),
         ] {
-            o.capture_hook(
-                &e,
-                "project",
-                "default",
-                "workbuddy",
-                Some(TurnIdField::None),
-            )
-            .unwrap();
+            o.capture_hook(&e, "project", "workbuddy", Some(TurnIdField::None))
+                .unwrap();
         }
         assert!(o.status().unwrap().is_empty());
         let open: i64 =
@@ -1050,11 +1004,10 @@ mod tests {
             ),
             (json!([1]), "JSON object"),
         ] {
-            let error = o.enqueue("default", "codex", &body).unwrap_err();
+            let error = o.enqueue("codex", &body).unwrap_err();
             assert!(error.to_string().contains(message), "{error}");
         }
         o.enqueue(
-            "default",
             "codex",
             &json!({"scope": scope, "turnId": "t", "sessionEnded": true}),
         )
@@ -1086,7 +1039,6 @@ mod tests {
             &self,
             name: &'static str,
             body: Value,
-            _tenant: &str,
             _platform: &str,
         ) -> Result<Value, CallError> {
             self.requests.lock().unwrap().push((name.into(), body));
@@ -1115,13 +1067,8 @@ mod tests {
     async fn lost_response_resends_same_key_then_polls_without_resubmitting() {
         let dir = tempfile::tempdir().unwrap();
         let mut o = outbox(&dir);
-        o.capture_notify(
-            &notify("t1", "I saved the decision."),
-            "p",
-            "tenant-one",
-            "codex",
-        )
-        .unwrap();
+        o.capture_notify(&notify("t1", "I saved the decision."), "p", "codex")
+            .unwrap();
         let o = Arc::new(Mutex::new(o));
         let fake = Fake::new(None);
         assert_eq!(drain_once(&o, &fake).await.unwrap(), 1);
@@ -1141,7 +1088,7 @@ mod tests {
         for (code, expected) in [(400, "rejected"), (503, "pending"), (429, "pending")] {
             let dir = tempfile::tempdir().unwrap();
             let mut o = outbox(&dir);
-            o.capture_notify(&notify("t1", "reply"), "p", "default", "codex")
+            o.capture_notify(&notify("t1", "reply"), "p", "codex")
                 .unwrap();
             let o = Arc::new(Mutex::new(o));
             assert_eq!(drain_once(&o, &Fake::new(Some(code))).await.unwrap(), 1);

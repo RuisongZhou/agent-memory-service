@@ -1,12 +1,12 @@
 """Building blocks for the fresh-store LoCoMo experiments (mem0_migration.py, locomo_full.py).
 
-An LLM relay that records every provider request, a throw-away daemon process per arm, the Mem0 SDK
+An LLM relay that records every provider request, a throw-away daemon process per store, the Mem0 SDK
 store factory pointed at that relay, corpus export, and service-response block extraction.
 """
 from __future__ import annotations
 
 from argparse import Namespace
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
@@ -93,35 +93,37 @@ def relay(root, arm, *, max_attempts=150):
 
 
 @contextmanager
-def daemon(root, arm, *, paid=False, llm_url=None, max_calls=150):
-    target = root / arm
-    target.mkdir(exist_ok=True)
+def _daemon(target, arm, store, *, paid, llm_url):
+    """One daemon serving the store in `target/store`; yields its client."""
+    data = target / store
+    data.mkdir(parents=True, exist_ok=True)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
-    binary = root / 'current-agent-memoryd' if arm == 'current' else root / 'new-agent-memoryd'
+    binary = target.parent / ('current-agent-memoryd' if arm == 'current' else 'new-agent-memoryd')
     config = {'defaultTokenBudget': 2000}
     if arm != 'current':
         config.update(memoryStrategy='mem0', mem0MaxTokens=8192, mem0CustomInstructions=mem0_adapter.mem0_custom_instructions())
     config_path = target / 'config.json'
     config_path.write_text(json.dumps(config, indent=2))
-    command = [str(binary.resolve()), 'serve', '--data-dir', str((target / 'store').resolve()),
+    command = [str(binary.resolve()), 'serve', '--data-dir', str(data.resolve()),
         '--config', str(config_path.resolve()), '--port', str(port), '--prompt-variant', 'en', '--llm-concurrency', '1', '--log-level', 'warn']
     if arm != 'current':
         command += ['--memory-strategy', 'mem0']
     if llm_url:
         command += ['--llm-base-url', llm_url]
     # The frozen protocol uses self-hosted BGE models; archived binaries ignore the provider variable.
-    child_env = dict(os.environ, QWEN_API_KEY=api_key() if paid else '', MEMORY_LLM_MAX_CALLS=str(max_calls) if paid else '0',
-        NO_PROXY='*', no_proxy='*', MEMORY_STRATEGY='current' if arm == 'current' else 'mem0', MEMORY_MODEL_PROVIDER='self-hosted')
+    # Paid generation goes through `relay`, which caps the attempts.
+    child_env = dict(os.environ, QWEN_API_KEY=api_key() if paid else '', NO_PROXY='*', no_proxy='*',
+        MEMORY_STRATEGY='current' if arm == 'current' else 'mem0', MEMORY_MODEL_PROVIDER='self-hosted')
     child_env.pop('MEMORY_MOCK_MODELS', None)
-    with (target / 'service.log').open('a') as log:
+    with (data / 'service.log').open('a') as log:
         process = subprocess.Popen(command, env=child_env, stdout=log, stderr=log)
         with httpx.Client(base_url=f'http://127.0.0.1:{port}', timeout=300, trust_env=False) as client:
             try:
                 for _ in range(600):
                     if process.poll() is not None:
-                        raise RuntimeError('daemon failed: ' + (target / 'service.log').read_text()[-2500:])
+                        raise RuntimeError('daemon failed: ' + (data / 'service.log').read_text()[-2500:])
                     try:
                         health = client.get('/health', timeout=1)
                         health.raise_for_status()
@@ -131,13 +133,7 @@ def daemon(root, arm, *, paid=False, llm_url=None, max_calls=150):
                 else:
                     raise TimeoutError('daemon startup timed out')
                 (target / 'health.json').write_text(json.dumps(health.json(), indent=2))
-
-                def post(path, body, tenant='conv-26-en'):
-                    response = client.post(path, json=body, headers={'X-Memory-Tenant': tenant, 'X-Memory-Platform': 'locomo'})
-                    if response.is_error:
-                        raise RuntimeError(f'{path}: {response.status_code}: {response.text[:1500]}')
-                    return response.json()
-                yield post, f'http://127.0.0.1:{port}'
+                yield client
             finally:
                 process.terminate()
                 try:
@@ -147,6 +143,22 @@ def daemon(root, arm, *, paid=False, llm_url=None, max_calls=150):
                     process.wait()
 
 
+@contextmanager
+def daemon(root, arm, stores=('store',), *, paid=False, llm_url=None):
+    """A throw-away daemon per store of `arm`, each with its own data directory `root/arm/<store>`. Yields
+    `post(path, body, store)`, which defaults to the first store, and the first daemon's URL."""
+    with ExitStack() as stack:
+        clients = {store: stack.enter_context(_daemon(root / arm, arm, store, paid=paid, llm_url=llm_url))
+                   for store in stores}
+
+        def post(path, body, store=stores[0]):
+            response = clients[store].post(path, json=body, headers={'X-Memory-Platform': 'locomo'})
+            if response.is_error:
+                raise RuntimeError(f'{path}: {response.status_code}: {response.text[:1500]}')
+            return response.json()
+        yield post, str(clients[stores[0]].base_url).rstrip('/')
+
+
 def sdk_stores(root, url, relay_url=None):
     args = Namespace(stores_dir=root / 'mem0-sdk' / 'sdk-store', tag='mem0',
         observation_date='session', no_custom_instructions=False, embed_url=url + '/v1',
@@ -154,8 +166,8 @@ def sdk_stores(root, url, relay_url=None):
     return mem0_adapter.Mem0Stores(args)
 
 
-def export(post, root, arm, tenants):
-    for tenant in tenants:
+def export(post, root, arm, stores):
+    for store in stores:
         for table in [None, 'llm_usage', 'llm_responses', 'extract_log', 'retrieval_log'] + (['requests'] if arm == 'mem0-strategy' else []):
-            result = post('/admin/export', {} if table is None else {'table': table}, tenant)
-            (root / arm / f'{tenant}-{table or "corpus"}.json').write_text(json.dumps(result, indent=2))
+            result = post('/admin/export', {} if table is None else {'table': table}, store)
+            (root / arm / f'{store}-{table or "corpus"}.json').write_text(json.dumps(result, indent=2))

@@ -109,32 +109,44 @@ class Gateway:
 
 
 class Service:
+    """One daemon per speaker of the protocol, each with its own store under `service-store/<speaker>`."""
+
     def __init__(self, root, protocol, gateway):
         self.root, self.protocol, self.gateway = root, protocol, gateway
-        with socket.socket() as sock:
-            sock.bind(('127.0.0.1', 0)); self.port = sock.getsockname()[1]
-        self.base = f'http://127.0.0.1:{self.port}'
-        self.proc = None
-        self.client = httpx.Client(base_url=self.base, timeout=300, trust_env=False)
+        self.speakers = [person['id'] for person in protocol['speakers']]
+        self.ports = {}
+        for speaker in self.speakers:
+            with socket.socket() as sock:
+                sock.bind(('127.0.0.1', 0)); self.ports[speaker] = sock.getsockname()[1]
+        self.base = f'http://127.0.0.1:{self.ports[self.speakers[0]]}'
+        self.procs = {}
+        self.clients = {speaker: httpx.Client(base_url=f'http://127.0.0.1:{port}', timeout=300, trust_env=False)
+                        for speaker, port in self.ports.items()}
         self.log = (root / 'service.log').open('a')
         config = {'mem0MaxTokens': 8192, 'mem0CustomInstructions': protocol['customInstructions'],
                   'mem0Rerank': False, 'mem0TopK': 30, 'mem0Threshold': .1, 'promptVariant': 'en'}
         save(root / 'service-config.json', config)
 
     def start(self, generation=True):
+        """Start every daemon; without `generation` they get no reachable generation endpoint."""
         # The protocol's embeddings come from the self-hosted BGE-M3 server, not the hosted default.
-        child = dict(os.environ, QWEN_API_KEY='local-gateway', MEMORY_LLM_MAX_CALLS='128' if generation else '0',
-                     MEMORY_MODEL_PROVIDER='self-hosted')
+        child = dict(os.environ, QWEN_API_KEY='local-gateway', MEMORY_MODEL_PROVIDER='self-hosted')
         child.pop('MEMORY_MOCK_MODELS', None)
-        self.proc = subprocess.Popen([self.protocol['binary'], 'serve', '--data-dir', str(self.root / 'service-store'),
-            '--port', str(self.port), '--config', str(self.root / 'service-config.json'), '--memory-strategy', 'mem0',
-            '--prompt-variant', 'en', '--llm-model', self.protocol['model'], '--llm-base-url', self.gateway.url + '/service',
-            '--embed-url', self.protocol.get('embedBaseUrl', 'http://127.0.0.1:8081'), '--no-reranker', '--llm-concurrency', '1', '--log-level', 'warn'],
-            env=child, stdout=self.log, stderr=self.log)
+        llm_url = self.gateway.url + '/service' if generation else 'http://127.0.0.1:1'
+        for speaker in self.speakers:
+            self.procs[speaker] = subprocess.Popen([self.protocol['binary'], 'serve',
+                '--data-dir', str(self.root / 'service-store' / speaker), '--port', str(self.ports[speaker]),
+                '--config', str(self.root / 'service-config.json'), '--memory-strategy', 'mem0',
+                '--prompt-variant', 'en', '--llm-model', self.protocol['model'], '--llm-base-url', llm_url,
+                '--embed-url', self.protocol.get('embedBaseUrl', 'http://127.0.0.1:8081'), '--no-reranker', '--llm-concurrency', '1', '--log-level', 'warn'],
+                env=child, stdout=self.log, stderr=self.log)
+        return [self.ready(speaker) for speaker in self.speakers][0]
+
+    def ready(self, speaker):
         for _ in range(180):
-            if self.proc.poll() is not None: raise RuntimeError('daemon exited; see service.log')
+            if self.procs[speaker].poll() is not None: raise RuntimeError('daemon exited; see service.log')
             try:
-                health = self.client.get('/health', timeout=2).json()
+                health = self.clients[speaker].get('/health', timeout=2).json()
                 if health.get('ok'):
                     assert health['modelBackend'] != 'mock', health
                     return health
@@ -142,16 +154,19 @@ class Service:
             time.sleep(.5)
         raise RuntimeError('daemon startup timeout')
 
-    def post(self, endpoint, body, speaker='default'):
-        result = self.client.post(endpoint, json=body, headers={'X-Memory-Tenant': speaker, 'X-Memory-Platform': 'live331'})
+    def post(self, endpoint, body, speaker=None):
+        result = self.clients[speaker or self.speakers[0]].post(endpoint, json=body, headers={'X-Memory-Platform': 'live331'})
         result.raise_for_status(); return result.json()
 
     def stop(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate(); self.proc.wait(timeout=25)
+        for proc in self.procs.values():
+            if proc.poll() is None:
+                proc.terminate(); proc.wait(timeout=25)
 
     def close(self):
-        self.stop(); self.client.close(); self.log.close()
+        self.stop()
+        for client in self.clients.values(): client.close()
+        self.log.close()
 
 
 class SDK:

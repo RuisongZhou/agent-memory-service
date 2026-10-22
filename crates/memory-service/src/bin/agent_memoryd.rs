@@ -115,8 +115,6 @@ enum Cmd {
         fulltext: bool,
         #[arg(long)]
         all: bool,
-        #[arg(long, default_value = "default")]
-        tenant: String,
     },
     /// Propose, apply or roll back a consolidation run on a running daemon and print it. Proposing and
     /// applying require `consolidationEnabled` in the daemon's configuration.
@@ -136,8 +134,6 @@ enum Cmd {
         /// Undo an applied run's ops, newest first; ops changed since stay applied
         #[arg(long, value_name = "RUN")]
         rollback: Option<String>,
-        #[arg(long, default_value = "default")]
-        tenant: String,
     },
 }
 
@@ -280,8 +276,8 @@ fn main() -> anyhow::Result<()> {
                         .await?;
                 let algorithm = memory_service::algorithms::select(cfg.memory_strategy);
                 let eng = Engine::new(cfg, llm, models, algorithm);
-                // open the default store eagerly so its workers resume unfinished tasks
-                eng.tenant("default").await?;
+                // open the store eagerly so its workers resume unfinished tasks
+                eng.store().await?;
                 if let Some((path, outbox)) = outbox {
                     tokio::spawn(harness::uploader::run(eng.clone(), path, outbox));
                 }
@@ -312,14 +308,12 @@ fn main() -> anyhow::Result<()> {
                 vector,
                 fulltext,
                 all,
-                tenant,
             } => {
                 anyhow::ensure!(vector || fulltext || all, "select --vector, --fulltext or --all");
                 let body =
                     serde_json::json!({"vector": vector || all, "fulltext": fulltext || all});
                 let resp = reqwest::Client::new()
                     .post(format!("{}/admin/reindex", url.trim_end_matches('/')))
-                    .header("x-memory-tenant", tenant)
                     .json(&body)
                     .send()
                     .await?
@@ -332,7 +326,6 @@ fn main() -> anyhow::Result<()> {
                 dry_run: _,
                 apply,
                 rollback,
-                tenant,
             } => {
                 let (action, body) = match (project, apply, rollback) {
                     (_, Some(run), _) => ("consolidation_apply", serde_json::json!({"runId": run})),
@@ -346,7 +339,6 @@ fn main() -> anyhow::Result<()> {
                 };
                 let resp = reqwest::Client::new()
                     .post(format!("{}/admin/{action}", url.trim_end_matches('/')))
-                    .header("x-memory-tenant", tenant)
                     .json(&body)
                     .send()
                     .await?;

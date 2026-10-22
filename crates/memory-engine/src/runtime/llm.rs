@@ -59,9 +59,8 @@ pub struct Llm {
     pub total_completion: AtomicU64,
     pub total_cache_hit: AtomicU64,
     pub total_calls: AtomicU64,
-    /// Optional pilot guard: counts all attempts, including retries and transport failures.
+    /// Every attempt, including retries and transport failures.
     pub total_attempts: AtomicU64,
-    max_calls: Option<u64>,
     timeout: Duration,
 }
 
@@ -84,11 +83,6 @@ impl Llm {
             total_cache_hit: AtomicU64::new(0),
             total_calls: AtomicU64::new(0),
             total_attempts: AtomicU64::new(0),
-            max_calls: std::env::var("MEMORY_LLM_MAX_CALLS")
-                .ok()
-                .map(|s| s.parse::<u64>())
-                .transpose()
-                .context("MEMORY_LLM_MAX_CALLS must be a nonnegative integer")?,
             timeout: Duration::from_secs(timeout_secs),
         })
     }
@@ -158,15 +152,7 @@ impl Llm {
         let mut last_err = anyhow!("no attempt");
         for attempt in 0..6u32 {
             let request_time = memory_rules::util::now();
-            self.total_attempts
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                    if self.max_calls.map(|limit| n >= limit).unwrap_or(false) {
-                        None
-                    } else {
-                        Some(n + 1)
-                    }
-                })
-                .map_err(|_| anyhow!("LLM attempt limit reached; pending work remains durable"))?;
+            self.total_attempts.fetch_add(1, Ordering::SeqCst);
             if attempt > 0 {
                 let backoff = Duration::from_millis(1000 * 2u64.pow(attempt.min(5)));
                 tokio::time::sleep(backoff).await;
@@ -337,7 +323,6 @@ impl Llm {
         json!({
             "calls": self.total_calls.load(Ordering::Relaxed),
             "attempts": self.total_attempts.load(Ordering::Relaxed),
-            "maxCalls": self.max_calls,
             "promptTokens": self.total_prompt.load(Ordering::Relaxed),
             "completionTokens": self.total_completion.load(Ordering::Relaxed),
             "cacheHitTokens": self.total_cache_hit.load(Ordering::Relaxed),

@@ -1,7 +1,7 @@
 //! Rebuildable Mem0 entity projection. Primary memories remain authoritative.
 //! The regex fallback is a supported Node SDK configuration; compromise NLP is not used.
 use anyhow::{ensure, Result};
-use memory_engine::runtime::{engine::Engine, tenant::Tenant};
+use memory_engine::runtime::{engine::Engine, instance::Instance};
 use memory_rules::util;
 use memory_store::{schema, store::Tx};
 use serde_json::{json, Value};
@@ -44,15 +44,16 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 /// Missing ingestionMode is reconstructed only from existing Mem0 provenance or a
 /// correction predecessor. Unknown legacy facts are excluded rather than treating raw
 /// facts as inferred. Corrections of inferred facts inherit entity-index eligibility.
-async fn inferred(t: &Tenant, doc: &Value) -> Result<bool> {
+/// Any recorded mode but `inferred` (raw text, or a record another use case wrote) is not
+/// formation inference.
+async fn inferred(t: &Instance, doc: &Value) -> Result<bool> {
     let mut doc = doc.clone();
     let mut seen = HashSet::new();
     for _ in 0..128 {
         match doc["ingestionMode"].as_str() {
             Some("inferred") => return Ok(true),
-            // Imported records copy a host's own notes; they are not formation output (see import.rs).
-            Some("raw" | "imported") => return Ok(false),
-            _ => {}
+            Some(_) => return Ok(false),
+            None => {}
         }
         let mid = doc["mid"].as_str().unwrap_or("");
         if !seen.insert(mid.to_owned()) {
@@ -129,7 +130,7 @@ struct Snapshot {
 type ProjectionCache = tokio::sync::Mutex<Option<Snapshot>>;
 
 async fn prepare_fact(
-    t: &Tenant,
+    t: &Instance,
     doc: Value,
     known: &HashSet<String>,
     saved: Option<&Value>,
@@ -345,10 +346,10 @@ async fn project(
     Ok(records)
 }
 
-/// Called only while holding Tenant::lock_formation. Snapshot publication follows a
+/// Called only while holding Instance::lock_formation. Snapshot publication follows a
 /// successful projection transaction. Restart, lost journal and opaque writes use full
 /// authoritative recovery; ordinary changes read only their affected primary IDs.
-pub async fn reconcile_locked(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
+pub async fn reconcile_locked(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()> {
     let cache = t.algorithm_state::<ProjectionCache>();
     let mut cached = cache.lock().await;
     loop {
@@ -546,7 +547,7 @@ pub async fn reconcile_locked(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> 
 /// SDK per-query entity top-500 / >=0.5 scoring over a committed typed snapshot.
 pub async fn boosts(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     query: &str,
     project: &str,
     platform: &str,

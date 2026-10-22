@@ -68,8 +68,13 @@ def batch_key(p, s, offset):
     return f'{p.user_id}/{s.key}/{offset}'
 
 
-def tenant(p):
+def store(p):
     return p.conv + ('-a-en' if p.is_a else '-b-en')
+
+
+def stores_of(arm, conv):
+    """The arm's service stores, one daemon each; the SDK arm's daemon only serves embeddings."""
+    return ['store'] if arm == 'mem0-sdk' else [store(p) for p in perspectives(conv)]
 
 
 def protocol(data, workers):
@@ -143,7 +148,7 @@ def ingest(root, arm, conv, spec):
     starts = {r['key']: r for r in jsonl.read(target/'batch-starts.jsonl')}
     cap = len(planned)*6
     with relay(root, arm, max_attempts=cap) as llm_url, daemon(
-            root, arm, paid=arm != 'mem0-sdk', llm_url=llm_url, max_calls=cap) as (post, url):
+            root, arm, stores_of(arm, conv), paid=arm != 'mem0-sdk', llm_url=llm_url) as (post, url):
         runtime = model_metadata.capture(json.loads((target/'health.json').read_text()))
         if runtime['isMock']:
             raise RuntimeError('A full benchmark cannot use mock models')
@@ -182,7 +187,7 @@ def ingest(root, arm, conv, spec):
                             time.sleep(2**attempt)
                 else:
                     result = post('/v1/add_memories', {'turnId': f'{s.key}-{offset}',
-                        'scope': {'project': p.conv, 'session': s.key}, 'messages': messages, 'sync': True}, tenant(p))
+                        'scope': {'project': p.conv, 'session': s.key}, 'messages': messages, 'sync': True}, store(p))
                     if result.get('status') != 'completed':
                         raise RuntimeError(f'Incomplete formation for {key}: {result}')
                 row = {'key': key, 'speaker': p.speaker, 'session': s.key, 'offset': offset,
@@ -197,10 +202,10 @@ def ingest(root, arm, conv, spec):
                 write_json(target/'corpus-saved.json', {p.speaker: sdk_corpus(stores.get(p)) for p in perspectives(conv)})
             else:
                 for p in perspectives(conv):
-                    status = post('/admin/wait_idle', {}, tenant(p))
+                    status = post('/admin/wait_idle', {}, store(p))
                     if status.get('status') != 'idle' or status.get('failedTurns'):
                         raise RuntimeError(status)
-                export(post, root, arm, [tenant(p) for p in perspectives(conv)])
+                export(post, root, arm, stores_of(arm, conv))
             summary = {'arm': arm, 'conv': conv['sample_id'], 'batches': len(done),
                        'processed_messages': sum(r['n_messages'] for r in done.values()),
                        'save_work_ms': sum(r['ms'] for r in done.values()),
@@ -220,7 +225,7 @@ def search(root, arm, conv, spec):
     if (target/'retrieval-audit.json').exists():
         return
     rows = {(r['pass'], r['qid']): r for r in jsonl.read(target/'retrieval.jsonl')}
-    with daemon(root, arm) as (post, url):
+    with daemon(root, arm, stores_of(arm, conv)) as (post, url):
         model_metadata.assert_same(json.loads((target/'runtime.json').read_text()),
                                    json.loads((target/'health.json').read_text()))
         stores = sdk_stores(root, url) if arm == 'mem0-sdk' else None
@@ -229,7 +234,7 @@ def search(root, arm, conv, spec):
             memories = [stores.get(p) for p in ps] if stores else None
             def corpus():
                 return {p.speaker: sdk_corpus(m) for p, m in zip(ps, memories)} if stores else {
-                    tenant(p): post('/admin/export', {}, tenant(p))['memories'] for p in ps}
+                    store(p): post('/admin/export', {}, store(p))['memories'] for p in ps}
             before_path = target/'corpus-before-search.json'
             before = corpus()
             if before_path.exists():
@@ -251,7 +256,7 @@ def search(root, arm, conv, spec):
                     else:
                         responses = [post('/v1/search_memories', {'query': q['question'], 'scope': {'project': p.conv},
                             'topK': spec['search_top_k_per_store'], 'tokenBudget': spec['context_cap'], 'includeRecent': False,
-                            'includeEvidence': False, 'asOf': locomo.rfc3339(locomo.as_of(conv)), 'touch': False}, tenant(p)) for p in ps]
+                            'includeEvidence': False, 'asOf': locomo.rfc3339(locomo.as_of(conv)), 'touch': False}, store(p)) for p in ps]
                         blocks = [block for response in responses for block in service_blocks(response)]
                     ms = (time.perf_counter()-tick)*1000
                     blocks.sort(key=lambda x: (-x[0], x[1]))

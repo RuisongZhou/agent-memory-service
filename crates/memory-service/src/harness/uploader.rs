@@ -23,11 +23,9 @@ impl Sender for InProcess {
         &self,
         name: &'static str,
         body: Value,
-        tenant: &str,
         platform: &str,
     ) -> Result<Value, CallError> {
         let caller = Caller {
-            tenant: tenant.into(),
             platform: platform.into(),
         };
         http::call(&self.0, &caller, name, body)
