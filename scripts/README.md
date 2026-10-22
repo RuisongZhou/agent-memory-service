@@ -17,6 +17,7 @@ Run commands from the repository root.
 | `mem0_hybrid_http_smoke.py` | Entity persistence, correction/delete repair, scope and restart checks | Local deterministic stub only |
 | `llama_http_smoke.py` | Self-hosted provider integration with already running real llama-server models | Local deterministic generation stub only |
 | `check_architecture.py` | Enforce Rust boundaries and separation between service and evaluation files | None |
+| `tests/` | Tests of the collector, recall hook, installer and launchers (`make test-scripts`); they need only pytest, not the evaluation environment or the dataset | None |
 | `check_public.py` | Check the Git index for weights, secrets and generated state | None |
 
 See [deployment instructions](../docs/deployment.md#install-and-deploy) for startup,

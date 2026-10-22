@@ -129,7 +129,7 @@ def script_violations():
 def eval_layout_violations():
     """SDK baselines, datasets and experiments must not leak into service scripts."""
     found = set()
-    for path in sorted(SCRIPTS.glob('*.py')):
+    for path in sorted(SCRIPTS.rglob('*.py')):
         rel = path.relative_to(ROOT).as_posix()
         if path.name in EVAL_ONLY_SCRIPTS:
             found.add(('eval-layout', rel))

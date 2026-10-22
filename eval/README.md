@@ -26,9 +26,9 @@ make test
 the dataset, use `python3 eval/download_data.py`. Neither setup command invokes a
 paid model or evaluates the dataset.
 
-Python tests use intercepted model calls and local Mem0/Qdrant components.
-Service deployment does not need these dependencies or the dataset. The service's
-mock/stub HTTP and MCP checks remain in [scripts/](../scripts/README.md).
+`make test` runs the evaluation tests, with intercepted model calls and local Mem0/Qdrant components.
+Service deployment and service checks do not need these dependencies or the dataset. The service's
+script tests (`make test-scripts`) and mock/stub HTTP and MCP checks are in [scripts/](../scripts/README.md).
 If invoking a vendored upstream CLI directly, use `eval/` as its working directory;
 its original relative `results/` defaults then stay under `eval/results/`.
 

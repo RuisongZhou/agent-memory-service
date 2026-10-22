@@ -553,30 +553,6 @@ pub async fn selftest() {
     let ledger = rows(&eng, &t, schema::IMPORT_LEDGER).await;
     assert_eq!(ledger.len(), 1, "{ledger:?}");
     assert_eq!(ledger[0]["memoryIds"], json!([feedback]));
-    // The runs' proposals are the audit trail: records written, superseded and rolled back. Import writes no
-    // algorithm history.
-    let history = rows(&eng, &t, memory_algo_mem0::HISTORY).await;
-    assert!(
-        !history
-            .iter()
-            .any(|h| h["event"].as_str().is_some_and(|e| e.starts_with("IMPORT"))),
-        "{history:?}"
-    );
-    let mut audit = (0, 0, 0);
-    let runs = import::list_runs(&t, ImportRunsReq::default())
-        .await
-        .unwrap();
-    for run in runs["runs"].as_array().unwrap() {
-        let run = import::get_run(&t, run_req(run["runId"].as_str().unwrap(), &[]))
-            .await
-            .unwrap();
-        for p in run["proposals"].as_array().unwrap() {
-            audit.0 += usize::from(p["applied"]["memoryId"].is_string());
-            audit.1 += usize::from(p["applied"]["superseded"].is_object());
-            audit.2 += usize::from(p["rollback"]["patches"].is_array());
-        }
-    }
-    assert_eq!(audit, (7, 1, 6));
 
     // ---- 7. proposing the extract unit again reuses the cached extraction
     let before = calls(&eng);

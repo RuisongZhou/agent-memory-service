@@ -1,16 +1,20 @@
 PYTHON ?= .venv/bin/python
+# Service script tests need only pytest, not the evaluation environment or the dataset.
+SCRIPTS_PYTHON ?= python3
 CARGO ?= cargo
 # Empty = cargo default (all cores). Set JOBS=2 on a machine with limited memory.
 JOBS ?=
 JFLAG = $(if $(JOBS),-j $(JOBS))
 
-.PHONY: setup build test test-workspace test-rust test-service selftest smoke install-check fmt check-public check-arch
+.PHONY: setup build test test-scripts test-workspace test-rust test-service selftest smoke install-check fmt check-public check-arch
 setup:
 	python3 eval/setup_eval.py
 build:
 	$(CARGO) build --locked -p memory-service --bin agent-memoryd --profile fast $(JFLAG)
 test:
 	$(PYTHON) -m pytest -q eval/tests
+test-scripts:
+	$(SCRIPTS_PYTHON) -m pytest -q scripts/tests
 # Every crate in one cargo invocation: separate invocations resolve dependency features differently and
 # rebuild shared dependencies. test-rust and test-service run each half on its own.
 test-workspace:
