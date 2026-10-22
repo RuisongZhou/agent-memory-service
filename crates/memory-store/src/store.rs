@@ -454,6 +454,7 @@ impl Store {
         Some(out)
     }
 
+    #[cfg(test)]
     pub fn memory_changes_since(&self, revision: u64) -> Option<BTreeSet<String>> {
         Some(
             self.document_changes_since(revision, &[schema::MEMORIES])?
@@ -549,16 +550,6 @@ impl Store {
     }
 
     // ------------------------------------------------------------ turns / sessions
-
-    pub async fn get_turn(&self, platform: &str, turn_id: &str) -> Result<Option<TurnRec>> {
-        let v = self
-            .select(
-                "SELECT * OMIT id, embedding, chunkEmbeddings FROM turns WHERE platform = $p AND turnId = $t LIMIT 1",
-                vec![("p", json!(platform)), ("t", json!(turn_id))],
-            )
-            .await?;
-        v.into_iter().next().map(from_doc).transpose()
-    }
 
     // ------------------------------------------------------------ embeddings
 

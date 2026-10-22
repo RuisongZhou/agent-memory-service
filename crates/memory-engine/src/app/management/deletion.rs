@@ -13,7 +13,7 @@ use memory_domain::types::*;
 use memory_store::schema;
 use memory_store::store::{safe_id, turn_rid, Tx};
 
-/// Physical delete: the record, its index entries (full-text delete committed before returning), evidence
+/// Physical delete: the record, its vector index entry (dropped before returning), evidence
 /// rows that only reference it, edges pointing at it, and its id in derived-turn lists. An update chain is
 /// relinked prev ↔ next. OPEN: deleting the head of a chain does not revive the previous value (it stays
 /// superseded with no successor); a `conflict` memory whose only conflict partner was deleted returns to
@@ -161,7 +161,7 @@ async fn delete_one(
         }
     }
 
-    // derived content in buffer turns (the fact text merged into the turn's full-text key, 3.4)
+    // derived content in buffer turns (3.4)
     let turns = t.store.turns_deriving(&id).await?;
     for tr in &turns {
         let ids: Vec<String> = tr
@@ -189,7 +189,7 @@ async fn delete_one(
     }
     tx.index_task(schema::MEMORIES, &id, "delete")?;
     t.store.commit(tx).await?;
-    // 5.2: the full-text delete is done and committed before returning
+    // 5.2: the vector index entry is dropped before returning
     indexer::drain(eng, t).await?;
     Ok(json!({
         "deleted": id,

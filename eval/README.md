@@ -6,12 +6,10 @@ vendored extraction prompt are service implementation and remain under `crates/`
 See [the evaluation protocol](docs/evaluation.md) before running an experiment.
 Commands below run from the repository root.
 
-Main runs only Mem0. Historical clients (`memory_run.py`, `fair_replay.py`, `integrity_benchmark.py`)
-retain the original protocol and require a matching frozen binary or the
-[`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos) checkout. Their guards reject a Mem0 daemon.
-Source-dependent legacy extraction examples, comparisons and recovery scripts remain on that branch,
-along with the Rust `replay_facts` example. Current Mem0/SDK comparison tools remain here.
-No frozen protocol, raw evidence or local result/store is rewritten by the branch split.
+Main runs only Mem0. The historical dual-strategy clients and replay tools, which need a Memos daemon,
+remain on the [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos)
+branch together with the legacy extraction examples and recovery scripts. Current Mem0/SDK comparison tools
+remain here. No frozen protocol, raw evidence or local result/store is rewritten by the branch split.
 
 ## Setup and offline checks
 
@@ -48,11 +46,10 @@ eval/
   .cache/       Ignored tokenizer and SDK caches
 ```
 
-## Entry points and historical replay clients
+## Entry points
 
 | Entry point | Purpose |
 |---|---|
-| `memory_run.py` | Historical dual-strategy client; requires the preserved daemon, not main |
 | `mem0_run.py` | Two-perspective Mem0 SDK ingest/search using the daemon's BGE-M3 endpoint |
 | `mem0_migration.py` | Explicit fresh-store strategy comparison |
 | `locomo_full.py` | Explicit full LoCoMo comparison with frozen manifests |
@@ -61,7 +58,6 @@ eval/
 | `report.py` | Cohort-aware result tables and recorded usage |
 | `preliminary_summary.py` | Local usage-export aggregation and deduplication |
 | `pilot_plan.py` | Evidence-covered session/question manifest |
-| `conv26_report.py` | Complete-pilot result and usage aggregation |
 
 These entry points have different stages: ingestion and answer/judge stages can make
 paid requests. Never use a paid experiment or the full dataset as an automatic check.
@@ -126,10 +122,6 @@ SDK compatibility check remains the separate offline comparison above.
 | `mem0_v3_context.py` | Offline fixed-input comparison of V3 message handling, prompt boundaries and persistence; model doubles, not an accuracy benchmark |
 | `mem0_sdk331_compare.py` | Actual Node SDK 3.3.1 comparison of prompts, entities and hybrid scores with the same local mock embeddings |
 | `extraction_audit.py` | Count-only audit of saved formation logs or a running daemon's store; no generation |
-| `longterm_context_ablation.py` | Remove the recent-turn section from saved contexts without purging sources |
-| `diagnose_replay.py` | Inspect historical QA, source, formation and retrieval chains |
-| `fair_replay.py` | Replay saved corpora with a shared whole-record context budget |
-| `integrity_benchmark.py` | Fixed retained-snapshot replay and compatible-cohort reports |
 
 Historical and new runs live under `eval/results/`, including `legacy-demo/`,
 `locomo-full-mem0-20261011-v3/`, `mem0-migration-20261011/`, and the Conv-26,
@@ -139,13 +131,10 @@ and verified file checksums. Generated audit/report links use the new paths.
 
 Frozen source/binary/protocol evidence and raw records retain their original bytes.
 An old path embedded in a frozen manifest, trace or source snapshot records the run's
-original location. `common.env.resolve_historical_result_path` resolves saved
-repository `results/` references to `eval/results/` when the integrity tools read them;
-absolute paths from an older checkout ending in `agent-memory-service/results/`
-are handled too. Use the new path for CLI arguments and when inspecting saved records.
-The dataset relocation and helper/source changes alter source manifests: do not edit
-an existing manifest to resume with different code. Use the recorded source snapshot
-for that run, or a fresh result directory for a new experiment.
+original location; use the new path for CLI arguments and when inspecting saved records.
+Source changes alter source manifests: do not edit an existing manifest to resume with
+different code. Use the recorded source snapshot for that run, or a fresh result
+directory for a new experiment.
 
 Runtime results, stores, downloaded data and caches stay ignored. Only curated
 historical aggregates belong in [docs/benchmarks/](docs/benchmarks/), including the

@@ -11,6 +11,7 @@ use super::{
     other_units_naming, run_proposals, LedgerRow, DECLINED, LEDGER_APPLIED,
 };
 use crate::app::consolidation::write_patch;
+use crate::app::runs;
 use crate::runtime::instance::Instance;
 use memory_domain::consolidation::apply::FieldPatch;
 use memory_domain::import::apply::{self as plan, EVIDENCE_ROLE};
@@ -269,11 +270,7 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
                 Err(e) => return Err(interrupted(t, id, e).await),
             }
         };
-        let committed = match tx.merge(schema::PROPOSALS, &p.proposal_id, bookkeeping) {
-            Ok(_) => t.store.commit(tx).await,
-            Err(e) => Err(e),
-        };
-        if let Err(e) = committed {
+        if let Err(e) = runs::commit_op(t, tx, &p.proposal_id, bookkeeping).await {
             return Err(interrupted(t, id, e).await);
         }
     }

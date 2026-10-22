@@ -46,22 +46,6 @@ impl Vis {
         }
     }
 
-    /// The same rule as a Tantivy filter (OR-ed field/value pairs).
-    pub fn ft_pairs(&self) -> Vec<(String, String)> {
-        let mut v = vec![("scope_kind".to_string(), "global".to_string())];
-        match &self.project {
-            Lvl::Any => v.push(("scope_kind".into(), "project".into())),
-            Lvl::Is(p) => v.push(("project".into(), p.clone())),
-            Lvl::No => {}
-        }
-        match &self.platform {
-            Lvl::Any => v.push(("scope_kind".into(), "platform".into())),
-            Lvl::Is(p) => v.push(("platform".into(), p.clone())),
-            Lvl::No => {}
-        }
-        v
-    }
-
     pub fn current_project(&self) -> Option<&str> {
         match &self.project {
             Lvl::Is(p) => Some(p.as_str()),

@@ -1,8 +1,7 @@
 //! 索引构建 (5.2): the primary record is committed first; an `index_tasks` row written in the same transaction
-//! drives asynchronous vector + full-text updates. Tasks are idempotent (delete-then-write by id) and are
-//! removed only after the Tantivy commit succeeded, so a restart resumes unfinished work.
+//! drives asynchronous vector updates. Tasks are idempotent (overwrite by id) and are removed only after the
+//! vectors were written, so a restart resumes unfinished work.
 use anyhow::Result;
-use memory_fulltext::FtDoc;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +9,6 @@ use std::time::Duration;
 use crate::runtime::engine::Engine;
 use crate::runtime::instance::Instance;
 use memory_domain::types::*;
-use memory_rules::util;
 use memory_store::schema;
 use memory_store::store::{from_doc, Tx};
 
@@ -41,71 +39,7 @@ pub fn vector_text(m: &MemoryRec) -> Option<String> {
     }
 }
 
-/// Text that goes into the full-text index for a memory (5.1 table).
-pub fn fulltext_text(m: &MemoryRec) -> Option<String> {
-    match m.mtype.as_str() {
-        T_FACT => Some(m.text.clone()),
-        T_EXPERIENCE | T_SKILL => {
-            let mut s = m.text.clone();
-            if let Some(d) = &m.detail {
-                s.push('\n');
-                s.push_str(&flatten_json_text(d));
-            }
-            Some(s)
-        }
-        _ => None,
-    }
-}
-
-fn flatten_json_text(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Array(a) => a
-            .iter()
-            .map(flatten_json_text)
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Value::Object(o) => o
-            .values()
-            .map(flatten_json_text)
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}
-
-pub fn memory_ftdoc(m: &MemoryRec, body: String) -> FtDoc {
-    FtDoc {
-        id: m.id.clone(),
-        kind: "memory".into(),
-        mtype: m.mtype.clone(),
-        status: m.status.clone(),
-        scope_kind: m.scope.kind.clone(),
-        project: m.scope.project.clone().unwrap_or_default(),
-        platform: m.scope.platform.clone().unwrap_or_default(),
-        session: String::new(),
-        effective_at: util::ts_secs(&m.effective_at),
-        body,
-    }
-}
-
-pub fn turn_ftdoc(rid: &str, t: &TurnRec) -> FtDoc {
-    FtDoc {
-        id: rid.to_string(),
-        kind: "turn".into(),
-        mtype: "turn".into(),
-        status: "buffer".into(),
-        scope_kind: "turn".into(),
-        project: t.project.clone(),
-        platform: t.platform.clone(),
-        session: t.session.clone(),
-        effective_at: util::ts_secs(&t.started_at),
-        body: t.full_text(),
-    }
-}
-
-/// Background worker: drains index_tasks; commits Tantivy at most once per second (约 1 秒后可查).
+/// Background worker: drains index_tasks, waking on new tasks or once per second.
 pub async fn run_index_worker(eng: Arc<Engine>, t: Arc<Instance>) {
     loop {
         match process_batch(&eng, &t, 64).await {
@@ -170,8 +104,6 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Instance>, limit: usize) -
 
     let mut to_embed: Vec<(String, String, String)> = Vec::new(); // (table, id, text)
     let mut to_chunk: Vec<(String, Vec<String>)> = Vec::new(); // (turn id, chunk texts)
-    let mut ft_upserts: Vec<FtDoc> = Vec::new();
-    let mut ft_deletes: Vec<String> = Vec::new();
     let mut clear_vec: Vec<(String, String)> = Vec::new();
 
     for key in &order {
@@ -195,13 +127,8 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Instance>, limit: usize) -
                             to_embed.push((table.clone(), id.clone(), vt));
                         }
                     }
-                    match fulltext_text(&m) {
-                        Some(ft) => ft_upserts.push(memory_ftdoc(&m, ft)),
-                        None => ft_deletes.push(id.clone()),
-                    }
                 } else {
-                    // superseded: drop from full-text and vector index (5.1)
-                    ft_deletes.push(id.clone());
+                    // superseded: drop from the vector index (5.1)
                     clear_vec.push((table.clone(), id.clone()));
                 }
             }
@@ -228,10 +155,8 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Instance>, limit: usize) -
                         .collect();
                     to_chunk.push((id.clone(), texts));
                 }
-                ft_upserts.push(turn_ftdoc(id, &tr));
             }
             (_, _) => {
-                ft_deletes.push(id.clone());
                 clear_vec.push((table.clone(), id.clone()));
             }
         }
@@ -283,15 +208,6 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Instance>, limit: usize) -
         c.turn_chunks.remove(id);
     }
 
-    // full text: delete-then-write by id, then commit; tasks are removed only after the commit
-    if !ft_deletes.is_empty() {
-        t.ft.delete(&ft_deletes)?;
-    }
-    if !ft_upserts.is_empty() {
-        t.ft.upsert(ft_upserts)?;
-    }
-    t.ft.commit()?;
-
     let mut tx = Tx::new();
     for tid in &task_ids {
         if !tid.is_empty() {
@@ -312,13 +228,10 @@ pub async fn drain(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()> {
     }
 }
 
-/// Queue a full rebuild (5.2): vector → re-embed every active memory and turn; full-text → clear and re-add.
-pub async fn schedule_rebuild(t: &Instance, vectors: bool, fulltext: bool) -> Result<()> {
+/// Queue a full rebuild (5.2): re-embed every active memory and turn.
+pub async fn schedule_rebuild(t: &Instance) -> Result<()> {
     let _guard = t.lock_index().await;
-    if fulltext {
-        t.ft.clear()?;
-    }
-    if vectors {
+    {
         let mut c = t.vecs.write().await;
         c.memories.clear();
         c.turns.clear();

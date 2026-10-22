@@ -1,29 +1,20 @@
-"""Offline recall tests: a fake loopback daemon only, no harness installation or model requests.
-
-Every behaviour test runs against scripts/harness_recall.py and, when it is built, against
-`agent-memoryd hook recall`, which replaces it with the same contract.
+"""Offline tests of `agent-memoryd hook recall` as hosts run it: a fake loopback daemon only, no harness
+installation or model requests. They need the built binary (make build) and are skipped without it.
 """
-import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from io import StringIO
 import json
 import os
 from pathlib import Path
-import signal
 import socket
 import subprocess
-import sys
 import threading
 import time
 
 import pytest
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / 'scripts/harness_recall.py'
 BINARY = Path(__file__).resolve().parents[2] / 'target/fast/agent-memoryd'
-spec = importlib.util.spec_from_file_location('harness_recall', SCRIPT)
-recall = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(recall)
+MAX_QUERY = 2000  # prompt characters sent as the search query
 
 # Top-level fields Codex 0.163's command output schemas allow (additionalProperties: false).
 CODEX_FIELDS = {'SessionStart': {'continue', 'stopReason', 'suppressOutput', 'systemMessage', 'hookSpecificOutput'},
@@ -36,16 +27,6 @@ PORT = {'id': 'm2', 'text': 'The service port is 8765.', 'status': 'conflict', '
 CONTEXT = {'text': '[Explicit instructions]\n- Cite sources.\n[Current project notes]\n- Deploys go through the staging gate.',
            'instructions': [{'id': 'i1'}], 'projectFacts': [GATE], 'facts': [], 'skills': [],
            'profile': None, 'projectNotes': None}
-
-
-@pytest.fixture(autouse=True)
-def process_state():
-    """main() sets the umask and a SIGALRM handler as a hook process; restore them for other tests."""
-    umask, handler = os.umask(0o022), signal.getsignal(signal.SIGALRM)
-    os.umask(umask)
-    yield
-    os.umask(umask)
-    signal.signal(signal.SIGALRM, handler)
 
 
 @pytest.fixture
@@ -90,30 +71,22 @@ def argv(tmp_path, url, *extra):
             '--tenant', 'team', '--url', url, *extra]
 
 
-def command(implementation):
-    if implementation == 'rust':
-        if not BINARY.is_file():
-            pytest.skip('agent-memoryd is not built (make build)')
-        return [str(BINARY), 'hook', 'recall']
-    return [sys.executable, str(SCRIPT)]
+def command():
+    if not BINARY.is_file():
+        pytest.skip('agent-memoryd is not built (make build)')
+    return [str(BINARY), 'hook', 'recall']
 
 
-@pytest.fixture(params=['python', 'rust'])
-def run(request):
-    """The recall implementation under test: (tmp_path, url, event, *extra) -> its JSON output."""
-    if request.param == 'rust':
-        prefix = command('rust')
+@pytest.fixture
+def run():
+    """Recall as a hook: (tmp_path, url, event, *extra) -> its JSON output."""
+    prefix = command()
 
-        def invoke(args, stdin):
-            result = subprocess.run(prefix + args, input=stdin, capture_output=True, text=True, timeout=30,
-                                    env={'PATH': os.environ.get('PATH', '')})
-            assert result.returncode == 0, result.stderr
-            return result.stdout
-    else:
-        def invoke(args, stdin):
-            stdout = StringIO()
-            assert recall.main(args, StringIO(stdin), stdout) == 0
-            return stdout.getvalue()
+    def invoke(args, stdin):
+        result = subprocess.run(prefix + args, input=stdin, capture_output=True, text=True, timeout=30,
+                                env={'PATH': os.environ.get('PATH', '')})
+        assert result.returncode == 0, result.stderr
+        return result.stdout
     return lambda tmp_path, url, event, *extra: checked(
         invoke(argv(tmp_path, url, *extra), event if isinstance(event, str) else json.dumps(event)))
 
@@ -174,7 +147,7 @@ def shown(text):
 def test_session_start_injects_get_context_framed_and_scoped(tmp_path, daemon, run):
     text = context(run(tmp_path, daemon.url, start()))
     assert text.startswith('<shared-memory project="proj" event="SessionStart">\n') and text.endswith('</shared-memory>')
-    assert recall.START_NOTE in text and '- Cite sources.' in text
+    assert 'Loaded automatically at session start' in text and '- Cite sources.' in text
     path, headers, body = daemon.requests[0]
     assert path == '/v1/get_context'
     assert body == {'scope': {'project': 'proj', 'session': 's1'}, 'tokenBudget': 1000}
@@ -186,7 +159,7 @@ def test_session_start_injects_get_context_framed_and_scoped(tmp_path, daemon, r
 def test_prompt_recall_frames_history_and_skips_what_the_session_was_shown(tmp_path, daemon, run):
     run(tmp_path, daemon.url, start('s1'))  # the overview already showed m1
     text = context(run(tmp_path, daemon.url, prompt()))
-    assert recall.PROMPT_NOTE in text and 'staging gate' not in text
+    assert 'Recalled automatically for this prompt' in text and 'staging gate' not in text
     assert '- The service port is 8765. (conflicting, pending confirmation; recorded 2026-10-03 · claude-code; id m2)' in text
     assert daemon.requests[-1][2] == {'query': 'How do deploys work?', 'scope': {'project': 'proj'},
                                       'topK': 15, 'tokenBudget': 6000}
@@ -229,17 +202,11 @@ def test_a_daemon_with_a_lower_max_top_k_gets_the_plain_request(tmp_path, daemon
     assert [(body['topK'], body['tokenBudget']) for _, _, body in daemon.requests] == [(15, 6000), (5, 400)]
 
 
-def test_excerpts_count_tokens_as_the_daemon_does():
-    assert [recall.excerpt('abcd efgh', tokens) for tokens in (1, 2)] == ['abcd', 'abcd efg']
-    assert [recall.excerpt('部署 staging', tokens) for tokens in (2, 3, 4)] == ['部署', '部署 sta', '部署 staging']
-    assert recall.est_tokens('部署 staging') == 4
-
-
 def test_prompt_query_drops_host_reminders_and_empty_prompts_search_nothing(tmp_path, daemon, run):
     run(tmp_path, daemon.url, prompt('<system-reminder>host text</system-reminder>\n<user_query> Which gate? </user_query>'))
     assert daemon.requests[-1][2]['query'] == 'Which gate?'
     run(tmp_path, daemon.url, prompt('x' * 5000, session='s2'))
-    assert len(daemon.requests[-1][2]['query']) == recall.MAX_QUERY
+    assert len(daemon.requests[-1][2]['query']) == MAX_QUERY
     requests = len(daemon.requests)
     assert run(tmp_path, daemon.url, prompt('  ')) == {} and run(tmp_path, daemon.url, prompt(None)) == {}
     assert len(daemon.requests) == requests
@@ -277,9 +244,8 @@ def test_a_broken_state_file_still_injects_within_budget(tmp_path, daemon, run):
     assert 'id m1' in context(run(tmp_path, daemon.url, prompt()))  # no record: still bounded per prompt
 
 
-@pytest.mark.parametrize('implementation', ['python', 'rust'])
-def test_as_hosts_run_it_proxies_are_bypassed_and_errors_exit_zero(tmp_path, daemon, implementation):
-    prefix = command(implementation)
+def test_as_hosts_run_it_proxies_are_bypassed_and_errors_exit_zero(tmp_path, daemon):
+    prefix = command()
 
     def run_script(args, event, **env):
         return subprocess.run(prefix + args, input=json.dumps(event), capture_output=True,
@@ -289,7 +255,7 @@ def test_as_hosts_run_it_proxies_are_bypassed_and_errors_exit_zero(tmp_path, dae
     result = run_script(argv(tmp_path, daemon.url), prompt(), HTTP_PROXY=proxy, http_proxy=proxy, ALL_PROXY=proxy)
     assert result.returncode == 0 and 'id m1' in json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
     for args in (argv(tmp_path, 'http://192.0.2.1:8765'),             # never leaves loopback
-                 ['--url', daemon.url],                             # no project: argparse error
+                 ['--url', daemon.url],                             # no project: a usage error
                  argv(tmp_path, daemon.url, '--top-k', '0')):
         result = run_script(args, prompt())
         assert result.returncode == 0 and result.stdout == '{}\n', result.stderr

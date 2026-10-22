@@ -395,8 +395,8 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
                 schema::EXTRACT_LOG,
                 json!({"stage":"Mem0-add","outputFormat":FORMAT,"requestId":id,
             "status":"model_completed","output":reply.json,"responseLogId":reply.response_log_id,
-            "systemHash":blake3::hash(SYSTEM.as_bytes()).to_hex().to_string(),
-            "inputHash":blake3::hash(input.as_bytes()).to_hex().to_string()}),
+            "systemHash":util::hex_hash(SYSTEM),
+            "inputHash":util::hex_hash(&input)}),
             )
             .await?;
         serde_json::from_value::<Output>(reply.json)?.memory

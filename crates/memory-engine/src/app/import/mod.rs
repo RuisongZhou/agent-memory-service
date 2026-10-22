@@ -24,15 +24,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+use crate::app::runs;
 use crate::runtime::instance::Instance;
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportRun, ImportRunReq, ImportRunsReq, UnitOutcome, APPLIED,
     KIND,
 };
 use memory_domain::types::*;
-use memory_rules::util;
 use memory_store::schema;
-use memory_store::store::{hashed_id, safe_id, Tx};
+use memory_store::store::{hashed_id, Tx};
 
 /// `import_runs` page size: default and largest.
 const DEFAULT_RUNS: usize = 20;
@@ -160,12 +160,7 @@ fn invalid(message: impl Into<String>) -> ApiError {
 }
 
 async fn load_run(t: &Instance, run_id: &str) -> ApiResult<ImportRun> {
-    safe_id(run_id).map_err(|_| invalid("invalid runId"))?;
-    let doc = t
-        .store
-        .get_doc(schema::IMPORT_RUNS, run_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("import run {run_id} not found")))?;
+    let doc = runs::load(t, schema::IMPORT_RUNS, "import", run_id).await?;
     Ok(serde_json::from_value(doc).map_err(anyhow::Error::from)?)
 }
 
@@ -180,21 +175,8 @@ async fn run_proposals(t: &Instance, run_id: &str) -> ApiResult<Vec<ImportPropos
     Ok(proposals)
 }
 
-/// Record an error on the run before returning it; the run keeps its in-progress status and resumes.
 async fn interrupted(t: &Instance, run_id: &str, error: anyhow::Error) -> ApiError {
-    let message = format!("{error:#}");
-    if let Err(e) = t
-        .store
-        .merge_doc(
-            schema::IMPORT_RUNS,
-            run_id,
-            json!({"error": message, "updatedAt": util::now_str()}),
-        )
-        .await
-    {
-        tracing::error!(run = run_id, "recording import error: {e:#}");
-    }
-    ApiError::Internal(message)
+    runs::interrupted(t, schema::IMPORT_RUNS, run_id, error).await
 }
 
 /// Proposals with `status`, session turns left out: they are counted on their own.

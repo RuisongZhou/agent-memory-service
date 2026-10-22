@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce the crate dependency graph, module boundaries between memory algorithms and eval script layout.
-
-Known violations are listed in ALLOWED and must shrink over time: a listed entry that no longer
-violates its rule is reported as stale, so each refactoring step has to remove it from the list.
-"""
+"""Enforce the crate dependency graph, module boundaries between memory algorithms and eval script layout."""
 import ast
 import re
 from pathlib import Path
@@ -12,10 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CRATES = ROOT / 'crates'
 EVAL = ROOT / 'eval'
 SCRIPTS = ROOT / 'scripts'
-EVAL_ONLY_SCRIPTS = {
-    'setup_eval.py', 'download_data.py', 'extraction_audit.py', 'real_extraction_example.py',
-    'longterm_context_ablation.py',
-}
+EVAL_ONLY_SCRIPTS = {'setup_eval.py', 'download_data.py', 'extraction_audit.py'}
 EVAL_IMPORTS = {'common', 'mem0', 'qdrant_client', 'nltk', 'tiktoken', 'fastembed'}
 
 # Shared code in every crate must not name a concrete algorithm or its private tables.
@@ -41,10 +34,9 @@ DOMAIN_PREFIX = 'memory-domain/src/'
 
 # Crate graph: workspace dependencies each crate may declare in its Cargo.toml.
 LEAF = set()
-ENGINE_DEPS = {'memory-config', 'memory-domain', 'memory-store', 'memory-rules', 'memory-fulltext'}
+ENGINE_DEPS = {'memory-config', 'memory-domain', 'memory-store', 'memory-rules'}
 LAYERS = {
     'memory-rules': LEAF,
-    'memory-fulltext': LEAF,
     'memory-config': LEAF,
     'memory-domain': {'memory-rules'},
     'memory-store': {'memory-domain', 'memory-rules'},
@@ -52,8 +44,6 @@ LAYERS = {
     'memory-algo-mem0': ENGINE_DEPS | {'memory-engine'},
     'memory-service': None,  # composition root: anything
 }
-
-ALLOWED = set()
 
 
 def is_sql_exempt(rel):
@@ -150,8 +140,7 @@ def eval_layout_violations():
             if path.name == '.DS_Store':
                 continue
             service_directory = path.is_dir() and (
-                path.name in {'llama', 'prompt-cleanup'}
-                or path.name.startswith(('service-', 'design-report-')))
+                path.name == 'llama' or path.name.startswith('service-'))
             service_check = path.is_file() and 'smoke' in path.name and path.suffix in {'.json', '.log'}
             if not (service_directory or service_check):
                 found.add(('eval-results-layout', path.relative_to(ROOT).as_posix()))
@@ -160,11 +149,9 @@ def eval_layout_violations():
 
 def main():
     found = rust_violations() | layering_violations() | script_violations() | eval_layout_violations()
-    errors = [f'{rule}: {path}' for rule, path in sorted(found - ALLOWED)]
-    errors += [f'stale allowlist entry (remove it): {rule}: {path}' for rule, path in sorted(ALLOWED - found)]
-    if errors:
-        raise SystemExit('\n'.join(errors))
-    print(f'Architecture boundaries verified; {len(ALLOWED)} known violations remain allowlisted.')
+    if found:
+        raise SystemExit('\n'.join(f'{rule}: {path}' for rule, path in sorted(found)))
+    print('Architecture boundaries verified.')
 
 
 if __name__ == '__main__':

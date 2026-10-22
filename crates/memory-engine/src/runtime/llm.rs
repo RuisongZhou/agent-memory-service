@@ -91,19 +91,6 @@ impl Llm {
         !self.api_key.is_empty()
     }
 
-    /// Every returned usage is durable before parsing or retrying model output.
-    pub async fn json_call_logged(
-        &self,
-        system: &str,
-        user: &str,
-        max_tokens: u32,
-        store: &memory_store::store::Store,
-        stage: &str,
-    ) -> Result<LlmReply> {
-        self.json_call_impl(system, user, max_tokens, Some((store, stage)), None)
-            .await
-    }
-
     /// JSON-object generation with local structural validation and corrective retries.
     pub async fn contract_call_logged(
         &self,

@@ -5,14 +5,6 @@ import hashlib
 import json
 
 
-def semantic_hash(records: list[dict]) -> str:
-    fields = ("id", "mid", "type", "text", "status", "scope", "effectiveAt", "validUntil",
-              "supersedes", "supersededBy", "usedMemoryIds", "derivation")
-    rows = [{key: row[key] for key in fields if key in row} for row in records]
-    rows.sort(key=lambda row: row.get("id", row.get("mid", "")))
-    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
-
-
 def sdk_corpus(memory):
     points, offset = [], None
     while True:

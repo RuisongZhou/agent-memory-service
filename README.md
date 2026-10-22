@@ -248,10 +248,9 @@ curl -fsS http://127.0.0.1:8765/health          # 健康检查：记忆策略、
 ## 开发与验证
 
 ```bash
-make build                                        # 构建 target/fast/agent-memoryd
-make setup                                        # 创建 .venv、安装测试依赖并下载公开数据集（不调用付费模型）
-make fmt test-workspace test build selftest smoke install-check
+make fmt test-workspace build test-scripts selftest smoke install-check   # 只需要 pytest，不需要评测环境
 make check-arch check-public
+make setup && make test                           # 只在改动 eval/ 时：创建 .venv、安装评测依赖并下载公开数据集
 ```
 
 所有检查都使用临时存储、mock 检索模型和本地确定性的生成桩，不会调用付费模型。详见 [贡献指南](CONTRIBUTING.md#checks)。

@@ -1,5 +1,6 @@
+# The evaluation environment (make setup); only `test` uses it.
 PYTHON ?= .venv/bin/python
-# Service script tests need only pytest, not the evaluation environment or the dataset.
+# Service scripts and checks need only the standard library, and their tests only pytest.
 SCRIPTS_PYTHON ?= python3
 CARGO ?= cargo
 # Empty = cargo default (all cores). Set JOBS=2 on a machine with limited memory.
@@ -20,16 +21,16 @@ test-scripts:
 test-workspace:
 	$(CARGO) test --locked --workspace --lib --profile fast $(JFLAG)
 test-rust:
-	$(CARGO) test --locked -p memory-rules -p memory-fulltext -p memory-config --profile fast $(JFLAG)
+	$(CARGO) test --locked -p memory-rules -p memory-config --profile fast $(JFLAG)
 test-service:
 	$(CARGO) test --locked -p memory-domain -p memory-store -p memory-engine -p memory-algo-mem0 -p memory-service --lib --profile fast $(JFLAG)
 selftest:
 	MEMORY_MOCK_MODELS=1 target/fast/agent-memoryd selftest
 smoke:
-	$(PYTHON) scripts/http_smoke.py --bin target/fast/agent-memoryd --output results/http-smoke.json
-	$(PYTHON) scripts/mem0_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-http-smoke.json
-	$(PYTHON) scripts/mem0_history_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-history-http-smoke.json
-	$(PYTHON) scripts/mem0_hybrid_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-hybrid-http-smoke.json
+	$(SCRIPTS_PYTHON) scripts/http_smoke.py --bin target/fast/agent-memoryd --output results/http-smoke.json
+	$(SCRIPTS_PYTHON) scripts/mem0_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-http-smoke.json
+	$(SCRIPTS_PYTHON) scripts/mem0_history_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-history-http-smoke.json
+	$(SCRIPTS_PYTHON) scripts/mem0_hybrid_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-hybrid-http-smoke.json
 # One-command install for every platform (with capture and recall where it has hooks) into a temporary home, verified
 # against a mock daemon. --no-service: no model key, and no service starts in the login session.
 install-check:
@@ -43,6 +44,6 @@ install-check:
 fmt:
 	$(CARGO) fmt --all -- --check
 check-public:
-	$(PYTHON) scripts/check_public.py
+	$(SCRIPTS_PYTHON) scripts/check_public.py
 check-arch:
-	$(PYTHON) scripts/check_architecture.py
+	$(SCRIPTS_PYTHON) scripts/check_architecture.py

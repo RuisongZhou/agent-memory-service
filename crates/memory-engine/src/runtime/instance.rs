@@ -1,6 +1,5 @@
-//! The store and its runtime state: full-text index, entity dictionary, vector caches and the coordination locks.
+//! The store and its runtime state: vector caches and the coordination locks.
 use anyhow::Result;
-use memory_fulltext::{EntityDict, FullText};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,8 +21,6 @@ pub struct VecCache {
 pub struct Instance {
     pub dir: PathBuf,
     pub store: Store,
-    pub ft: FullText,
-    pub entities: RwLock<EntityDict>,
     pub vecs: RwLock<VecCache>,
     // Coordination primitives are private: take them only through the methods below so that the
     // lock-ordering contract documented there has a single place to live.
@@ -46,13 +43,17 @@ impl Instance {
             tracing::info!(from = %earlier.display(), to = %dir.display(), "moved the store");
         }
         std::fs::create_dir_all(&dir)?;
+        // Earlier versions also kept a full-text index here that no search read.
+        let fulltext = dir.join("fulltext");
+        if fulltext.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(&fulltext) {
+                tracing::warn!(dir = %fulltext.display(), "removing the unused full-text index: {e}");
+            }
+        }
         let store = Store::open(&dir.join("db"), dim, algorithm_schema).await?;
-        let ft = FullText::open(&dir.join("fulltext"))?;
         Ok(Self {
             dir,
             store,
-            ft,
-            entities: RwLock::new(EntityDict::new()),
             vecs: RwLock::new(VecCache::default()),
             extract_lock: Mutex::new(()),
             ingest_lock: Mutex::new(()),

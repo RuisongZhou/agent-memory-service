@@ -31,7 +31,9 @@ use std::time::Duration;
 use self::prompt::Lang;
 use self::session::SessionAdapter;
 use self::source::{display, timestamp, Adapter};
-use super::{expand, home, invalid, loopback, outbox, positive_seconds, private_file, Error};
+use super::{
+    expand, home, invalid, loopback_url, outbox, positive, positive_seconds, private_file, Error,
+};
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8765";
 /// Units per `import_propose` request at most.
@@ -375,13 +377,6 @@ fn nonblank(value: &str) -> Result<String, String> {
     }
 }
 
-fn positive(value: &str) -> Result<usize, String> {
-    match value.parse::<usize>() {
-        Ok(n) if n > 0 => Ok(n),
-        _ => Err("must be a positive integer".into()),
-    }
-}
-
 /// A recall budget that leaves a unit room for text.
 fn recall_budget(value: &str) -> Result<usize, String> {
     match value.parse::<usize>() {
@@ -423,18 +418,6 @@ fn platform_label(value: &str) -> Result<String, String> {
         true => Ok(value.to_string()),
         false => Err("must be 1 to 64 ASCII letters, digits, '.', '_' or '-'".into()),
     }
-}
-
-fn loopback_url(value: &str) -> Result<String, String> {
-    let url = reqwest::Url::parse(value).map_err(|e| e.to_string())?;
-    if !matches!(url.scheme(), "http" | "https")
-        || !loopback(&url)
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err("import only reaches a daemon on loopback".into());
-    }
-    Ok(value.trim_end_matches('/').to_string())
 }
 
 #[cfg(test)]

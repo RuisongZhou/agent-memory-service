@@ -1,7 +1,7 @@
 //! Local dialogue outbox. Hooks only capture into it; an uploader submits jobs in order and
 //! polls their receipts. Capture uses documented Codex notify / Claude Code hook fields, never private
 //! transcript formats; `agent-memoryd import apply` queues past session turns read from those under the
-//! same turn keys (`enqueue_import`). The SQLite schema is the one `scripts/harness_memory.py` writes.
+//! same turn keys (`enqueue_import`). The SQLite schema is the one the Python collector of earlier installers wrote.
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Map, Value};
 use std::fs::File;
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     UNIQUE (tenant, platform, turn_id)
 );";
 const SESSION_KEY: &str = "tenant=?1 AND platform=?2 AND project=?3 AND session=?4";
-/// The `tenant` column the schema keeps for the file `scripts/harness_memory.py` shares; it always holds this value.
+/// The `tenant` column of the Python collector's schema; it always holds this value.
 const TENANT: &str = "default";
 
 pub fn default_path() -> PathBuf {
@@ -610,8 +610,8 @@ pub async fn drain_once<S: Sender>(
     Ok(errors)
 }
 
-/// The cross-process advisory lock that excludes a second uploader (not hooks) from an outbox.
-/// It is the same `flock` on `<outbox>.uploader.lock` that `harness_memory.py drain` takes.
+/// The cross-process advisory lock (`flock` on `<outbox>.uploader.lock`) that excludes a second uploader
+/// (not hooks) from an outbox.
 pub struct UploaderLock(#[allow(dead_code)] File);
 
 impl UploaderLock {

@@ -17,7 +17,7 @@ def main():
         name=raw.decode();p=Path(name)
         if p.suffix.lower() in WEIGHTS or (p.name.startswith('.env') and p.name != '.env.example'):
             errors.append(name+': weight or secret file')
-        if any(part in {'.venv','__pycache__','.cache','models','results','runtime-data','target','stores'} for part in p.parts):
+        if any(part in {'.venv','__pycache__','.cache','models','results','target','stores'} for part in p.parts):
             errors.append(name+': generated state')
         if p.suffix.lower() in {'.db','.sqlite','.sqlite3','.log'} or p.name=='locomo10.json':
             errors.append(name+': runtime or downloaded dataset')

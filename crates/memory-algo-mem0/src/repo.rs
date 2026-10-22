@@ -107,7 +107,7 @@ pub async fn list_inputs(t: &Instance, filter: InputFilter<'_>) -> Result<Vec<Va
 }
 
 /// Primary facts used to reconcile the rebuildable entity projection. This deliberately
-/// reads the authoritative table rather than eventual vector/full-text indexes.
+/// reads the authoritative table rather than eventual vector index.
 pub async fn entity_memory_inputs(t: &Instance) -> Result<Vec<Value>> {
     t.store.select("SELECT mid, text, type, scope, status, ingestionMode, supersedes, recordedAt, formationPosition FROM memories WHERE type = 'fact' AND status IN ['current','conflict'] ORDER BY mid ASC", vec![]).await
 }

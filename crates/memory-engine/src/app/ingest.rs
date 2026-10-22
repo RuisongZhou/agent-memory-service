@@ -1,5 +1,4 @@
 //! Shared admission, explicit instructions and durable request inspection.
-use crate::app::admission::required_scope;
 pub use crate::app::tasks::get_task;
 use crate::runtime::{engine::Engine, instance::Instance};
 use memory_domain::types::*;
@@ -64,4 +63,20 @@ pub async fn add_memories(
 
 pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
     eng.wait_idle(t).await
+}
+
+fn required_scope(req: &AddMemoriesReq) -> ApiResult<(&str, &str)> {
+    let project = req
+        .scope
+        .project
+        .as_deref()
+        .filter(|s| !s.trim().is_empty() && *s != "*")
+        .ok_or_else(|| ApiError::InvalidArgument("scope.project is required".into()))?;
+    let session = req
+        .scope
+        .session
+        .as_deref()
+        .filter(|s| !s.trim().is_empty() && *s != "*")
+        .ok_or_else(|| ApiError::InvalidArgument("scope.session is required".into()))?;
+    Ok((project, session))
 }

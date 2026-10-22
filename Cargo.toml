@@ -7,7 +7,6 @@ members = [
     "crates/memory-algo-mem0",
     "crates/memory-domain",
     "crates/memory-store",
-    "crates/memory-fulltext",
     "crates/memory-rules",
 ]
 default-members = ["crates/memory-service"]

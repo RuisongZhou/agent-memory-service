@@ -8,6 +8,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::app::runs;
 use crate::runtime::engine::Engine;
 use crate::runtime::instance::Instance;
 use memory_domain::consolidation::apply::{FieldPatch, OpOutcome};
@@ -16,7 +17,7 @@ use memory_domain::types::*;
 use memory_rules::consolidation as limits;
 use memory_rules::util;
 use memory_store::schema;
-use memory_store::store::{safe_id, Tx};
+use memory_store::store::Tx;
 
 /// Run and proposal statuses. Only a `proposed` run's `proposed` ops may ever be applied.
 pub const PROPOSED: &str = "proposed";
@@ -225,28 +226,11 @@ pub async fn consolidate(
 }
 
 async fn load_run(t: &Instance, run_id: &str) -> ApiResult<Value> {
-    safe_id(run_id).map_err(|_| ApiError::InvalidArgument("invalid runId".into()))?;
-    t.store
-        .get_doc(schema::CONSOLIDATION_RUNS, run_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("consolidation run {run_id} not found")))
+    runs::load(t, schema::CONSOLIDATION_RUNS, "consolidation", run_id).await
 }
 
-/// Record an error on the run before returning it; the run keeps its in-progress status and resumes.
 async fn interrupted(t: &Instance, run_id: &str, error: anyhow::Error) -> ApiError {
-    let message = format!("{error:#}");
-    if let Err(e) = t
-        .store
-        .merge_doc(
-            schema::CONSOLIDATION_RUNS,
-            run_id,
-            json!({"error": message, "updatedAt": util::now_str()}),
-        )
-        .await
-    {
-        tracing::error!(run = run_id, "recording consolidation error: {e:#}");
-    }
-    ApiError::Internal(message)
+    runs::interrupted(t, schema::CONSOLIDATION_RUNS, run_id, error).await
 }
 
 fn count(proposals: &[Value], status: &str) -> usize {
@@ -311,11 +295,7 @@ pub async fn apply(
                 json!({"status": SKIPPED, "skipReason": reason, "skippedAt": now})
             }
         };
-        let committed = match tx.merge(schema::PROPOSALS, &pid, bookkeeping) {
-            Ok(_) => t.store.commit(tx).await,
-            Err(e) => Err(e),
-        };
-        if let Err(e) = committed {
+        if let Err(e) = runs::commit_op(t, tx, &pid, bookkeeping).await {
             return Err(interrupted(t, id, e).await);
         }
     }
@@ -380,11 +360,7 @@ pub async fn rollback(
                 json!({"rollbackSkipReason": reason, "rollbackCheckedAt": now})
             }
         };
-        let committed = match tx.merge(schema::PROPOSALS, pid, bookkeeping) {
-            Ok(_) => t.store.commit(tx).await,
-            Err(e) => Err(e),
-        };
-        if let Err(e) = committed {
+        if let Err(e) = runs::commit_op(t, tx, pid, bookkeeping).await {
             return Err(interrupted(t, id, e).await);
         }
     }

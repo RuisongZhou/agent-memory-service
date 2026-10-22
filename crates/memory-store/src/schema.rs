@@ -3,7 +3,6 @@ pub const MEMORIES: &str = "memories";
 pub const TURNS: &str = "turns";
 pub const SESSIONS: &str = "sessions";
 pub const EVIDENCE: &str = "evidence";
-pub const ENTITIES: &str = "entities";
 pub const INDEX_TASKS: &str = "index_tasks";
 pub const INDEX_META: &str = "index_meta";
 pub const STORE_REVISIONS: &str = "store_revisions";
@@ -31,7 +30,6 @@ pub const SHARED_TABLES: &[&str] = &[
     SESSIONS,
     EVIDENCE,
     MEMORIES,
-    ENTITIES,
     INDEX_TASKS,
     INDEX_META,
     STORE_REVISIONS,

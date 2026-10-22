@@ -102,53 +102,29 @@ impl Engine {
         Ok(t.clone())
     }
 
-    /// Load the entity dictionary and vector caches; check index_meta (5.2 一致性与重建).
+    /// Load the vector caches; check index_meta (5.2 一致性与重建).
     async fn warm(&self, t: &Arc<Instance>) -> Result<()> {
         // The demo uses one algorithm per process and data directory. Check only at startup.
         let incompatible = self.algorithm.foreign_unfinished_jobs(t).await?;
         anyhow::ensure!(incompatible == 0,
             "data directory has unfinished jobs from another algorithm; use the selected algorithm's data directory");
         t.store.repair_integrity().await?;
-        // entity alias dictionary (kept in memory, 5.2 实体索引)
-        let ents = t.store.entities().await?;
-        {
-            let mut d = t.entities.write().await;
-            for e in &ents {
-                let mut names = vec![e.name.clone()];
-                names.extend(e.aliases.iter().cloned());
-                d.upsert(&e.id, &names);
-            }
-        }
-        // index meta: embedding model + analyzer version
+        // index meta: a different embedding model or dimension re-embeds every record
         let want = json!({
             "mid": "meta",
             "embeddingModel": self.models.embed_model_id,
             "dim": self.models.dim,
-            "analyzer": memory_fulltext::ANALYZER_VERSION,
         });
         let have = t.store.get_doc(schema::INDEX_META, "meta").await?;
-        let mut rebuild_vec = false;
-        let mut rebuild_ft = false;
-        if let Some(h) = &have {
-            if h.get("embeddingModel") != want.get("embeddingModel")
-                || h.get("dim") != want.get("dim")
-            {
-                rebuild_vec = true;
-            }
-            if h.get("analyzer") != want.get("analyzer") {
-                rebuild_ft = true;
-            }
-        }
-        if have.is_none() || rebuild_vec || rebuild_ft {
+        let rebuild = have.as_ref().is_some_and(|h| {
+            h.get("embeddingModel") != want.get("embeddingModel") || h.get("dim") != want.get("dim")
+        });
+        if have.is_none() || rebuild {
             t.store.put_doc(schema::INDEX_META, "meta", &want).await?;
         }
-        if rebuild_vec || rebuild_ft {
-            tracing::warn!(
-                rebuild_vec,
-                rebuild_ft,
-                "index meta changed; scheduling rebuild"
-            );
-            indexer::schedule_rebuild(t, rebuild_vec, rebuild_ft).await?;
+        if rebuild {
+            tracing::warn!("embedding model changed; scheduling a vector rebuild");
+            indexer::schedule_rebuild(t).await?;
         }
         // vector caches
         {

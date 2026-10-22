@@ -168,10 +168,8 @@ MEMORY_MODEL_API_KEY=your-model-api-key
 ```
 
 When it is empty, the daemon uses `QWEN_API_KEY`, so one key is enough if it covers both generation and
-the retrieval models. Embeddings go to `https://maas.qianwenaiapi.com/compatible-mode/v1/embeddings`
-and reranking to `https://maas.qianwenaiapi.com/compatible-api/v1/reranks`; the compatible-mode base has
-no rerank route. Override the bases with `MEMORY_EMBED_URL`/`MEMORY_RERANK_URL` and the models with
-`MEMORY_EMBED_MODEL`/`MEMORY_RERANK_MODEL` for another OpenAI-compatible provider. Each startup makes one
+the retrieval models. The hosted endpoints and models, and the variables that point them at another
+OpenAI-compatible provider, are in the [configuration reference](api.md#configuration). Each startup makes one
 small embedding request to check the key and read the vector dimension, and one rerank request when
 reranking is enabled. Stored texts and queries are sent to the provider; use `self-hosted` if they must
 stay on your machines.
@@ -434,23 +432,23 @@ To run user services after logout, enable lingering according to the host's admi
 
 ### Storage, backups, and upgrades
 
-Within the selected data root, the store keeps its embedded database at `store/db` and full-text index at `store/fulltext`. Earlier versions kept it under `tenants/default`; the daemon moves that directory to `store` when it starts. Primary inputs, memories, provenance, request receipts, and durable index work belong in the database; search indexes are rebuildable. The capture outbox is a separate database and also needs a retention/backup policy.
+Within the selected data root, the store keeps its embedded database at `store/db`. Earlier versions kept it under `tenants/default`, which the daemon moves to `store` when it starts, and an unused full-text index at `store/fulltext`, which it removes. Primary inputs, memories, provenance, request receipts, and durable index work belong in the database; search indexes are rebuildable. The capture outbox is a separate database and also needs a retention/backup policy.
 
 For a consistent backup, pause new submissions, stop the uploader and daemon, then copy the **entire data root** and the outbox database with any `-wal`/`-shm` companions while no collector is writing. A copy of an active database directory is not a documented snapshot method. Preserve the matching configuration, strategy, source revision, and model identities. `/admin/export` provides selected audit tables; it is not a complete restore backup.
 
 Before upgrading, make that backup, rebuild the binary from the updated source or install the new release binary at the same path, restart with the same data path/strategy, and check health and a known record. Do not run two daemons against one data directory. Restore with services stopped and a matching version/configuration. For unfinished legacy jobs, use the preserved version or a fresh store; see [compatibility](api.md#compatibility).
 
-To request an index rebuild on a running daemon:
+To re-embed every record on a running daemon:
 
 ```sh
 target/fast/agent-memoryd reindex --all --url http://127.0.0.1:8765
 ```
 
-Use `--vector` or `--fulltext` for a specific index. Changing the model provider, embedding model, or a self-hosted model's alias/quantization causes re-embedding at the next start; expect rebuild work and verify retrieval afterwards. Review local outbox retention periodically: `completed`, `failed`, and `rejected` rows remain until deliberately cleaned up.
+`--vector` does the same; the vector index is the only rebuildable index. Changing the model provider, embedding model, or a self-hosted model's alias/quantization causes re-embedding at the next start; expect rebuild work and verify retrieval afterwards. Review local outbox retention periodically: `completed`, `failed`, and `rejected` rows remain until deliberately cleaned up.
 
 ### Stop and restart
 
-With the terminal/script setup, stop the foreground daemon (and a standalone uploader, if you run one) with Ctrl-C, then any self-hosted model servers with `scripts/self_hosted_models.sh stop`. Restart self-hosted models first, then the daemon with the same arguments/data directory. Accepted outbox jobs resume polling; pending ones retain their payloads for retry. Durable unfinished server jobs resume when their tenant is opened.
+With the terminal/script setup, stop the foreground daemon (and a standalone uploader, if you run one) with Ctrl-C, then any self-hosted model servers with `scripts/self_hosted_models.sh stop`. Restart self-hosted models first, then the daemon with the same arguments/data directory. Accepted outbox jobs resume polling; pending ones retain their payloads for retry. Durable unfinished server jobs resume when the daemon starts.
 
 With the LaunchAgent setup, use `launchctl bootout` for the selected service labels and `launchctl bootstrap` to start them again. With systemd, stop the daemon and any model units using `systemctl --user stop` and start them with `systemctl --user start`. Use the process manager's logs instead of `results/llama/`, which belongs to the self-hosted helper script.
 

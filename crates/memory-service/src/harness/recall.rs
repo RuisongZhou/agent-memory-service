@@ -3,8 +3,8 @@
 //! SessionStart injects get_context; UserPromptSubmit injects search_memories results for the
 //! prompt that this session was not shown yet, packed into its own token budget. The daemon must
 //! be on loopback. A hook never blocks or fails its host: every outcome prints exactly one JSON
-//! object and exits 0 (exit 2 would block the prompt). Contract and recall record match
-//! `scripts/harness_recall.py`.
+//! object and exits 0 (exit 2 would block the prompt). The recall record keeps the schema of the Python
+//! hook that earlier installers wrote.
 use memory_rules::util;
 use regex::Regex;
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::{expand, private_file, CallError, Daemon, Error};
+use super::{expand, loopback_url, positive, private_file, CallError, Daemon, Error};
 
 /// Default record of shown memories, relative to the home directory.
 pub const DEFAULT_STATE: &str = ".local/state/agent-memory-service/recall-state.sqlite3";
@@ -82,25 +82,6 @@ pub struct RecallArgs {
     /// Hard cap on injected characters, below every host limit
     #[arg(long, default_value_t = 6000, value_parser = positive)]
     pub max_chars: usize,
-}
-
-fn positive(value: &str) -> Result<usize, String> {
-    match value.parse::<usize>() {
-        Ok(n) if n > 0 => Ok(n),
-        _ => Err("must be a positive integer".into()),
-    }
-}
-
-fn loopback_url(value: &str) -> Result<String, String> {
-    let url = reqwest::Url::parse(value).map_err(|e| e.to_string())?;
-    if !matches!(url.scheme(), "http" | "https")
-        || !super::loopback(&url)
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err("recall only reaches a daemon on loopback".into());
-    }
-    Ok(value.trim_end_matches('/').to_string())
 }
 
 /// Memories to record as shown in a session after the output is printed.
@@ -512,7 +493,7 @@ fn fact_line(memory: &Map<String, Value>, text: &str, note: &str) -> String {
     )
 }
 
-/// The `tenant` column the record keeps for the file `scripts/harness_recall.py` shares; it always holds this value.
+/// The `tenant` column of the Python hook's schema; it always holds this value.
 const TENANT: &str = "default";
 
 fn open_state(path: &Path) -> Result<Connection, Error> {

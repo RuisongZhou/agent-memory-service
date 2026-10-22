@@ -49,6 +49,11 @@ pub fn date_of(ts: &str) -> String {
     }
 }
 
+/// blake3 of `text` as lowercase hex: the hash of prompts, model inputs and stored content.
+pub fn hex_hash(text: &str) -> String {
+    blake3::hash(text.as_bytes()).to_hex().to_string()
+}
+
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Short unique id: 16 hex chars from blake3(nanos, counter, pid, prefix).
@@ -106,10 +111,6 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     } else {
         dot / (na.sqrt() * nb.sqrt())
     }
-}
-
-pub fn days_between(later: &DateTime<Utc>, earlier: &DateTime<Utc>) -> f64 {
-    (*later - *earlier).num_seconds() as f64 / 86_400.0
 }
 
 #[cfg(test)]

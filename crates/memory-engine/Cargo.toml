@@ -10,12 +10,11 @@ publish = false
 [dependencies]
 memory-config = { path = "../memory-config" }
 memory-domain = { path = "../memory-domain" }
-memory-fulltext = { path = "../memory-fulltext" }
 memory-rules = { path = "../memory-rules" }
 memory-store = { path = "../memory-store" }
 anyhow = "1"
 blake3 = "1"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = "0.4"
 lru = "0.16.2"
 reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1", features = ["derive"] }

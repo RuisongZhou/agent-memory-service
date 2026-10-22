@@ -1,8 +1,7 @@
 //! Agent harness commands: the dialogue collector and automatic recall that agent hosts run as
 //! hooks, and the uploader that submits captured dialogue to the daemon. They keep the files,
-//! schemas and hook contracts of `scripts/harness_memory.py` and `scripts/harness_recall.py`, so
-//! either implementation can share one outbox and one recall record while installations migrate.
-//! See docs/mcp-harness.md. `import` reads the memories a host already keeps into a reviewable plan
+//! schemas and hook contracts of the Python hooks that earlier installers wrote, so an existing
+//! outbox and recall record stay usable. See docs/mcp-harness.md. `import` reads the memories a host already keeps into a reviewable plan
 //! and drives the daemon's import runs (docs/design/memory-import.md).
 pub mod import;
 pub mod outbox;
@@ -216,6 +215,26 @@ fn positive_seconds(value: &str) -> Result<f64, String> {
         Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
         _ => Err("must be a positive number of seconds".into()),
     }
+}
+
+fn positive(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => Err("must be a positive integer".into()),
+    }
+}
+
+/// A daemon URL on this machine, without credentials; the trailing slash is dropped.
+fn loopback_url(value: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(value).map_err(|e| e.to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !loopback(&url)
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("must be a daemon URL on loopback".into());
+    }
+    Ok(value.trim_end_matches('/').to_string())
 }
 
 /// A refused or failed outbox/recall-record operation. Display names fields or error kinds only.

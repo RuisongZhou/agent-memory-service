@@ -7,23 +7,13 @@ pub mod envfile;
 pub mod harness;
 pub mod service;
 
-// Flat facade for external clients (binary, examples); internal code uses the canonical paths.
+// Flat facade for the binary; internal code uses the canonical paths.
 pub use api::{http, mcp};
-pub use app::management as manage;
-pub use app::{ingest, instructions, tasks};
 pub use memory_config as config;
-pub use memory_domain as domain;
-pub use memory_domain::types;
-pub use memory_engine::{app, retrieval, runtime};
-pub use memory_rules::{timeparse, util};
-pub use memory_store as storage;
-pub use memory_store::store;
-pub use retrieval as retrieve;
+pub use memory_engine::runtime;
 pub use runtime::engine::Engine;
-pub use runtime::{engine, indexer, instance, llm, models, reference_time};
+pub use runtime::{llm, models};
 
-// Stable Rust facade for existing clients and diagnostics; implementations live with their algorithm.
-pub use algorithms::mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
 #[cfg(feature = "selftest")]
 pub use diagnostics::{
     consolidation as consolidation_tests, consolidation_apply as consolidation_apply_tests,

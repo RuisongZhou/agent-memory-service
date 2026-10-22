@@ -56,7 +56,7 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
         "counts": counts,
         "memories": by,
         "llm": {"process": eng.llm.usage_snapshot(), "persisted": usage_sum, "rows": usage_rows.len()},
-        "index": {"fulltextDocs": t.ft.num_docs(), "memoryVectors": vm, "turnVectors": vt, "turnChunkVectors": vc,
+        "index": {"memoryVectors": vm, "turnVectors": vt, "turnChunkVectors": vc,
                   "pendingTasks": indexer::pending(t).await?},
         "retrieval": {"gapSearches": gap_searches},
         "jobs": {"pendingJobs": t.store.count(schema::REQUESTS, Some("status IN ['queued','running','indexing']")).await?},
@@ -119,8 +119,8 @@ pub async fn export(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiRes
 }
 
 /// Test-only admin action: insert records directly (bypassing extraction) and index them synchronously.
-/// Body: `{memories: [MemoryRec], turns: [TurnRec], sessions: [SessionRec], evidence: [EvidenceRec],
-/// entities: [EntityRec]}` in the API's camelCase JSON.
+/// Body: `{memories: [MemoryRec], turns: [TurnRec], sessions: [SessionRec], evidence: [EvidenceRec]}` in the
+/// API's camelCase JSON.
 pub async fn seed(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiResult<Value> {
     if !eng.models.is_mock() {
         return Err(ApiError::InvalidArgument(
@@ -139,7 +139,6 @@ pub async fn seed(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiResul
     let turns: Vec<TurnRec> = list(&body, "turns")?;
     let sessions: Vec<SessionRec> = list(&body, "sessions")?;
     let evidence: Vec<EvidenceRec> = list(&body, "evidence")?;
-    let entities: Vec<EntityRec> = list(&body, "entities")?;
     let mut tx = Tx::new();
     for m in &mems {
         let mut m = m.clone();
@@ -166,18 +165,7 @@ pub async fn seed(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiResul
     for e in &evidence {
         tx.put(schema::EVIDENCE, &e.id, to_doc(e)?)?;
     }
-    for e in &entities {
-        tx.put(schema::ENTITIES, &e.id, to_doc(e)?)?;
-    }
     t.store.commit(tx).await?;
-    {
-        let mut d = t.entities.write().await;
-        for e in &entities {
-            let mut names = vec![e.name.clone()];
-            names.extend(e.aliases.iter().cloned());
-            d.upsert(&e.id, &names);
-        }
-    }
     indexer::drain(eng, t).await?;
     // sanity: every seeded record can be read back
     let back: Vec<MemoryRec> = t
@@ -186,6 +174,6 @@ pub async fn seed(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiResul
         .await?;
     Ok(json!({
         "memories": back.len(), "turns": turns.len(), "sessions": sessions.len(),
-        "evidence": evidence.len(), "entities": entities.len(), "fulltextDocs": t.ft.num_docs(),
+        "evidence": evidence.len(),
     }))
 }

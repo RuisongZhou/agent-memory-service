@@ -9,6 +9,7 @@ use super::{
     run_proposals, turns, LedgerRow,
 };
 use crate::app::consolidation::write_patch;
+use crate::app::runs;
 use crate::runtime::engine::Engine;
 use crate::runtime::instance::Instance;
 use memory_domain::import::apply as plan;
@@ -159,11 +160,7 @@ pub async fn rollback(eng: &Arc<Engine>, t: &Arc<Instance>, req: ImportRunReq) -
             }
             Err(e) => return Err(interrupted(t, id, e).await),
         };
-        let committed = match tx.merge(schema::PROPOSALS, &p.proposal_id, bookkeeping) {
-            Ok(_) => t.store.commit(tx).await,
-            Err(e) => Err(e),
-        };
-        if let Err(e) = committed {
+        if let Err(e) = runs::commit_op(t, tx, &p.proposal_id, bookkeeping).await {
             return Err(interrupted(t, id, e).await);
         }
     }

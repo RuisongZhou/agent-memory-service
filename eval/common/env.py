@@ -17,30 +17,6 @@ STORES_DIR = EVAL_DIR / "stores"
 CACHE_DIR = EVAL_DIR / ".cache"
 DATA_PATH = EVAL_DIR / "data" / "locomo10.json"
 DOTENV_PATH = ROOT_DIR / ".env"
-# Name of the checkout that produced pre-migration runs; independent of this clone's directory name.
-HISTORICAL_REPO_NAME = "agent-memory-service"
-
-
-def resolve_historical_result_path(path: str | Path) -> Path:
-    """Resolve saved benchmark paths without rewriting frozen manifests.
-
-    Runs predating the eval/results migration used repository-relative results/ paths
-    or absolute paths ending in agent-memory-service/results/ on an older checkout.
-    Other absolute paths are caller-owned and must remain unchanged.
-    """
-    value = Path(path)
-    parts = value.parts
-    if not value.is_absolute():
-        if parts[:1] == ("results",):
-            return RESULTS_DIR.joinpath(*parts[1:])
-        if parts[:2] == ("eval", "results"):
-            return RESULTS_DIR.joinpath(*parts[2:])
-    else:
-        for i in range(len(parts) - 1):
-            if parts[i:i + 2] == (HISTORICAL_REPO_NAME, "results"):
-                return RESULTS_DIR.joinpath(*parts[i + 2:])
-    return value
-
 
 os.environ["MEM0_TELEMETRY"] = "False"
 os.environ.setdefault("MEM0_DIR", str(CACHE_DIR / "mem0"))

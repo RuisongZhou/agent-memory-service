@@ -113,12 +113,7 @@ async fn admin(
             "import_runs" => import::list_runs(&t, parse(body)?).await,
             "seed" if eng.models.is_mock() => management::seed(&eng, &t, body).await,
             "reindex" => {
-                let v = body.get("vector").and_then(|x| x.as_bool()).unwrap_or(true);
-                let f = body
-                    .get("fulltext")
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(true);
-                indexer::schedule_rebuild(&t, v, f).await?;
+                indexer::schedule_rebuild(&t).await?;
                 Ok(json!({"scheduled": true}))
             }
             other => Err(ApiError::NotFound(format!("unknown admin action {other}"))),
