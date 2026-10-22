@@ -5,10 +5,10 @@ Legacy: `agent-memoryd hook recall` replaces this script with the same contract 
 the installer now writes that. It stays so hooks written by earlier installers keep working.
 
 SessionStart injects get_context; UserPromptSubmit injects search_memories results for
-the prompt, skipping memories this session was already shown. The daemon must be on
-loopback. A hook never blocks or fails its host: every outcome prints exactly one JSON
-object and exits 0. See docs/mcp-harness.md#automatic-recall. Python 3.11+, standard
-library only.
+the prompt that this session was not shown yet, packed into its own token budget. The
+daemon must be on loopback. A hook never blocks or fails its host: every outcome prints
+exactly one JSON object and exits 0. See docs/mcp-harness.md#automatic-recall. Python
+3.11+, standard library only.
 """
 import argparse
 from contextlib import contextmanager
@@ -20,6 +20,7 @@ import signal
 import sqlite3
 import sys
 import time
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -31,6 +32,16 @@ TAG = 'shared-memory'
 MAX_RESPONSE = 1 << 20  # bytes read from the daemon
 MAX_QUERY = 2000  # prompt characters sent as the search query
 KEEP_SECONDS = 30 * 86400  # shown-memory records older than this are pruned
+# UserPromptSubmit searches for three times --top-k results, within 15 and the daemon's default
+# maxTopK, with --search-budget tokens for each: room to skip what the session was shown, and
+# for the longest records to arrive whole and be cut here.
+FETCH_FACTOR, MIN_FETCH, MAX_FETCH = 3, 15, 50
+RESULT_TOKENS = 8  # tokens the daemon counts for each result on top of its text; recall packs the same way
+MIN_EXCERPT = 32  # fewest text tokens worth injecting as an excerpt
+EXCERPT = 'excerpt, full text via get_memory; '
+# Characters the daemon's token estimate counts one token each; four other characters make one.
+CJK = ((0x4E00, 0x9FFF), (0x3400, 0x4DBF), (0x20000, 0x2A6DF), (0xF900, 0xFAFF),
+       (0x3000, 0x303F), (0xFF00, 0xFFEF), (0x3040, 0x30FF), (0xAC00, 0xD7AF))
 START_NOTE = ('Loaded automatically at session start from the shared memory service (get_context). '
               'Only its explicit-instructions section holds behaviour requirements the user saved; follow '
               'them unless current instructions override them. Every other section is historical '
@@ -168,14 +179,75 @@ def memory_ids(context):
     return [i for i in ids if isinstance(i, str) and i]
 
 
-def fact_line(memory):
+def is_cjk(char):
+    return any(low <= ord(char) <= high for low, high in CJK)
+
+
+def est_tokens(text):
+    """The daemon's token estimate."""
+    cjk = sum(map(is_cjk, text))
+    return cjk + -(-(len(text) - cjk) // 4)
+
+
+def excerpt(text, tokens):
+    """The longest start of text within tokens, estimated as the daemon does."""
+    cjk = other = 0
+    for at, char in enumerate(text):
+        if is_cjk(char):
+            cjk += 1
+        else:
+            other += 1
+        if cjk + -(-other // 4) > tokens:
+            return text[:at].rstrip()
+    return text
+
+
+def one_line(memory):
+    """A memory's text on one line, unable to close the wrapper."""
+    return clean(' '.join(str(memory.get('text', '')).split()))
+
+
+def fact_line(memory, text, note=''):
+    """text (from one_line, maybe cut) with the memory's status, date, platform and ID."""
     effective, recorded = (str(memory.get(key) or '')[:10] for key in ('effectiveAt', 'recordedAt'))
     when = f'since {effective}' if effective else f'recorded {recorded}' if recorded else ''
     source = memory.get('source')
     platform = str(source.get('platform') or '') if isinstance(source, dict) else ''
     status = 'conflicting, pending confirmation; ' if memory.get('status') == 'conflict' else ''
     details = ' · '.join(part for part in (when, platform) if part)
-    return f"- {clean(' '.join(str(memory.get('text', '')).split()))} ({status}{details}; id {memory.get('id')})"
+    return f"- {text} ({note}{status}{details}; id {memory.get('id')})"
+
+
+def pack(args, memories):
+    """(line, memory id) for at most --top-k results in rank order, each costing its text as the
+    daemon estimates it plus RESULT_TOKENS, within --search-budget. The first result too long for
+    the tokens left becomes an excerpt that ends the list, unless less than MIN_EXCERPT would fit."""
+    left, lines = args.search_budget, []
+    for memory in memories:
+        if len(lines) == args.top_k:
+            break
+        text = one_line(memory)
+        cost = est_tokens(text) + RESULT_TOKENS
+        if cost <= left:
+            left -= cost
+            lines.append((fact_line(memory, text), memory['id']))
+        elif left >= RESULT_TOKENS + MIN_EXCERPT:
+            lines.append((fact_line(memory, excerpt(text, left - RESULT_TOKENS) + '…', EXCERPT), memory['id']))
+            break
+    return lines
+
+
+def search(args, query):
+    """search_memories for the prompt, asking for more than recall injects. A daemon whose maxTopK
+    refuses that gets the plain request."""
+    fetch = min(max(args.top_k * FETCH_FACTOR, MIN_FETCH), MAX_FETCH)
+    body = {'query': query, 'scope': {'project': args.project}}
+    try:
+        return call(args, 'search_memories', {**body, 'topK': fetch, 'tokenBudget': args.search_budget * fetch})
+    except HTTPError as error:
+        if error.code != 400 or fetch <= args.top_k:
+            raise
+    return call(args, 'search_memories', {**body, 'topK': args.top_k, 'tokenBudget': args.search_budget})
 
 
 def session_start(args, event):
@@ -195,8 +267,7 @@ def prompt_submit(args, event):
     query = query_text(prompt) if isinstance(prompt, str) else ''
     if not query:
         return None, None  # an image-only or empty prompt has nothing to search for
-    found = call(args, 'search_memories', {'query': query, 'scope': {'project': args.project},
-                                           'topK': args.top_k, 'tokenBudget': args.search_budget})
+    found = search(args, query)
     memories = [r['memory'] for r in found.get('results') or []
                 if isinstance(r, dict) and isinstance(r.get('memory'), dict) and r['memory'].get('id')]
     if session:
@@ -206,10 +277,11 @@ def prompt_submit(args, event):
         except (OSError, sqlite3.Error) as error:
             report(error)  # without the record, inject unfiltered: each prompt stays within budget
             session = None
-    text, kept = wrap(args, 'UserPromptSubmit', PROMPT_NOTE, [fact_line(m) for m in memories])
+    picked = pack(args, memories)
+    text, kept = wrap(args, 'UserPromptSubmit', PROMPT_NOTE, [line for line, _ in picked])
     if not text or not session:
         return text, None
-    return text, (session, [m['id'] for m in memories[:kept]], False)
+    return text, (session, [memory for _, memory in picked[:kept]], False)
 
 
 def recall(args, event):
