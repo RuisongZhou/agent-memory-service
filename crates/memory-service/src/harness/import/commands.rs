@@ -16,9 +16,7 @@ use std::time::{Duration, Instant};
 use super::client::{self, Client, RunView};
 use super::plan::{self, Plan, PlanOptions, SessionOptions};
 use super::source::{Issue, ScanContext, ScanOutput};
-use super::{
-    project, review, shown, DaemonArgs, Host, Include, PlanArgs, DEFAULT_TENANT, DEFAULT_URL,
-};
+use super::{project, review, shown, DaemonArgs, Host, Include, PlanArgs, DEFAULT_URL};
 use crate::harness::outbox::{Outbox, Queued};
 use crate::harness::{expand, home, invalid, Error};
 
@@ -247,14 +245,11 @@ pub fn plan_report(path: &Path, plan: &Plan, args: &PlanArgs) -> String {
     out
 }
 
-/// ` --url U --tenant T` for the commands a report suggests, when they are not the defaults.
+/// ` --url U` for the commands a report suggests, when it is not the default.
 fn daemon_flags(daemon: &DaemonArgs) -> String {
     let mut flags = String::new();
     if daemon.url != DEFAULT_URL {
         let _ = write!(flags, " --url {}", daemon.url);
-    }
-    if daemon.tenant != DEFAULT_TENANT {
-        let _ = write!(flags, " --tenant {}", daemon.tenant);
     }
     flags
 }
@@ -288,7 +283,7 @@ pub async fn propose(
             ),
         }));
     }
-    let client = Client::new(&daemon.url, &daemon.tenant, timeout)?;
+    let client = Client::new(&daemon.url, timeout)?;
     say(&format!(
         "Proposing {} units of {} for project {:?}, {batch} per request",
         units.len(),
@@ -493,7 +488,7 @@ pub async fn show(
             shown(&path)
         )));
     }
-    let client = Client::new(&daemon.url, &daemon.tenant, CALL_TIMEOUT)?;
+    let client = Client::new(&daemon.url, CALL_TIMEOUT)?;
     let view = client.run(run_id).await?;
     review::write(&path, &view.run, &view.proposals)?;
     let mut text = run_report(&view.run);
@@ -582,7 +577,6 @@ pub struct Queue {
 pub async fn queue_turns(
     view: &RunView,
     path: &Path,
-    tenant: &str,
     pace: &Pace,
     say: &mut (dyn FnMut(&str) + Send),
 ) -> Result<Queue, Error> {
@@ -632,7 +626,7 @@ pub async fn queue_turns(
         }
         let body = json!({"scope": {"project": run.project, "session": turn.session},
                           "turnId": turn.turn_id, "messages": turn.messages, "importRunId": run.run_id});
-        match outbox.enqueue_import(tenant, &run.host, &body)? {
+        match outbox.enqueue_import(&run.host, &body)? {
             Queued::Added => {
                 queue.added += 1;
                 last_added = Some(Instant::now());
@@ -665,7 +659,7 @@ pub async fn apply(
     pace: &Pace,
     say: &mut (dyn FnMut(&str) + Send),
 ) -> Result<String, Error> {
-    let client = Client::new(&daemon.url, &daemon.tenant, CALL_TIMEOUT)?;
+    let client = Client::new(&daemon.url, CALL_TIMEOUT)?;
     let current = client.run(run_id).await?;
     let resume = current.run.status == RUN_APPLIED && current.run.counts.session_turns > 0;
     let applied = match resume {
@@ -675,7 +669,7 @@ pub async fn apply(
         },
         false => client.apply(run_id, review, home).await?,
     };
-    let queue = queue_turns(&applied.view, outbox, &daemon.tenant, pace, say).await?;
+    let queue = queue_turns(&applied.view, outbox, pace, say).await?;
     let mut out = run_report(&applied.view.run);
     for source in &applied.changed {
         let _ = writeln!(
@@ -724,7 +718,7 @@ pub async fn status(
     project: Option<&str>,
     daemon: &DaemonArgs,
 ) -> Result<String, Error> {
-    let client = Client::new(&daemon.url, &daemon.tenant, CALL_TIMEOUT)?;
+    let client = Client::new(&daemon.url, CALL_TIMEOUT)?;
     if let Some(run_id) = run_id {
         let view = client.run(run_id).await?;
         let mut out = run_report(&view.run);
@@ -765,7 +759,7 @@ pub async fn status(
 /// no uploader submits them (the daemon would refuse them anyway once the run rolls back), then the daemon
 /// undoes the run.
 pub async fn rollback(run_id: &str, daemon: &DaemonArgs, outbox: &Path) -> Result<String, Error> {
-    let client = Client::new(&daemon.url, &daemon.tenant, CALL_TIMEOUT)?;
+    let client = Client::new(&daemon.url, CALL_TIMEOUT)?;
     let current = client.run(run_id).await?;
     let cancelled =
         match current.run.counts.session_turns > 0 && std::fs::symlink_metadata(outbox).is_ok() {
@@ -940,10 +934,7 @@ mod tests {
         let path = home.path().join("p.plan.jsonl");
         plan::write(&plan, &path).unwrap();
         let (url, requests) = stub().await;
-        let daemon = DaemonArgs {
-            url: url.clone(),
-            tenant: "default".into(),
-        };
+        let daemon = DaemonArgs { url: url.clone() };
         let mut said = Vec::new();
         let report = propose(
             &path,
@@ -1042,10 +1033,7 @@ mod tests {
     async fn show_keeps_an_edited_review_unless_forced() {
         let home = tempfile::tempdir().unwrap();
         let (url, requests) = stub().await;
-        let daemon = DaemonArgs {
-            url,
-            tenant: "default".into(),
-        };
+        let daemon = DaemonArgs { url };
         // The default file, under the home directory.
         let default = review::default_path(home.path(), "ir1");
         show("ir1", None, false, &daemon, home.path())
@@ -1100,10 +1088,7 @@ mod tests {
         ])
         .unwrap();
         let (url, _) = stub_with(run, stub_proposals()).await;
-        let daemon = DaemonArgs {
-            url,
-            tenant: "default".into(),
-        };
+        let daemon = DaemonArgs { url };
         let path = home.path().join("ir1.review.jsonl");
         let text = show("ir1", Some(&path), false, &daemon, home.path())
             .await
@@ -1143,10 +1128,7 @@ mod tests {
     async fn apply_reports_the_sources_changed_since_propose() {
         let home = tempfile::tempdir().unwrap();
         let (url, requests) = stub_with(stub_run(), sourced_proposals(home.path())).await;
-        let daemon = DaemonArgs {
-            url,
-            tenant: "default".into(),
-        };
+        let daemon = DaemonArgs { url };
         std::fs::write(home.path().join("b.md"), "Edited.\n").unwrap();
         std::fs::remove_file(home.path().join("c.md")).unwrap();
         let outbox = home.path().join("outbox.sqlite3");
@@ -1328,10 +1310,7 @@ mod tests {
         let (mut run, _) = session_run(RUN_PROPOSED);
         run["counts"]["turnsQueued"] = json!(0);
         let (url, _) = stub_with(run, vec![turn_row("ip1", "t1", "proposed")]).await;
-        let daemon = DaemonArgs {
-            url,
-            tenant: "default".into(),
-        };
+        let daemon = DaemonArgs { url };
         let report = propose(
             &path,
             &daemon,
@@ -1359,10 +1338,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let (run, rows) = session_run(RUN_APPLIED);
         let (url, requests) = stub_with(run, rows).await;
-        let daemon = DaemonArgs {
-            url,
-            tenant: "team".into(),
-        };
+        let daemon = DaemonArgs { url };
         let outbox = home.path().join("outbox.sqlite3");
         let report = apply(
             "ir1",
@@ -1382,7 +1358,6 @@ mod tests {
             "session turns queued into",
             "2 new, 0 already queued by this run, 0 already captured live, 0 queued by an earlier import",
             "agent-memoryd import status ir1 --url ",
-            " --tenant team",
         ] {
             assert!(report.contains(part), "{part}\n{report}");
         }
@@ -1445,7 +1420,7 @@ mod tests {
             run: serde_json::from_value(run.clone()).unwrap(),
             proposals: rows.clone(),
         };
-        queue_turns(&view, &outbox, "default", &at_once(), &mut |_| {})
+        queue_turns(&view, &outbox, &at_once(), &mut |_| {})
             .await
             .unwrap();
         let mut other = view.clone();
@@ -1453,14 +1428,11 @@ mod tests {
         for p in &mut other.proposals {
             p.turn.as_mut().unwrap().turn_id += "-b";
         }
-        queue_turns(&other, &outbox, "default", &at_once(), &mut |_| {})
+        queue_turns(&other, &outbox, &at_once(), &mut |_| {})
             .await
             .unwrap();
         let (url, requests) = stub_with(run, rows).await;
-        let daemon = DaemonArgs {
-            url,
-            tenant: "default".into(),
-        };
+        let daemon = DaemonArgs { url };
         let report = rollback("ir1", &daemon, &outbox).await.unwrap();
         assert!(
             report.contains("2 session turns not yet submitted were cancelled"),
@@ -1510,7 +1482,7 @@ mod tests {
         });
         let started = Instant::now();
         let mut said = Vec::new();
-        let queue = queue_turns(&view, &outbox, "default", &pace, &mut |line| {
+        let queue = queue_turns(&view, &outbox, &pace, &mut |line| {
             said.push(line.to_string())
         })
         .await

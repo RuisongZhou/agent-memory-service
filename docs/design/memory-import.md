@@ -363,7 +363,7 @@ run 的状态：`proposing` → `proposed`（或 `failed`）→ `applying` → `
 
 ### 6.9 导入台账、幂等和更新
 
-台账为每个导入单元保存一行：`(tenant, host, unit) → {fileHash, unitHash, memoryIds, runId, status}`。单元键由宿主、
+台账为每个导入单元保存一行：`(project, unit) → {fileHash, unitHash, memoryIds, runId, status}`。单元键由宿主、
 原生 ID（没有时用相对宿主目录的路径）和单元在文件里的位置组成。
 
 - 以文件为单位比较。文件哈希不变就整文件跳过，计划里标 `unchanged`。
@@ -454,7 +454,7 @@ agent-memoryd import plan --host claude-code|codex|workbuddy|jsonl --project my-
   [--include notes,sessions] [--since TIME] [--limit 200] \
   [--all] [--from FILE] [--label LABEL] [--no-extract] [--recall-budget 400] [--recall-top-k 5] [--home DIR] \
   [--claude-config-dir DIR] [--codex-home DIR] [--workbuddy-home DIR] [--out PLAN.jsonl]
-agent-memoryd import propose PLAN.jsonl [--url http://127.0.0.1:8765] [--tenant default] [--batch 8] [--timeout 900] \
+agent-memoryd import propose PLAN.jsonl [--url http://127.0.0.1:8765] [--batch 8] [--timeout 900] \
   [--home DIR] [--reconsider]
 agent-memoryd import show RUN [--out REVIEW.jsonl] [--force]
 agent-memoryd import apply RUN (--review REVIEW.jsonl | --yes) [--home DIR] [--outbox FILE] [--rate 20] [--max-pending 4]

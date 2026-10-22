@@ -125,7 +125,7 @@ SDK compatibility check remains the separate offline comparison above.
 |---|---|
 | `mem0_v3_context.py` | Offline fixed-input comparison of V3 message handling, prompt boundaries and persistence; model doubles, not an accuracy benchmark |
 | `mem0_sdk331_compare.py` | Actual Node SDK 3.3.1 comparison of prompts, entities and hybrid scores with the same local mock embeddings |
-| `extraction_audit.py` | Count-only audit of saved formation logs or already opened daemon tenants; no generation |
+| `extraction_audit.py` | Count-only audit of saved formation logs or a running daemon's store; no generation |
 | `longterm_context_ablation.py` | Remove the recent-turn section from saved contexts without purging sources |
 | `diagnose_replay.py` | Inspect historical QA, source, formation and retrieval chains |
 | `fair_replay.py` | Replay saved corpora with a shared whole-record context budget |

@@ -150,7 +150,7 @@ pub(super) async fn extract(
         project,
         limits,
         existing,
-        eng.prompt_variant_for(t) == "zh",
+        eng.cfg.prompt_variant == "zh",
     );
     let input_hash = blake3::hash(input.as_bytes()).to_hex().to_string();
     let reply = eng

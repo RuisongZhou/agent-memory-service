@@ -63,8 +63,9 @@ pub struct RecallArgs {
     pub project: String,
     #[arg(long, default_value = "codex")]
     pub platform: String,
-    #[arg(long, default_value = "default")]
-    pub tenant: String,
+    /// Ignored: hooks written by earlier installers pass it.
+    #[arg(long, hide = true)]
+    pub tenant: Option<String>,
     #[arg(long, default_value = "http://127.0.0.1:8765", value_parser = loopback_url)]
     pub url: String,
     /// Seconds for the whole recall; keep it below the hook timeout
@@ -224,7 +225,7 @@ async fn session_start(
     }
     let body = json!({"scope": scope, "tokenBudget": args.context_budget});
     let context = daemon
-        .post("get_context", &body, &args.tenant, &args.platform)
+        .post("get_context", &body, &args.platform)
         .await
         .map_err(|e| e.kind())?;
     let text = context.get("text").and_then(Value::as_str).unwrap_or("");
@@ -272,11 +273,7 @@ async fn prompt_submit(
         .collect();
     if let Some(current) = session.clone() {
         let state = args.state.clone();
-        let key = (
-            args.tenant.clone(),
-            args.platform.clone(),
-            args.project.clone(),
-        );
+        let key = (args.platform.clone(), args.project.clone());
         let seen = tokio::task::spawn_blocking(move || already_shown(&state, &key, &current))
             .await
             .map_err(|_| "Panic")?;
@@ -315,15 +312,10 @@ async fn search(args: &RecallArgs, daemon: &Daemon, query: &str) -> Result<Value
                "topK": top_k, "tokenBudget": budget})
     };
     let wide = body(fetch, args.search_budget.saturating_mul(fetch));
-    match daemon
-        .post("search_memories", &wide, &args.tenant, &args.platform)
-        .await
-    {
+    match daemon.post("search_memories", &wide, &args.platform).await {
         Err(CallError::Status(400)) if fetch > args.top_k => {
             let plain = body(args.top_k, args.search_budget);
-            daemon
-                .post("search_memories", &plain, &args.tenant, &args.platform)
-                .await
+            daemon.post("search_memories", &plain, &args.platform).await
         }
         found => found,
     }
@@ -520,6 +512,9 @@ fn fact_line(memory: &Map<String, Value>, text: &str, note: &str) -> String {
     )
 }
 
+/// The `tenant` column the record keeps for the file `scripts/harness_recall.py` shares; it always holds this value.
+const TENANT: &str = "default";
+
 fn open_state(path: &Path) -> Result<Connection, Error> {
     let path = expand(path);
     private_file(&path)?;
@@ -536,14 +531,14 @@ fn open_state(path: &Path) -> Result<Connection, Error> {
 
 fn already_shown(
     state: &Path,
-    (tenant, platform, project): &(String, String, String),
+    (platform, project): &(String, String),
     session: &str,
 ) -> Result<HashSet<String>, Error> {
     let db = open_state(state)?;
     let mut statement = db.prepare(
         "SELECT memory FROM shown WHERE tenant=?1 AND platform=?2 AND project=?3 AND session=?4",
     )?;
-    let rows = statement.query_map(params![tenant, platform, project, session], |row| {
+    let rows = statement.query_map(params![TENANT, platform, project, session], |row| {
         row.get(0)
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -559,7 +554,7 @@ fn unix_now() -> f64 {
 fn remember(args: &RecallArgs, record: &Record) -> Result<(), Error> {
     let mut db = open_state(&args.state)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let key = params![args.tenant, args.platform, args.project, record.session];
+    let key = params![TENANT, args.platform, args.project, record.session];
     let at = unix_now();
     if record.reset {
         tx.execute(
@@ -572,7 +567,7 @@ fn remember(args: &RecallArgs, record: &Record) -> Result<(), Error> {
         tx.execute(
             "INSERT OR IGNORE INTO shown VALUES (?1,?2,?3,?4,?5,?6)",
             params![
-                args.tenant,
+                TENANT,
                 args.platform,
                 args.project,
                 record.session,
@@ -682,7 +677,7 @@ mod tests {
             state: dir.path().join("state/recall.sqlite3"),
             project: "proj".into(),
             platform: "claude-code".into(),
-            tenant: "team".into(),
+            tenant: None,
             url: url.into(),
             timeout: 2.0,
             context_budget: 1000,

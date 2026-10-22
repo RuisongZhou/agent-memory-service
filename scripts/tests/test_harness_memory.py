@@ -176,7 +176,6 @@ def test_cli_capture_then_actual_http_upload(tmp_path, captured_by, uploaded_by)
                                 text=True, check=True, capture_output=True)
         assert json.loads(result.stdout)['statuses'] == {'completed':2}
         assert [r[0] for r in requests] == ['/v1/add_memories','/v1/add_memories','/v1/get_task','/v1/get_task']
-        assert requests[0][1]['x-memory-tenant'] == 'isolated'
         assert [m['content'] for m in requests[0][2]['messages']] == ['original user','original assistant']
         assert requests[1][1]['x-memory-platform'] == 'workbuddy'
         assert [m['content'] for m in requests[1][2]['messages']] == ['idless user','idless assistant']

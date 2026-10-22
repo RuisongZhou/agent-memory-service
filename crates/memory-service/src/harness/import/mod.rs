@@ -34,7 +34,6 @@ use self::source::{display, timestamp, Adapter};
 use super::{expand, home, invalid, loopback, outbox, positive_seconds, private_file, Error};
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8765";
-const DEFAULT_TENANT: &str = "default";
 /// Units per `import_propose` request at most.
 const MAX_BATCH: usize = 64;
 /// Session turns a plan takes by default (design §6.14): enough for a first look, few enough not to hold up
@@ -101,8 +100,6 @@ pub struct DaemonArgs {
     /// Daemon base URL; loopback only
     #[arg(long, default_value = DEFAULT_URL, value_parser = loopback_url)]
     pub url: String,
-    #[arg(long, default_value = DEFAULT_TENANT)]
-    pub tenant: String,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -607,7 +604,6 @@ mod tests {
             daemon,
             DaemonArgs {
                 url: DEFAULT_URL.into(),
-                tenant: "default".into()
             }
         );
         assert_eq!((batch, timeout, home, reconsider), (8, 900.0, None, false));
@@ -621,8 +617,6 @@ mod tests {
             "p",
             "--url",
             "http://localhost:9000/",
-            "--tenant",
-            "t",
             "--batch",
             "64",
             "--reconsider",
@@ -631,10 +625,7 @@ mod tests {
         else {
             panic!("propose")
         };
-        assert_eq!(
-            (daemon.url.as_str(), daemon.tenant.as_str(), batch),
-            ("http://localhost:9000", "t", 64)
-        );
+        assert_eq!((daemon.url.as_str(), batch), ("http://localhost:9000", 64));
         assert!(reconsider);
         for bad in [
             &["propose", "p", "--url", "http://192.0.2.1:8765"][..],

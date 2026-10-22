@@ -9,7 +9,7 @@ pub fn start(eng: Arc<Engine>, t: Arc<Tenant>) {
 pub async fn run_extract_worker(eng: Arc<Engine>, t: Arc<Tenant>) {
     loop {
         if let Err(error) = super::formation::process_jobs(&eng, &t).await {
-            tracing::error!(tenant=%t.name, "mem0 formation worker: {error:#}");
+            tracing::error!("mem0 formation worker: {error:#}");
         }
         tokio::select! {
             _ = t.formation_signal() => {},

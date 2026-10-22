@@ -112,7 +112,7 @@ pub async fn run_index_worker(eng: Arc<Engine>, t: Arc<Tenant>) {
             Ok(n) if n > 0 => continue,
             Ok(_) => {}
             Err(e) => {
-                tracing::error!(tenant = %t.name, "index worker: {e:#}");
+                tracing::error!("index worker: {e:#}");
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }

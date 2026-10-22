@@ -87,9 +87,6 @@ pub struct InstallArgs {
     /// Port the daemon listens on (`serve --port`)
     #[arg(long, default_value_t = 8765)]
     pub port: u16,
-    /// Generation-attempt guard, set as MEMORY_LLM_MAX_CALLS in the unit; 0 removes it
-    #[arg(long, default_value_t = 60)]
-    pub max_calls: u64,
     /// Concurrent generation requests (`serve --llm-concurrency`)
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     pub llm_concurrency: u32,
@@ -147,8 +144,6 @@ pub struct Serve {
     pub outbox: Option<PathBuf>,
     pub port: u16,
     pub llm_concurrency: u32,
-    /// MEMORY_LLM_MAX_CALLS; None leaves generation attempts unguarded.
-    pub max_calls: Option<u64>,
 }
 
 impl Serve {
@@ -172,14 +167,6 @@ impl Serve {
         }
         Ok(argv)
     }
-
-    /// Environment the unit sets; never a key.
-    pub fn environment(&self) -> Vec<(&'static str, String)> {
-        self.max_calls
-            .map(|n| ("MEMORY_LLM_MAX_CALLS", n.to_string()))
-            .into_iter()
-            .collect()
-    }
 }
 
 /// A path as unit-file text: UTF-8 without control characters.
@@ -198,7 +185,6 @@ fn unit_text(path: &Path) -> Result<String> {
 /// The file `manager` reads: a LaunchAgent property list or a systemd user unit.
 pub fn render(manager: Manager, serve: &Serve, home: &Path) -> Result<String> {
     let argv = serve.argv()?;
-    let env = serve.environment();
     let mut lines: Vec<String> = Vec::new();
     match manager {
         Manager::Launchd => {
@@ -214,15 +200,6 @@ pub fn render(manager: Manager, serve: &Serve, home: &Path) -> Result<String> {
             lines.push("  <array>".into());
             lines.extend(argv.iter().map(|arg| format!("    {}", string(arg))));
             lines.push("  </array>".into());
-            if !env.is_empty() {
-                lines.push("  <key>EnvironmentVariables</key>".into());
-                lines.push("  <dict>".into());
-                lines.extend(
-                    env.iter()
-                        .map(|(k, v)| format!("    <key>{k}</key>{}", string(v))),
-                );
-                lines.push("  </dict>".into());
-            }
             lines.push("  <key>RunAtLoad</key><true/>".into());
             lines.push("  <key>KeepAlive</key><true/>".into());
             lines.push("  <key>ThrottleInterval</key><integer>10</integer>".into());
@@ -246,10 +223,6 @@ pub fn render(manager: Manager, serve: &Serve, home: &Path) -> Result<String> {
             lines.push("[Service]".into());
             let words: Vec<String> = argv.iter().map(|a| systemd_quote(a)).collect();
             lines.push(format!("ExecStart={}", words.join(" ")));
-            lines.extend(
-                env.iter()
-                    .map(|(k, v)| format!("Environment={}", systemd_quote(&format!("{k}={v}")))),
-            );
             // The daemon exits when the retrieval models do not answer at startup; retry later.
             lines.push("Restart=on-failure".into());
             lines.push("RestartSec=5".into());
@@ -351,25 +324,6 @@ pub fn unit_argv(manager: Manager, text: &str) -> Option<Vec<String>> {
     }
 }
 
-/// The value a unit file, as written by `render`, sets for environment variable `key`.
-fn unit_env(manager: Manager, text: &str, key: &str) -> Option<String> {
-    match manager {
-        Manager::Launchd => {
-            let start = text.find("<key>EnvironmentVariables</key>")?;
-            let rest = &text[start..];
-            let dict = &rest[..rest.find("</dict>")?];
-            let (_, value) = dict.split_once(&format!("<key>{key}</key>"))?;
-            let (_, value) = value.split_once("<string>")?;
-            value.split_once("</string>").map(|(v, _)| xml_unescape(v))
-        }
-        Manager::Systemd => text
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("Environment="))
-            .flat_map(systemd_words)
-            .find_map(|word| Some(word.strip_prefix(key)?.strip_prefix('=')?.to_string())),
-    }
-}
-
 /// What `install` or `uninstall` did, as report lines.
 #[derive(Debug, Default)]
 pub struct Outcome {
@@ -413,7 +367,6 @@ pub fn install(args: &InstallArgs) -> Result<Outcome> {
         },
         port: args.port,
         llm_concurrency: args.llm_concurrency,
-        max_calls: (args.max_calls > 0).then_some(args.max_calls),
     };
     let text = render(manager, &serve, &home)?;
     let path = manager.unit_path(&home);
@@ -430,13 +383,6 @@ pub fn install(args: &InstallArgs) -> Result<Outcome> {
         path.display()
     ));
     out.report.push(format!("[plan] runs {}", argv.join(" ")));
-    for (key, value) in serve.environment() {
-        out.report.push(format!("[plan] with {key}={value}"));
-    }
-    if serve.max_calls.is_none() {
-        out.report
-            .push("[note] --max-calls 0: generation attempts are not guarded".into());
-    }
     out.report.extend(private_note(&serve.env_file));
     if current.as_deref() == Some(text.as_str()) {
         out.report.push(format!(
@@ -633,11 +579,6 @@ pub fn status_json(at: &Target) -> Result<serde_json::Value> {
         "outbox": flag("--outbox"),
         "port": if text.is_some() { serve_port(&argv) } else { None },
         "llmConcurrency": number(flag("--llm-concurrency")),
-        "maxCalls": number(
-            text.as_deref()
-                .and_then(|t| unit_env(manager, t, "MEMORY_LLM_MAX_CALLS"))
-                .as_deref()
-        ),
     }))
 }
 
@@ -1141,7 +1082,6 @@ mod tests {
         let text = std::fs::read_to_string(&unit).unwrap();
         assert!(!text.contains("offline-test-value"));
         assert!(text.contains(MARKER));
-        assert!(text.contains("<key>MEMORY_LLM_MAX_CALLS</key><string>60</string>"));
         let argv = unit_argv(Manager::Launchd, &text).unwrap();
         let p = |rel: &str| home.path().join(rel).to_str().unwrap().to_string();
         assert_eq!(
@@ -1206,7 +1146,6 @@ mod tests {
         assert_eq!(home.backups(), [backup]);
         let text = std::fs::read_to_string(&unit).unwrap();
         assert!(!text.contains("offline-test-value"));
-        assert!(text.contains("\nEnvironment=MEMORY_LLM_MAX_CALLS=60\n"));
         assert!(text.contains("\nWantedBy=default.target\n"));
         let argv = unit_argv(Manager::Systemd, &text).unwrap();
         assert_eq!(flag_value(&argv, "--port"), Some("9001"));
@@ -1247,15 +1186,11 @@ mod tests {
     }
 
     #[test]
-    fn max_calls_zero_removes_the_guard() {
-        let home = Home::new("svc-guard");
-        home.install(
-            "systemd",
-            &["--max-calls", "0", "--llm-concurrency", "2", "--apply"],
-        )
-        .unwrap();
+    fn passes_the_llm_concurrency() {
+        let home = Home::new("svc-concurrency");
+        home.install("systemd", &["--llm-concurrency", "2", "--apply"])
+            .unwrap();
         let text = std::fs::read_to_string(Manager::Systemd.unit_path(home.path())).unwrap();
-        assert!(!text.contains("MEMORY_LLM_MAX_CALLS"));
         let argv = unit_argv(Manager::Systemd, &text).unwrap();
         assert_eq!(flag_value(&argv, "--llm-concurrency"), Some("2"));
         assert!(
@@ -1363,8 +1298,6 @@ mod tests {
                 "--outbox",
                 "--port",
                 "9003",
-                "--max-calls",
-                "7",
                 "--llm-concurrency",
                 "2",
                 "--apply",
@@ -1381,12 +1314,9 @@ mod tests {
             assert_eq!(json["outbox"], p(crate::harness::outbox::DEFAULT_OUTBOX));
             assert_eq!(json["port"], 9003);
             assert_eq!(json["llmConcurrency"], 2);
-            assert_eq!(json["maxCalls"], 7);
 
-            home.install(manager, &["--max-calls", "0", "--apply"])
-                .unwrap();
+            home.install(manager, &["--apply"]).unwrap();
             let json = status(&home);
-            assert_eq!(json["maxCalls"], serde_json::Value::Null);
             assert_eq!(json["outbox"], serde_json::Value::Null);
             assert_eq!(json["port"], 8765);
         }

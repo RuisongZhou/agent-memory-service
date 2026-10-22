@@ -1,5 +1,5 @@
 //! Offline integrity checks for the additive strategy, using mock embeddings and no provider.
-use super::{engine, tenant};
+use super::{engine, fresh_store};
 use memory_algo_mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
 use memory_config::ServiceConfig;
 use memory_domain::types::*;
@@ -19,7 +19,7 @@ pub async fn selftest() {
     )
     .is_err());
     let eng = engine(ServiceConfig::default());
-    let (t, caller, dir) = tenant(&eng, "mem0-selftest", "test").await;
+    let (t, caller, dir) = fresh_store(&eng, "mem0-selftest", "test").await;
     let scope = ReqScope {
         project: Some("a".into()),
         session: Some("s".into()),

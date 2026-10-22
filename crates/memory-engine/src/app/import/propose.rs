@@ -171,7 +171,7 @@ struct Proposer<'a> {
     run: &'a ImportRun,
     limits: UnitLimits,
     prompt_hash: String,
-    /// The tenant's prompt variant (`zh`, `en`), part of the extraction input.
+    /// The configured prompt variant (`zh`, `en`), part of the extraction input.
     variant: String,
     reconsider: bool,
     now: String,
@@ -672,7 +672,7 @@ pub async fn propose(
         run: &run,
         limits: run.limits.into(),
         prompt_hash: extract::prompt_hash(),
-        variant: eng.prompt_variant_for(t).to_string(),
+        variant: eng.cfg.prompt_variant.clone(),
         reconsider: req.reconsider,
         now: now.clone(),
         generation_calls: 0,

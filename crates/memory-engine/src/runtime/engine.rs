@@ -1,15 +1,14 @@
-//! Engine: shared config, LLM, models and the tenant registry; starts per-tenant background workers.
+//! Engine: shared config, LLM, models and the store; starts the store's background workers.
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::OnceCell;
 
 use crate::runtime::algorithm::MemoryAlgorithm;
 use crate::runtime::indexer;
 use crate::runtime::llm::Llm;
 use crate::runtime::models::ModelHub;
-use crate::runtime::tenant::{valid_tenant, Tenant};
+use crate::runtime::tenant::Tenant;
 use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::types::*;
 use memory_store::schema;
@@ -20,7 +19,7 @@ pub struct Engine {
     algorithm: Arc<dyn MemoryAlgorithm>,
     pub llm: Llm,
     pub models: ModelHub,
-    tenants: RwLock<HashMap<String, Arc<Tenant>>>,
+    store: OnceCell<Arc<Tenant>>,
 }
 
 impl Engine {
@@ -40,7 +39,7 @@ impl Engine {
             cfg,
             llm,
             models,
-            tenants: RwLock::new(HashMap::new()),
+            store: OnceCell::new(),
         })
     }
 
@@ -83,61 +82,24 @@ impl Engine {
         self.algorithm.wait_idle(self, t).await
     }
 
-    /// Shared language selection; each algorithm owns its actual prompt contract.
-    pub fn prompt_variant_for<'a>(&'a self, tenant: &Tenant) -> &'a str {
-        if tenant.name.ends_with("-en") {
-            "en"
-        } else if tenant.name.ends_with("-zh") {
-            "zh"
-        } else {
-            &self.cfg.prompt_variant
-        }
-    }
-
-    /// Open (or return) a tenant store, warm its caches and start its workers.
-    pub async fn tenant(self: &Arc<Self>, name: &str) -> ApiResult<Arc<Tenant>> {
-        if !valid_tenant(name) {
-            return Err(ApiError::InvalidArgument(format!(
-                "invalid tenant name {name:?}"
-            )));
-        }
-        if let Some(t) = self.tenants.read().await.get(name) {
-            return Ok(t.clone());
-        }
-        let mut map = self.tenants.write().await;
-        if let Some(t) = map.get(name) {
-            return Ok(t.clone());
-        }
-        let t = Arc::new(
-            Tenant::open(
-                name,
-                &self.cfg.data_dir,
-                self.models.dim,
-                self.algorithm.schema(),
-            )
-            .await
-            .with_context(|| format!("open tenant {name}"))?,
-        );
-        self.warm(&t).await?;
-        map.insert(name.to_string(), t.clone());
-        drop(map);
-        tokio::spawn(indexer::run_index_worker(self.clone(), t.clone()));
-        self.algorithm.start_workers(self.clone(), t.clone());
-        tracing::info!(tenant = name, "tenant opened");
-        Ok(t)
-    }
-
-    pub async fn tenant_names(&self) -> Vec<String> {
-        self.tenants.read().await.keys().cloned().collect()
-    }
-
-    pub async fn tenant_prompt_variants(&self) -> HashMap<String, String> {
-        self.tenants
-            .read()
-            .await
-            .iter()
-            .map(|(name, t)| (name.clone(), self.prompt_variant_for(t).to_string()))
-            .collect()
+    /// The store, opened on first use: caches warmed and workers started.
+    pub async fn store(self: &Arc<Self>) -> ApiResult<Arc<Tenant>> {
+        let t = self
+            .store
+            .get_or_try_init(|| async {
+                let t = Arc::new(
+                    Tenant::open(&self.cfg.data_dir, self.models.dim, self.algorithm.schema())
+                        .await
+                        .context("open the store")?,
+                );
+                self.warm(&t).await?;
+                tokio::spawn(indexer::run_index_worker(self.clone(), t.clone()));
+                self.algorithm.start_workers(self.clone(), t.clone());
+                tracing::info!("store opened");
+                anyhow::Ok(t)
+            })
+            .await?;
+        Ok(t.clone())
     }
 
     /// Load the entity dictionary and vector caches; check index_meta (5.2 一致性与重建).
@@ -181,7 +143,11 @@ impl Engine {
             t.store.put_doc(schema::INDEX_META, "meta", &want).await?;
         }
         if rebuild_vec || rebuild_ft {
-            tracing::warn!(tenant = %t.name, rebuild_vec, rebuild_ft, "index meta changed; scheduling rebuild");
+            tracing::warn!(
+                rebuild_vec,
+                rebuild_ft,
+                "index meta changed; scheduling rebuild"
+            );
             indexer::schedule_rebuild(t, rebuild_vec, rebuild_ft).await?;
         }
         // vector caches

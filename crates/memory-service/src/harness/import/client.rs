@@ -153,21 +153,19 @@ pub fn changed_sources(proposals: &[ImportProposal], home: &Path) -> Vec<Changed
     changed
 }
 
-/// Calls to one daemon and tenant.
+/// Calls to one daemon.
 pub struct Client {
     daemon: Daemon,
     url: String,
-    tenant: String,
 }
 
 impl Client {
-    pub fn new(url: &str, tenant: &str, timeout: Duration) -> Result<Self, Error> {
+    pub fn new(url: &str, timeout: Duration) -> Result<Self, Error> {
         let daemon =
             Daemon::new(url, timeout).map_err(|e| invalid(format!("--url {url}: {}", e.kind())))?;
         Ok(Client {
             daemon,
             url: url.to_string(),
-            tenant: tenant.to_string(),
         })
     }
 
@@ -179,7 +177,7 @@ impl Client {
     ) -> Result<Value, Error> {
         let body = serde_json::to_value(body).map_err(|_| Error::Json)?;
         self.daemon
-            .admin(name, &body, &self.tenant, platform)
+            .admin(name, &body, platform)
             .await
             .map_err(|e| self.failed(e))
     }
@@ -658,7 +656,7 @@ pub(crate) mod tests {
         let (units, stale) = fresh_units(&plan, home.path());
         assert!(stale.is_empty());
         let (url, requests) = stub().await;
-        let client = Client::new(&url, "team", Duration::from_secs(5)).unwrap();
+        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
         let mut seen = Vec::new();
         let view = client
             .propose(&plan, &units, 4, false, &mut |done, of, run| {
@@ -724,7 +722,7 @@ pub(crate) mod tests {
         let plan = plan_over(home.path());
         let (units, _) = fresh_units(&plan, home.path());
         let (url, requests) = stub().await;
-        let client = Client::new(&url, "default", Duration::from_secs(5)).unwrap();
+        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
         // With reconsider, every batch asks for the units whose last import applied nothing.
         client
             .propose(&plan, &units, 3, true, &mut |_, _, _| {})
@@ -778,7 +776,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn apply_sends_the_review_decisions_and_declines_unlisted_proposals() {
         let (url, requests) = stub().await;
-        let client = Client::new(&url, "default", Duration::from_secs(5)).unwrap();
+        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         let path = dir.path().join("ir1.review.jsonl");
@@ -848,7 +846,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn apply_sends_the_global_scope_of_accepted_instructions_only() {
         let (url, requests) = stub().await;
-        let client = Client::new(&url, "default", Duration::from_secs(5)).unwrap();
+        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ir1.review.jsonl");
         let text = review::render(&run("ir1"), &stub_proposals()).unwrap();
@@ -892,7 +890,7 @@ pub(crate) mod tests {
         let home = tempfile::tempdir().unwrap();
         let proposals = sourced_proposals(home.path());
         let (url, requests) = stub_with(stub_run(), proposals.clone()).await;
-        let client = Client::new(&url, "default", Duration::from_secs(5)).unwrap();
+        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
         let path = home.path().join("ir1.review.jsonl");
         // Everything accepted, the instruction as global.
         let text = review::render(&run("ir1"), &proposals).unwrap();
@@ -983,7 +981,7 @@ pub(crate) mod tests {
     async fn apply_needs_the_proposals_to_recheck_them() {
         // A daemon answering the run without the proposals it counts.
         let (url, requests) = stub_with(stub_run(), vec![]).await;
-        let client = Client::new(&url, "default", Duration::from_secs(5)).unwrap();
+        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
         let home = tempfile::tempdir().unwrap();
         let error = client_error(client.apply("ir1", None, home.path()).await);
         assert!(error.contains("without its proposals"), "{error}");
@@ -997,7 +995,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn runs_rollback_and_errors() {
         let (url, requests) = stub().await;
-        let client = Client::new(&url, "default", Duration::from_secs(5)).unwrap();
+        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
         let runs = client.runs(Some("my-project"), 10).await.unwrap();
         assert_eq!(runs[0].run_id, "ir1");
         assert_eq!(
@@ -1022,7 +1020,7 @@ pub(crate) mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             format!("http://{}", listener.local_addr().unwrap())
         };
-        let down = Client::new(&closed, "default", Duration::from_secs(2)).unwrap();
+        let down = Client::new(&closed, Duration::from_secs(2)).unwrap();
         let error = client_error(down.run("ir1").await);
         assert!(
             error.contains("cannot reach the daemon") && error.contains(&closed),

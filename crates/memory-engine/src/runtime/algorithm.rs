@@ -38,7 +38,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     /// Unfinished work left in this data directory by a different algorithm.
     fn foreign_unfinished_jobs<'a>(&'a self, t: &'a Tenant) -> BoxFuture<'a, anyhow::Result<i64>>;
 
-    /// Spawn the algorithm's background workers for a freshly opened tenant.
+    /// Spawn the algorithm's background workers for a freshly opened store.
     fn start_workers(&self, eng: Arc<Engine>, t: Arc<Tenant>);
 
     /// Admit an `add_memories` request other than an explicit instruction. The request row it commits in

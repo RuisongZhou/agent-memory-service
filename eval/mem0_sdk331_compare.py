@@ -91,40 +91,45 @@ def daemon(binary, output):
 
     stub = ThreadingHTTPServer(('127.0.0.1', 0), Stub)
     threading.Thread(target=stub.serve_forever, daemon=True).start()
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
-    base = f'http://127.0.0.1:{port}'
+    child_env = dict(os.environ, MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline', MEMORY_STRATEGY='mem0')
+    processes, bases = {}, {}
 
-    def api(endpoint, body=None, tenant='probe'):
-        request = Request(base + endpoint, data=None if body is None else json.dumps(body).encode(),
-                          headers={'Content-Type': 'application/json', 'X-Memory-Tenant': tenant,
-                                   'X-Memory-Platform': 'sdk331'})
+    def start(store):
+        """A daemon with a fresh store `output/store/<store>`, started on first use."""
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            port = sock.getsockname()[1]
+        processes[store] = subprocess.Popen([str(binary.resolve()), 'serve', '--data-dir', str(output / 'store' / store),
+                                             '--port', str(port), '--llm-base-url', f'http://127.0.0.1:{stub.server_port}',
+                                             '--memory-strategy', 'mem0', '--prompt-variant', 'en', '--log-level', 'warn'],
+                                            env=child_env, stdout=log, stderr=log)
+        for _ in range(200):
+            if processes[store].poll() is not None:
+                raise RuntimeError('daemon exited: see daemon.log')
+            try:
+                with urlopen(f'http://127.0.0.1:{port}/health', timeout=90):
+                    bases[store] = f'http://127.0.0.1:{port}'
+                    return
+            except OSError:
+                time.sleep(.05)
+        raise RuntimeError('startup timeout')
+
+    def api(endpoint, body=None, store='probe'):
+        if store not in bases:
+            start(store)
+        request = Request(bases[store] + endpoint, data=None if body is None else json.dumps(body).encode(),
+                          headers={'Content-Type': 'application/json', 'X-Memory-Platform': 'sdk331'})
         with urlopen(request, timeout=90) as result:
             return json.load(result)
 
-    child_env = dict(os.environ, MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline',
-                     MEMORY_LLM_MAX_CALLS='100', MEMORY_STRATEGY='mem0')
     with (output / 'daemon.log').open('w') as log:
-        process = subprocess.Popen([str(binary.resolve()), 'serve', '--data-dir', str(output / 'store'),
-                                    '--port', str(port), '--llm-base-url', f'http://127.0.0.1:{stub.server_port}',
-                                    '--memory-strategy', 'mem0', '--prompt-variant', 'en', '--log-level', 'warn'],
-                                   env=child_env, stdout=log, stderr=log)
         try:
-            for _ in range(200):
-                if process.poll() is not None:
-                    raise RuntimeError('daemon exited: see daemon.log')
-                try:
-                    api('/health')
-                    break
-                except OSError:
-                    time.sleep(.05)
-            else:
-                raise RuntimeError('startup timeout')
-            yield api, traces, base
+            start('probe')
+            yield api, traces, bases['probe']
         finally:
-            process.terminate()
-            process.wait(timeout=15)
+            for process in processes.values():
+                process.terminate()
+                process.wait(timeout=15)
             stub.shutdown()
             stub.server_close()
 

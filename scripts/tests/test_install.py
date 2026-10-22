@@ -146,15 +146,15 @@ def test_claude_code_replaces_the_documented_manual_setup(tmp_path):
     (workspace / '.claude').mkdir(parents=True)
     shutil.copy(ROOT / 'examples/claude-code.mcp.json', workspace / '.mcp.json')
     shutil.copy(ROOT / 'examples/claude-code.settings.json', workspace / '.claude/settings.local.json')
-    args, ctx = ctx_for(claude_code, tmp_path, '--workspace', str(workspace), '--tenant', 'team')
+    args, ctx = ctx_for(claude_code, tmp_path, '--workspace', str(workspace))
     changes = {path: json.loads(data) for path, data, _ in filter(None, claude_code.changes(args, ctx, False))}
     server = changes[workspace / '.mcp.json']['mcpServers']['shared-memory']
-    assert server['command'] == '/opt/agent-memoryd' and server['env'] == {'MEMORY_TENANT': 'team'}
+    assert server['command'] == '/opt/agent-memoryd'
     hooks = changes[workspace / '.claude/settings.local.json']['hooks']
     assert set(hooks) == set(claude_code.EVENTS) and all(len(groups) == 1 for groups in hooks.values())
     words = shlex.split(hooks['Stop'][0]['hooks'][0]['command'])
     assert words[:3] == ['/opt/agent-memoryd', 'hook', 'capture']
-    assert words[-6:] == ['--project', 'proj', '--platform', 'claude-code', '--tenant', 'team']
+    assert words[-4:] == ['--project', 'proj', '--platform', 'claude-code']
 
 
 def test_a_rerun_migrates_python_hook_entries_to_the_binary(tmp_path):
@@ -222,7 +222,7 @@ def test_codex_hooks_carry_names_and_a_rerun_names_unnamed_entries_in_place(tmp_
 
 @pytest.mark.parametrize('module', [claude_code, codex, workbuddy])
 def test_recall_adds_its_own_groups_and_a_rerun_without_it_removes_them(module, tmp_path):
-    ctx, hooks = recall_hooks(module, tmp_path, '--recall', '--tenant', 'team')
+    ctx, hooks = recall_hooks(module, tmp_path, '--recall')
     recall = {event: [g for g in groups if core.owned_recall(g['hooks'][0])] for event, groups in hooks.items()}
     assert {event for event, groups in recall.items() if groups} == set(core.RECALL_EVENTS)
     for event in core.RECALL_EVENTS:
@@ -230,15 +230,15 @@ def test_recall_adds_its_own_groups_and_a_rerun_without_it_removes_them(module, 
         assert group['hooks'] == [core.recall_handler(ctx, getattr(module, 'RECALL_NAME', None))]
         assert group['hooks'][0]['timeout'] == core.RECALL_TIMEOUT
         words = shlex.split(group['hooks'][0]['command'])
-        assert words[:3] == ['/opt/agent-memoryd', 'hook', 'recall'] and words[-8:] == [
-            '--project', 'proj', '--platform', module.PLATFORM, '--tenant', 'team', '--url', 'http://127.0.0.1:8765']
+        assert words[:3] == ['/opt/agent-memoryd', 'hook', 'recall'] and words[-6:] == [
+            '--project', 'proj', '--platform', module.PLATFORM, '--url', 'http://127.0.0.1:8765']
     capture = {event for event, groups in hooks.items() for g in groups if core.owned_handler(g['hooks'][0])}
     assert capture == set(module.EVENTS)  # capture is unchanged alongside recall
     hook_file = ctx.hooks_json if module is codex else ctx.settings
     hook_file.parent.mkdir(parents=True, exist_ok=True)
     hook_file.write_text(json.dumps({'hooks': hooks}))
-    assert recall_hooks(module, tmp_path, '--recall', '--tenant', 'team')[1] == hooks  # idempotent
-    without = recall_hooks(module, tmp_path, '--tenant', 'team')[1]
+    assert recall_hooks(module, tmp_path, '--recall')[1] == hooks  # idempotent
+    without = recall_hooks(module, tmp_path)[1]
     assert not any(core.owned_recall(g['hooks'][0]) for groups in without.values() for g in groups)
     assert {event for event, groups in without.items() for g in groups if core.owned_handler(g['hooks'][0])} == capture
 
@@ -308,7 +308,7 @@ def test_codex_recall_hooks_refuse_config_toml_hooks_without_capture(tmp_path):
 # --- Codex config.toml ------------------------------------------------------------
 
 SERVER = {'command': '/opt/agent-memoryd', 'args': ['mcp', '--url', 'http://127.0.0.1:8765', '--platform', 'codex'],
-          'tool_timeout_sec': 180, 'env': {'MEMORY_TENANT': 'default'}}
+          'tool_timeout_sec': 180}
 # The collector notify earlier installers wrote; a rerun removes it.
 NOTIFY = ['/opt/agent-memoryd', 'hook', 'codex-notify', '--project', 'p', '--platform', 'codex',
           '--tenant', 'default']
@@ -418,7 +418,7 @@ def test_codex_refuses_a_foreign_server_and_config_toml_hooks(tmp_path):
 
 DSH_CONFIG = {'serverName': 'shared-memory', 'transport': 'stdio', 'command': '/opt/agent-memoryd',
               'args': ['mcp', '--url', 'http://127.0.0.1:8765', '--platform', 'deepseek-harness'],
-              'env': {'MEMORY_TENANT': 'default'}, 'toolCallTimeoutMs': 180000}
+              'toolCallTimeoutMs': 180000}
 PATCH = """# personal overrides
 - insert:
     - id: mcp-github
@@ -453,9 +453,9 @@ def test_dsh_patch_edit_keeps_every_other_byte_and_is_idempotent(text, after_rem
 
 def test_dsh_patch_block_is_replaced_in_place():
     edited = deepseek_harness.edit_patch(PATCH, DSH_CONFIG) + '- id: later\n  disabled: true\n'
-    moved = deepseek_harness.edit_patch(edited, dict(DSH_CONFIG, env={'MEMORY_TENANT': 'team'}))
+    moved = deepseek_harness.edit_patch(edited, dict(DSH_CONFIG, toolCallTimeoutMs=1))
     assert moved.endswith('# <<< agent-memory-service <<<\n- id: later\n  disabled: true\n')
-    assert '"MEMORY_TENANT": "team"' in moved and moved.count('mcp-shared-memory') == 1
+    assert 'toolCallTimeoutMs: 1\n' in moved and moved.count('mcp-shared-memory') == 1
 
 
 @pytest.mark.parametrize('text,message', [
@@ -498,8 +498,6 @@ DUMP = """# == @deepseek-ai/dsh-base
       - http://127.0.0.1:8765
       - '--platform'
       - deepseek-harness
-    env:
-      MEMORY_TENANT: default
     toolCallTimeoutMs: 180000
 """
 
@@ -793,7 +791,7 @@ def test_argument_errors(tmp_path, capsys, fake_binary):
 KEY = 'offline-test-key-1'  # not shaped like a provider key (check_public.py)
 NOT_INSTALLED = {'manager': 'launchd', 'unit': '/nowhere/local.agent-memory-daemon.plist', 'installed': False,
                  'managed': False, 'binary': None, 'envFile': None, 'dataDir': None, 'outbox': None, 'port': None,
-                 'llmConcurrency': None, 'maxCalls': None}
+                 'llmConcurrency': None}
 
 
 @pytest.fixture
@@ -897,7 +895,7 @@ def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys,
     assert flag(call, '--binary') == str(service_binary) and flag(call, '--env-file') == str(env)
     assert flag(call, '--port') == '8765' and flag(call, '--home') == str(session)
     assert flag(call, '--outbox') == str(session / core.OUTBOX)  # the daemon uploads what capture writes
-    assert flag(call, '--data-dir') is None and flag(call, '--max-calls') is None  # service defaults
+    assert flag(call, '--data-dir') is None  # service default
     # A rerun reuses the env file: no key needed, nothing rewritten, no restart; the same key from
     # --key-file changes nothing either.
     stamp = env.stat().st_mtime_ns
@@ -925,14 +923,14 @@ def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, se
     env.parent.mkdir()
     env.write_text(f'QWEN_API_KEY={KEY}\n')
     status = dict(NOT_INSTALLED, installed=True, managed=True, envFile=str(env), dataDir='/data/mem0', outbox=None,
-                  port=8765, llmConcurrency=2, maxCalls=None)
+                  port=8765, llmConcurrency=2)
     (service_binary.parent / 'status.json').write_text(json.dumps(status))
     installed_unit(session)
     code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
     assert code == 0, output
     (call,) = service_calls(service_binary)
     assert flag(call, '--env-file') == str(env) and flag(call, '--data-dir') == '/data/mem0'
-    assert flag(call, '--llm-concurrency') == '2' and flag(call, '--max-calls') == '0'  # unguarded stays unguarded
+    assert flag(call, '--llm-concurrency') == '2'
     assert flag(call, '--outbox') == str(session / core.OUTBOX)  # capture adds the upload
     assert not (session / '.config/agent-memory-service/.env').exists()
 

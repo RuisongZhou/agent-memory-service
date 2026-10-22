@@ -1,5 +1,5 @@
 //! Persistent integrity and instruction tests. No generation or external model calls.
-use super::{engine, memory, tenant};
+use super::{engine, fresh_store, memory};
 use memory_config::ServiceConfig;
 use memory_domain::types::*;
 use memory_engine::app::{ingest, management};
@@ -10,7 +10,7 @@ use serde_json::json;
 
 pub async fn selftest() {
     let eng = engine(ServiceConfig::default());
-    let (t, caller, dir) = tenant(&eng, "integrity", "agent").await;
+    let (t, caller, dir) = fresh_store(&eng, "integrity", "agent").await;
     let fact = MemoryRec {
         id: "fact".into(),
         mtype: T_FACT.into(),

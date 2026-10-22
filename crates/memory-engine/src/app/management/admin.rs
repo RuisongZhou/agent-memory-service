@@ -53,7 +53,6 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
     };
     let gap_searches = t.store.gap_search_count().await?;
     Ok(json!({
-        "tenant": t.name,
         "counts": counts,
         "memories": by,
         "llm": {"process": eng.llm.usage_snapshot(), "persisted": usage_sum, "rows": usage_rows.len()},

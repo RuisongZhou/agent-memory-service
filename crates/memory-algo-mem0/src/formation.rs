@@ -371,7 +371,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
                 mem0.custom_instructions
             ));
         }
-        if eng.prompt_variant_for(t) == "zh" {
+        if eng.cfg.prompt_variant == "zh" {
             sections.push("## Language Requirement\nRespond in the same language and script as the new messages.".into());
         }
         sections.push("# Output:".into());

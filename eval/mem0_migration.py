@@ -25,6 +25,8 @@ from common.protocol import guard
 # Archived protocol arm names and the frozen current binary retain their original labels.
 # Historical short-term/long-term controls live on codex/mem0-memos; keep recorded arm labels.
 ARMS = ('current', 'mem0-strategy', 'mem0-sdk')
+# The service stores of each arm, one daemon each; the SDK arm's daemon only serves embeddings.
+STORES = {'current': ['conv-26-en'], 'mem0-strategy': ['conv-26-a-en', 'conv-26-b-en'], 'mem0-sdk': []}
 
 
 def select_questions(conv, protocol):
@@ -38,7 +40,9 @@ def ingest(root, arm, conv, protocol):
     if (target / 'save-summary.json').exists():
         raise ValueError('formation already completed; choose a fresh experiment root')
     selected = [s for s in locomo.sessions(conv) if s.key in protocol['sessions']]
-    with relay(root, arm) as relay_url, daemon(root, arm, paid=arm != 'mem0-sdk', llm_url=relay_url) as (post, url):
+    names = STORES[arm]
+    with relay(root, arm) as relay_url, daemon(root, arm, names or ['store'], paid=arm != 'mem0-sdk',
+                                               llm_url=relay_url) as (post, url):
         started = time.perf_counter()
         if arm == 'current':
             for session in selected:
@@ -56,12 +60,8 @@ def ingest(root, arm, conv, protocol):
                     raise RuntimeError(f'current formation incomplete: {status}')
                 jsonl.append(target / 'drains.jsonl', {'session': session.key, 'ms': 1000 * (time.perf_counter() - tick), 'status': status})
                 print(f'{arm}: {session.key} completed', flush=True)
-            tenants = ['conv-26-en']
         elif arm == 'mem0-strategy':
-            tenants = []
-            for perspective in perspectives(conv):
-                tenant = f"conv-26-{('a' if perspective.is_a else 'b')}-en"
-                tenants.append(tenant)
+            for perspective, name in zip(perspectives(conv), names):
                 for session in selected:
                     for offset in range(0, len(session.utterances), protocol['batch_utterances']):
                         utterances = session.utterances[offset:offset + protocol['batch_utterances']]
@@ -70,14 +70,13 @@ def ingest(root, arm, conv, protocol):
                             for i, u in enumerate(utterances)]
                         tick = time.perf_counter()
                         receipt = post('/v1/add_memories', {'turnId': f'{session.key}-{offset}',
-                            'scope': {'project': conv['sample_id'], 'session': session.key}, 'messages': messages, 'sync': True}, tenant)
+                            'scope': {'project': conv['sample_id'], 'session': session.key}, 'messages': messages, 'sync': True}, name)
                         jsonl.append(target / 'saves.jsonl', {'speaker': perspective.speaker, 'session': session.key,
                             'batch': offset // protocol['batch_utterances'], 'n_messages': len(messages),
                             'ms': 1000 * (time.perf_counter() - tick), 'receipt': receipt})
                     print(f'{arm}: {perspective.speaker} {session.key} completed', flush=True)
-                post('/admin/wait_idle', {}, tenant)
+                post('/admin/wait_idle', {}, name)
         else:
-            tenants = []
             stores = sdk_stores(root, url, relay_url)
             try:
                 for perspective in perspectives(conv):
@@ -104,7 +103,7 @@ def ingest(root, arm, conv, protocol):
         summary = {'arm': arm, 'source_utterances': protocol['utterances'], 'save_wall_ms': saved_ms,
                    'includes': 'formation, native batching/drains, index visibility; excludes process/model startup and exports',
                    'perspectives': 1 if arm == 'current' else 2}
-        export(post, root, arm, tenants)
+        export(post, root, arm, names)
         (target / 'save-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
         print(f'{arm}: save wall {saved_ms/1000:.1f}s', flush=True)
 
@@ -114,18 +113,13 @@ def search(root, arm, conv, protocol):
     target = root / arm
     if (target / 'contexts.jsonl').exists():
         raise ValueError('search already recorded; do not append mixed runs')
-    with daemon(root, arm) as (post, url):
+    names = STORES[arm]
+    with daemon(root, arm, names or ['store']) as (post, url):
         stores = sdk_stores(root, url) if arm == 'mem0-sdk' else None
         try:
             memories = [stores.get(p) for p in perspectives(conv)] if stores else None
-            if arm == 'current':
-                tenants = ['conv-26-en']
-            elif arm == 'mem0-strategy':
-                tenants = ['conv-26-a-en', 'conv-26-b-en']
-            else:
-                tenants = []
-            for tenant in tenants:
-                status = post('/admin/wait_idle', {}, tenant)
+            for name in names:
+                status = post('/admin/wait_idle', {}, name)
                 if status['status'] != 'idle':
                     raise RuntimeError(status)
             before = {}
@@ -134,7 +128,7 @@ def search(root, arm, conv, protocol):
                 for speaker, records in before.items():
                     (target / f'{speaker}-corpus-full.json').write_text(json.dumps(records, indent=2))
             else:
-                before = {tenant: post('/admin/export', {}, tenant)['memories'] for tenant in tenants}
+                before = {name: post('/admin/export', {}, name)['memories'] for name in names}
             (target / 'corpus-before-search.json').write_text(json.dumps(before, indent=2))
             for pass_index in range(protocol['passes']):
                 for q in select_questions(conv, protocol):
@@ -146,7 +140,7 @@ def search(root, arm, conv, protocol):
                     else:
                         responses = [post('/v1/search_memories', {'query': q.question, 'scope': {'project': conv['sample_id']},
                             'topK': 30, 'tokenBudget': 2000, 'includeRecent': False, 'includeEvidence': arm == 'current',
-                            'asOf': protocol["as_of"], 'touch': False}, tenant) for tenant in tenants]
+                            'asOf': protocol["as_of"], 'touch': False}, name) for name in names]
                         blocks = [block for response in responses for block in service_blocks(response, arm == 'current')]
                     search_ms = 1000 * (time.perf_counter() - tick)
                     blocks.sort(key=lambda x: (-x[0], x[1]))
@@ -160,7 +154,7 @@ def search(root, arm, conv, protocol):
                             'search_ms': search_ms, 'n_memories': len(context.split('\n\n')) if context else 0, 'n_turns': 0})
                 print(f'{arm}: search pass {pass_index+1} completed', flush=True)
             after = {p.speaker: sdk_corpus(m) for p, m in zip(perspectives(conv), memories)} if stores else {
-                tenant: post('/admin/export', {}, tenant)['memories'] for tenant in tenants}
+                name: post('/admin/export', {}, name)['memories'] for name in names}
             audit = {key: {'before': corpus_hash(before[key]), 'after': corpus_hash(after[key]),
                            'count': len(before[key])} for key in before}
             if any(row['before'] != row['after'] for row in audit.values()):

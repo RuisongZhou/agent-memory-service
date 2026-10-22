@@ -1,6 +1,5 @@
 //! 接入层: local HTTP (`POST /v1/{接口名}`, JSON). Platform is taken from the connection
-//! (`X-Memory-Platform`), never from the request body (2.2). `X-Memory-Tenant` selects the store
-//! (evaluation only; the product runs a single store named `default`).
+//! (`X-Memory-Platform`), never from the request body (2.2).
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -27,17 +26,12 @@ pub fn router(eng: Arc<Engine>) -> Router {
 }
 
 fn caller(h: &HeaderMap) -> Caller {
-    let tenant = h
-        .get("x-memory-tenant")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("default")
-        .to_string();
     let platform = h
         .get("x-memory-platform")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("sdk")
         .to_string();
-    Caller { tenant, platform }
+    Caller { platform }
 }
 
 fn err_response(e: ApiError) -> Response {
@@ -63,15 +57,13 @@ async fn health(State(eng): State<Arc<Engine>>) -> Json<Value> {
         "modelDevice": eng.models.device,
         "modelDtype": eng.models.dtype,
         "llm": eng.llm.usage_snapshot(),
-        "tenants": eng.tenant_names().await,
-        "tenantPromptVariants": eng.tenant_prompt_variants().await,
         "memoryStrategy": eng.strategy(),
     }))
 }
 
 /// One public interface call (`POST /v1/{name}`); the in-process dialogue uploader shares it.
 pub async fn call(eng: &Arc<Engine>, c: &Caller, name: &str, body: Value) -> ApiResult<Value> {
-    let t = eng.tenant(&c.tenant).await?;
+    let t = eng.store().await?;
     match name {
         "add_memories" => ingest::add_memories(eng, &t, c, parse(body)?).await,
         "get_task" => ingest::get_task(eng, &t, parse(body)?).await,
@@ -102,13 +94,11 @@ async fn api(
 async fn admin(
     State(eng): State<Arc<Engine>>,
     Path(name): Path<String>,
-    headers: HeaderMap,
     body: Option<Json<Value>>,
 ) -> Response {
-    let c = caller(&headers);
     let body = body.map(|b| b.0).unwrap_or(json!({}));
     let res: ApiResult<Value> = async {
-        let t = eng.tenant(&c.tenant).await?;
+        let t = eng.store().await?;
         match name.as_str() {
             "wait_idle" => ingest::wait_idle(&eng, &t).await,
             "stats" => management::stats(&eng, &t).await,

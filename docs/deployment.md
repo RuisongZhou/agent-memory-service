@@ -188,22 +188,20 @@ Use a persistent directory outside the source checkout, and run the binary from 
 ```sh
 mkdir -p "$HOME/.local/share/agent-memory-service/mem0"
 chmod 700 "$HOME/.local/share/agent-memory-service/mem0"
-MEMORY_LLM_MAX_CALLS=60 target/fast/agent-memoryd serve --env-file .env \
+target/fast/agent-memoryd serve --env-file .env \
   --data-dir "$HOME/.local/share/agent-memory-service/mem0" --llm-concurrency 1
 ```
 
 This runs in the foreground. Keep the terminal open or [run it as a service](#keep-services-running).
-Two settings protect the generation provider, and the service setup keeps both:
-`MEMORY_LLM_MAX_CALLS=60` stops the process after 60 generation attempts, retries included, and
-`--llm-concurrency 1` sends one generation request at a time instead of the binary's default of 24. They
-belong to this deployment, not to the binary's defaults. `--env-file` reads only the keys listed in
+`--llm-concurrency 1` sends one generation request at a time instead of the binary's default of 24; the
+service setup keeps it. It belongs to this deployment, not to the binary's defaults. `--env-file` reads only the keys listed in
 [configuration](api.md#configuration); a non-empty environment variable still wins. An explicit data
 path avoids the binary's relative `./memory-data` default.
 
 If agents capture dialogue, add `--outbox`: the daemon then also uploads the collector's outbox
 (`~/.local/share/agent-memory-service/harness-outbox.sqlite3`, or the path given after `--outbox`)
-and no separate uploader process is needed. The option is never on by default, so evaluation and
-check daemons never take conversations from your outbox. The daemon log reports only lock and outbox
+and no separate uploader process is needed. The option is never on by default, so another daemon, such as
+the installer's check daemon, never takes conversations from your outbox. The daemon log reports only lock and outbox
 failures; a turn whose formation failed or was rejected shows in `agent-memoryd outbox status`.
 
 For daemon-only settings such as `--prompt-variant en`, `--no-reranker` or `--config`, see
@@ -211,19 +209,17 @@ For daemon-only settings such as `--prompt-variant en`, `--no-reranker` or `--co
 
 #### Python launcher
 
-`scripts/serve.py` starts the same binary with the checkout's `.env`; existing setups and evaluation
-use it, and it needs Python 3.11. Its `--max-calls 60` (the default) sets `MEMORY_LLM_MAX_CALLS=60`, and
-its concurrency defaults to 1:
+`scripts/serve.py` starts the same binary with the checkout's `.env`; existing setups use it, and it
+needs Python 3.11. Its concurrency defaults to 1:
 
 ```sh
 python3 scripts/serve.py \
   --memory-strategy mem0 \
-  --data-dir "$HOME/.local/share/agent-memory-service/mem0" \
-  --max-calls 60 --outbox
+  --data-dir "$HOME/.local/share/agent-memory-service/mem0" --outbox
 ```
 
-The launcher accepts `--config`, `--bin`, `--model-provider`, endpoint/port options, concurrency and the
-generation-attempt guard; its own data default is the checkout's relative `daemon-data`. It runs
+The launcher accepts `--config`, `--bin`, `--model-provider`, endpoint/port options and concurrency; its own
+data default is the checkout's relative `daemon-data`. It runs
 `target/fast/agent-memoryd` unless `--bin` selects another binary, such as
 `--bin target/release/agent-memoryd` after a release build. For daemon-only flags such as
 `--prompt-variant en` or `--no-reranker`, launch the binary directly.
@@ -243,12 +239,12 @@ For a write/read check that makes **no generation request**, save an explicit in
 ```sh
 curl -fsS http://127.0.0.1:8765/v1/add_memories \
   -H 'Content-Type: application/json' \
-  -H 'X-Memory-Tenant: default' -H 'X-Memory-Platform: demo' \
+  -H 'X-Memory-Platform: demo' \
   -d '{"scope":{"project":"deployment-demo","session":"setup-check"},"turnId":"deployment-demo/setup-check/instruction-1","memoryType":"instruction","text":"Include sources when reporting project decisions."}'
 
 curl -fsS http://127.0.0.1:8765/v1/get_context \
   -H 'Content-Type: application/json' \
-  -H 'X-Memory-Tenant: default' -H 'X-Memory-Platform: demo' \
+  -H 'X-Memory-Platform: demo' \
   -d '{"scope":{"project":"deployment-demo","session":"setup-check"},"tokenBudget":1500}'
 ```
 
@@ -293,7 +289,6 @@ a unit under another `--home`. The [one-command installer](mcp-harness.md#one-co
 | `--data-dir DIR` | Memory store (`~/.local/share/agent-memory-service/mem0`) |
 | `--outbox [PATH]` | Also upload captured dialogue; without PATH the default outbox, written as an absolute path. Omit it when no agent captures dialogue |
 | `--port` | Daemon port (8765) |
-| `--max-calls N` | `MEMORY_LLM_MAX_CALLS` in the unit's environment (60); 0 removes the guard |
 | `--llm-concurrency N` | `serve --llm-concurrency` (1) |
 | `--binary PATH` | The executable the unit runs (default: the `agent-memoryd` you invoked) |
 | `--manager launchd\|systemd`, `--home DIR` | Service manager (launchd on macOS, systemd elsewhere) and the home directory for the unit and default paths (tests) |
@@ -317,7 +312,7 @@ systemctl --user enable --now agent-memory.service
 `agent-memoryd service status` shows the installed file, the command it runs, whether its env file
 exists and is private, on Linux whether the unit is enabled, and whether a daemon answers on its port.
 `service status --json` prints the unit's settings (binary, env file, data directory, outbox, port,
-concurrency, generation guard) as one JSON object for scripts, without the health check.
+concurrency) as one JSON object for scripts, without the health check.
 To remove the service, stop it first, with `launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"`
 or `systemctl --user disable --now agent-memory.service`, then run
 `agent-memoryd service uninstall --apply`. It backs up and deletes the unit file and leaves the data,
@@ -363,10 +358,6 @@ launchd does not expand `$HOME` or `~` inside plist strings.
     <string>--outbox</string>
     <string>/Users/YOUR_USER/.local/share/agent-memory-service/harness-outbox.sqlite3</string>
   </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>MEMORY_LLM_MAX_CALLS</key><string>60</string>
-  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
@@ -414,7 +405,6 @@ Description=Agent Memory daemon
 
 [Service]
 ExecStart=/absolute/path/agent-memory-service/target/fast/agent-memoryd serve --env-file /absolute/path/agent-memory-service/.env --data-dir /home/YOUR_USER/.local/share/agent-memory-service/mem0 --port 8765 --llm-concurrency 1 --outbox /home/YOUR_USER/.local/share/agent-memory-service/harness-outbox.sqlite3
-Environment=MEMORY_LLM_MAX_CALLS=60
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -444,7 +434,7 @@ To run user services after logout, enable lingering according to the host's admi
 
 ### Storage, backups, and upgrades
 
-Within the selected data root, each tenant stores its embedded database at `tenants/<tenant>/db` and full-text index at `tenants/<tenant>/fulltext`. Primary inputs, memories, provenance, request receipts, and durable index work belong in the database; search indexes are rebuildable. The capture outbox is a separate database and also needs a retention/backup policy.
+Within the selected data root, the store keeps its embedded database at `store/db` and full-text index at `store/fulltext`. Earlier versions kept it under `tenants/default`; the daemon moves that directory to `store` when it starts. Primary inputs, memories, provenance, request receipts, and durable index work belong in the database; search indexes are rebuildable. The capture outbox is a separate database and also needs a retention/backup policy.
 
 For a consistent backup, pause new submissions, stop the uploader and daemon, then copy the **entire data root** and the outbox database with any `-wal`/`-shm` companions while no collector is writing. A copy of an active database directory is not a documented snapshot method. Preserve the matching configuration, strategy, source revision, and model identities. `/admin/export` provides selected audit tables; it is not a complete restore backup.
 
@@ -453,7 +443,7 @@ Before upgrading, make that backup, rebuild the binary from the updated source o
 To request an index rebuild on a running daemon:
 
 ```sh
-target/fast/agent-memoryd reindex --all --url http://127.0.0.1:8765 --tenant default
+target/fast/agent-memoryd reindex --all --url http://127.0.0.1:8765
 ```
 
 Use `--vector` or `--fulltext` for a specific index. Changing the model provider, embedding model, or a self-hosted model's alias/quantization causes re-embedding at the next start; expect rebuild work and verify retrieval afterwards. Review local outbox retention periodically: `completed`, `failed`, and `rejected` rows remain until deliberately cleaned up.
@@ -474,7 +464,6 @@ With the LaunchAgent setup, use `launchctl bootout` for the selected service lab
 | Daemon fails before listening | Check `serve --help`; invalid config fields/tunables are rejected, and the retrieval models must answer |
 | Service restarts repeatedly or never answers | Run `agent-memoryd service status`; read `~/Library/Logs/agent-memory-service/daemon.stderr.log` or `journalctl --user -u agent-memory.service`. A missing env file, a missing key or a port already in use stops startup |
 | `LLM API key not configured` or provider 401 | Check the env file, exported overrides, and provider access; direct binary launches read a dotenv file only with `--env-file` |
-| Generation attempt guard reached | Inspect usage/errors and deliberately revise the launch guard/provider budget; restarting resets the process guard |
 | Legacy jobs at startup | Complete them with the preserved version or use a fresh store; see [compatibility](api.md#compatibility) |
 
 Inspect a daemon task through HTTP using the actual receipt ID:
@@ -482,11 +471,11 @@ Inspect a daemon task through HTTP using the actual receipt ID:
 ```sh
 curl -fsS http://127.0.0.1:8765/v1/get_task \
   -H 'Content-Type: application/json' \
-  -H 'X-Memory-Tenant: default' -H 'X-Memory-Platform: codex' \
+  -H 'X-Memory-Platform: codex' \
   -d '{"requestId":"REPLACE_WITH_RETURNED_REQUEST_ID"}'
 ```
 
-The daemon enforces loopback binding. For another machine, keep this boundary and deploy an authenticated gateway or an authenticated tunnel to the local service. Tenant/platform labels do not authorize access. The supplied MCP bridge and uploader have no gateway credential options; direct gateway authentication needs an adapter change. A remote stdio bridge/tunnel must also preserve transport and scope correctly. This repository does not provide a turnkey multi-user remote deployment.
+The daemon enforces loopback binding. For another machine, keep this boundary and deploy an authenticated gateway or an authenticated tunnel to the local service. Platform labels do not authorize access. The supplied MCP bridge and uploader have no gateway credential options; direct gateway authentication needs an adapter change. A remote stdio bridge/tunnel must also preserve transport and scope correctly. This repository does not provide a turnkey multi-user remote deployment.
 
 
 For MCP, capture and uploader failures, see [client troubleshooting](mcp-harness.md#troubleshooting).

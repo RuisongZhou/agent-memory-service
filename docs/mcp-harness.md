@@ -85,7 +85,7 @@ outbox:
 
 Capture and recall commands fix `--project`. Codex hooks, WorkBuddy hooks and Claude Code `--scope user` are
 user-level, so every session on that platform is filed under that project; Claude Code's default project
-scope binds one project directory. Use the same `--project` and `--tenant` on every platform that should
+scope binds one project directory. Use the same `--project` on every platform that should
 share memory, and add the [shared memory workflow](#shared-memory-workflow) to `AGENTS.md`/`CLAUDE.md`.
 MCP tools are not tied to the installed project.
 
@@ -93,7 +93,7 @@ MCP tools are not tied to the installed project.
 |---|---|
 | `--dry-run` (default) / `--apply` | Preview only / build, verify, write and start the daemon service |
 | `--project ID` | Stable shared project ID recorded with captured turns; prompted for when interactive; refused for DeepSeek Harness |
-| `--tenant`, `--url` | Daemon store (`default`), recorded by the bridge and collector, and base URL (`http://127.0.0.1:8765`) for the bridge, the service's port and the printed uploader command |
+| `--url` | Daemon base URL (`http://127.0.0.1:8765`) for the bridge, the service's port and the printed uploader command |
 | `--no-capture` | No dialogue collector; removes collector entries this installer manages |
 | `--recall` | Add the [automatic recall](#automatic-recall) hooks (not for DeepSeek Harness); without it, a rerun removes recall entries this installer manages |
 | `--no-service` | Register the platform only: no env file, key or daemon service |
@@ -117,7 +117,7 @@ reaches a model provider or the real store:
    a loopback daemon.
 2. With capture, platform-shaped events run through the installed collector command into a temporary
    outbox; the temporary daemon's own uploader (`serve --outbox`) submits them; a local generation stub
-   forms one fact; the bridge finds it with `search_memories` under the configured tenant and project.
+   forms one fact; the bridge finds it with `search_memories` under the configured project.
    Codex's events include a turn that ends without a final message, which must queue nothing.
 3. With recall (after forming the fact through the bridge when capture is off), platform-shaped
    `SessionStart` and `UserPromptSubmit` events run through the installed recall command. Each output
@@ -191,9 +191,6 @@ Alternatively, merge this into `~/.codex/config.toml`, or into `.codex/config.to
 command = "/absolute/path/agent-memory-service/target/fast/agent-memoryd"
 args = ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "codex"]
 tool_timeout_sec = 180
-
-[mcp_servers.shared-memory.env]
-MEMORY_TENANT = "default"
 ```
 
 Use either registration method for this server and preserve existing settings. Local Codex clients share MCP configuration on the same host; project configuration requires a trusted project. Restart/reload the client after changing its configuration, inspect `/mcp` in the CLI, and confirm the eight tools in the [API reference](api.md#interfaces) are available. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
@@ -219,8 +216,7 @@ Alternatively, merge [examples/claude-code.mcp.json](../examples/claude-code.mcp
     "shared-memory": {
       "type": "stdio",
       "command": "/absolute/path/agent-memory-service/target/fast/agent-memoryd",
-      "args": ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "claude-code"],
-      "env": {"MEMORY_TENANT": "default"}
+      "args": ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "claude-code"]
     }
   }
 }
@@ -250,7 +246,6 @@ applies after its own layers. The installer keeps one block in it and leaves eve
         transport: "stdio"
         command: "/absolute/path/agent-memory-service/target/fast/agent-memoryd"
         args: ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "deepseek-harness"]
-        env: {"MEMORY_TENANT": "default"}
         toolCallTimeoutMs: 180000
 # <<< agent-memory-service <<<
 ```
@@ -270,7 +265,7 @@ app manages its own profile files under `~/.dsh/profiles/desktop/`; the installe
 
 ## Shared memory workflow
 
-Use the same daemon, tenant, and stable project ID across clients. Give each client its own platform label and use the actual native session ID for each session.
+Use the same daemon and stable project ID across clients. Give each client its own platform label and use the actual native session ID for each session.
 
 See [scope and idempotency](api.md#scope-and-idempotency) for field meanings and retry keys.
 
@@ -304,7 +299,7 @@ To verify sharing, save that project instruction in Codex, then ask Claude Code 
 
 Automatic saving requires **both a collector and a running uploader**. The collector (`agent-memoryd hook capture`, run by Codex, Claude Code and WorkBuddy hooks) captures completed user/assistant text into a local durable queue without waiting for the daemon. The uploader, the daemon itself when started with `--outbox` or a standalone `agent-memoryd outbox drain`, submits it without involving the agent's main model. Capture does not include tool traces, reasoning, images, or every possible client/subagent lifecycle.
 
-Use the same `--project`, `--platform`, and `--tenant` in capture commands as in the corresponding MCP setup. `--tenant default` is the collector default; `MEMORY_TENANT` configures the MCP bridge and is not read by the collector. If you change `--outbox`, every collector, uploader, and status command must use that same path. One outbox can contain both Codex and Claude Code records for one daemon.
+Use the same `--project` and `--platform` in capture commands as in the corresponding MCP setup. Hooks written by earlier installers also pass `--tenant`, which is ignored: a daemon serves one store. If you change `--outbox`, every collector, uploader, and status command must use that same path. One outbox can contain both Codex and Claude Code records for one daemon.
 
 ### Codex hooks
 
@@ -394,7 +389,7 @@ Status output includes identifiers, receipts, and errors without dumping chat te
 | `failed` | Formation failed; input and request ID retained |
 | `cancelled` | An [import rollback](#import-past-sessions) cancelled the turn before it was submitted; never sent |
 
-Transient connection errors, lost responses, HTTP 408/429, and 5xx retry the same payload and turn ID. The service deduplicates by `platform + turnId` within a tenant; retries preserve the first input and timestamps. After acceptance, the uploader polls instead of resubmitting. Failed/rejected records are not automatically resubmitted, and terminal records are not automatically deleted.
+Transient connection errors, lost responses, HTTP 408/429, and 5xx retry the same payload and turn ID. The service deduplicates by `platform + turnId`; retries preserve the first input and timestamps. After acceptance, the uploader polls instead of resubmitting. Failed/rejected records are not automatically resubmitted, and terminal records are not automatically deleted.
 
 A durable request ID is not formation completion. The uploader follows the [task contract](api.md#tasks-and-completion).
 
@@ -448,7 +443,7 @@ only through `get_context`. Stored text is flattened to one line and cannot clos
 | Time | `--timeout` (2 s) bounds the whole recall; the installed hook timeout (5 s) is the host's backstop |
 | Tokens | The daemon packs the `SessionStart` budget, and returns whole records for `UserPromptSubmit`. Recall packs `--search-budget` itself and counts a result as the daemon does: its text at one token per CJK character and one per four other characters, plus 8. Searching wider than it injects lets recall skip what the session was shown and still fill the budget, and lets a record too long for the budget arrive to be cut. An excerpt needs room for 32 tokens of text; with less left, that result waits for a later prompt and shorter ones may still fit. `--max-chars` (6000) also caps the block in whole lines, marked `[truncated]`, below Claude Code's 10,000-character limit for one `additionalContext` |
 | Repeats | A per-session record of shown memory IDs (`~/.local/state/agent-memory-service/recall-state.sqlite3`, mode 0600, IDs only, pruned after 30 days) keeps prompts from re-injecting what this session was already shown. It holds only what was injected, excerpts included. If the record fails, recall injects unfiltered; each prompt still stays within budget |
-| Scope | `--project`, `--tenant` and `--platform` come from the installed command, as for capture; the session comes from the event. Search covers that project plus visible global records |
+| Scope | `--project` and `--platform` come from the installed command, as for capture; the session comes from the event. Search covers that project plus visible global records |
 | Network | The URL must be loopback (`127.0.0.1`, `localhost`, `::1`), and proxy variables are ignored; the installer refuses `--recall` with another `--url` |
 | Daemon down | Nothing is injected and the prompt proceeds; recall resumes when the daemon answers |
 
@@ -607,7 +602,7 @@ captured turns. Propose a plan in parts if that matters.
 | Outbox stays `accepted` | Query `get_task`; inspect provider failures and unfinished index publication |
 | Uploader reports a lock error, or the daemon log says another uploader holds the outbox lock | Another uploader (a Python `drain`, `outbox drain` or a second daemon) holds the same outbox lock; keep one per queue |
 | DeepSeek Harness lists no `mcp__shared-memory__*` tools | Restart it and start a new session; rerun the installer, which reports whether `dsh --dump-config` reads the row; check the daemon URL |
-| Cross-agent recall is empty | Check the same daemon, tenant/project IDs, record scope, completion state, token budget, and explicit cross-platform raw-input scope |
+| Cross-agent recall is empty | Check the same daemon, project IDs, record scope, completion state, token budget, and explicit cross-platform raw-input scope |
 | Automatic recall injects nothing | Check the daemon at the loopback `--url`, trust the recall hooks in Codex, and run the hook by hand as in [automatic recall](#automatic-recall); stderr names the error type |
 | `import plan` finds no Claude Code notes | Pass the repository (or a worktree of it) as `--workspace`: Claude Code keeps one memory directory per repository. `--all` also finds directories by their transcripts' `cwd` |
 | `import propose` fails with HTTP 503 | Extract units need the daemon's generation key; set it, or plan with `--no-extract` |

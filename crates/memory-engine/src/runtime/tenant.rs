@@ -1,10 +1,9 @@
-//! Per-store state. The product is single-user (one store); tenants exist only so that evaluation can keep
-//! each LoCoMo conversation in its own store inside one daemon process (models are loaded once).
+//! The store and its runtime state: full-text index, entity dictionary, vector caches and the coordination locks.
 use anyhow::Result;
 use memory_fulltext::{EntityDict, FullText};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::futures::Notified;
 use tokio::sync::{Mutex, MutexGuard, Notify, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -21,7 +20,6 @@ pub struct VecCache {
 }
 
 pub struct Tenant {
-    pub name: String,
     pub dir: PathBuf,
     pub store: Store,
     pub ft: FullText,
@@ -39,18 +37,18 @@ pub struct Tenant {
 }
 
 impl Tenant {
-    pub async fn open(
-        name: &str,
-        root: &PathBuf,
-        dim: usize,
-        algorithm_schema: &str,
-    ) -> Result<Self> {
-        let dir = root.join("tenants").join(name);
+    /// Open the store under `root/store`. Earlier versions kept it under `root/tenants/default`; it is moved here.
+    pub async fn open(root: &Path, dim: usize, algorithm_schema: &str) -> Result<Self> {
+        let dir = root.join("store");
+        let earlier = root.join("tenants").join("default");
+        if !dir.exists() && earlier.is_dir() {
+            std::fs::rename(&earlier, &dir)?;
+            tracing::info!(from = %earlier.display(), to = %dir.display(), "moved the store");
+        }
         std::fs::create_dir_all(&dir)?;
         let store = Store::open(&dir.join("db"), dim, algorithm_schema).await?;
         let ft = FullText::open(&dir.join("fulltext"))?;
         Ok(Self {
-            name: name.to_string(),
             dir,
             store,
             ft,
@@ -66,8 +64,8 @@ impl Tenant {
         })
     }
 
-    /// Algorithm-owned typed state follows this tenant/store instance's lifetime. The
-    /// shared runtime neither names algorithm types nor retains tenants globally.
+    /// Algorithm-owned typed state follows this store instance's lifetime. The
+    /// shared runtime never names algorithm types.
     pub fn algorithm_state<T: Default + Send + Sync + 'static>(&self) -> Arc<T> {
         let mut states = self
             .algorithm_states
@@ -99,7 +97,7 @@ impl Tenant {
     /// Serialises idempotency checks and session/request sequence assignment (ingest, instruction writes, session
     /// start/end bookkeeping), independently of LLM extraction.
     ///
-    /// Lock order: a leaf lock. Never take another tenant lock while holding it; it may be taken while
+    /// Lock order: a leaf lock. Never take another store lock while holding it; it may be taken while
     /// holding `lock_formation`.
     pub async fn lock_ingest(&self) -> MutexGuard<'_, ()> {
         self.ingest_lock.lock().await
@@ -107,7 +105,7 @@ impl Tenant {
 
     /// One index batch at a time: the index worker, administrative drains and rebuild scheduling share it.
     ///
-    /// Lock order: a leaf lock. It may be taken while holding `lock_formation`; never take another tenant
+    /// Lock order: a leaf lock. It may be taken while holding `lock_formation`; never take another store
     /// lock while holding it.
     pub async fn lock_index(&self) -> MutexGuard<'_, ()> {
         self.index_lock.lock().await
@@ -128,7 +126,7 @@ impl Tenant {
         self.import_gate.write().await
     }
 
-    /// Wakes the per-tenant formation worker, `notify_one` semantics (a permit is stored if
+    /// Wakes the formation worker, `notify_one` semantics (a permit is stored if
     /// the worker is not currently waiting).
     pub fn wake_formation(&self) {
         self.extract_notify.notify_one();
@@ -148,13 +146,4 @@ impl Tenant {
     pub fn indexer_signal(&self) -> Notified<'_> {
         self.index_notify.notified()
     }
-}
-
-/// Validate tenant names (they become directory names).
-pub fn valid_tenant(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }

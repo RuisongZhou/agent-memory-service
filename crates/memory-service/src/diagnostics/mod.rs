@@ -24,18 +24,17 @@ pub(crate) fn engine(cfg: ServiceConfig) -> Arc<Engine> {
     )
 }
 
-/// A tenant in a fresh temporary directory, with a caller on `platform`.
-pub(crate) async fn tenant(
+/// A store in a fresh temporary directory, with a caller on `platform`.
+pub(crate) async fn fresh_store(
     eng: &Engine,
     name: &str,
     platform: &str,
 ) -> (Arc<Tenant>, Caller, PathBuf) {
     let dir = std::env::temp_dir().join(memory_rules::util::new_id(&format!("memory-{name}-")));
-    let t = Tenant::open(name, &dir, eng.models.dim, eng.algorithm().schema())
+    let t = Tenant::open(&dir, eng.models.dim, eng.algorithm().schema())
         .await
         .unwrap();
     let caller = Caller {
-        tenant: name.into(),
         platform: platform.into(),
     };
     (Arc::new(t), caller, dir)

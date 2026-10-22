@@ -207,7 +207,7 @@ fn fact_doc(mid: &str, text: &str, mode: Option<&str>, time: &str) -> Value {
 async fn tenant(eng: &Engine) -> (Arc<Tenant>, std::path::PathBuf) {
     let root = std::env::temp_dir().join(util::new_id("mem0_entities_test"));
     let t = Arc::new(
-        Tenant::open("same-name", &root, eng.models.dim, crate::SCHEMA)
+        Tenant::open(&root, eng.models.dim, crate::SCHEMA)
             .await
             .unwrap(),
     );
@@ -420,7 +420,7 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
     drop(t);
     let mut reopened = None;
     for _ in 0..40 {
-        match Tenant::open("same-name", &root, eng.models.dim, crate::SCHEMA).await {
+        match Tenant::open(&root, eng.models.dim, crate::SCHEMA).await {
             Ok(tenant) => {
                 reopened = Some(Arc::new(tenant));
                 break;
@@ -446,7 +446,7 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
             .iter()
             .any(|current| current["mid"] == row["mid"]));
     }
-    // Same tenant name in a different Store must never reuse this instance's state.
+    // A different store must never reuse this instance's state.
     let (other, other_root) = tenant(&eng).await;
     assert!(boosts(&eng, &other, "\"Eve\"", "a", "test")
         .await?

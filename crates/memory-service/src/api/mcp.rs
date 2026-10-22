@@ -1,6 +1,6 @@
 //! 接入层 — MCP stdio shim: exposes eight memory tools and forwards every call to
 //! the daemon's HTTP API (`POST {url}/v1/{name}`) with `X-Memory-Platform: <platform>` — the platform is a
-//! property of the connection, never of the arguments (2.2). `MEMORY_TENANT` (optional) selects the store.
+//! property of the connection, never of the arguments (2.2).
 use rmcp::{
     handler::server::ServerHandler,
     model::*,
@@ -162,7 +162,6 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
 pub struct Shim {
     url: String,
     platform: String,
-    tenant: Option<String>,
     http: reqwest::Client,
     tools: Arc<Vec<Tool>>,
 }
@@ -179,9 +178,6 @@ impl Shim {
         Self {
             url: url.trim_end_matches('/').to_string(),
             platform: platform.to_string(),
-            tenant: std::env::var("MEMORY_TENANT")
-                .ok()
-                .filter(|s| !s.is_empty()),
             // The daemon binds to loopback: never route it through a proxy from the client's environment.
             http: if crate::runtime::models::is_loopback(url) {
                 reqwest::Client::builder()
@@ -201,14 +197,11 @@ impl Shim {
         if let Value::Object(fields) = &mut args {
             fields.remove("importRunId");
         }
-        let mut req = self
+        let req = self
             .http
             .post(format!("{}/v1/{name}", self.url))
             .header("X-Memory-Platform", &self.platform)
             .json(&args);
-        if let Some(t) = &self.tenant {
-            req = req.header("X-Memory-Tenant", t);
-        }
         match req.send().await {
             Ok(resp) => {
                 let ok = resp.status().is_success();

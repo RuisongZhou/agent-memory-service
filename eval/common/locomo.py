@@ -1,7 +1,7 @@
 """LoCoMo loading, QA filtering and the SPEC §5 mapping (identical for Memory and mem0).
 
 Mapping:
-- one conversation (sample_id, e.g. conv-26) = one tenant / project; session key session_<n>,
+- one conversation (sample_id, e.g. conv-26) = one store / project; session key session_<n>,
   sessions in numeric order (== chronological order for all 10 conversations; conv-26 additionally
   carries 16 orphan session_20..35_date_time keys without content, which are ignored);
 - utterance content = "<speaker>: <text>" plus " [shares a photo: <blip_caption>]" when present;

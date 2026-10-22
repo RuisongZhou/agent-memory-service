@@ -132,7 +132,7 @@ pub async fn generate(
         .map(|(i, m)| json!({"id":i.to_string(),"text":m.text,"statedAt":m.stated_at}))
         .collect();
     let mut sections = vec![format!("## Facts\n{}", serde_json::to_string(&facts)?)];
-    if eng.prompt_variant_for(t) == "zh" {
+    if eng.cfg.prompt_variant == "zh" {
         sections.push("## Language Requirement\nWrite merged text in the same language and script as the facts it merges.".into());
     }
     sections.push("# Output:".into());

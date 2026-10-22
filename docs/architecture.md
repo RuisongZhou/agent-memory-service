@@ -26,7 +26,7 @@ and [SQLite vector/BM25 store](https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem
 | `memory-config` | Startup configuration and validation | none |
 | `memory-domain` | Records, request types, errors and pure integrity and consolidation planners | rules |
 | `memory-store` | SurrealDB transactions, repositories, revisions and integrity glue | domain, rules |
-| `memory-engine` | Tenants, workers, model clients, context and application operations | config, domain, store, rules, fulltext |
+| `memory-engine` | The store, workers, model clients, context and application operations | config, domain, store, rules, fulltext |
 | `memory-algo-mem0` | Formation, search, entity projection, consolidation prompt and ordered worker | engine and its dependencies |
 | `memory-service` | HTTP/MCP, composition, diagnostics and daemon | service layers |
 
@@ -41,7 +41,7 @@ SQL placement and the service/evaluation boundary.
    instructions to their synchronous path. Mem0 validates message roles, timestamp order and input shape.
 2. Under the ingest lock, formation checks the platform/turn idempotency key and commits the complete
    input, sequence number and `queued` request. Asynchronous acknowledgement confirms this commit.
-3. One ordered worker per tenant takes the formation lock. It prepares prior messages and retrieves
+3. One ordered worker takes the formation lock. It prepares prior messages and retrieves
    up to ten visible existing facts using **pure vector recall**, not the public hybrid search path.
 4. The prompt combines the vendored additive template, historical messages, existing facts with
    temporary IDs, full new messages, observation/current dates and optional custom instructions.
@@ -67,7 +67,7 @@ Opt-in [consolidation](#consolidation) proposes such rewrites and applies them o
 | View | Rule |
 |---|---|
 | Stored input and current formation batch | Full original messages; no old 8 KB head/tail clipping |
-| Historical prompt context | Latest ten messages from preceding formed, inferred requests in the same tenant/platform/project/session; at most 300 UTF-16 units per message |
+| Historical prompt context | Latest ten messages from preceding formed, inferred requests in the same platform/project/session; at most 300 UTF-16 units per message |
 | Embedding/reranking input | Model adapter token limit; truncating the model input does not alter stored text |
 
 Historical eligibility requires `formed:true` and status `indexing` or `completed`; raw and failed jobs
@@ -123,7 +123,7 @@ state marker publish atomically after checking the dependency revision under the
 Failed projection work leaves the request at `indexing`, never at a false completed checkpoint.
 
 A bounded revision journal supplies changed memory IDs. Warm queries compare in-memory revisions and
-reuse tenant-owned typed entity caches. Ordinary changes point-read affected facts and persist a delta;
+reuse store-owned typed entity caches. Ordinary changes point-read affected facts and persist a delta;
 canonical entity merges still replay cached history in memory, so this is not an O(new records) graph
 update. Restart, an expired journal, opaque writes or projection changes trigger authoritative recovery.
 Malformed intermediate caches are rebuilt. Correction/deletion removes obsolete links and extraction

@@ -4,7 +4,7 @@
 //! another unit, a unit imported by another run after propose, rollback with a corrected record kept, and
 //! the extraction cache. No external model call.
 use super::consolidation::{engine, generation_stub};
-use super::{memory, tenant};
+use super::{fresh_store, memory};
 use memory_algo_mem0::{HASHES, SOURCES};
 use memory_domain::import::*;
 use memory_domain::types::*;
@@ -138,7 +138,7 @@ async fn rows(eng: &Arc<Engine>, t: &Arc<Tenant>, table: &str) -> Vec<Value> {
 pub async fn selftest() {
     let url = generation_stub().await;
     let eng = engine(&url, true);
-    let (t, caller, dir) = tenant(&eng, "import-selftest", "test").await;
+    let (t, caller, dir) = fresh_store(&eng, "import-selftest", "test").await;
 
     // ---- requests are checked before anything is written
     let bad = |project: &str, units: Vec<ImportUnit>| ImportProposeReq {
@@ -676,7 +676,7 @@ async fn current_with(t: &Tenant, text: &str) -> Vec<MemoryRec> {
 pub async fn repeated_runs() {
     let url = generation_stub().await;
     let eng = engine(&url, true);
-    let (t, _caller, dir) = tenant(&eng, "import-repeated", "test").await;
+    let (t, _caller, dir) = fresh_store(&eng, "import-repeated", "test").await;
     let limits = ImportLimits::default();
 
     // ---- a duplicate of another unit is linked, and survives that unit's change

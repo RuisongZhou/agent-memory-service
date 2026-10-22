@@ -2,7 +2,7 @@
 //! embeddings: merge, supersede and conflict, deduplication into a merged record, rollback, rollback
 //! after a user correction, and deletion of a merged record or one of its inputs.
 use super::consolidation::{add, engine, generation_stub};
-use super::{memory, tenant};
+use super::{fresh_store, memory};
 use memory_algo_mem0::{HASHES, SOURCES};
 use memory_domain::types::*;
 use memory_engine::app::{consolidation, management};
@@ -113,7 +113,7 @@ async fn merge_project(
 pub async fn selftest() {
     let url = generation_stub().await;
     let eng = engine(&url, true);
-    let (t, caller, dir) = tenant(&eng, "consolidation-apply", "test").await;
+    let (t, caller, dir) = fresh_store(&eng, "consolidation-apply", "test").await;
     let c = &caller;
 
     // ---- merge, supersede and conflict applied, deduplication into the merge, then rollback

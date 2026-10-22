@@ -62,7 +62,7 @@ def prepare(root, sdk_root):
                 'maxProviderCalls': 320, 'embedding': 'real BGE-M3 Q8_0 via common daemon, 512-token input limit',
                 'nlp': 'official built-in fallback without natural/compromise',
                 'dateAdapter': 'gateway replaces only Observation Date with original session date in both arms',
-                'scopeMapping': 'service tenant=perspective/project=session; SDK user_id=perspective/run_id=session; search across sessions',
+                'scopeMapping': 'service store=perspective/project=session; SDK user_id=perspective/run_id=session; search across sessions',
                 'contextPacking': 'same score/text stable sort, exact text dedup, whole records, cl100k_base',
                 'ingestOrder': 'alternate arm first by batch index; each perspective remains chronological',
                 'searchTiming': 'fresh daemon cache per arm; three sequential passes; includes HTTP/IPC, excludes startup/export',
@@ -120,7 +120,7 @@ def search(root, protocol, service, sdk, gateway):
     before = export_corpus(root, protocol, service, sdk)
     for arm in ['service', 'sdk']:
         service.stop(); service.start(generation=False)
-        # Initialize tenant caches outside the client timing boundary.
+        # Warm the stores' caches outside the client timing boundary.
         for person in protocol['speakers']:
             service.post('/admin/export', {}, person['id'])
             sdk.call('export', person['id'])

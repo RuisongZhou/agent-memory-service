@@ -4,7 +4,7 @@
 //! also formed. One part goes through two dialogue outboxes and the in-process uploader: a turn captured live
 //! and then imported comes back `duplicate:true`. No external model call.
 use super::consolidation::generation_stub;
-use super::{memory, tenant};
+use super::{fresh_store, memory};
 use crate::harness::import::client::run_view;
 use crate::harness::import::commands::{queue_turns, Pace, Queue};
 use crate::harness::outbox::{drain_once, Outbox};
@@ -127,7 +127,7 @@ fn calls(eng: &Engine) -> u64 {
 pub async fn selftest() {
     let url = generation_stub().await;
     let eng = super::consolidation::engine(&url, false);
-    let (t, caller, dir) = tenant(&eng, "import-sessions", HOST).await;
+    let (t, caller, dir) = fresh_store(&eng, "import-sessions", HOST).await;
     let s1_1 = turn_unit("s1", "p1", STAGING, "2026-03-01T10:00:00Z");
     // The stub forms one fact per `user: ` line of the new messages: this turn's prompt holds two.
     let s1_2 = turn_unit(
@@ -247,7 +247,6 @@ pub async fn selftest() {
 
     // ---- 5. the uploader submits them; what is not the run's applied turn is refused
     let codex = Caller {
-        tenant: caller.tenant.clone(),
         platform: "codex".into(),
     };
     let mut wrong_project = submission(&s1_2, Some(&r1));
@@ -413,8 +412,7 @@ async fn through_outboxes(url: &str) {
         ModelHub::mock(),
         crate::algorithms::select(strategy),
     );
-    let name = "import-outboxes";
-    let t = eng.tenant(name).await.unwrap();
+    let t = eng.store().await.unwrap();
     let sender = InProcess(eng.clone());
 
     let captured = Arc::new(Mutex::new(
@@ -434,7 +432,7 @@ async fn through_outboxes(url: &str) {
         captured
             .lock()
             .unwrap()
-            .capture_hook(&event, PROJECT, name, HOST, None)
+            .capture_hook(&event, PROJECT, HOST, None)
             .unwrap();
     }
     assert_eq!(drain_once(&captured, &sender).await.unwrap(), 0);
@@ -452,7 +450,7 @@ async fn through_outboxes(url: &str) {
     import::apply(&t, run_req(&run_id)).await.unwrap();
     let view = run_view(import::get_run(&t, run_req(&run_id)).await.unwrap()).unwrap();
     let path = dir.join("import.sqlite3");
-    let queue = queue_turns(&view, &path, name, &Pace::new(0.0, 4), &mut |_| {})
+    let queue = queue_turns(&view, &path, &Pace::new(0.0, 4), &mut |_| {})
         .await
         .unwrap();
     assert_eq!(
@@ -466,7 +464,6 @@ async fn through_outboxes(url: &str) {
     let held = queue_turns(
         &view,
         &dir.join("capture.sqlite3"),
-        name,
         &Pace::new(0.0, 4),
         &mut |_| {},
     )
@@ -495,7 +492,7 @@ async fn through_outboxes(url: &str) {
     assert_eq!(statuses, ["completed", "completed"]);
     // Every turn has its request now: a resumed apply queues nothing.
     let view = run_view(import::get_run(&t, run_req(&run_id)).await.unwrap()).unwrap();
-    let rest = queue_turns(&view, &path, name, &Pace::new(0.0, 4), &mut |_| {})
+    let rest = queue_turns(&view, &path, &Pace::new(0.0, 4), &mut |_| {})
         .await
         .unwrap();
     assert_eq!(rest, Queue::default());
