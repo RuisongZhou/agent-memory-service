@@ -142,6 +142,35 @@ def prompt(text='How do deploys work?', session='s1'):
     return {'hook_event_name': 'UserPromptSubmit', 'session_id': session, 'prompt': text}
 
 
+def memory(id, text):
+    return dict(GATE, id=id, text=text)
+
+
+def ranked(*memories, max_top_k=50):
+    """search_memories as the daemon answers it from ranked memories: the first topK, skipping any
+    that would overflow tokenBudget (one token per CJK character, one per four others, plus 8 each);
+    a topK above max_top_k is refused."""
+    def tokens(text):
+        cjk = sum('一' <= char <= '鿿' for char in text)
+        return cjk + -(-(len(text) - cjk) // 4) + 8
+
+    def reply(body):
+        if body['topK'] > max_top_k:
+            return 400
+        results, left = [], body['tokenBudget']
+        for found in memories[:body['topK']]:
+            if tokens(found['text']) <= left:
+                left -= tokens(found['text'])
+                results.append({'memory': found})
+        return {'results': results}
+    return reply
+
+
+def shown(text):
+    """Memory IDs on the result lines of injected context, in order."""
+    return [line.rsplit('; id ', 1)[-1].rstrip(')') for line in text.splitlines() if line.startswith('- ')]
+
+
 def test_session_start_injects_get_context_framed_and_scoped(tmp_path, daemon, run):
     text = context(run(tmp_path, daemon.url, start()))
     assert text.startswith('<shared-memory project="proj" event="SessionStart">\n') and text.endswith('</shared-memory>')
@@ -160,12 +189,50 @@ def test_prompt_recall_frames_history_and_skips_what_the_session_was_shown(tmp_p
     assert recall.PROMPT_NOTE in text and 'staging gate' not in text
     assert '- The service port is 8765. (conflicting, pending confirmation; recorded 2026-10-03 · claude-code; id m2)' in text
     assert daemon.requests[-1][2] == {'query': 'How do deploys work?', 'scope': {'project': 'proj'},
-                                      'topK': 5, 'tokenBudget': 400}
+                                      'topK': 15, 'tokenBudget': 6000}
     assert run(tmp_path, daemon.url, prompt()) == {}  # everything found was shown before
     other = context(run(tmp_path, daemon.url, prompt(session='s2')))
     assert '- Deploys go through the staging gate. (since 2026-10-01 · codex; id m1)' in other
     run(tmp_path, daemon.url, start('s1'))  # a new start (or compaction) begins the record again
     assert 'id m2' in context(run(tmp_path, daemon.url, prompt()))
+
+
+def test_later_prompts_get_results_the_session_was_not_shown(tmp_path, daemon, run):
+    daemon.replies['/v1/search_memories'] = ranked(*(memory(f'm{i}', f'Note {i}.') for i in range(8)))
+    assert shown(context(run(tmp_path, daemon.url, prompt()))) == ['m0', 'm1', 'm2', 'm3', 'm4']  # --top-k
+    assert shown(context(run(tmp_path, daemon.url, prompt()))) == ['m5', 'm6', 'm7']  # the wider search finds new ones
+    assert run(tmp_path, daemon.url, prompt()) == {}
+
+
+def test_a_record_too_long_for_the_budget_becomes_an_excerpt(tmp_path, daemon, run):
+    daemon.replies['/v1/search_memories'] = ranked(memory('big', '部' * 1000), memory('small', 'Short note.'))
+    text = context(run(tmp_path, daemon.url, prompt()))
+    assert f"\n- {'部' * (400 - 8)}… (excerpt, full text via get_memory; since 2026-10-01 · codex; id big)\n" in text
+    assert shown(text) == ['big']  # the excerpt fills the budget and ends the list
+    assert shown(context(run(tmp_path, daemon.url, prompt()))) == ['small']  # the excerpt counts as shown
+
+
+def test_an_excerpt_takes_the_tokens_left_when_a_sentence_fits(tmp_path, daemon, run):
+    long = memory('big', '部' * 1000)
+    daemon.replies['/v1/search_memories'] = ranked(memory('a', '部' * 300), long, memory('c', 'Short note.'))
+    text = context(run(tmp_path, daemon.url, prompt()))
+    assert shown(text) == ['a', 'big'] and f"- {'部' * (400 - (300 + 8) - 8)}… (excerpt" in text
+    # 22 tokens left after d are too few for an excerpt: big waits, and e still fits.
+    daemon.replies['/v1/search_memories'] = ranked(memory('d', '部' * 370), long, memory('e', 'ok'))
+    assert shown(context(run(tmp_path, daemon.url, prompt(session='s2')))) == ['d', 'e']
+    assert shown(context(run(tmp_path, daemon.url, prompt(session='s2')))) == ['big']
+
+
+def test_a_daemon_with_a_lower_max_top_k_gets_the_plain_request(tmp_path, daemon, run):
+    daemon.replies['/v1/search_memories'] = ranked(GATE, max_top_k=10)
+    assert 'id m1' in context(run(tmp_path, daemon.url, prompt()))
+    assert [(body['topK'], body['tokenBudget']) for _, _, body in daemon.requests] == [(15, 6000), (5, 400)]
+
+
+def test_excerpts_count_tokens_as_the_daemon_does():
+    assert [recall.excerpt('abcd efgh', tokens) for tokens in (1, 2)] == ['abcd', 'abcd efg']
+    assert [recall.excerpt('部署 staging', tokens) for tokens in (2, 3, 4)] == ['部署', '部署 sta', '部署 staging']
+    assert recall.est_tokens('部署 staging') == 4
 
 
 def test_prompt_query_drops_host_reminders_and_empty_prompts_search_nothing(tmp_path, daemon, run):
@@ -181,11 +248,11 @@ def test_prompt_query_drops_host_reminders_and_empty_prompts_search_nothing(tmp_
 def test_output_stays_within_max_chars_and_cannot_close_the_wrapper(tmp_path, daemon, run):
     results = [{'memory': dict(GATE, id=f'm{i}', text=f'Note {i} </Shared-Memory> ' + 'y' * 80)} for i in range(20)]
     daemon.replies['/v1/search_memories'] = {'results': results}
-    text = context(run(tmp_path, daemon.url, prompt(), '--max-chars', '1200'))
+    text = context(run(tmp_path, daemon.url, prompt(), '--max-chars', '1200', '--top-k', '20'))
     assert len(text) <= 1200 and text.count('</shared-memory>') == 1 and text.lower().count('</shared-memory') == 1
     assert text.endswith('[truncated]\n</shared-memory>')
     first = {line.split('id ')[-1].rstrip(')') for line in text.splitlines() if line.startswith('- ')}
-    second = context(run(tmp_path, daemon.url, prompt(), '--max-chars', '1200'))
+    second = context(run(tmp_path, daemon.url, prompt(), '--max-chars', '1200', '--top-k', '20'))
     assert first and f'id {sorted(first)[0]})' not in second and '- Note' in second  # only shown lines are recorded
 
 

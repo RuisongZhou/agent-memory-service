@@ -202,6 +202,24 @@ def recall_hooks(module, tmp_path, *extra):
     return ctx, json.loads(planned[hook_file]).get('hooks', {}) if planned[hook_file] else {}
 
 
+def test_codex_hooks_carry_names_and_a_rerun_names_unnamed_entries_in_place(tmp_path):
+    """/hooks lists a hook by its statusMessage; Claude Code and WorkBuddy hooks stay unnamed."""
+    ctx, hooks = recall_hooks(codex, tmp_path, '--recall')
+    names = {event: [g['hooks'][0].get('statusMessage') for g in groups] for event, groups in hooks.items()}
+    assert names == {'UserPromptSubmit': [codex.CAPTURE_NAME, codex.RECALL_NAME], 'Stop': [codex.CAPTURE_NAME],
+                     'SessionEnd': [codex.CAPTURE_NAME], 'SessionStart': [codex.RECALL_NAME]}
+    # Entries written before the names existed (by #21) are renamed where they are, never duplicated.
+    unnamed = {event: [{'hooks': [{k: v for k, v in g['hooks'][0].items() if k != 'statusMessage'}]} for g in groups]
+               for event, groups in hooks.items()}
+    ctx.hooks_json.parent.mkdir(parents=True, exist_ok=True)
+    ctx.hooks_json.write_text(json.dumps({'hooks': unnamed}))
+    assert recall_hooks(codex, tmp_path, '--recall')[1] == hooks
+    for module in (claude_code, workbuddy):
+        (tmp_path / module.ID).mkdir()
+        other = recall_hooks(module, tmp_path / module.ID, '--recall')[1]
+        assert not any('statusMessage' in g['hooks'][0] for groups in other.values() for g in groups)
+
+
 @pytest.mark.parametrize('module', [claude_code, codex, workbuddy])
 def test_recall_adds_its_own_groups_and_a_rerun_without_it_removes_them(module, tmp_path):
     ctx, hooks = recall_hooks(module, tmp_path, '--recall', '--tenant', 'team')
@@ -209,7 +227,8 @@ def test_recall_adds_its_own_groups_and_a_rerun_without_it_removes_them(module, 
     assert {event for event, groups in recall.items() if groups} == set(core.RECALL_EVENTS)
     for event in core.RECALL_EVENTS:
         (group,) = recall[event]
-        assert group['hooks'] == [core.recall_handler(ctx)] and group['hooks'][0]['timeout'] == core.RECALL_TIMEOUT
+        assert group['hooks'] == [core.recall_handler(ctx, getattr(module, 'RECALL_NAME', None))]
+        assert group['hooks'][0]['timeout'] == core.RECALL_TIMEOUT
         words = shlex.split(group['hooks'][0]['command'])
         assert words[:3] == ['/opt/agent-memoryd', 'hook', 'recall'] and words[-8:] == [
             '--project', 'proj', '--platform', module.PLATFORM, '--tenant', 'team', '--url', 'http://127.0.0.1:8765']
@@ -707,6 +726,19 @@ def test_installed_commands_stay_recognizable(tmp_path):
     assert codex.owned_notify(notify) and codex.released_notify(notify) is None
     wrapping = [*notify, '--', CLIENT, '--', 'turn-ended']
     assert codex.owned_notify(wrapping) and codex.released_notify(wrapping) == [CLIENT, '--', 'turn-ended']
+
+
+def test_codex_install_ends_with_the_steps_only_the_user_can_take(tmp_path, capsys, fake_binary, offline):
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--recall', '--apply'))
+    assert code == 0, output
+    todo = output[output.index('[todo] 1.'):]
+    assert todo.index('[todo] 1. Restart Codex') < todo.index('[todo] 2. Run /hooks') < todo.index('[todo] 3.')
+    assert f'"{codex.CAPTURE_NAME}" on UserPromptSubmit, Stop and SessionEnd' in todo
+    assert f'"{codex.RECALL_NAME}" on SessionStart and UserPromptSubmit' in todo
+    assert 'this installer cannot trust them for you' in todo
+    assert f'outbox status --outbox {shlex.quote(str(tmp_path / core.OUTBOX))} lists it' in todo  # an isolated home names its outbox
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--no-capture', '--apply'))
+    assert code == 0 and '[todo] 1.' in output and '[todo] 2.' not in output, output  # MCP only: nothing to trust
 
 
 def test_codex_rerun_gives_notify_back_and_captures_with_hooks(tmp_path, capsys, fake_binary, offline):

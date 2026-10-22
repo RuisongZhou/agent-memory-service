@@ -62,7 +62,7 @@ hooks all run `agent-memoryd`, so the agent host needs no Python. Run from the c
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
 |---|---|---|---|---|
-| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]`; `~/.codex/hooks.json`: `UserPromptSubmit`, `Stop`, `SessionEnd` | [Hooks](#codex-hooks) paired by `turn_id`; `notify` is left to other programs | Restart Codex; trust the three collector hooks in `/hooks` (App: Settings → Hooks); nothing is captured before that |
+| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]`; `~/.codex/hooks.json`: `UserPromptSubmit`, `Stop`, `SessionEnd` | [Hooks](#codex-hooks) paired by `turn_id`; `notify` is left to other programs | Restart Codex; trust the three `shared-memory capture` hooks in `/hooks` (App: Settings → Hooks); nothing is captured before that |
 | Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project` | `<project>/.mcp.json` and `<project>/.claude/settings.local.json`; `--scope user`: `~/.claude.json` and `~/.claude/settings.json` | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; approve the project MCP server (`/mcp`) |
 | WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
 | DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness); `--project` is refused | Restart DeepSeek Harness and start a new session |
@@ -319,7 +319,11 @@ installer does, replacing the binary path and project ID:
 | `SessionEnd` | Clears incomplete input and queues a close marker for a captured session |
 
 Codex runs a hook only after you trust it: review and trust the three collector hooks with `/hooks`
-(App: Settings → Hooks). Codex records trust per command, so changing `--project`, the binary path or
+(App: Settings → Hooks). `/hooks` lists a hook under its `statusMessage`; the installer names the
+collector hooks `shared-memory capture` and the [recall hooks](#automatic-recall) `shared-memory recall`,
+and a hook without one shows as Unnamed hook. The installer cannot trust them for you: Codex has no command for it, and
+`/hooks` records your review in `config.toml` (`[hooks.state]`) through the app-server's generic config
+write. The installer never writes those records itself, which would skip that review. Its closing output lists the hooks to trust. Codex records trust per command, so changing `--project`, the binary path or
 another option needs trust again, and untrusted or changed hooks are skipped. Start a new turn after
 installing; a `Stop` from a turn whose prompt was not captured cannot be paired. The payload fields come
 from the hook input schemas embedded in Codex CLI 0.163.0 (`turn_id` is Codex's extension). See the
@@ -424,12 +428,12 @@ unchanged and recall works without it. DeepSeek Harness gets MCP tools only, and
 collector's: the collector exits 1 so faults surface, while recall always exits 0 so even a broken
 command cannot block a prompt. Neither ever exits 2, which blocks a prompt, not even for invalid
 arguments. Recall also needs neither the outbox nor a non-loopback path.
-Each hook makes one request to the daemon and prints the result as `hookSpecificOutput.additionalContext`:
+Each hook asks the daemon and prints what to inject as `hookSpecificOutput.additionalContext`:
 
 | Event | Request | Injected |
 |---|---|---|
 | `SessionStart` (any source: startup, resume, clear, compact, fork) | `get_context` for the project and native session, `tokenBudget` 1000 | The context text; also starts the session's record of shown memories over |
-| `UserPromptSubmit` | `search_memories` with the prompt (at most 2000 characters; the `<user_query>` part when the host wraps it), the project, `topK` 5, `tokenBudget` 400 | Results this session has not been shown yet, one line each with its date, platform and ID; an empty prompt searches nothing |
+| `UserPromptSubmit` | `search_memories` with the prompt (at most 2000 characters; the `<user_query>` part when the host wraps it), the project, `topK` 15 (three times `--top-k`, from 15 to 50) and `tokenBudget` 6000 (`--search-budget` for each). A daemon whose `maxTopK` is lower refuses that; recall then asks again with `--top-k` and `--search-budget` | Up to `--top-k` (5) results this session has not been shown yet, in rank order within `--search-budget` (400) tokens, one line each with its date, platform and ID. A result too long for the tokens left becomes an excerpt marked `excerpt, full text via get_memory` and ends the list; an empty prompt searches nothing |
 
 The injected block is framed for the agent. Only the explicit-instructions section of `get_context`
 holds behavior requirements, subject to current instructions. All other sections and every search result
@@ -441,8 +445,8 @@ only through `get_context`. Stored text is flattened to one line and cannot clos
 |---|---|
 | Never block or fail the host | Every outcome prints exactly one JSON object and exits 0. Nothing to inject, a daemon that is down, slow or failing, invalid input, invalid arguments or a non-loopback URL all print `{}`, with only the error type on stderr. It never exits 2, which would block a prompt, and a panic still prints `{}`. Codex's output schema allows no extra fields; `hookSpecificOutput` appears only on these two events, and the collector's `Stop`/`SessionEnd` output stays `{}` |
 | Time | `--timeout` (2 s) bounds the whole recall; the installed hook timeout (5 s) is the host's backstop |
-| Tokens | The daemon packs both budgets. `--max-chars` (6000) also caps the block in whole lines, marked `[truncated]`, below Claude Code's 10,000-character limit for one `additionalContext` |
-| Repeats | A per-session record of shown memory IDs (`~/.local/state/agent-memory-service/recall-state.sqlite3`, mode 0600, IDs only, pruned after 30 days) keeps prompts from re-injecting what this session was already shown. If the record fails, recall injects unfiltered; each prompt still stays within budget |
+| Tokens | The daemon packs the `SessionStart` budget, and returns whole records for `UserPromptSubmit`. Recall packs `--search-budget` itself and counts a result as the daemon does: its text at one token per CJK character and one per four other characters, plus 8. Searching wider than it injects lets recall skip what the session was shown and still fill the budget, and lets a record too long for the budget arrive to be cut. An excerpt needs room for 32 tokens of text; with less left, that result waits for a later prompt and shorter ones may still fit. `--max-chars` (6000) also caps the block in whole lines, marked `[truncated]`, below Claude Code's 10,000-character limit for one `additionalContext` |
+| Repeats | A per-session record of shown memory IDs (`~/.local/state/agent-memory-service/recall-state.sqlite3`, mode 0600, IDs only, pruned after 30 days) keeps prompts from re-injecting what this session was already shown. It holds only what was injected, excerpts included. If the record fails, recall injects unfiltered; each prompt still stays within budget |
 | Scope | `--project`, `--tenant` and `--platform` come from the installed command, as for capture; the session comes from the event. Search covers that project plus visible global records |
 | Network | The URL must be loopback (`127.0.0.1`, `localhost`, `::1`), and proxy variables are ignored; the installer refuses `--recall` with another `--url` |
 | Daemon down | Nothing is injected and the prompt proceeds; recall resumes when the daemon answers |
@@ -451,7 +455,7 @@ Privacy: every prompt goes to the local daemon as a search query, even without c
 records it in its retrieval log, which is readable through `POST /admin/export`. The daemon embeds the
 query with its [retrieval models](deployment.md#4-configure-the-retrieval-models). With the default
 hosted provider (`api`), **every prompt (up to 2000 characters) is sent to the hosted embedding API**,
-and, when Mem0 reranking is enabled, to the rerank API together with the candidate memories. Only
+and, when Mem0 reranking is enabled, to the rerank API together with up to `topK` (15) candidate memories. Only
 `self-hosted` models on this machine keep prompts local. `SessionStart` (`get_context`) makes no model
 call. The installer notes which provider the daemon at `--url` uses.
 
