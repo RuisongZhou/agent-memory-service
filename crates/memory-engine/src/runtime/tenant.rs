@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::futures::Notified;
-use tokio::sync::{Mutex, MutexGuard, Notify, RwLock};
+use tokio::sync::{Mutex, MutexGuard, Notify, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use memory_store::store::Store;
 
@@ -34,6 +34,7 @@ pub struct Tenant {
     extract_notify: Notify,
     index_notify: Notify,
     index_lock: Mutex<()>,
+    import_gate: RwLock<()>,
     algorithm_states: std::sync::Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
 }
 
@@ -60,6 +61,7 @@ impl Tenant {
             extract_notify: Notify::new(),
             index_notify: Notify::new(),
             index_lock: Mutex::new(()),
+            import_gate: RwLock::new(()),
             algorithm_states: std::sync::Mutex::new(HashMap::new()),
         })
     }
@@ -109,6 +111,21 @@ impl Tenant {
     /// lock while holding it.
     pub async fn lock_index(&self) -> MutexGuard<'_, ()> {
         self.index_lock.lock().await
+    }
+
+    /// Held while a session turn of an import run is admitted and queued (shared), and while import rollback
+    /// closes a run to further turns (exclusive): a turn checked against an applied run is queued before
+    /// rollback looks for the run's requests, or is refused.
+    ///
+    /// Lock order: take it before `lock_ingest`; rollback takes it exclusively while holding `lock_formation`.
+    /// Never take `lock_formation` while holding it.
+    pub async fn admit_import_turn(&self) -> RwLockReadGuard<'_, ()> {
+        self.import_gate.read().await
+    }
+
+    /// The exclusive side of [`Tenant::admit_import_turn`].
+    pub async fn close_import_turns(&self) -> RwLockWriteGuard<'_, ()> {
+        self.import_gate.write().await
     }
 
     /// Wakes the per-tenant formation worker, `notify_one` semantics (a permit is stored if

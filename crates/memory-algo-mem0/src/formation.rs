@@ -195,7 +195,7 @@ pub async fn enqueue(
     tx.put(schema::REQUESTS,&id,json!({"requestId":id,"kind":request_kind::MEM0,"strategy":"mem0",
         "status":"queued","memoryIds":[],"createdAt":now,"updatedAt":now,
         "platform":c.platform,"project":project,"session":session,"inputSeq":seq,
-        "turnKeys":key.into_iter().collect::<Vec<_>>(),"turnId":req.turn_id,
+        "turnKeys":key.into_iter().collect::<Vec<_>>(),"turnId":req.turn_id,"importRunId":req.import_run_id,
         "inputMessages":messages,"infer":req.infer.unwrap_or(true),"sessionEnded":req.session_ended.unwrap_or(false),
         "formed":false,"searchable":false,"failures":0}))?;
     t.store.commit(tx).await?;

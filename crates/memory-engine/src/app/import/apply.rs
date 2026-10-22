@@ -1,13 +1,14 @@
 //! `apply`: the accepted proposals of a proposed run become records (or links to the current record of the same
 //! text), one proposal per transaction under the formation lock; declined ones are dropped. Every unit the run
-//! proposed gets a ledger row of its live links, so proposing the same text again finds it unchanged.
+//! proposed gets a ledger row of its live links, so proposing the same text again finds it unchanged. Accepted
+//! session turns are only marked queued: the client submits them through the dialogue outbox (`turns`).
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{
-    count, interrupted, invalid, ledger, ledger_id, ledger_write, load_run, other_units_naming,
-    run_proposals, LedgerRow, DECLINED, EVENT_SUPERSEDED, LEDGER_APPLIED,
+    count, count_turns, interrupted, invalid, ledger, ledger_id, ledger_write, load_run,
+    other_units_naming, run_proposals, LedgerRow, DECLINED, EVENT_SUPERSEDED, LEDGER_APPLIED,
 };
 use crate::app::consolidation::write_patch;
 use crate::runtime::engine::Engine;
@@ -15,9 +16,9 @@ use crate::runtime::tenant::Tenant;
 use memory_domain::consolidation::apply::FieldPatch;
 use memory_domain::import::apply::{self as plan, EVIDENCE_ROLE};
 use memory_domain::import::{
-    ImportProposal, ImportRun, ImportRunReq, UnitOutcome, ACCEPT, APPLIED, DROPPED, PROPOSED,
-    REJECT, RUN_APPLIED, RUN_APPLYING, RUN_PROPOSED, SKIPPED, UNIT_CHANGED, UNIT_NEW,
-    UNIT_RECONSIDERED,
+    is_session_turn, ImportProposal, ImportRun, ImportRunReq, UnitOutcome, ACCEPT, APPLIED,
+    DROPPED, MODE_SESSION_TURN, PROPOSED, REJECT, RUN_APPLIED, RUN_APPLYING, RUN_PROPOSED, SKIPPED,
+    UNIT_CHANGED, UNIT_NEW, UNIT_RECONSIDERED,
 };
 use memory_domain::types::*;
 use memory_rules::import::units;
@@ -264,6 +265,10 @@ pub async fn apply(eng: &Arc<Engine>, t: &Arc<Tenant>, req: ImportRunReq) -> Api
         let mut tx = Tx::new();
         let bookkeeping = if decision == REJECT {
             json!({"status": DROPPED, "decision": REJECT})
+        } else if is_session_turn(&p) {
+            // Queued for the client to put into the dialogue outbox; formation writes its facts.
+            json!({"status": APPLIED, "decision": ACCEPT, "applied": {"queued": true},
+                "appliedAt": util::now_str()})
         } else {
             match accept(eng, t, &run, &p, global, &mut tx).await {
                 Ok(Accepted::Applied { memory_id, applied }) => json!({"status": APPLIED,
@@ -287,11 +292,10 @@ pub async fn apply(eng: &Arc<Engine>, t: &Arc<Tenant>, req: ImportRunReq) -> Api
     // Units of which nothing was applied are recorded as declined, keeping their earlier records.
     let mut tx = Tx::new();
     let now = util::now_str();
-    for unit in run
-        .units
-        .iter()
-        .filter(|u| [UNIT_NEW, UNIT_CHANGED, UNIT_RECONSIDERED].contains(&u.outcome.as_str()))
-    {
+    for unit in run.units.iter().filter(|u| {
+        u.mode != MODE_SESSION_TURN
+            && [UNIT_NEW, UNIT_CHANGED, UNIT_RECONSIDERED].contains(&u.outcome.as_str())
+    }) {
         let lid = ledger_id(&run.project, &unit.unit);
         let row = match ledger(t, &lid).await {
             Ok(row) => row,
@@ -316,6 +320,7 @@ pub async fn apply(eng: &Arc<Engine>, t: &Arc<Tenant>, req: ImportRunReq) -> Api
     counts.applied = count(&proposals, APPLIED);
     counts.dropped = count(&proposals, DROPPED);
     counts.skipped = count(&proposals, SKIPPED);
+    counts.turns_queued = count_turns(&proposals, APPLIED);
     let now = util::now_str();
     t.store
         .merge_doc(

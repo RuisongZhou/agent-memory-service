@@ -2,17 +2,24 @@
 //! and writes the plan, `propose`, `show`, `apply`, `status` and `rollback` call the daemon through
 //! `client`. Reports are plain text for a person; the files they name hold the full detail.
 use chrono::{DateTime, Utc};
-use memory_domain::import::{ImportLimits, ImportProposal, ImportRun, UNIT_FAILED};
+use memory_domain::import::{
+    is_session_turn, ImportLimits, ImportProposal, ImportRun, APPLIED, ROLLED_BACK, RUN_APPLIED,
+    UNIT_FAILED,
+};
 use memory_rules::util::fmt_ts;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::client::{self, Client};
-use super::plan::{self, Plan, PlanOptions};
-use super::source::{Issue, ScanContext};
-use super::{project, review, shown, DaemonArgs, Host, PlanArgs, DEFAULT_TENANT, DEFAULT_URL};
+use super::client::{self, Client, RunView};
+use super::plan::{self, Plan, PlanOptions, SessionOptions};
+use super::source::{Issue, ScanContext, ScanOutput};
+use super::{
+    project, review, shown, DaemonArgs, Host, Include, PlanArgs, DEFAULT_TENANT, DEFAULT_URL,
+};
+use crate::harness::outbox::{Outbox, Queued};
 use crate::harness::{expand, home, invalid, Error};
 
 /// Seconds per daemon request of every command but `propose`.
@@ -23,6 +30,8 @@ const STATUS_RUNS: usize = 10;
 const SHOW_PROPOSALS: usize = 10;
 /// Paths the plan summary prints per issue reason.
 const ISSUE_PATHS: usize = 5;
+/// Session turns `apply` reports progress after.
+const PROGRESS_TURNS: usize = 25;
 
 /// Scan the host, plan its units and write the plan file; returns where.
 pub fn make_plan(args: &PlanArgs, now: DateTime<Utc>) -> Result<(PathBuf, Plan), Error> {
@@ -31,6 +40,16 @@ pub fn make_plan(args: &PlanArgs, now: DateTime<Utc>) -> Result<(PathBuf, Plan),
     }
     if args.all && args.host != Host::ClaudeCode {
         return Err(invalid("--all is for --host claude-code"));
+    }
+    let sessions = args.include.contains(&Include::Sessions);
+    let session_adapter = match sessions {
+        true => Some(args.host.session_adapter().ok_or_else(|| {
+            invalid("--include sessions is for --host claude-code and --host codex")
+        })?),
+        false => None,
+    };
+    if !sessions && args.since.is_some() {
+        return Err(invalid("--since is for --include sessions"));
     }
     let home = args.home.as_deref().map(expand).unwrap_or_else(home);
     let workspaces = workspace_roots(&args.workspaces)?;
@@ -44,7 +63,15 @@ pub fn make_plan(args: &PlanArgs, now: DateTime<Utc>) -> Result<(PathBuf, Plan),
         from: args.from.as_deref().map(expand),
         label: args.label.clone(),
     };
-    let scan = args.host.adapter().scan(&ctx)?;
+    let mut scan = match args.include.contains(&Include::Notes) {
+        true => args.host.adapter().scan(&ctx)?,
+        false => ScanOutput::default(),
+    };
+    if let Some(adapter) = session_adapter {
+        let found = adapter.scan_sessions(&ctx)?;
+        scan.sessions = found.sessions;
+        scan.issues.extend(found.issues);
+    }
     let host = args.host.label(args.label.as_deref());
     let options = PlanOptions {
         host: host.clone(),
@@ -57,6 +84,10 @@ pub fn make_plan(args: &PlanArgs, now: DateTime<Utc>) -> Result<(PathBuf, Plan),
         },
         no_extract: args.no_extract,
         created_at: fmt_ts(&now),
+        sessions: sessions.then(|| SessionOptions {
+            since: args.since.clone(),
+            limit: args.limit,
+        }),
     };
     let plan = plan::build(scan, &options)?;
     let path = match args.out.as_deref() {
@@ -130,13 +161,50 @@ pub fn plan_report(path: &Path, plan: &Plan, args: &PlanArgs) -> String {
     if !s.workspaces.is_empty() {
         let _ = writeln!(out, "  workspaces: {}", s.workspaces.join(", "));
     }
+    let turns = match &s.sessions {
+        Some(_) => format!(", {} session turns", c.session_turns),
+        None => String::new(),
+    };
     let _ = writeln!(
         out,
-        "  to import: {} verbatim, {} split, {} extract",
+        "  to import: {} verbatim, {} split, {} extract{turns}",
         c.verbatim, c.split, c.extract
     );
     if c.skipped > 0 {
         let _ = writeln!(out, "  skipped: {} ({})", c.skipped, tally(&s.skip_reasons));
+    }
+    if let Some(sessions) = &s.sessions {
+        let from = match &sessions.since {
+            Some(since) => format!("from {since}, "),
+            None => String::new(),
+        };
+        let _ = writeln!(
+            out,
+            "  sessions: {} read; turns {from}oldest first, at most {}",
+            sessions.sessions, sessions.limit
+        );
+        let mut left = Vec::new();
+        if sessions.before_since > 0 {
+            left.push(format!("{} before --since", sessions.before_since));
+        }
+        if sessions.copies > 0 {
+            left.push(format!(
+                "{} repeated by a forked or resumed session",
+                sessions.copies
+            ));
+        }
+        if sessions.over_limit > 0 {
+            left.push(format!("{} over --limit", sessions.over_limit));
+        }
+        if !left.is_empty() {
+            let _ = writeln!(out, "  turns left out: {}", left.join(", "));
+        }
+        if let Some(next) = &sessions.next_since {
+            let _ = writeln!(
+                out,
+                "  next batch: plan again with --since {next} once this one is applied"
+            );
+        }
     }
     if !s.redactions.is_empty() {
         let _ = writeln!(out, "  redacted: {}", tally(&s.redactions));
@@ -155,6 +223,12 @@ pub fn plan_report(path: &Path, plan: &Plan, args: &PlanArgs) -> String {
         "  model services: {} generation calls with {} characters; {} texts with {} characters to embed, plus two per extracted item",
         e.generation_calls, e.chars_to_generation, e.embedding_texts, e.chars_to_embedding
     );
+    if c.session_turns > 0 {
+        let _ = writeln!(
+            out,
+            "  session turns go through Mem0 formation once applied: a generation call each, with the session's earlier turns as context, and an embedding per fact formed"
+        );
+    }
     let _ = writeln!(
         out,
         "  unit cap: cost {} (extraction aims at {}), from recall budget {} and top-k {}",
@@ -241,6 +315,13 @@ pub async fn propose(
         true => String::new(),
         false => format!(" --home {}", shown(home)),
     };
+    if view.run.counts.proposals == 0 && view.run.counts.session_turns > 0 {
+        let _ = writeln!(
+            out,
+            "Next: agent-memoryd import apply {id} --yes{flags} queues the session turns into the dialogue outbox (--outbox, as the uploader drains it)"
+        );
+        return Ok(out);
+    }
     let _ = writeln!(out, "Next: agent-memoryd import show {id}{flags}");
     let _ = writeln!(
         out,
@@ -275,6 +356,13 @@ fn run_report(run: &ImportRun) -> String {
             c.applied, c.dropped, c.skipped, c.rolled_back
         );
     }
+    if c.session_turns > 0 {
+        let _ = writeln!(
+            out,
+            "  session turns {}, registered without a model call: {} queued, {} rolled back",
+            c.session_turns, c.turns_queued, c.turns_rolled_back
+        );
+    }
     for unit in run.units.iter().filter(|u| u.outcome == UNIT_FAILED) {
         let error = unit.error.as_deref().unwrap_or("no error recorded");
         let _ = writeln!(out, "  failed unit {}: {error}", unit.unit);
@@ -304,11 +392,68 @@ fn previous_report(run: &ImportRun, listed: &str) -> String {
     )
 }
 
-/// Proposals per status and per kind.
+/// Where a run's session turns stand, from their rows: submitted as new requests or found to duplicate a turn
+/// the daemon had, still to be submitted, and what rollback did; nothing for a run without turns.
+fn turns_report(view: &RunView) -> String {
+    let turns: Vec<&ImportProposal> = view
+        .proposals
+        .iter()
+        .filter(|p| is_session_turn(p))
+        .collect();
+    if turns.is_empty() {
+        return String::new();
+    }
+    let applied = |p: &&ImportProposal| p.applied.clone().unwrap_or(Value::Null);
+    let (mut formed, mut duplicates, mut waiting) = (0, 0, 0);
+    for p in turns.iter().filter(|p| p.status == APPLIED) {
+        match applied(p)["duplicate"].as_bool() {
+            Some(true) => duplicates += 1,
+            Some(false) => formed += 1,
+            None => waiting += 1,
+        }
+    }
+    let mut out = String::new();
+    if formed + duplicates + waiting > 0 {
+        let _ = writeln!(
+            out,
+            "  session turns submitted: {formed} new, {duplicates} the daemon already had (captured live or imported before); {waiting} not submitted yet"
+        );
+    }
+    let undone: Vec<Value> = turns
+        .iter()
+        .filter(|p| p.status == ROLLED_BACK)
+        .map(|p| p.rollback.clone().unwrap_or(Value::Null))
+        .collect();
+    let forming = turns
+        .iter()
+        .filter(|p| p.status == APPLIED && p.rollback_skip_reason.is_some())
+        .count();
+    if !undone.is_empty() || forming > 0 {
+        let length = |v: &Value, key: &str| v[key].as_array().map_or(0, Vec::len);
+        let retired: usize = undone.iter().map(|r| length(r, "retired")).sum();
+        let kept: usize = undone.iter().map(|r| length(r, "kept")).sum();
+        let _ = writeln!(
+            out,
+            "  session turns rolled back {}: {retired} facts retired, {kept} kept (also formed from other turns, or changed since)",
+            undone.len()
+        );
+        if forming > 0 {
+            let _ = writeln!(
+                out,
+                "  {forming} session turns are still forming: roll back again once the daemon is done with them"
+            );
+        }
+    }
+    out
+}
+
+/// Proposals per status and per kind; session turns are reported apart.
 fn proposal_counts(proposals: &[ImportProposal]) -> String {
     let mut statuses: BTreeMap<String, usize> = BTreeMap::new();
     let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
-    for proposal in proposals {
+    let proposals: Vec<&ImportProposal> =
+        proposals.iter().filter(|p| !is_session_turn(p)).collect();
+    for proposal in &proposals {
         *statuses.entry(proposal.status.clone()).or_insert(0) += 1;
         *kinds.entry(proposal.item_kind.clone()).or_insert(0) += 1;
     }
@@ -353,7 +498,12 @@ pub async fn show(
     review::write(&path, &view.run, &view.proposals)?;
     let mut text = run_report(&view.run);
     let _ = writeln!(text, "{}", proposal_counts(&view.proposals));
-    for proposal in view.proposals.iter().take(SHOW_PROPOSALS) {
+    let reviewed: Vec<&ImportProposal> = view
+        .proposals
+        .iter()
+        .filter(|p| !is_session_turn(p))
+        .collect();
+    for proposal in reviewed.iter().take(SHOW_PROPOSALS) {
         let line = review::ProposalLine::new(proposal);
         let hint = match line.item_kind == review::INSTRUCTION {
             true if line.scope_hint.is_empty() => " (no scope hint)".to_string(),
@@ -369,8 +519,7 @@ pub async fn show(
             one_line(&line.text, 100)
         );
     }
-    if let Some(more) = view
-        .proposals
+    if let Some(more) = reviewed
         .len()
         .checked_sub(SHOW_PROPOSALS)
         .filter(|n| *n > 0)
@@ -392,16 +541,141 @@ pub async fn show(
     Ok(text)
 }
 
+/// How fast `apply` queues session turns (design §6.14): at most `per_minute`, each only while the outbox
+/// holds fewer than `max_pending` turns not yet formed, so newly captured turns are not held up behind an
+/// import. `per_minute` 0 queues every turn at once.
+#[derive(Debug, Clone)]
+pub struct Pace {
+    pub per_minute: f64,
+    pub max_pending: usize,
+    /// How often a wait looks at the outbox again, and after how long it says why it waits.
+    pub poll: Duration,
+    pub note_after: Duration,
+}
+
+impl Pace {
+    pub fn new(per_minute: f64, max_pending: usize) -> Self {
+        Pace {
+            per_minute,
+            max_pending,
+            poll: Duration::from_secs(2),
+            note_after: Duration::from_secs(30),
+        }
+    }
+}
+
+/// What queueing a run's session turns found.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Queue {
+    pub added: usize,
+    /// Queued by an earlier, interrupted apply of the run.
+    pub again: usize,
+    /// Held by a job of live capture, which the daemon deduplicates the turn against.
+    pub captured: usize,
+    /// Held by an earlier import run's job.
+    pub earlier: usize,
+}
+
+/// Queue the run's applied session turns that no request answers yet into the dialogue outbox at `path`, in the
+/// run's order (oldest first in each session), as the run's host, each naming the run. A turn the outbox already
+/// holds is never replaced. Progress goes to `say`.
+pub async fn queue_turns(
+    view: &RunView,
+    path: &Path,
+    tenant: &str,
+    pace: &Pace,
+    say: &mut (dyn FnMut(&str) + Send),
+) -> Result<Queue, Error> {
+    let run = &view.run;
+    let turns: Vec<&ImportProposal> = view
+        .proposals
+        .iter()
+        .filter(|p| is_session_turn(p) && p.status == APPLIED)
+        .filter(|p| {
+            p.applied
+                .as_ref()
+                .is_none_or(|a| a.get("requestId").is_none())
+        })
+        .collect();
+    let mut queue = Queue::default();
+    if turns.is_empty() {
+        return Ok(queue);
+    }
+    let mut outbox = Outbox::open(path)?;
+    let interval = match pace.per_minute > 0.0 {
+        true => Some(Duration::from_secs_f64(60.0 / pace.per_minute)),
+        false => None,
+    };
+    let mut last_added: Option<Instant> = None;
+    for (i, p) in turns.iter().enumerate() {
+        let Some(turn) = &p.turn else { continue };
+        if let Some(interval) = interval {
+            let waiting = Instant::now();
+            let mut noted = false;
+            loop {
+                let backlog = outbox.backlog()?;
+                if backlog < pace.max_pending {
+                    break;
+                }
+                if !noted && waiting.elapsed() >= pace.note_after {
+                    say(&format!(
+                        "  waiting: {backlog} turns in {} are not formed yet; the daemon uploads them when started with --outbox on that file, or run `agent-memoryd outbox drain`",
+                        shown(path)
+                    ));
+                    noted = true;
+                }
+                tokio::time::sleep(pace.poll).await;
+            }
+            if let Some(last) = last_added {
+                tokio::time::sleep(interval.saturating_sub(last.elapsed())).await;
+            }
+        }
+        let body = json!({"scope": {"project": run.project, "session": turn.session},
+                          "turnId": turn.turn_id, "messages": turn.messages, "importRunId": run.run_id});
+        match outbox.enqueue_import(tenant, &run.host, &body)? {
+            Queued::Added => {
+                queue.added += 1;
+                last_added = Some(Instant::now());
+            }
+            Queued::Again => queue.again += 1,
+            Queued::Held { run: None, .. } => queue.captured += 1,
+            Queued::Held { run: Some(_), .. } => queue.earlier += 1,
+        }
+        if (i + 1) % PROGRESS_TURNS == 0 && i + 1 < turns.len() {
+            say(&format!(
+                "  queued {} of {} session turns",
+                i + 1,
+                turns.len()
+            ));
+        }
+    }
+    Ok(queue)
+}
+
 /// `apply`: with a review file its decisions, without one the defaults; the proposals whose source file
-/// (under `home`) changed since propose are declined either way.
+/// (under `home`) changed since propose are declined either way. Then the run's session turns go into the
+/// dialogue outbox at `outbox`, paced by `pace`. A run already applied only has its remaining turns queued, so
+/// an interrupted apply resumes.
 pub async fn apply(
     run_id: &str,
     review: Option<&Path>,
     daemon: &DaemonArgs,
     home: &Path,
+    outbox: &Path,
+    pace: &Pace,
+    say: &mut (dyn FnMut(&str) + Send),
 ) -> Result<String, Error> {
     let client = Client::new(&daemon.url, &daemon.tenant, CALL_TIMEOUT)?;
-    let applied = client.apply(run_id, review, home).await?;
+    let current = client.run(run_id).await?;
+    let resume = current.run.status == RUN_APPLIED && current.run.counts.session_turns > 0;
+    let applied = match resume {
+        true => client::Applied {
+            view: current,
+            changed: vec![],
+        },
+        false => client.apply(run_id, review, home).await?,
+    };
+    let queue = queue_turns(&applied.view, outbox, &daemon.tenant, pace, say).await?;
     let mut out = run_report(&applied.view.run);
     for source in &applied.changed {
         let _ = writeln!(
@@ -418,10 +692,27 @@ pub async fn apply(
             "  make a new plan and propose again to import the current text"
         );
     }
-    if review.is_none() {
+    if review.is_none() && applied.view.run.counts.proposals > 0 {
         let _ = writeln!(
             out,
             "  default decisions: facts and preferences accepted, instruction candidates and duplicates not written"
+        );
+    }
+    out.push_str(&turns_report(&applied.view));
+    if queue != Queue::default() {
+        let _ = writeln!(
+            out,
+            "  session turns queued into {}: {} new, {} already queued by this run, {} already captured live, {} queued by an earlier import",
+            shown(outbox),
+            queue.added,
+            queue.again,
+            queue.captured,
+            queue.earlier
+        );
+        let _ = writeln!(
+            out,
+            "  the uploader submits them and the daemon forms each turn it does not have yet; follow with: agent-memoryd import status {run_id}{}",
+            daemon_flags(daemon)
         );
     }
     Ok(out)
@@ -437,9 +728,10 @@ pub async fn status(
     if let Some(run_id) = run_id {
         let view = client.run(run_id).await?;
         let mut out = run_report(&view.run);
-        if !view.proposals.is_empty() {
+        if view.run.counts.proposals > 0 {
             let _ = writeln!(out, "{}", proposal_counts(&view.proposals));
         }
+        out.push_str(&turns_report(&view));
         out.push_str(&previous_report(
             &view.run,
             &format!("agent-memoryd import show {run_id} lists them"),
@@ -469,10 +761,28 @@ pub async fn status(
     Ok(out)
 }
 
-/// `rollback`.
-pub async fn rollback(run_id: &str, daemon: &DaemonArgs) -> Result<String, Error> {
+/// `rollback`: first the run's session turns still waiting in the dialogue outbox at `outbox` are cancelled, so
+/// no uploader submits them (the daemon would refuse them anyway once the run rolls back), then the daemon
+/// undoes the run.
+pub async fn rollback(run_id: &str, daemon: &DaemonArgs, outbox: &Path) -> Result<String, Error> {
     let client = Client::new(&daemon.url, &daemon.tenant, CALL_TIMEOUT)?;
-    Ok(run_report(&client.rollback(run_id).await?.run))
+    let current = client.run(run_id).await?;
+    let cancelled =
+        match current.run.counts.session_turns > 0 && std::fs::symlink_metadata(outbox).is_ok() {
+            true => Outbox::open(outbox)?.cancel_import(run_id)?,
+            false => 0,
+        };
+    let view = client.rollback(run_id).await?;
+    let mut out = run_report(&view.run);
+    if cancelled > 0 {
+        let _ = writeln!(
+            out,
+            "  {cancelled} session turns not yet submitted were cancelled in {}",
+            shown(outbox)
+        );
+    }
+    out.push_str(&turns_report(&view));
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -482,8 +792,9 @@ mod tests {
         plan_over, sourced_proposals, stub, stub_proposals, stub_run, stub_with,
     };
     use crate::harness::import::message;
-    use crate::harness::import::review::tests::changed_unit;
-    use serde_json::Value;
+    use crate::harness::import::review::tests::{changed_unit, turn_row};
+    use crate::harness::import::session::{SessionDoc, Turn};
+    use memory_domain::import::RUN_PROPOSED;
 
     fn plan_args(home: &Path, host: Host) -> PlanArgs {
         PlanArgs {
@@ -501,7 +812,15 @@ mod tests {
             codex_home: None,
             workbuddy_home: None,
             out: None,
+            include: vec![Include::Notes],
+            since: None,
+            limit: 200,
         }
+    }
+
+    /// No pacing: every turn is queued at once.
+    fn at_once() -> Pace {
+        Pace::new(0.0, 4)
     }
 
     #[test]
@@ -670,9 +989,18 @@ mod tests {
             review::read(&review_path, "ir1").unwrap().decisions.len(),
             3
         );
-        let applied = apply("ir1", Some(&review_path), &daemon, home.path())
-            .await
-            .unwrap();
+        let outbox = home.path().join("outbox.sqlite3");
+        let applied = apply(
+            "ir1",
+            Some(&review_path),
+            &daemon,
+            home.path(),
+            &outbox,
+            &at_once(),
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
         assert!(applied.contains("applied 2"), "{applied}");
         assert!(!applied.contains("since propose"), "{applied}");
         let last = requests.lock().unwrap().last().unwrap().2.clone();
@@ -681,10 +1009,12 @@ mod tests {
             .await
             .unwrap()
             .starts_with("ir1  proposed"));
-        assert!(rollback("ir1", &daemon)
+        assert!(rollback("ir1", &daemon, &outbox)
             .await
             .unwrap()
             .starts_with("Run ir1"));
+        // A run without session turns opens no outbox.
+        assert!(std::fs::symlink_metadata(&outbox).is_err());
 
         // A plan whose sources all changed proposes nothing.
         for name in ["a.md", "b.md", "c.md"] {
@@ -819,7 +1149,18 @@ mod tests {
         };
         std::fs::write(home.path().join("b.md"), "Edited.\n").unwrap();
         std::fs::remove_file(home.path().join("c.md")).unwrap();
-        let report = apply("ir1", None, &daemon, home.path()).await.unwrap();
+        let outbox = home.path().join("outbox.sqlite3");
+        let report = apply(
+            "ir1",
+            None,
+            &daemon,
+            home.path(),
+            &outbox,
+            &at_once(),
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
         for part in [
             "~/b.md changed since propose: its 2 proposals were declined",
             "~/c.md vanished since propose: its 1 proposals were declined",
@@ -831,5 +1172,358 @@ mod tests {
         assert_eq!(report.matches("since propose").count(), 2, "{report}");
         let last = requests.lock().unwrap().last().unwrap().2.clone();
         assert_eq!(last["decisions"]["ip4"], "reject");
+    }
+
+    /// Run `ir1` as a session import in `status`: turn t1 already submitted, t2 and t3 queued.
+    fn session_run(status: &str) -> (Value, Vec<ImportProposal>) {
+        let mut run = stub_run();
+        run["status"] = json!(status);
+        run["counts"]["proposals"] = json!(0);
+        run["counts"]["sessionTurns"] = json!(3);
+        run["counts"]["turnsQueued"] = json!(3);
+        let mut t1 = turn_row("ip1", "t1", APPLIED);
+        t1.applied = Some(json!({"queued": true, "requestId": "rq1", "duplicate": false}));
+        let mut t2 = turn_row("ip2", "t2", APPLIED);
+        t2.applied = Some(json!({"queued": true}));
+        let mut t3 = turn_row("ip3", "t3", APPLIED);
+        t3.applied = Some(json!({"queued": true}));
+        (run, vec![t1, t2, t3])
+    }
+
+    /// (turn id, platform, status, the body's importRunId) of every job of the outbox at `path`.
+    fn jobs(path: &Path) -> Vec<(String, String, String, Value)> {
+        let db = rusqlite::Connection::open(path).unwrap();
+        let mut statement = db
+            .prepare("SELECT turn_id, platform, status, body FROM jobs ORDER BY seq")
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                let body: String = row.get(3)?;
+                let body: Value = serde_json::from_str(&body).unwrap();
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    body["importRunId"].clone(),
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn plan_reads_session_transcripts_up_to_the_limit() {
+        use crate::harness::import::codex_session::tests::{complete, meta, user_message, Fixture};
+        let f = Fixture::new();
+        let mut lines = vec![meta(
+            "thr-1",
+            "2026-04-01T09:00:00Z",
+            &f.workspace,
+            Some("user"),
+        )];
+        for (i, turn) in ["t1", "t2", "t3"].iter().enumerate() {
+            let at = format!("2026-04-01T09:0{i}:00Z");
+            lines.push(user_message(&at, turn, &format!("Question {turn}?")));
+            lines.push(complete(&at, turn, Some(&format!("Answer {turn}."))));
+        }
+        f.rollout("sessions/2026/04/01/rollout-thr-1.jsonl", &lines);
+        f.rollout(
+            "sessions/2026/04/01/rollout-sub.jsonl",
+            &[meta(
+                "sub",
+                "2026-04-01T09:00:00Z",
+                &f.workspace,
+                Some("subagent"),
+            )],
+        );
+        let mut args = plan_args(f.home.path(), Host::Codex);
+        args.workspaces = vec![f.workspace.clone()];
+        args.include = vec![Include::Sessions];
+        args.limit = 2;
+        let now = Utc::now();
+        let (path, plan) = make_plan(&args, now).unwrap();
+        let turns: Vec<&str> = plan
+            .import_units()
+            .map(|u| u.turn.as_ref().unwrap().native_id.as_str())
+            .collect();
+        assert_eq!(turns, ["t1", "t2"]);
+        assert_eq!(plan.summary.host, "codex");
+        assert_eq!(
+            plan.summary
+                .sessions
+                .as_ref()
+                .unwrap()
+                .next_since
+                .as_deref(),
+            Some("2026-04-01T09:02:00Z")
+        );
+        let report = plan_report(&path, &plan, &args);
+        for part in [
+            "to import: 0 verbatim, 0 split, 0 extract, 2 session turns",
+            "sessions: 1 read; turns oldest first, at most 2",
+            "turns left out: 1 over --limit",
+            "next batch: plan again with --since 2026-04-01T09:02:00Z",
+            "thread_source:subagent (1): ~/.codex/sessions/2026/04/01/rollout-sub.jsonl",
+            "2 generation calls",
+            "session turns go through Mem0 formation",
+        ] {
+            assert!(report.contains(part), "{part}\n{report}");
+        }
+        // Notes and sessions together: the Codex memories directory is then needed too.
+        args.include = vec![Include::Notes, Include::Sessions];
+        assert!(message(&make_plan(&args, now).unwrap_err()).contains("memories"));
+        // Only hosts whose turns capture files by transcript ids have sessions to import.
+        let mut wrong = plan_args(f.home.path(), Host::Workbuddy);
+        wrong.include = vec![Include::Sessions];
+        assert!(message(&make_plan(&wrong, now).unwrap_err()).contains("--include sessions"));
+        let mut wrong = plan_args(f.home.path(), Host::Codex);
+        wrong.workspaces = vec![f.workspace.clone()];
+        wrong.since = Some("2026-01-01T00:00:00Z".into());
+        assert!(message(&make_plan(&wrong, now).unwrap_err()).contains("--since"));
+    }
+
+    #[tokio::test]
+    async fn a_sessions_only_run_is_applied_without_a_review() {
+        let home = tempfile::tempdir().unwrap();
+        let mut opts = PlanOptions {
+            host: "codex".into(),
+            project: "my-project".into(),
+            home: home.path().to_path_buf(),
+            workspaces: vec![],
+            limits: ImportLimits::default(),
+            no_extract: false,
+            created_at: "2026-10-22T12:00:00Z".into(),
+            sessions: Some(SessionOptions {
+                since: None,
+                limit: 10,
+            }),
+        };
+        opts.workspaces.clear();
+        let scan = ScanOutput {
+            sessions: vec![SessionDoc {
+                host: "codex".into(),
+                via: "codex-rollout",
+                path: home.path().join("rollout-s1.jsonl"),
+                display_path: "~/rollout-s1.jsonl".into(),
+                session: "s1".into(),
+                cwd: home.path().to_path_buf(),
+                file_hash: "f".into(),
+                started_at: "2026-01-02T03:04:05Z".into(),
+                turns: vec![Turn {
+                    native_id: "t1".into(),
+                    prompt: "Prompt t1.".into(),
+                    reply: "Reply t1.".into(),
+                    prompt_at: "2026-01-02T03:04:05Z".into(),
+                    reply_at: "2026-01-02T03:04:06Z".into(),
+                    skip: None,
+                }],
+                extra: Value::Null,
+            }],
+            ..ScanOutput::default()
+        };
+        let plan = plan::build(scan, &opts).unwrap();
+        let path = home.path().join("s.plan.jsonl");
+        plan::write(&plan, &path).unwrap();
+        let (mut run, _) = session_run(RUN_PROPOSED);
+        run["counts"]["turnsQueued"] = json!(0);
+        let (url, _) = stub_with(run, vec![turn_row("ip1", "t1", "proposed")]).await;
+        let daemon = DaemonArgs {
+            url,
+            tenant: "default".into(),
+        };
+        let report = propose(
+            &path,
+            &daemon,
+            8,
+            Duration::from_secs(5),
+            home.path(),
+            false,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(
+            report.contains("session turns 3, registered without a model call"),
+            "{report}"
+        );
+        assert!(
+            report.contains("Next: agent-memoryd import apply ir1 --yes"),
+            "{report}"
+        );
+        assert!(!report.contains("import show"), "{report}");
+    }
+
+    #[tokio::test]
+    async fn apply_queues_the_runs_turns_and_resumes_an_applied_run() {
+        let home = tempfile::tempdir().unwrap();
+        let (run, rows) = session_run(RUN_APPLIED);
+        let (url, requests) = stub_with(run, rows).await;
+        let daemon = DaemonArgs {
+            url,
+            tenant: "team".into(),
+        };
+        let outbox = home.path().join("outbox.sqlite3");
+        let report = apply(
+            "ir1",
+            None,
+            &daemon,
+            home.path(),
+            &outbox,
+            &at_once(),
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        for part in [
+            "session turns 3, registered without a model call: 3 queued",
+            "session turns submitted: 1 new, 0 the daemon already had",
+            "2 not submitted yet",
+            "session turns queued into",
+            "2 new, 0 already queued by this run, 0 already captured live, 0 queued by an earlier import",
+            "agent-memoryd import status ir1 --url ",
+            " --tenant team",
+        ] {
+            assert!(report.contains(part), "{part}\n{report}");
+        }
+        // The run was applied already: only its turns were queued, t1 not, as its request answered it.
+        let names: Vec<String> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.0.clone())
+            .collect();
+        assert_eq!(names, ["import_run"]);
+        let queued = jobs(&outbox);
+        assert_eq!(
+            queued,
+            [
+                (
+                    "my-project/s1/t2".to_string(),
+                    "codex".to_string(),
+                    "pending".to_string(),
+                    json!("ir1")
+                ),
+                (
+                    "my-project/s1/t3".into(),
+                    "codex".into(),
+                    "pending".into(),
+                    json!("ir1")
+                ),
+            ]
+        );
+        let again = apply(
+            "ir1",
+            None,
+            &daemon,
+            home.path(),
+            &outbox,
+            &at_once(),
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(
+            again.contains("0 new, 2 already queued by this run"),
+            "{again}"
+        );
+        assert_eq!(jobs(&outbox).len(), 2);
+        let status = status(Some("ir1"), None, &daemon).await.unwrap();
+        assert!(
+            status.contains("session turns submitted: 1 new"),
+            "{status}"
+        );
+        assert!(!status.contains("proposals by status"), "{status}");
+    }
+
+    #[tokio::test]
+    async fn rollback_cancels_the_runs_turns_still_in_the_outbox() {
+        let home = tempfile::tempdir().unwrap();
+        let (run, rows) = session_run(RUN_APPLIED);
+        let outbox = home.path().join("outbox.sqlite3");
+        let view = RunView {
+            run: serde_json::from_value(run.clone()).unwrap(),
+            proposals: rows.clone(),
+        };
+        queue_turns(&view, &outbox, "default", &at_once(), &mut |_| {})
+            .await
+            .unwrap();
+        let mut other = view.clone();
+        other.run.run_id = "ir2".into();
+        for p in &mut other.proposals {
+            p.turn.as_mut().unwrap().turn_id += "-b";
+        }
+        queue_turns(&other, &outbox, "default", &at_once(), &mut |_| {})
+            .await
+            .unwrap();
+        let (url, requests) = stub_with(run, rows).await;
+        let daemon = DaemonArgs {
+            url,
+            tenant: "default".into(),
+        };
+        let report = rollback("ir1", &daemon, &outbox).await.unwrap();
+        assert!(
+            report.contains("2 session turns not yet submitted were cancelled"),
+            "{report}"
+        );
+        let statuses: Vec<(String, Value)> =
+            jobs(&outbox).into_iter().map(|j| (j.2, j.3)).collect();
+        assert_eq!(
+            statuses,
+            [
+                ("cancelled".to_string(), json!("ir1")),
+                ("cancelled".into(), json!("ir1")),
+                ("pending".into(), json!("ir2")),
+                ("pending".into(), json!("ir2")),
+            ]
+        );
+        assert_eq!(
+            requests.lock().unwrap().last().unwrap().0,
+            "import_rollback"
+        );
+    }
+
+    #[tokio::test]
+    async fn turns_wait_while_the_outbox_holds_turns_not_yet_formed() {
+        let home = tempfile::tempdir().unwrap();
+        let (run, mut rows) = session_run(RUN_APPLIED);
+        rows[0].applied = Some(json!({"queued": true}));
+        let view = RunView {
+            run: serde_json::from_value(run).unwrap(),
+            proposals: rows,
+        };
+        let outbox = home.path().join("outbox.sqlite3");
+        let pace = Pace {
+            per_minute: 60_000.0,
+            max_pending: 2,
+            poll: Duration::from_millis(5),
+            note_after: Duration::from_millis(20),
+        };
+        // An uploader that forms the first two turns a little later.
+        let path = outbox.clone();
+        let uploader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let db = rusqlite::Connection::open(path).unwrap();
+            db.busy_timeout(Duration::from_secs(2)).unwrap();
+            db.execute("UPDATE jobs SET status='completed'", [])
+                .unwrap();
+        });
+        let started = Instant::now();
+        let mut said = Vec::new();
+        let queue = queue_turns(&view, &outbox, "default", &pace, &mut |line| {
+            said.push(line.to_string())
+        })
+        .await
+        .unwrap();
+        uploader.join().unwrap();
+        assert_eq!(queue.added, 3);
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("waiting: 2 turns in") && said[0].contains("outbox drain"));
+        let order: Vec<String> = jobs(&outbox).into_iter().map(|j| j.0).collect();
+        assert_eq!(
+            order,
+            ["my-project/s1/t1", "my-project/s1/t2", "my-project/s1/t3"]
+        );
     }
 }

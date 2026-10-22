@@ -11,6 +11,7 @@ use std::fs::{File, Metadata};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use super::session::SessionDoc;
 use crate::harness::{invalid, Error};
 
 /// Where to look and what to keep.
@@ -128,6 +129,8 @@ pub struct Issue {
 pub struct ScanOutput {
     pub docs: Vec<SourceDoc>,
     pub issues: Vec<Issue>,
+    /// Past session transcripts (`--include sessions`).
+    pub sessions: Vec<SessionDoc>,
 }
 
 impl ScanOutput {

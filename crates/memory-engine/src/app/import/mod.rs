@@ -3,14 +3,18 @@
 //! `rollback` then change records one proposal per transaction under the formation lock, through the pure plans of
 //! `memory_domain::import::apply` and the algorithm's import hooks. The import ledger keeps one row per unit of a
 //! project: the run that last imported it, its hash and the records it became, with the row it replaced kept for
-//! rollback. This module holds the ledger and run reads the three steps share.
+//! rollback. Session turns (`turns`) are rows of the run too, but go through Mem0 formation instead: they have no
+//! ledger rows, since the daemon deduplicates turns by `platform + turnId`. This module holds the ledger and run
+//! reads the steps share.
 mod apply;
 mod propose;
 mod rollback;
+mod turns;
 
 pub use apply::apply;
 pub use propose::propose;
 pub use rollback::rollback;
+pub use turns::{proposal_id as turn_proposal_id, submit as submit_turn};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -18,7 +22,8 @@ use std::sync::Arc;
 
 use crate::runtime::tenant::Tenant;
 use memory_domain::import::{
-    ImportProposal, ImportRun, ImportRunReq, ImportRunsReq, UnitOutcome, APPLIED, KIND,
+    is_session_turn, ImportProposal, ImportRun, ImportRunReq, ImportRunsReq, UnitOutcome, APPLIED,
+    KIND,
 };
 use memory_domain::types::*;
 use memory_rules::util;
@@ -191,8 +196,20 @@ async fn interrupted(t: &Tenant, run_id: &str, error: anyhow::Error) -> ApiError
     ApiError::Internal(message)
 }
 
+/// Proposals with `status`, session turns left out: they are counted on their own.
 fn count(proposals: &[ImportProposal], status: &str) -> usize {
-    proposals.iter().filter(|p| p.status == status).count()
+    proposals
+        .iter()
+        .filter(|p| p.status == status && !is_session_turn(p))
+        .count()
+}
+
+/// Session turns with `status`.
+fn count_turns(proposals: &[ImportProposal], status: &str) -> usize {
+    proposals
+        .iter()
+        .filter(|p| p.status == status && is_session_turn(p))
+        .count()
 }
 
 /// One run with its proposals.

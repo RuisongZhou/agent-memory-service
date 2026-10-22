@@ -188,6 +188,17 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
         Box::pin(async { Ok(()) })
     }
 
+    /// Import rollback of session turns: the requests the fact `memory_id` was formed from, so rollback
+    /// retires only a fact all of whose sources the run submitted. `None` when the algorithm keeps no such
+    /// record; rollback then leaves the fact alone.
+    fn import_fact_requests<'a>(
+        &'a self,
+        _t: &'a Tenant,
+        _memory_id: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<Option<Vec<String>>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Algorithm-private writes when import apply or rollback retires `memory_id` (`event`:
     /// `IMPORT_SUPERSEDED` or `IMPORT_ROLLBACK`). Added to `tx`, which the engine commits.
     fn import_retired<'a>(

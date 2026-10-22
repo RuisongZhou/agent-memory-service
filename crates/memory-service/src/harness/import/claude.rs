@@ -6,13 +6,12 @@
 //! sibling transcript, whose content is otherwise never read.
 use memory_rules::import::markdown::split_frontmatter;
 use memory_rules::import::units::content_hash;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::project::{claude_dir_name, repository_root, within};
+use super::session::first_cwd;
 use super::source::{
     entries, mtime, read_text, timestamp, Adapter, Policy, ScanContext, ScanOutput, Segment,
     SourceDoc,
@@ -24,7 +23,7 @@ const VIA: &str = "claude-auto-memory";
 /// Largest note read.
 const MAX_NOTE: u64 = 64 * 1024;
 /// Transcript bytes read to find a directory's `cwd`.
-const SNIFF_BYTES: usize = 16 * 1024;
+pub(super) const SNIFF_BYTES: u64 = 16 * 1024;
 
 pub struct Claude;
 
@@ -140,28 +139,7 @@ fn sniff_cwd(dir: &Path) -> Option<PathBuf> {
         .ok()?
         .into_iter()
         .filter(|(name, _)| name.ends_with(".jsonl"))
-        .find_map(|(_, path)| first_cwd(&path))
-}
-
-fn first_cwd(path: &Path) -> Option<PathBuf> {
-    if !std::fs::symlink_metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let mut head = Vec::with_capacity(SNIFF_BYTES);
-    File::open(path)
-        .ok()?
-        .take(SNIFF_BYTES as u64)
-        .read_to_end(&mut head)
-        .ok()?;
-    let mut lines: Vec<&[u8]> = head.split(|&b| b == b'\n').collect();
-    if head.len() == SNIFF_BYTES {
-        lines.pop(); // the read may have cut the last line
-    }
-    lines.into_iter().find_map(|line| {
-        let record: Value = serde_json::from_slice(line).ok()?;
-        let cwd = PathBuf::from(record.get("cwd")?.as_str()?);
-        cwd.is_absolute().then_some(cwd)
-    })
+        .find_map(|(_, path)| first_cwd(&path, SNIFF_BYTES))
 }
 
 /// One document per note of `memory`.
@@ -235,6 +213,7 @@ fn notes(ctx: &ScanContext, project: &ProjectDir, memory: &Path, out: &mut ScanO
 mod tests {
     use super::*;
     use crate::harness::import::source::Issue;
+    use std::fs::File;
     use std::time::{Duration, SystemTime};
 
     struct Fixture {
@@ -445,7 +424,8 @@ mod tests {
         f.note("-other", "d.md", "Other project note.");
         f.transcript("-other", &[record(&other)]);
         f.note("-late", "e.md", "Late note.");
-        let filler = json!({"type": "summary", "summary": "x".repeat(SNIFF_BYTES)}).to_string();
+        let filler =
+            json!({"type": "summary", "summary": "x".repeat(SNIFF_BYTES as usize)}).to_string();
         f.transcript("-late", &[filler, record(&f.workspace)]);
         f.note("-mystery", "f.md", "Unknown project note.");
 

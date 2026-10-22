@@ -4,7 +4,7 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use super::store::Store;
+use super::store::{turn_rid, Store};
 use memory_domain::types::MemoryRec;
 
 impl Store {
@@ -46,6 +46,27 @@ impl Store {
             .await?
             .into_iter()
             .next())
+    }
+
+    /// The request a turn was submitted as: the one whose `turnKeys` hold `platform + turn_id`.
+    pub async fn request_for_turn(&self, platform: &str, turn_id: &str) -> Result<Option<Value>> {
+        Ok(self
+            .select(
+                "SELECT * OMIT id FROM requests WHERE turnKeys CONTAINS $key LIMIT 1",
+                vec![("key", json!(turn_rid(platform, turn_id)))],
+            )
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    /// The requests import run `run_id` created by submitting its session turns (`importRunId`), oldest first.
+    pub async fn import_run_requests(&self, run_id: &str) -> Result<Vec<Value>> {
+        self.select(
+            "SELECT * OMIT id FROM requests WHERE importRunId = $run ORDER BY inputSeq ASC",
+            vec![("run", json!(run_id))],
+        )
+        .await
     }
 
     /// Import ledger rows whose `memoryIds` name `memory_id`.
@@ -152,6 +173,35 @@ mod tests {
             "mmmm"
         );
         assert!(store.current_imported("c", T_FACT, "key1").await?.is_none());
+
+        let mut tx = Tx::new();
+        for (id, run, seq, keys) in [
+            ("rq2", Some("ir1"), 2, vec![turn_rid("codex", "p/s/t2")]),
+            ("rq1", Some("ir1"), 1, vec![turn_rid("codex", "p/s/t1")]),
+            ("rq3", None, 3, vec![turn_rid("claude-code", "p/s/t1")]),
+        ] {
+            tx.put(
+                schema::REQUESTS,
+                id,
+                json!({"requestId": id, "importRunId": run, "inputSeq": seq, "turnKeys": keys}),
+            )?;
+        }
+        store.commit(tx).await?;
+        let found = store.request_for_turn("codex", "p/s/t1").await?.unwrap();
+        assert_eq!(found["requestId"], "rq1");
+        let other = store
+            .request_for_turn("claude-code", "p/s/t1")
+            .await?
+            .unwrap();
+        assert_eq!(other["requestId"], "rq3");
+        assert!(store.request_for_turn("codex", "p/s/t3").await?.is_none());
+        let owned: Vec<Value> = store.import_run_requests("ir1").await?;
+        let owned: Vec<&str> = owned
+            .iter()
+            .map(|r| r["requestId"].as_str().unwrap())
+            .collect();
+        assert_eq!(owned, ["rq1", "rq2"]);
+        assert!(store.import_run_requests("ir2").await?.is_empty());
 
         let rows = store.ledger_rows_naming("m").await?;
         assert_eq!(rows.len(), 1);

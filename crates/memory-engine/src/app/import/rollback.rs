@@ -1,19 +1,20 @@
 //! `rollback`: an applied run's writes are undone as logical inverses, newest proposal first, under the formation
 //! lock; a record changed since apply stays, with the reason.
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{
-    count, interrupted, invalid, ledger, ledger_id, load_run, other_units_naming, run_proposals,
-    LedgerRow, EVENT_ROLLBACK,
+    count, count_turns, interrupted, invalid, ledger, ledger_id, load_run, other_units_naming,
+    run_proposals, turns, LedgerRow, EVENT_ROLLBACK,
 };
 use crate::app::consolidation::write_patch;
 use crate::runtime::engine::Engine;
 use crate::runtime::tenant::Tenant;
 use memory_domain::import::apply as plan;
 use memory_domain::import::{
-    ImportProposal, ImportRun, ImportRunReq, APPLIED, ROLLED_BACK, RUN_APPLIED, RUN_APPLYING,
-    RUN_PARTIALLY_ROLLED_BACK, RUN_ROLLED_BACK, RUN_ROLLING_BACK,
+    is_session_turn, ImportProposal, ImportRun, ImportRunReq, APPLIED, ROLLED_BACK, RUN_APPLIED,
+    RUN_APPLYING, RUN_PARTIALLY_ROLLED_BACK, RUN_ROLLED_BACK, RUN_ROLLING_BACK,
 };
 use memory_domain::types::*;
 use memory_rules::util;
@@ -104,7 +105,9 @@ async fn undo(
 /// unlinked, and each unit's ledger row returns to the row it replaced once none of the unit's proposals
 /// stays applied. A proposal stays `applied` with `rollbackSkipReason` when its record was corrected,
 /// merged, disputed or deleted since, when another run's ledger row also names the record, or when a later
-/// run imported the unit again; the run is then `partially_rolled_back` and rollback can be retried.
+/// run imported the unit again; the run is then `partially_rolled_back` and rollback can be retried. Session
+/// turns are closed first (`turns`): the run admits none from then on, and each submitted turn's facts formed
+/// only from the run's own requests are retired; a turn still forming stays applied until a retry.
 pub async fn rollback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: ImportRunReq) -> ApiResult<Value> {
     let _guard = t.lock_formation().await;
     let id = req.run_id.as_str();
@@ -123,19 +126,35 @@ pub async fn rollback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: ImportRunReq) -> 
         )));
     }
     let now = util::now_str();
-    t.store
-        .merge_doc(
-            schema::IMPORT_RUNS,
-            id,
-            json!({"status": RUN_ROLLING_BACK, "rollbackStartedAt": now, "updatedAt": now, "error": null}),
-        )
-        .await?;
+    {
+        // From here on the run admits no more session turns; one admitted before is already a request.
+        let _closed = t.close_import_turns().await;
+        t.store
+            .merge_doc(
+                schema::IMPORT_RUNS,
+                id,
+                json!({"status": RUN_ROLLING_BACK, "rollbackStartedAt": now, "updatedAt": now, "error": null}),
+            )
+            .await?;
+    }
     let mut proposals = run_proposals(t, id).await?;
     proposals.reverse();
+    let owned = if proposals.iter().any(is_session_turn) {
+        match turns::owned_requests(t, id).await {
+            Ok(owned) => owned,
+            Err(e) => return Err(interrupted(t, id, e).await),
+        }
+    } else {
+        HashMap::new()
+    };
     for p in proposals.iter().filter(|p| p.status == APPLIED) {
         let mut tx = Tx::new();
         let now = util::now_str();
-        let bookkeeping = match undo(eng, t, &run, p, &mut tx).await {
+        let undone = match is_session_turn(p) {
+            true => turns::undo(eng, t, &run, p, &owned, &mut tx).await,
+            false => undo(eng, t, &run, p, &mut tx).await,
+        };
+        let bookkeeping = match undone {
             Ok(Ok(inverse)) => json!({"status": ROLLED_BACK, "rollback": inverse,
                 "rolledBackAt": now, "rollbackSkipReason": null}),
             Ok(Err(reason)) => {
@@ -184,6 +203,8 @@ pub async fn rollback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: ImportRunReq) -> 
     let remaining = count(&proposals, APPLIED);
     let mut counts = run.counts.clone();
     counts.rolled_back = count(&proposals, ROLLED_BACK);
+    counts.turns_rolled_back = count_turns(&proposals, ROLLED_BACK);
+    let remaining = remaining + count_turns(&proposals, APPLIED);
     let status = if remaining == 0 {
         RUN_ROLLED_BACK
     } else {

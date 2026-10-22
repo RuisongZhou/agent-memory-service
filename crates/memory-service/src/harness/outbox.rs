@@ -1,6 +1,7 @@
 //! Local dialogue outbox. Hooks only capture into it; an uploader submits jobs in order and
-//! polls their receipts. Uses documented Codex notify / Claude Code hook fields, never private
-//! transcript formats. The SQLite schema is the one `scripts/harness_memory.py` writes.
+//! polls their receipts. Capture uses documented Codex notify / Claude Code hook fields, never private
+//! transcript formats; `agent-memoryd import apply` queues past session turns read from those under the
+//! same turn keys (`enqueue_import`). The SQLite schema is the one `scripts/harness_memory.py` writes.
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Map, Value};
 use std::fs::File;
@@ -80,21 +81,25 @@ fn required<'a>(event: &'a Value, key: &str) -> Result<&'a str, Error> {
     }
 }
 
-/// Python's `quote(part, safe='')`: only unreserved ASCII passes through.
-fn quote(part: &str) -> String {
-    let mut out = String::with_capacity(part.len());
-    for byte in part.bytes() {
-        if byte.is_ascii_alphanumeric() || b"_.-~".contains(&byte) {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
+/// `project/session/native_id`, each part quoted as Python's `quote(part, safe='')`; session import gives a
+/// past turn the same key (`memory_rules::import::units::turn_key`).
+pub fn turn_key(project: &str, session: &str, native_id: &str) -> String {
+    memory_rules::import::units::turn_key(project, session, native_id)
 }
 
-pub fn turn_key(project: &str, session: &str, native_id: &str) -> String {
-    [project, session, native_id].map(quote).join("/")
+/// What [`Outbox::enqueue_import`] found for a turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Queued {
+    /// The turn's job was added.
+    Added,
+    /// The same run queued it before: an interrupted apply resumes.
+    Again,
+    /// Another job holds the turn: live capture (`run` None) or another import run. It is never replaced.
+    Held {
+        run: Option<String>,
+        status: String,
+        request_id: Option<String>,
+    },
 }
 
 fn turn_body(
@@ -181,6 +186,69 @@ impl Outbox {
         enqueue_in(&tx, tenant, platform, body)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Queue a past session turn of the import run its body names (`importRunId`), unless a job of the same turn
+    /// is there already: one live capture queued, or an earlier run's.
+    pub fn enqueue_import(
+        &mut self,
+        tenant: &str,
+        platform: &str,
+        body: &Value,
+    ) -> Result<Queued, Error> {
+        let run = required(body, "importRunId")?.to_string();
+        let turn_id = required(body, "turnId")?.to_string();
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<(String, String, Option<String>)> = tx
+            .query_row(
+                "SELECT body,status,request_id FROM jobs WHERE tenant=?1 AND platform=?2 AND turn_id=?3",
+                params![tenant, platform, turn_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let queued = match existing {
+            None => {
+                enqueue_in(&tx, tenant, platform, body)?;
+                Queued::Added
+            }
+            Some((held, status, request_id)) => {
+                let held_run = serde_json::from_str::<Value>(&held)
+                    .ok()
+                    .and_then(|b| b["importRunId"].as_str().map(str::to_string));
+                match held_run.as_deref() == Some(run.as_str()) {
+                    true => Queued::Again,
+                    false => Queued::Held {
+                        run: held_run,
+                        status,
+                        request_id,
+                    },
+                }
+            }
+        };
+        tx.commit()?;
+        Ok(queued)
+    }
+
+    /// Mark the jobs of import run `run_id` that no uploader has submitted `cancelled`, which no uploader sends;
+    /// returns how many.
+    pub fn cancel_import(&mut self, run_id: &str) -> Result<usize, Error> {
+        Ok(self.db.execute(
+            "UPDATE jobs SET status='cancelled',error='import rolled back' \
+             WHERE status='pending' AND json_extract(body,'$.importRunId')=?1",
+            [run_id],
+        )?)
+    }
+
+    /// Jobs waiting for an uploader (`pending`) or for formation to finish (`accepted`).
+    pub fn backlog(&self) -> Result<usize, Error> {
+        let n: i64 = self.db.query_row(
+            "SELECT count(*) FROM jobs WHERE status IN ('pending','accepted')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
     }
 
     /// A Codex `agent-turn-complete` notification becomes one completed turn.
@@ -636,6 +704,121 @@ mod tests {
     fn turn_keys_quote_every_reserved_character() {
         assert_eq!(turn_key("p", "s 1", "a/b?"), "p/s%201/a%2Fb%3F");
         assert_eq!(turn_key("名", "-_.~", "x"), "%E5%90%8D/-_.~/x");
+    }
+
+    fn imported(run: &str, turn: &str) -> Value {
+        json!({"scope": {"project": "project", "session": "s1"}, "turnId": format!("project/s1/{turn}"),
+               "importRunId": run,
+               "messages": [{"role": "user", "content": "Old prompt.", "timestamp": "2026-01-02T03:04:05Z"},
+                            {"role": "assistant", "content": "Old reply.", "timestamp": "2026-01-02T03:04:09Z"}]})
+    }
+
+    #[test]
+    fn imported_turns_never_replace_a_job_of_the_same_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut o = outbox(&dir);
+        // Live capture queued t1 first.
+        let hook = |name: &str, extra: Value| {
+            let mut e = json!({"hook_event_name": name, "session_id": "s1", "prompt_id": "t1"});
+            e.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            e
+        };
+        o.capture_hook(
+            &hook("UserPromptSubmit", json!({"prompt": "live prompt"})),
+            "project",
+            "default",
+            "claude-code",
+            None,
+        )
+        .unwrap();
+        o.capture_hook(
+            &hook("Stop", json!({"last_assistant_message": "live reply"})),
+            "project",
+            "default",
+            "claude-code",
+            None,
+        )
+        .unwrap();
+        let held = o
+            .enqueue_import("default", "claude-code", &imported("ir1", "t1"))
+            .unwrap();
+        assert_eq!(
+            held,
+            Queued::Held {
+                run: None,
+                status: "pending".into(),
+                request_id: None
+            }
+        );
+        assert_eq!(
+            o.enqueue_import("default", "claude-code", &imported("ir1", "t2"))
+                .unwrap(),
+            Queued::Added
+        );
+        // A resumed apply finds its own job; a later run finds the first run's.
+        assert_eq!(
+            o.enqueue_import("default", "claude-code", &imported("ir1", "t2"))
+                .unwrap(),
+            Queued::Again
+        );
+        assert!(matches!(
+            o.enqueue_import("default", "claude-code", &imported("ir2", "t2")).unwrap(),
+            Queued::Held { run: Some(run), .. } if run == "ir1"
+        ));
+        // Another platform's turn of the same id is a different turn.
+        assert_eq!(
+            o.enqueue_import("default", "codex", &imported("ir1", "t1"))
+                .unwrap(),
+            Queued::Added
+        );
+        let jobs = bodies(&o);
+        assert_eq!(contents(&jobs[0]), ["live prompt", "live reply"]);
+        assert_eq!(contents(&jobs[1]), ["Old prompt.", "Old reply."]);
+        assert_eq!(jobs[1]["sync"], false);
+        assert_eq!(o.backlog().unwrap(), 3);
+        assert!(o
+            .enqueue_import("default", "codex", &json!({"turnId": "x"}))
+            .is_err());
+    }
+
+    #[test]
+    fn rollback_cancels_only_the_runs_unsubmitted_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut o = outbox(&dir);
+        for (run, turn) in [("ir1", "t1"), ("ir1", "t2"), ("ir2", "t3")] {
+            o.enqueue_import("default", "codex", &imported(run, turn))
+                .unwrap();
+        }
+        o.capture_notify(&notify("t4", "reply"), "project", "default", "codex")
+            .unwrap();
+        let first = o.jobs("pending").unwrap()[0].seq;
+        o.accept(first, "rq1").unwrap();
+        assert_eq!(o.cancel_import("ir1").unwrap(), 1);
+        let statuses: Vec<(String, String)> = o
+            .status()
+            .unwrap()
+            .iter()
+            .map(|j| {
+                (
+                    j["turn_id"].as_str().unwrap().into(),
+                    j["status"].as_str().unwrap().into(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                ("project/s1/t1".to_string(), "accepted".to_string()),
+                ("project/s1/t2".into(), "cancelled".into()),
+                ("project/s1/t3".into(), "pending".into()),
+                ("project/s1/t4".into(), "pending".into()),
+            ]
+        );
+        assert_eq!(o.backlog().unwrap(), 3);
+        // The uploader never sends a cancelled job.
+        assert_eq!(o.jobs("pending").unwrap().len(), 2);
     }
 
     #[test]

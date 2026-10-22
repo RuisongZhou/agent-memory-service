@@ -217,8 +217,11 @@ curl -fsS http://127.0.0.1:8765/health          # 健康检查：记忆策略、
 ```
 
 导入的事实来源记为 `imported`，只作为历史参考，自动召回能找到它们；需要人确认的行为要求不会自动写入。读不到存储的平台
-（ChatGPT 等）可以用 `import prompt` 生成一段提示词，让那边的 Agent 导出 JSONL 后再导入。完整说明见
-[导入已有记忆](docs/mcp-harness.md#import-existing-memories)。
+（ChatGPT 等）可以用 `import prompt` 生成一段提示词，让那边的 Agent 导出 JSONL 后再导入。
+
+装上捕获之前的 Claude Code 和 Codex 会话也能导入：`plan` 加 `--include sessions`（可配 `--since`、`--limit`），只取人发出的轮次，
+`apply RUN --yes` 把它们按时间顺序限速写进捕获用的 outbox，像实时捕获的轮次一样形成记忆，已经捕获过的轮次不会重复形成。
+完整说明见 [导入已有记忆](docs/mcp-harness.md#import-existing-memories)。
 
 ### 手动部署与其他平台
 
@@ -235,7 +238,7 @@ curl -fsS http://127.0.0.1:8765/health          # 健康检查：记忆策略、
 | 一键安装的细节、手动接入 Codex / Claude Code / WorkBuddy / DeepSeek Harness、对话捕获与自动召回 | [MCP 与宿主集成](docs/mcp-harness.md) |
 | 请求字段、完成状态、作用域和配置默认值 | [API 与配置](docs/api.md) |
 | 写入与读取路径、存储、实体投影、与 SDK 的差异 | [架构](docs/architecture.md) |
-| 把宿主已有的记忆导入共享记忆（笔记导入已实现，会话导入待做） | [导入已有记忆](docs/mcp-harness.md#import-existing-memories)、[记忆导入设计](docs/design/memory-import.md) |
+| 把宿主已有的记忆和过去的会话导入共享记忆 | [导入已有记忆](docs/mcp-harness.md#import-existing-memories)、[记忆导入设计](docs/design/memory-import.md) |
 | 构建、校验和提交改动 | [贡献指南](CONTRIBUTING.md) |
 | 与 Mem0 SDK 的受控对比和历史评测证据 | [评测](eval/README.md) |
 | 运维与校验脚本清单 | [脚本清单](scripts/README.md) |
