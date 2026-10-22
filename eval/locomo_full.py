@@ -113,7 +113,7 @@ def prepare(root, data, workers):
     manifest = {str(p.relative_to(REPO)): sha(p) for folder in ('crates', 'eval/common')
                 for p in (REPO/folder).rglob('*') if p.is_file() and p.suffix in ('.rs', '.toml', '.txt', '.py')}
     for name in ('eval/locomo_full.py', 'eval/mem0_migration.py', 'eval/mem0_run.py',
-                 'eval/answer_and_judge.py', 'eval/fair_replay.py'):
+                 'eval/answer_and_judge.py'):
         manifest[name] = sha(REPO/name)
     source_path = root/'source-manifest.json'
     if source_path.exists() and json.loads(source_path.read_text()) != manifest:

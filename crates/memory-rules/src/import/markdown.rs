@@ -264,6 +264,7 @@ impl Fence {
 /// relative. An unindented line directly after an item line continues it lazily (CommonMark) unless it starts a
 /// block (heading, fence, thematic break, quote) or another item. After a blank line an unindented line that is no
 /// item marker ends the list, while another marker continues it. Items that are empty after trimming are skipped.
+#[cfg(test)]
 pub fn list_items(text: &str) -> Vec<String> {
     walk(text)
         .into_iter()
@@ -537,6 +538,7 @@ const CLOSERS: [char; 16] = [
 ///
 /// A run of terminators and closing quotes or brackets ("。”", "?!", "...", ".)") ends one sentence together.
 /// Line breaks without a terminator do not split.
+#[cfg(test)]
 pub fn sentences(text: &str) -> Vec<String> {
     sentence_spans(text)
         .into_iter()

@@ -11,6 +11,7 @@ use memory_domain::consolidation::{
 use memory_domain::types::*;
 use memory_engine::runtime::{engine::Engine, instance::Instance, llm::JsonContract};
 use memory_rules::consolidation::NAMED_ENTITY_KINDS;
+use memory_rules::util;
 use memory_store::schema;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -113,7 +114,7 @@ pub async fn snapshot(
         eligible_facts,
         clusters,
         prompt_format: FORMAT.into(),
-        prompt_hash: blake3::hash(SYSTEM.as_bytes()).to_hex().to_string(),
+        prompt_hash: util::hex_hash(SYSTEM),
     })
 }
 
@@ -137,7 +138,7 @@ pub async fn generate(
     }
     sections.push("# Output:".into());
     let input = sections.join("\n\n");
-    let input_hash = blake3::hash(input.as_bytes()).to_hex().to_string();
+    let input_hash = util::hex_hash(&input);
     let reply = eng
         .llm
         .contract_call_logged(
@@ -155,7 +156,7 @@ pub async fn generate(
             schema::EXTRACT_LOG,
             json!({"stage":STAGE,"outputFormat":FORMAT,"project":project,"memoryIds":member_ids,
             "status":"model_completed","output":reply.json,"responseLogId":reply.response_log_id,
-            "systemHash":blake3::hash(SYSTEM.as_bytes()).to_hex().to_string(),"inputHash":input_hash}),
+            "systemHash":util::hex_hash(SYSTEM),"inputHash":input_hash}),
         )
         .await?;
     let real = |id: &str| -> String {

@@ -454,15 +454,11 @@ pub async fn reconcile_locked(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()
             return Ok(());
         }
         let inputs: Vec<_> = facts.values().map(|fact| &fact.doc).collect();
-        let fingerprint = blake3::hash(serde_json::to_string(&inputs)?.as_bytes())
-            .to_hex()
-            .to_string();
+        let fingerprint = util::hex_hash(&serde_json::to_string(&inputs)?);
         let model_matches = prior.as_ref().is_some_and(|state| {
             state["version"] == VERSION && state["embeddingModel"] == eng.models.embed_model_id
         });
-        let prepared_fingerprint = blake3::hash(serde_json::to_string(&facts)?.as_bytes())
-            .to_hex()
-            .to_string();
+        let prepared_fingerprint = util::hex_hash(&serde_json::to_string(&facts)?);
         let manifest_matches = recovery
             && prior.as_ref().is_some_and(|state| {
                 model_matches

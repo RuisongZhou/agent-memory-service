@@ -22,11 +22,10 @@ and [SQLite vector/BM25 store](https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem
 | Crate | Responsibility | Workspace dependencies |
 |---|---|---|
 | `memory-rules` | Pure message formatting, identity, entity, scoring, time, dependency and consolidation rules | none |
-| `memory-fulltext` | Lexical and entity indexing | none |
 | `memory-config` | Startup configuration and validation | none |
 | `memory-domain` | Records, request types, errors and pure integrity and consolidation planners | rules |
 | `memory-store` | SurrealDB transactions, repositories, revisions and integrity glue | domain, rules |
-| `memory-engine` | The store, workers, model clients, context and application operations | config, domain, store, rules, fulltext |
+| `memory-engine` | The store, workers, model clients, context and application operations | config, domain, store, rules |
 | `memory-algo-mem0` | Formation, search, entity projection, consolidation prompt and ordered worker | engine and its dependencies |
 | `memory-service` | HTTP/MCP, composition, diagnostics and daemon | service layers |
 
@@ -118,7 +117,7 @@ first matches normalized text exactly, then existing visible entities at cosine 
 entities in one batch do not semantically merge with each other. Formation position preserves batch
 order; older records without it use stable ID order, which cannot recover lost original ordering.
 
-Primary records are durable; entity/vector/full-text indexes are rebuildable. Projection rows and their
+Primary records are durable; entity and vector indexes are rebuildable. Projection rows and their
 state marker publish atomically after checking the dependency revision under the store write lock.
 Failed projection work leaves the request at `indexing`, never at a false completed checkpoint.
 
@@ -332,7 +331,7 @@ records `error` and resumes.
 | Question | Entry point |
 |---|---|
 | Where are HTTP requests dispatched? | [api/http.rs](../crates/memory-service/src/api/http.rs) |
-| How are inputs admitted and instructions routed? | [app/ingest.rs](../crates/memory-engine/src/app/ingest.rs), [app/admission.rs](../crates/memory-engine/src/app/admission.rs) |
+| How are inputs admitted and instructions routed? | [app/ingest.rs](../crates/memory-engine/src/app/ingest.rs) |
 | How are inputs queued, extracted and published? | [formation.rs](../crates/memory-algo-mem0/src/formation.rs), [runtime.rs](../crates/memory-algo-mem0/src/runtime.rs) |
 | Where are candidate and hybrid scoring rules? | [retrieval.rs](../crates/memory-algo-mem0/src/retrieval.rs), [mem0_hybrid.rs](../crates/memory-rules/src/mem0_hybrid.rs) |
 | How does entity recovery work? | [entities.rs](../crates/memory-algo-mem0/src/entities.rs), [repo.rs](../crates/memory-algo-mem0/src/repo.rs) |

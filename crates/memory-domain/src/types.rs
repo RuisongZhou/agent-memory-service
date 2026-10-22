@@ -217,7 +217,7 @@ pub struct TurnRec {
     #[serde(default)]
     pub extracted_at: Option<String>,
     pub digest: String,
-    /// texts of facts derived from this turn (merged into the full-text key after extraction, 3.4)
+    /// texts of facts derived from this turn (3.4)
     #[serde(default)]
     pub derived_text: String,
     #[serde(default)]
@@ -247,15 +247,6 @@ pub struct TurnChunk {
 }
 
 impl TurnRec {
-    pub fn full_text(&self) -> String {
-        let mut s = format!("{}\n{}", self.user_message, self.assistant_message);
-        if !self.derived_text.is_empty() {
-            s.push('\n');
-            s.push_str(&self.derived_text);
-        }
-        s
-    }
-
     pub fn message(&self, role: &str) -> &str {
         if role == "user" {
             &self.user_message
@@ -341,16 +332,6 @@ pub struct EvidenceRec {
 pub struct EvidenceContext {
     pub span: String,
     pub stated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct EntityRec {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub aliases: Vec<String>,
-    pub scope: MemScope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -3,7 +3,6 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::store::Store;
-use memory_domain::types::EntityRec;
 
 impl Store {
     /// Every document of `table` without its record id (admin export, usage totals).
@@ -20,12 +19,6 @@ impl Store {
             .iter()
             .filter_map(|r| r.get("mid").and_then(|v| v.as_str()).map(str::to_string))
             .collect())
-    }
-
-    /// The entity dictionary.
-    pub async fn entities(&self) -> Result<Vec<EntityRec>> {
-        self.select_as("SELECT * OMIT id FROM entities", vec![])
-            .await
     }
 
     /// Number of logged searches that returned a gap (a `count`, or `0` when there are none).

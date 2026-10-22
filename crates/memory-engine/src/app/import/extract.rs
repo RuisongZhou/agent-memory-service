@@ -37,7 +37,7 @@ fn output_budget(note: &str) -> u32 {
 
 /// blake3 hex of the system prompt: the prompt identity on runs and in the extraction cache key.
 pub fn prompt_hash() -> String {
-    blake3::hash(SYSTEM.as_bytes()).to_hex().to_string()
+    util::hex_hash(SYSTEM)
 }
 
 /// Contract check of the shape only: `{"memories": [...]}` and nothing else, each item an object with exactly
@@ -152,7 +152,7 @@ pub(super) async fn extract(
         existing,
         eng.cfg.prompt_variant == "zh",
     );
-    let input_hash = blake3::hash(input.as_bytes()).to_hex().to_string();
+    let input_hash = util::hex_hash(&input);
     let reply = eng
         .llm
         .contract_call_logged(

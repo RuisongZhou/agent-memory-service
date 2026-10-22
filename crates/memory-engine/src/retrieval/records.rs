@@ -44,67 +44,6 @@ impl<'a> Loader<'a> {
         self.cache.insert(id.to_string(), m.clone());
         Ok(m)
     }
-    pub async fn get_many(&mut self, ids: &[String]) -> Result<()> {
-        let missing: Vec<String> = ids
-            .iter()
-            .filter(|i| !self.cache.contains_key(*i) && safe_id(i).is_ok())
-            .cloned()
-            .collect();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        for m in self.t.store.get_memories(&missing).await? {
-            self.cache.insert(m.id.clone(), Some(m));
-        }
-        for id in missing {
-            self.cache.entry(id).or_insert(None);
-        }
-        Ok(())
-    }
-
-    /// Last node of the chain reachable forward from `m` (via supersededBy) that the caller can see.
-    /// Active memories are normally the head already; this handles chains that cross scopes (5.3 step 4).
-    pub async fn visible_head(&mut self, m: &MemoryRec, vis: &Vis) -> Result<MemoryRec> {
-        let mut best = m.clone();
-        let mut cur = m.clone();
-        let mut seen = HashSet::from([m.id.clone()]);
-        for _ in 0..MAX_CHAIN_HOPS {
-            let Some(next_id) = cur.superseded_by.clone() else {
-                break;
-            };
-            if !seen.insert(next_id.clone()) {
-                break;
-            }
-            let Some(next) = self.get(&next_id).await? else {
-                break;
-            };
-            if vis.sees(&next.scope) {
-                best = next.clone();
-            }
-            cur = next;
-        }
-        Ok(best)
-    }
-
-    /// Chain key: the last node reachable forward (visible or not) — identical for every node of a chain.
-    pub async fn chain_key(&mut self, m: &MemoryRec) -> Result<String> {
-        let mut cur = m.clone();
-        let mut seen = HashSet::from([m.id.clone()]);
-        for _ in 0..MAX_CHAIN_HOPS {
-            let Some(next_id) = cur.superseded_by.clone() else {
-                break;
-            };
-            if !seen.insert(next_id.clone()) {
-                break;
-            }
-            match self.get(&next_id).await? {
-                Some(n) => cur = n,
-                None => break,
-            }
-        }
-        Ok(cur.id)
-    }
-
     /// Older values of `m` (nearest first) with their validity end (`validUntil` = the next value's
     /// effectiveAt); invisible nodes are skipped (chains crossing scopes). Stops after `max` visible nodes.
     pub async fn older(

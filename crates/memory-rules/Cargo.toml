@@ -8,5 +8,5 @@ description = "Pure temporal, identifier and memory revision planning rules"
 
 [dependencies]
 blake3 = "1"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = "0.4"
 regex = "1"

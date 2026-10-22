@@ -6,7 +6,7 @@
 //!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
 //!   agent-memoryd import plan | propose | show | apply | status | rollback | prompt ...   (a host's existing memories)
 //!   agent-memoryd service install | uninstall | status ...     (LaunchAgent / systemd user unit for serve)
-//!   agent-memoryd reindex --vector | --fulltext | --all [--url ...]
+//!   agent-memoryd reindex --vector | --all [--url ...]
 //!   agent-memoryd consolidate --project P --dry-run | --apply RUN | --rollback RUN [--url ...]
 use clap::{error::ErrorKind, Parser, Subcommand};
 use memory_service::harness::{self, import::ImportCmd, outbox::Outbox, HookCmd, OutboxCmd};
@@ -105,14 +105,12 @@ enum Cmd {
     /// Run storage self-tests
     #[cfg(feature = "selftest")]
     Selftest,
-    /// Trigger an index rebuild on a running daemon
+    /// Re-embed every record on a running daemon (`--vector` and `--all` are the same)
     Reindex {
         #[arg(long, default_value = "http://127.0.0.1:8765")]
         url: String,
         #[arg(long)]
         vector: bool,
-        #[arg(long)]
-        fulltext: bool,
         #[arg(long)]
         all: bool,
     },
@@ -303,18 +301,11 @@ fn main() -> anyhow::Result<()> {
             Cmd::Outbox(cmd) => std::process::exit(harness::outbox(cmd).await),
             Cmd::Import(cmd) => std::process::exit(harness::import::run(cmd).await),
             Cmd::Service(cmd) => std::process::exit(service::run(cmd).await),
-            Cmd::Reindex {
-                url,
-                vector,
-                fulltext,
-                all,
-            } => {
-                anyhow::ensure!(vector || fulltext || all, "select --vector, --fulltext or --all");
-                let body =
-                    serde_json::json!({"vector": vector || all, "fulltext": fulltext || all});
+            Cmd::Reindex { url, vector, all } => {
+                anyhow::ensure!(vector || all, "select --vector or --all");
                 let resp = reqwest::Client::new()
                     .post(format!("{}/admin/reindex", url.trim_end_matches('/')))
-                    .json(&body)
+                    .json(&serde_json::json!({}))
                     .send()
                     .await?
                     .error_for_status()?;

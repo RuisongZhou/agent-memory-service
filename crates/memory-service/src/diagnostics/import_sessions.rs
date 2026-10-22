@@ -4,7 +4,7 @@
 //! also formed. One part goes through two dialogue outboxes and the in-process uploader: a turn captured live
 //! and then imported comes back `duplicate:true`. No external model call.
 use super::consolidation::generation_stub;
-use super::{fresh_store, memory};
+use super::{fresh_store, llm_calls, memory};
 use crate::harness::import::client::run_view;
 use crate::harness::import::commands::{queue_turns, Pace, Queue};
 use crate::harness::outbox::{drain_once, Outbox};
@@ -15,7 +15,6 @@ use memory_domain::types::*;
 use memory_engine::app::{import, ingest};
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::instance::Instance;
-use memory_engine::runtime::{llm::Llm, models::ModelHub};
 use memory_rules::import::units::{content_hash, turn_key, unit_key};
 use memory_store::schema;
 use serde_json::{json, Value};
@@ -120,10 +119,6 @@ async fn fact(t: &Instance, text: &str) -> MemoryRec {
         .unwrap_or_else(|| panic!("no current fact {text:?}"))
 }
 
-fn calls(eng: &Engine) -> u64 {
-    eng.llm.usage_snapshot()["calls"].as_u64().unwrap()
-}
-
 pub async fn selftest() {
     let url = generation_stub().await;
     let eng = super::consolidation::engine(&url, false);
@@ -165,7 +160,7 @@ pub async fn selftest() {
     }
 
     // ---- 1. propose registers the turns without a model call
-    let before = calls(&eng);
+    let before = llm_calls(&eng);
     let out = propose(
         &eng,
         &t,
@@ -180,7 +175,7 @@ pub async fn selftest() {
         (&json!(4), &json!(0)),
         "{run}"
     );
-    assert_eq!(calls(&eng), before, "registering turns calls no model");
+    assert_eq!(llm_calls(&eng), before, "registering turns calls no model");
     assert!(run["units"]
         .as_array()
         .unwrap()
@@ -405,13 +400,7 @@ async fn through_outboxes(url: &str) {
         data_dir: dir.join("data"),
         ..Default::default()
     };
-    let strategy = cfg.memory_strategy;
-    let eng = Engine::new(
-        cfg,
-        Llm::new(url, "stub", "stub-model", 2, 10).unwrap(),
-        ModelHub::mock(),
-        crate::algorithms::select(strategy),
-    );
+    let eng = super::stub_engine(cfg, url);
     let t = eng.store().await.unwrap();
     let sender = InProcess(eng.clone());
 

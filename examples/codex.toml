@@ -1,8 +1,0 @@
-# Merge into user-level ~/.codex/config.toml, or a trusted project's .codex/config.toml.
-# Replace /absolute/path with your checkout. Dialogue capture uses the hooks in codex.hooks.json;
-# notify stays free for other programs.
-
-[mcp_servers.shared-memory]
-command = "/absolute/path/agent-memory-service/target/fast/agent-memoryd"
-args = ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "codex"]
-tool_timeout_sec = 180

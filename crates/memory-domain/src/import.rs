@@ -30,7 +30,6 @@ pub const ITEM_SESSION_TURN: &str = "session-turn";
 /// applied, and an interrupted apply or rollback resumes from its in-progress status.
 pub const RUN_PROPOSING: &str = "proposing";
 pub const RUN_PROPOSED: &str = "proposed";
-pub const RUN_FAILED: &str = "failed";
 pub const RUN_APPLYING: &str = "applying";
 pub const RUN_APPLIED: &str = "applied";
 pub const RUN_ROLLING_BACK: &str = "rolling_back";

@@ -49,15 +49,15 @@ are edited in that file; the service reads it at each start.
 
 The binary, env file and service are shared: a later run for another platform reuses them, so only the
 first run asks for the key. A rerun replaces the binary when the build changed and then restarts the
-service. An installed service keeps its data directory, env file, port, concurrency and generation
-guard; only its binary changes, and capture adds `--outbox`. A unit that `service install` did not write
+service. An installed service keeps its data directory, env file, port and concurrency; only its binary
+changes, and capture adds `--outbox`. A unit that `service install` did not write
 and a daemon started by hand are left alone and used as they are. `--no-service` registers the platform
 only, as for a daemon you run yourself; the installer then needs no key. A `--url` other than a loopback
 `http://` URL with a port is never served by the installed service.
 
 Requirements: macOS or Linux (on Windows, WSL), a checkout of this repository, Python 3.11+ to run the
 installer itself (the only component that needs Python), Rust/Cargo to build the binary unless
-`--binary` is given, and a model API key unless `--no-service` is given. The bridge, the hooks and
+`--binary` is given, and a model API key unless `--no-service` is given. The MCP bridge and the
 hooks all run `agent-memoryd`, so the agent host needs no Python. Run from the checkout:
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
@@ -473,12 +473,10 @@ echo '{"hook_event_name":"SessionStart","session_id":"manual-check"}' | \
 ### Migrate from the Python hook scripts
 
 Installers before `agent-memoryd hook` wrote hooks that run `scripts/harness_memory.py` and
-`scripts/harness_recall.py` with Python 3.11. Those scripts stay in the repository with the same
-contracts, outbox and recall record, so existing entries keep working; deleting them would make Python
-exit 2 and block prompts. Rerun the installer with the same options to replace every entry with
-`agent-memoryd hook` commands. A Python `drain` and a daemon started with `--outbox` exclude each other
-through the outbox lock, so either can finish the queue the other started; stop the Python uploader
-once the daemon uploads.
+`scripts/harness_recall.py` with Python 3.11. Those scripts are no longer in the repository, so after an
+update such a hook makes Python exit 2, which blocks prompts. Rerun the installer with the same options:
+it recognizes these entries and replaces them with `agent-memoryd hook` commands. The daemon keeps using
+the existing outbox and recall record; stop a separately running Python uploader.
 
 ## Import existing memories
 
@@ -595,12 +593,11 @@ captured turns. Propose a plan in parts if that matters.
 |---|---|
 | Installer refuses to write | Read the `[error]` line: it names the conflicting entry; nothing was changed. Fix it or edit the configuration by hand as in the sections above |
 | MCP is listed but calls fail | Check daemon `/health`, absolute binary path, port, and stdio transport; the bridge does not start the daemon |
-| Codex captures no turns | Trust the `UserPromptSubmit`, `Stop` and `SessionEnd` collector hooks in `/hooks` (again after the command changed), start a new turn, verify the `agent-memoryd` path, and inspect the selected outbox |
-| A Codex collector or recall hook is skipped | Review/trust Codex hooks with `/hooks`; restart the client after edits |
+| Codex captures no turns | Trust the `UserPromptSubmit`, `Stop` and `SessionEnd` collector hooks in `/hooks` (again after the command changed), restart the client after edits, start a new turn, verify the `agent-memoryd` path, and inspect the selected outbox |
 | Claude Stop pairing fails | Start a new turn with capture hooks installed; verify required event fields and the matching project/platform |
 | Outbox stays `pending` | Start the daemon with `--outbox` (or run `outbox drain`) on the same outbox path; inspect `outbox status` errors |
 | Outbox stays `accepted` | Query `get_task`; inspect provider failures and unfinished index publication |
-| Uploader reports a lock error, or the daemon log says another uploader holds the outbox lock | Another uploader (a Python `drain`, `outbox drain` or a second daemon) holds the same outbox lock; keep one per queue |
+| Uploader reports a lock error, or the daemon log says another uploader holds the outbox lock | Another uploader (`outbox drain` or a second daemon) holds the same outbox lock; keep one per queue |
 | DeepSeek Harness lists no `mcp__shared-memory__*` tools | Restart it and start a new session; rerun the installer, which reports whether `dsh --dump-config` reads the row; check the daemon URL |
 | Cross-agent recall is empty | Check the same daemon, project IDs, record scope, completion state, token budget, and explicit cross-platform raw-input scope |
 | Automatic recall injects nothing | Check the daemon at the loopback `--url`, trust the recall hooks in Codex, and run the hook by hand as in [automatic recall](#automatic-recall); stderr names the error type |

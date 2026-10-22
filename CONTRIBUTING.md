@@ -11,10 +11,11 @@ script tests (with pytest) and evaluation.
 ## Checks
 
 For changes to service behavior, run the existing local/CI workflow. None of it needs the evaluation environment
-or the dataset; `test-scripts` needs only pytest (`python3 -m pip install pytest`):
+or the dataset; `test-scripts` needs only pytest (`python3 -m pip install pytest`), and its hook tests run the
+binary that `build` produces (they are skipped without it):
 
 ```sh
-make fmt test-workspace test-scripts build selftest smoke install-check
+make fmt test-workspace build test-scripts selftest smoke install-check
 make check-arch check-public
 ```
 

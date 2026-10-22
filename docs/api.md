@@ -131,7 +131,7 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /admin/wait_idle` | Drain formation/index work and report remaining or failed requests |
 | `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs |
 | `POST /admin/export` | Read memories or selected audit tables of the store; not a full backup |
-| `POST /admin/reindex` | Queue vector/full-text rebuild; CLI requires `--all`, `--vector` or `--fulltext` |
+| `POST /admin/reindex` | Queue a vector rebuild (re-embed every record); CLI requires `--all` or `--vector` |
 | `POST /admin/consolidate` | Propose consolidation ops for one project and store the run; requires `consolidationEnabled` and `dryRun:true` |
 | `POST /admin/consolidation_apply` | Apply a proposed run's ops, one transaction per op; requires `consolidationEnabled` |
 | `POST /admin/consolidation_rollback` | Undo an applied run's ops, newest first; ops changed since stay applied |

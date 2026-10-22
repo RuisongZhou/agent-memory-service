@@ -1,7 +1,6 @@
 //! Shared context assembly over authoritative records and explicit instructions.
 use super::{
     records::{latest_profile, Loader},
-    scoring::pack_prefix,
     visibility::Vis,
 };
 use crate::runtime::{engine::Engine, instance::Instance};
@@ -366,4 +365,17 @@ pub(crate) async fn assemble_context(
         "tokensUsed": used,
         "retrievalId": retrieval_id,
     }))
+}
+
+/// Prefix packing for get_context parts (5.4 "从最旧的一条开始舍弃"): items are newest first; keep the newest
+/// prefix that fits. Returns the number of items kept and their cost.
+fn pack_prefix(costs: &[usize], cap: usize) -> (usize, usize) {
+    let mut used = 0;
+    for (i, &c) in costs.iter().enumerate() {
+        if used + c > cap {
+            return (i, used);
+        }
+        used += c;
+    }
+    (costs.len(), used)
 }

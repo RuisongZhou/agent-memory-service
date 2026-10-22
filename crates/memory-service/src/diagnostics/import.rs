@@ -4,7 +4,7 @@
 //! another unit, a unit imported by another run after propose, rollback with a corrected record kept, and
 //! the extraction cache. No external model call.
 use super::consolidation::{engine, generation_stub};
-use super::{fresh_store, memory};
+use super::{fresh_store, llm_calls, memory};
 use memory_algo_mem0::{HASHES, SOURCES};
 use memory_domain::import::*;
 use memory_domain::types::*;
@@ -99,10 +99,6 @@ fn run_req(run_id: &str, decisions: &[(&str, &str)]) -> ImportRunReq {
     }
 }
 
-fn calls(eng: &Engine) -> u64 {
-    eng.llm.usage_snapshot()["calls"].as_u64().unwrap()
-}
-
 fn find<'a>(proposals: &'a Value, text: &str) -> &'a Value {
     proposals
         .as_array()
@@ -170,7 +166,7 @@ pub async fn selftest() {
     ));
 
     // ---- 1. one run proposed in two batches
-    let before = calls(&eng);
+    let before = llm_calls(&eng);
     let mut units = plan();
     let second = units.split_off(3);
     let first = propose(&eng, &t, None, false, units).await;
@@ -196,7 +192,7 @@ pub async fn selftest() {
         (&json!(9), &json!(2), &json!(2), &json!(1), &json!(0)),
         "{run}"
     );
-    assert_eq!(calls(&eng) - before, 1, "one generation call");
+    assert_eq!(llm_calls(&eng) - before, 1, "one generation call");
     assert_eq!(out["units"][1]["index"], 4);
     let mut proposals = first["proposals"].as_array().unwrap().clone();
     proposals.extend(out["proposals"].as_array().unwrap().iter().cloned());
@@ -390,7 +386,7 @@ pub async fn selftest() {
     assert!(found["tokensUsed"].as_u64().unwrap() <= 400);
 
     // ---- 3. the same units again: all unchanged, nothing to propose, no model call
-    let before = calls(&eng);
+    let before = llm_calls(&eng);
     let same = propose(&eng, &t, None, true, plan()).await;
     assert!(
         same["units"]
@@ -403,7 +399,7 @@ pub async fn selftest() {
     assert_eq!(same["proposals"], json!([]));
     assert_eq!(same["run"]["counts"]["unchanged"], 5);
     assert_eq!(same["run"]["counts"]["generationCalls"], 0);
-    assert_eq!(calls(&eng), before);
+    assert_eq!(llm_calls(&eng), before);
 
     // ---- 4. a changed verbatim unit replaces its record; 5. another unit duplicates an imported text.
     // A changed split unit keeps one piece: a duplicate of its own record, linked by default.
@@ -555,7 +551,7 @@ pub async fn selftest() {
     assert_eq!(ledger[0]["memoryIds"], json!([feedback]));
 
     // ---- 7. proposing the extract unit again reuses the cached extraction
-    let before = calls(&eng);
+    let before = llm_calls(&eng);
     let again = propose(
         &eng,
         &t,
@@ -568,7 +564,7 @@ pub async fn selftest() {
     assert_eq!(again["units"][0]["cached"], true);
     assert_eq!(again["run"]["counts"]["cacheHits"], 1);
     assert_eq!(again["run"]["counts"]["generationCalls"], 0);
-    assert_eq!(calls(&eng), before);
+    assert_eq!(llm_calls(&eng), before);
     assert_eq!(again["proposals"].as_array().unwrap().len(), 3);
     assert_eq!(find(&again["proposals"], FACT)["duplicateOf"], Value::Null);
 
@@ -868,7 +864,7 @@ pub async fn repeated_runs() {
 
     // ---- the extraction cache key covers the limits; a reply with no usable item is not cached
     const QUEUE: &str = "- The orbit queue drains every hour.";
-    let before = calls(&eng);
+    let before = llm_calls(&eng);
     round(
         &eng,
         &t,
@@ -879,7 +875,7 @@ pub async fn repeated_runs() {
         none,
     )
     .await;
-    assert_eq!(calls(&eng) - before, 1);
+    assert_eq!(llm_calls(&eng) - before, 1);
     round(
         &eng,
         &t,
@@ -890,7 +886,7 @@ pub async fn repeated_runs() {
         none,
     )
     .await;
-    assert_eq!(calls(&eng) - before, 1, "same input: cached");
+    assert_eq!(llm_calls(&eng) - before, 1, "same input: cached");
     let wide = ImportLimits {
         recall_budget: 2000,
         recall_top_k: 2,
@@ -905,9 +901,9 @@ pub async fn repeated_runs() {
         none,
     )
     .await;
-    assert_eq!(calls(&eng) - before, 2, "other limits: extracted again");
+    assert_eq!(llm_calls(&eng) - before, 2, "other limits: extracted again");
     const SENSOR: &str = "- The TRAP sensor reports orbit drift.";
-    let before = calls(&eng);
+    let before = llm_calls(&eng);
     round(
         &eng,
         &t,
@@ -928,7 +924,7 @@ pub async fn repeated_runs() {
         none,
     )
     .await;
-    assert_eq!(calls(&eng) - before, 2, "every item failed: not cached");
+    assert_eq!(llm_calls(&eng) - before, 2, "every item failed: not cached");
 
     // ---- instructions: project scope unless a person chooses global; the instruction limits apply
     const DEPLOY: &str = "Always tag orbit releases before deploying.";

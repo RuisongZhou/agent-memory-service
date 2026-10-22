@@ -15,13 +15,30 @@ use std::sync::Arc;
 
 /// Engine with mock embeddings and an unreachable LLM, so a self-test can never make a model call.
 pub(crate) fn engine(cfg: ServiceConfig) -> Arc<Engine> {
+    engine_with(
+        cfg,
+        Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
+    )
+}
+
+/// Engine with mock embeddings whose generation calls go to the local stub at `url`.
+pub(crate) fn stub_engine(cfg: ServiceConfig, url: &str) -> Arc<Engine> {
+    engine_with(cfg, Llm::new(url, "stub", "stub-model", 2, 10).unwrap())
+}
+
+fn engine_with(cfg: ServiceConfig, llm: Llm) -> Arc<Engine> {
     let strategy = cfg.memory_strategy;
     Engine::new(
         cfg,
-        Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
+        llm,
         ModelHub::mock(),
         crate::algorithms::select(strategy),
     )
+}
+
+/// Generation calls the engine has made.
+pub(crate) fn llm_calls(eng: &Engine) -> u64 {
+    eng.llm.usage_snapshot()["calls"].as_u64().unwrap()
 }
 
 /// A store in a fresh temporary directory, with a caller on `platform`.

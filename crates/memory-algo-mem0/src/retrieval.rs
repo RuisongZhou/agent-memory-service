@@ -68,7 +68,9 @@ pub async fn dense_with_vector(
         let mut k = limit * 2;
         let mut hits = Vec::new();
         for attempt in 0..3 {
-            hits = memory_engine::retrieval::vector::hnsw_search(t, query, k)
+            hits = t
+                .store
+                .nearest_memories(query, k)
                 .await?
                 .into_iter()
                 .filter(|(id, _)| ids.contains(id))

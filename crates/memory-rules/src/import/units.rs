@@ -227,7 +227,7 @@ fn cut_bytes(text: &str, max_bytes: usize) -> Vec<String> {
 
 /// blake3 hex of the exact text.
 pub fn content_hash(text: &str) -> String {
-    blake3::hash(text.as_bytes()).to_hex().to_string()
+    crate::util::hex_hash(text)
 }
 
 /// Exact-deduplication key of an imported record: blake3 hex over length-prefixed `project`, the text trimmed with
@@ -257,7 +257,7 @@ pub fn turn_key(project: &str, session: &str, native_id: &str) -> String {
     [project, session, native_id].map(quote).join("/")
 }
 
-/// Python's `quote(part, safe='')`, as the dialogue outbox and `scripts/harness_memory.py` quote turn keys.
+/// Python's `quote(part, safe='')`, as the dialogue outbox quotes turn keys.
 fn quote(part: &str) -> String {
     let mut out = String::with_capacity(part.len());
     for byte in part.bytes() {

@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use memory_config::ServiceConfig;
 use memory_domain::types::*;
 use memory_engine::app::{consolidation, ingest, management};
-use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub};
+use memory_engine::runtime::engine::Engine;
 use memory_store::schema;
 use memory_store::store::Tx;
 use serde_json::{json, Value};
@@ -103,13 +103,7 @@ pub(crate) fn engine(url: &str, enabled: bool) -> Arc<Engine> {
         consolidation_enabled: enabled,
         ..Default::default()
     };
-    let strategy = cfg.memory_strategy;
-    Engine::new(
-        cfg,
-        Llm::new(url, "stub", "stub-model", 2, 10).unwrap(),
-        ModelHub::mock(),
-        crate::algorithms::select(strategy),
-    )
+    super::stub_engine(cfg, url)
 }
 
 pub(crate) async fn add(

@@ -19,9 +19,6 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
-      # Service script tests run before the evaluation setup: they need neither its packages nor the dataset.
-      - run: python3 -m pip install pytest==9.1.1
-      - run: make test-scripts
       - run: make setup
       - run: make test
       - run: make check-public
@@ -36,8 +33,9 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - run: make fmt test-workspace build selftest install-check
-      - run: python3 scripts/http_smoke.py --bin target/fast/agent-memoryd --output results/http-smoke.json
-      - run: python3 scripts/mem0_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-http-smoke.json
-      - run: python3 scripts/mem0_history_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-history-http-smoke.json
-      - run: python3 scripts/mem0_hybrid_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-hybrid-http-smoke.json
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      # Service scripts need neither the evaluation packages nor the dataset; the hook tests need the built daemon.
+      - run: python3 -m pip install pytest==9.1.1
+      - run: make fmt test-workspace build selftest install-check smoke test-scripts
