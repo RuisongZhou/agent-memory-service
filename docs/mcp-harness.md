@@ -58,11 +58,11 @@ only, as for a daemon you run yourself; the installer then needs no key. A `--ur
 Requirements: macOS or Linux (on Windows, WSL), a checkout of this repository, Python 3.11+ to run the
 installer itself (the only component that needs Python), Rust/Cargo to build the binary unless
 `--binary` is given, and a model API key unless `--no-service` is given. The bridge, the hooks and
-`notify` all run `agent-memoryd`, so the agent host needs no Python. Run from the checkout:
+hooks all run `agent-memoryd`, so the agent host needs no Python. Run from the checkout:
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
 |---|---|---|---|---|
-| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]` and `notify`, [wrapping](#codex-notifications-and-session-end) a notify program already there; `~/.codex/hooks.json`: `SessionEnd` | `notify` on each completed turn; `SessionEnd` close marker | Restart Codex; trust the `SessionEnd` hook in `/hooks` (App: Settings → Hooks) |
+| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]`; `~/.codex/hooks.json`: `UserPromptSubmit`, `Stop`, `SessionEnd` | [Hooks](#codex-hooks) paired by `turn_id`; `notify` is left to other programs | Restart Codex; trust the three collector hooks in `/hooks` (App: Settings → Hooks); nothing is captured before that |
 | Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project` | `<project>/.mcp.json` and `<project>/.claude/settings.local.json`; `--scope user`: `~/.claude.json` and `~/.claude/settings.json` | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; approve the project MCP server (`/mcp`) |
 | WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
 | DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness); `--project` is refused | Restart DeepSeek Harness and start a new session |
@@ -83,7 +83,7 @@ outbox:
 "$HOME/.local/bin/agent-memoryd" outbox drain --url http://127.0.0.1:8765
 ```
 
-Capture and recall commands fix `--project`. Codex `notify`, WorkBuddy hooks and Claude Code `--scope user` are
+Capture and recall commands fix `--project`. Codex hooks, WorkBuddy hooks and Claude Code `--scope user` are
 user-level, so every session on that platform is filed under that project; Claude Code's default project
 scope binds one project directory. Use the same `--project` and `--tenant` on every platform that should
 share memory, and add the [shared memory workflow](#shared-memory-workflow) to `AGENTS.md`/`CLAUDE.md`.
@@ -118,8 +118,7 @@ reaches a model provider or the real store:
 2. With capture, platform-shaped events run through the installed collector command into a temporary
    outbox; the temporary daemon's own uploader (`serve --outbox`) submits them; a local generation stub
    forms one fact; the bridge finds it with `search_memories` under the configured tenant and project.
-   When the Codex `notify` wraps a program of yours, a stand-in takes that program's place and must
-   receive the event; the check never runs your program.
+   Codex's events include a turn that ends without a final message, which must queue nothing.
 3. With recall (after forming the fact through the bridge when capture is off), platform-shaped
    `SessionStart` and `UserPromptSubmit` events run through the installed recall command. Each output
    must be one JSON object of the shape Codex's hook schema allows, and both injected contexts must
@@ -145,9 +144,7 @@ as the installer's only when it runs `agent-memoryd hook capture`, `codex-notify
 the Python script an earlier installer wrote instead (see [migration](#migrate-from-the-python-hook-scripts)),
 so a dispatcher that forwards to them stays yours. Reruns with the same options write nothing, and a file
 that removing the installer's entries leaves empty is deleted. The installer refuses, without writing, a different server already named
-`shared-memory`, a Codex `notify` that is not a command array or that already runs the collector through a
-program of yours (edit it yourself or use `--no-capture`), Codex hooks defined under `[hooks]` in
-`config.toml`, TOML forms it cannot edit safely,
+`shared-memory`, Codex hooks defined under `[hooks]` in `config.toml`, TOML forms it cannot edit safely,
 symlinked configuration files, a Claude Code local-scope `shared-memory` for the workspace, which
 would take precedence, and a DeepSeek Harness `cordis.patch.yml` that is not a plain top-level YAML list,
 has damaged installer markers or already holds another `shared-memory` row. It cannot see a trusted
@@ -201,7 +198,7 @@ MEMORY_TENANT = "default"
 
 Use either registration method for this server and preserve existing settings. Local Codex clients share MCP configuration on the same host; project configuration requires a trusted project. Restart/reload the client after changing its configuration, inspect `/mcp` in the CLI, and confirm the eight tools in the [API reference](api.md#interfaces) are available. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
-Add the [shared memory workflow](#shared-memory-workflow) to the target project's `AGENTS.md`. For automatic capture, follow the separate [Codex notification setup](#codex-notifications-and-session-end). A local stdio setup requires the executable and daemon to be reachable from the host running the client; a cloud container has its own loopback address.
+Add the [shared memory workflow](#shared-memory-workflow) to the target project's `AGENTS.md`. For automatic capture, follow the separate [Codex hooks setup](#codex-hooks). A local stdio setup requires the executable and daemon to be reachable from the host running the client; a cloud container has its own loopback address.
 
 ## Use with Claude Code
 
@@ -305,39 +302,36 @@ To verify sharing, save that project instruction in Codex, then ask Claude Code 
 
 ## Automatically save conversations
 
-Automatic saving requires **both a collector and a running uploader**. The collector (`agent-memoryd hook capture`, or `hook codex-notify` for Codex) captures completed user/assistant text into a local durable queue without waiting for the daemon. The uploader, the daemon itself when started with `--outbox` or a standalone `agent-memoryd outbox drain`, submits it without involving the agent's main model. Capture does not include tool traces, reasoning, images, or every possible client/subagent lifecycle.
+Automatic saving requires **both a collector and a running uploader**. The collector (`agent-memoryd hook capture`, run by Codex, Claude Code and WorkBuddy hooks) captures completed user/assistant text into a local durable queue without waiting for the daemon. The uploader, the daemon itself when started with `--outbox` or a standalone `agent-memoryd outbox drain`, submits it without involving the agent's main model. Capture does not include tool traces, reasoning, images, or every possible client/subagent lifecycle.
 
 Use the same `--project`, `--platform`, and `--tenant` in capture commands as in the corresponding MCP setup. `--tenant default` is the collector default; `MEMORY_TENANT` configures the MCP bridge and is not read by the collector. If you change `--outbox`, every collector, uploader, and status command must use that same path. One outbox can contain both Codex and Claude Code records for one daemon.
 
-### Codex notifications and session end
+### Codex hooks
 
-Merge the optional `notify` setting from [examples/codex.toml](../examples/codex.toml) into **user-level `~/.codex/config.toml`**, before any TOML tables. Codex appends the event JSON as the last argument:
+Codex captures turns through hooks, as Claude Code does. Merge
+[examples/codex.hooks.json](../examples/codex.hooks.json) into user-level `~/.codex/hooks.json`, as the
+installer does, replacing the binary path and project ID:
 
-```toml
-notify = ["/absolute/path/agent-memory-service/target/fast/agent-memoryd", "hook", "codex-notify", "--project", "my-project", "--platform", "codex"]
-```
+| Event | Adapter behavior |
+|---|---|
+| `UserPromptSubmit` | Stores the prompt under Codex's `turn_id` |
+| `Stop` | Pairs that prompt with `last_assistant_message` and queues a completed turn; a turn that ended without a final message (`null`) queues nothing |
+| `SessionEnd` | Clears incomplete input and queues a close marker for a captured session |
 
-Install the supplied notification template at user level; keep project-scoped MCP registration separate.
+Codex runs a hook only after you trust it: review and trust the three collector hooks with `/hooks`
+(App: Settings → Hooks). Codex records trust per command, so changing `--project`, the binary path or
+another option needs trust again, and untrusted or changed hooks are skipped. Start a new turn after
+installing; a `Stop` from a turn whose prompt was not captured cannot be paired. The payload fields come
+from the hook input schemas embedded in Codex CLI 0.163.0 (`turn_id` is Codex's extension). See the
+[official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks).
 
-Codex runs one `notify` program. To keep one you already have, such as the Codex Computer Use client,
-let the collector wrap it: append `--` and that program's command to the collector's. The collector
-starts the wrapped program with the same event appended, as Codex would, queues the turn, and exits 1
-when either fails; a capture failure never keeps the event from the wrapped program. It waits up to
-10 seconds for that program and then leaves it running. The installer
-does this for any notify program it finds, and `--uninstall` or `--no-capture` puts the program back:
-
-```toml
-notify = ["/Users/me/.local/bin/agent-memoryd", "hook", "codex-notify", "--project", "my-project", "--platform", "codex", "--tenant", "default",
-          "--", "/Users/me/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
-```
-
-Whatever installed that program may write `notify` again, for example when Computer Use is reinstalled
-or updated; capture then stops until you rerun the installer, which wraps the program once more. This
-notification command fixes the project ID, so enable it for sessions belonging to that project, or use a dispatcher that explicitly maps projects; otherwise unrelated sessions will be filed under the same project. See [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
-
-Codex sends an `agent-turn-complete` event as a single JSON argument containing thread/turn IDs, user inputs, and the last assistant message. The collector joins multiple user inputs into one user text and records the observed completion time because the event supplies no source message timestamps. See [official notification documentation](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications).
-
-For session closure, merge [examples/codex.hooks.json](../examples/codex.hooks.json) into user-level `~/.codex/hooks.json`, as the installer does, replacing the script path and project ID. This queues a `SessionEnd` marker. Review and trust the installed definition using `/hooks`; untrusted or changed hooks are skipped. See [official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks). This hook needs an already captured turn; it does not replace `notify`.
+Capture leaves `notify` alone; Codex runs only one notify program, and Codex Computer Use, for example,
+uses it. Earlier installers captured turns with `notify = [<agent-memoryd>, "hook", "codex-notify", ...]`,
+wrapping a notify program already set (after `--`). A rerun of the installer, `--no-capture` or
+`--uninstall` removes that entry and puts a wrapped program back. `agent-memoryd hook codex-notify`
+remains for such setups: it captures the `agent-turn-complete` event Codex appends as the last
+argument, and after `--` it first starts the program it wraps with the same event, waiting up to
+10 seconds for it.
 
 ### Claude Code hooks
 
@@ -492,8 +486,8 @@ once the daemon uploads.
 |---|---|
 | Installer refuses to write | Read the `[error]` line: it names the conflicting entry; nothing was changed. Fix it or edit the configuration by hand as in the sections above |
 | MCP is listed but calls fail | Check daemon `/health`, absolute binary path, port, and stdio transport; the bridge does not start the daemon |
-| Codex captures no turns | Put `notify` in user-level config, verify the `agent-memoryd` path, check that nothing rewrote `notify` without the collector (rerun the installer to wrap it again), and inspect the selected outbox |
-| Session-end hook is skipped | Review/trust Codex hooks with `/hooks`; restart the client after edits |
+| Codex captures no turns | Trust the `UserPromptSubmit`, `Stop` and `SessionEnd` collector hooks in `/hooks` (again after the command changed), start a new turn, verify the `agent-memoryd` path, and inspect the selected outbox |
+| A Codex collector or recall hook is skipped | Review/trust Codex hooks with `/hooks`; restart the client after edits |
 | Claude Stop pairing fails | Start a new turn with capture hooks installed; verify required event fields and the matching project/platform |
 | Outbox stays `pending` | Start the daemon with `--outbox` (or run `outbox drain`) on the same outbox path; inspect `outbox status` errors |
 | Outbox stays `accepted` | Query `get_task`; inspect provider failures and unfinished index publication |

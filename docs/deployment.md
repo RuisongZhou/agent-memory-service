@@ -22,7 +22,7 @@ the daemon. For client registration and dialogue capture by hand, continue with
 | Embedding model | Hosted `qwen3.7-text-embedding-flash` through an API key (default), or your own `llama-server` | `https://maas.qianwenaiapi.com/compatible-mode/v1` |
 | Reranker (optional) | Hosted `qwen3.7-text-rerank` (default), or your own `llama-server` | `https://maas.qianwenaiapi.com/compatible-api/v1` |
 | MCP bridge | Each agent client launches `agent-memoryd mcp` as a stdio child process | Forwards tools to the daemon |
-| Optional dialogue collector | `agent-memoryd hook capture` (Codex: `hook codex-notify`) run by a Codex, Claude Code or WorkBuddy hook | Writes a local SQLite outbox |
+| Optional dialogue collector | `agent-memoryd hook capture` run by a Codex, Claude Code or WorkBuddy hook | Writes a local SQLite outbox |
 | Optional uploader | The daemon started with `--outbox`, or one `agent-memoryd outbox drain` per outbox | Submits dialogue and polls task receipts |
 
 Configure the model key and start the daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) does both and then registers a client. MCP registration alone, by hand or with the installer's `--no-service`, makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context (the installer's `--recall` adds hooks that do).

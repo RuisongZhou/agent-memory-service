@@ -45,7 +45,7 @@ bash scripts/install.sh --host codex --apply --project my-project --recall
 
 | 宿主 | 接入方式 | 命令 | 安装后还需手动做 |
 |---|---|---|---|
-| Codex CLI / App | MCP + 自动捕获（`notify` 与 `SessionEnd` hook）+ 自动召回 | `bash scripts/install.sh --host codex --apply --project my-project --recall` | 重启 Codex；在 `/hooks`（App：Settings → Hooks）中信任 `SessionEnd` 和两个召回 hook |
+| Codex CLI / App | MCP + 自动捕获（3 个 hooks）+ 自动召回 | `bash scripts/install.sh --host codex --apply --project my-project --recall` | 重启 Codex；在 `/hooks`（App：Settings → Hooks）中信任 3 个捕获 hook 和 2 个召回 hook，信任之前不会捕获 |
 | Claude Code | MCP + 自动捕获（4 个 hooks）+ 自动召回 | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project --recall` | 在该项目中重启 Claude Code，按提示批准项目 MCP server（用 `/mcp` 查看） |
 | WorkBuddy | MCP + 自动捕获（3 个 hooks）+ 自动召回 | `bash scripts/install.sh --host workbuddy --apply --project my-project --recall` | 重启 WorkBuddy，在「连接器 → 自定义连接器」中信任 `shared-memory`，确认 8 个工具都已启用 |
 | DeepSeek Harness（桌面版与 `dsh`） | 仅 MCP 工具，由模型主动调用 | `bash scripts/install.sh --host deepseek-harness --apply` | 重启 DeepSeek Harness，新建会话 |
@@ -54,9 +54,9 @@ bash scripts/install.sh --host codex --apply --project my-project --recall
 之后给其他宿主安装时复用同一个二进制、密钥和 daemon，不会再问。想让几个宿主共享同一份项目记忆，
 就给它们传同一个 `--project`。`--recall` 让 hook 在会话开始和每次提问时自动注入相关记忆；不需要时可以去掉。
 
-Codex 只能设置一个 `notify` 程序。已经有一个时（例如 Codex Computer Use 的客户端），安装器会把它包装起来：
-采集器记下每一轮对话后，把同一事件原样转交给原程序，两者都照常工作；`--uninstall` 或 `--no-capture`
-会恢复原来的 `notify`。Computer Use 重装或更新后如果改写了 `notify`，自动捕获会停止，重新运行安装命令即可。
+Codex 和 Claude Code 一样用 hooks 捕获对话（`UserPromptSubmit`、`Stop`、`SessionEnd`），不占用 `notify`，
+因此不会和 Codex Computer Use 等使用 `notify` 的程序冲突。之前的安装用 `notify` 捕获，重新运行安装命令时会去掉它，
+并把原来的程序（例如 Computer Use 的客户端）还回去。Codex 按命令内容记录信任，改了 `--project` 等选项后需要重新信任。
 
 ### 这条命令做了什么
 
