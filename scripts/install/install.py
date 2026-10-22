@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the shared-memory MCP bridge and dialogue collector into an agent host.
+"""Install the shared-memory daemon and register its MCP bridge and hooks in an agent host.
 
 Usage: install.py --host <codex|claude-code|workbuddy|deepseek-harness> [--apply] [options]; see core.py.
 """

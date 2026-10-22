@@ -1,6 +1,7 @@
 # MCP and harness integration
 
-This is the client setup and dialogue-capture guide. Start the daemon using
+This is the client setup and dialogue-capture guide. The [one-command installer](#one-command-install)
+deploys the daemon and connects a client in one step; for a manual setup, start the daemon using
 [deployment instructions](deployment.md) first. Request fields and response contracts belong to
 [the API reference](api.md); implementation details belong to [architecture](architecture.md).
 
@@ -12,26 +13,52 @@ collector and recall are all subcommands of the one `agent-memoryd` binary, and 
 the uploader when started with `--outbox`.
 Templates must be merged into the target client's existing configuration with absolute executable paths.
 The [one-command installer](#one-command-install) performs that merge for Codex, Claude Code, WorkBuddy and
-DeepSeek Harness.
+DeepSeek Harness, and installs and starts the daemon they share.
 
 ## One-command install
 
-`scripts/install.sh` registers the stdio bridge, unless `--no-capture` is given the
-[dialogue collector](#automatically-save-conversations), and with `--recall` the
-[automatic recall](#automatic-recall) hooks in one agent platform; DeepSeek Harness gets the bridge only.
-Without `--apply` it only previews. With `--apply` it builds `target/fast/agent-memoryd` (as `make build`), checks the exact commands
-it will install against a temporary mock daemon, then backs up and writes the platform's configuration.
-It never starts or installs the daemon, model servers or uploader and never handles provider keys:
-[deploy the daemon](deployment.md) first (`agent-memoryd service install` runs it as a service). After
-writing, it reports whether a daemon answers at `--url` and whether an uploader holds the outbox, and
-says how to start one when none does.
+`scripts/install.sh` deploys the daemon and connects one agent platform to it. It registers the stdio
+bridge, unless `--no-capture` is given the [dialogue collector](#automatically-save-conversations), and
+with `--recall` the [automatic recall](#automatic-recall) hooks; DeepSeek Harness gets the bridge only.
+Without `--apply` it only previews. With `--apply`, in this order:
 
-Requirements: macOS or Linux, a checkout of this repository, Python 3.11+ to run the installer itself
-(the only component that needs Python), and Rust/Cargo to build the binary, or `--binary` with an
-existing one such as a [release binary](deployment.md#release-archive) of the same version:
-`bash scripts/install.sh --host codex --apply --project my-project --binary "$HOME/.local/bin/agent-memoryd"`.
-The bridge, the hooks and `notify` all run `agent-memoryd`, so the agent host needs no Python. Run from
-the checkout:
+1. It asks for the model API key, hidden, when the daemon's env file has none yet (see below).
+2. It builds `agent-memoryd` (as `make build`) and copies it to `~/.local/bin/agent-memoryd`, so the
+   installed commands survive `cargo clean` or a moved checkout. `--binary PATH` uses an existing
+   executable as is, such as a [release binary](deployment.md#release-archive) of the same version.
+3. It checks the exact commands it will register, run from the installed binary, against a temporary
+   mock daemon and the platform's own CLI ([checks](#installer-checks)).
+4. It backs up and writes the platform's configuration.
+5. It installs the daemon as a LaunchAgent or systemd user service with
+   [`agent-memoryd service install --apply --start`](deployment.md#install-the-service), with `--outbox`
+   when the platform captures dialogue, and waits until `/health` answers.
+
+If a step before the last fails, the installer puts back the configuration files, the binary and the
+env file it changed. A service that does not start leaves the written configuration in place: the
+error names the cause, typically the key, and a rerun continues from there.
+
+The env file is `~/.config/agent-memory-service/.env` (directory 0700, file 0600), created from
+[.env.example](../.env.example) with the hosted defaults; an installed service keeps the env file it
+already uses, and `--env-file` names another. The key goes into `QWEN_API_KEY`, which the daemon also
+uses for the hosted retrieval models; it comes from `--key-file`, else the environment variable named by
+`--api-key-env` (`QWEN_API_KEY`), else the hidden prompt, and never from a command-line argument or the
+output. An env file that already has a key is reused untouched, unless `--key-file` replaces the key;
+an edited file is first copied to `~/.local/state/agent-memory-service/installations/env/`. Other
+settings, such as another generation model or [self-hosted retrieval models](self-hosted-models.md),
+are edited in that file; the service reads it at each start.
+
+The binary, env file and service are shared: a later run for another platform reuses them, so only the
+first run asks for the key. A rerun replaces the binary when the build changed and then restarts the
+service. An installed service keeps its data directory, env file, port, concurrency and generation
+guard; only its binary changes, and capture adds `--outbox`. A unit that `service install` did not write
+and a daemon started by hand are left alone and used as they are. `--no-service` registers the platform
+only, as for a daemon you run yourself; the installer then needs no key. A `--url` other than a loopback
+`http://` URL with a port is never served by the installed service.
+
+Requirements: macOS or Linux (on Windows, WSL), a checkout of this repository, Python 3.11+ to run the
+installer itself (the only component that needs Python), Rust/Cargo to build the binary unless
+`--binary` is given, and a model API key unless `--no-service` is given. The bridge, the hooks and
+`notify` all run `agent-memoryd`, so the agent host needs no Python. Run from the checkout:
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
 |---|---|---|---|---|
@@ -45,15 +72,15 @@ recall hook (Codex: trust both in `/hooks` as well). `--recall` needs `--project
 it is refused for DeepSeek Harness, which gets MCP tools only. Every prompt becomes a search query, which
 the default hosted retrieval models receive; see [privacy](#automatic-recall).
 
-On a platform with capture, captured turns also need an uploader. Start the daemon with `--outbox`
-([deployment](deployment.md#5-start-the-shared-daemon)); without a path it drains the default outbox the
-installer configures. With the installer's `--outbox`, give the daemon that path. Alternatively keep a
-standalone uploader running against the installer's `--url`; the installer prints the exact command when
-no uploader holds the outbox:
+On a platform with capture, captured turns also need an uploader. The installed service is one: it runs
+the daemon with `--outbox` on the outbox the collector writes, the default one unless the installer's
+`--outbox` names another. With `--no-service` or a daemon started by hand, start that daemon with
+`--outbox` ([deployment](deployment.md#5-start-the-shared-daemon)), or keep a standalone uploader running
+against the installer's `--url`; the installer prints the exact command when no uploader holds the
+outbox:
 
 ```sh
-/absolute/path/agent-memory-service/target/fast/agent-memoryd \
-  outbox drain --url http://127.0.0.1:8765
+"$HOME/.local/bin/agent-memoryd" outbox drain --url http://127.0.0.1:8765
 ```
 
 Capture and recall commands fix `--project`. Codex `notify`, WorkBuddy hooks and Claude Code `--scope user` are
@@ -64,17 +91,23 @@ MCP tools are not tied to the installed project.
 
 | Option | Meaning |
 |---|---|
-| `--dry-run` (default) / `--apply` | Preview only / build, verify and write |
+| `--dry-run` (default) / `--apply` | Preview only / build, verify, write and start the daemon service |
 | `--project ID` | Stable shared project ID recorded with captured turns; prompted for when interactive; refused for DeepSeek Harness |
-| `--tenant`, `--url` | Daemon store (`default`), recorded by the bridge and collector, and base URL (`http://127.0.0.1:8765`) for the bridge and the printed uploader command |
+| `--tenant`, `--url` | Daemon store (`default`), recorded by the bridge and collector, and base URL (`http://127.0.0.1:8765`) for the bridge, the service's port and the printed uploader command |
 | `--no-capture` | No dialogue collector; removes collector entries this installer manages |
 | `--recall` | Add the [automatic recall](#automatic-recall) hooks (not for DeepSeek Harness); without it, a rerun removes recall entries this installer manages |
-| `--binary`, `--outbox` | Use an existing `agent-memoryd` (it must have the `hook` commands), or a non-default outbox |
+| `--no-service` | Register the platform only: no env file, key or daemon service |
+| `--env-file`, `--key-file`, `--api-key-env NAME` | The daemon's env file; a file whose key replaces the env file's; the variable read when the env file has no key (`QWEN_API_KEY`) |
+| `--verify-model` | Also check the env file's real models in a temporary store (below); makes a few model calls |
+| `--binary`, `--outbox` | Use an existing `agent-memoryd` as is (it must have the `hook` commands and `service install --start`), or a non-default outbox |
 | `--codex-home`; `--scope`, `--workspace`, `--claude-config-dir`; `--workbuddy-home`, `--mcp-target`; `--dsh-home`, `--dsh-binary` | Platform locations and, for DeepSeek Harness, the `dsh` CLI that parses the result; host environment variables such as `CODEX_HOME` or `DSH_HOME` are not read |
-| `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, never prompt, or install into another home (tests) |
-| `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only this project's entries |
+| `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, never prompt (fail on a missing project ID or key), or install into another home (tests; needs `--no-service`) |
+| `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only this project's entries. Both keep the binary, env file, service, memory data and outbox for the other platforms |
 
-Every `--apply` runs these checks before writing anything; none reaches a model provider or the real store:
+### Installer checks
+
+Every `--apply` runs these checks before writing the platform's configuration; none of the first four
+reaches a model provider or the real store:
 
 1. The bridge, started exactly as configured, completes the MCP handshake, lists the
    [eight tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
@@ -96,6 +129,13 @@ Every `--apply` runs these checks before writing anything; none reaches a model 
    on `PATH` or in the Desktop app), which must compose the `shared-memory` row exactly once, as written,
    with no warning the current file lacks.
    WorkBuddy has no such CLI; its JSON is checked by the installer only.
+5. With `--verify-model`, a temporary daemon started with the real env file on a temporary data
+   directory forms one synthetic fact from a two-message dialogue and must find it with
+   `search_memories`. This makes real calls: the retrieval-model probe at startup, one formation (at
+   most four generation attempts) and two embeddings. Without it, the service's start checks the
+   retrieval models only; the generation key is first used by the first captured turn.
+
+### Merges, backups and rollback
 
 Merges keep other servers, hooks, settings, comments and ordering. In the files it writes, entries
 created from the [examples](../examples) are adopted and replaced rather than duplicated; an entry counts
@@ -113,7 +153,9 @@ project's `.codex/config.toml`, a project-level `.codex/hooks.json` collector ho
 Backups live in `~/.local/state/agent-memory-service/installations/<platform>/`, one history per
 Claude Code project or user configuration. `--rollback` undoes the latest installation for the same
 target and refuses when a file changed after it, as happens when Codex records hook trust or Claude Code
-updates `~/.claude.json`; use `--uninstall` then. Neither touches daemon data or the outbox.
+updates `~/.claude.json`; use `--uninstall` then. Neither touches the binary, the env file, the daemon
+service, its data or the outbox, which the other platforms share; to remove the service, stop it and
+run `agent-memoryd service uninstall --apply` ([deployment](deployment.md#install-the-service)).
 
 Verification scope: the offline checks above and the CLI parsing checks (Codex CLI 0.163.0, Claude Code
 2.1.305, `dsh` from DeepSeek Harness 0.2.1-rc.2) have run on macOS; without a platform's CLI the installer
@@ -121,13 +163,17 @@ prints a note instead. Recall output follows the hook schemas embedded in Codex 
 Claude Code hooks reference. WorkBuddy hook payloads follow events recorded from WorkBuddy 5.8.3 by the
 [pd-memory](https://github.com/RuisongZhou/pd-memory) integration. For DeepSeek Harness, its bundled MCP
 client SDK (`@modelcontextprotocol/client` 2.2.0) was connected to the bridge once by hand: probe,
-`-32022`, `initialize` 2025-11-25, eight tools. No installation has been exercised in a live client
-session with a real provider; confirm with the [sharing check](#shared-memory-workflow).
+`-32022`, `initialize` 2025-11-25, eight tools. The service step's launchctl and systemctl commands
+are unit-tested as a plan; CI installs every platform with `--no-service`. No installation has been
+exercised in a live client session with a real provider; confirm with `--verify-model` and the
+[sharing check](#shared-memory-workflow).
 
 ## Use with Codex
 
 This and the next section describe the configuration the installer writes, for manual setup or review.
-Install Codex separately and start the shared daemon first. Replace `/absolute/path/agent-memory-service` in all templates with the checkout's actual absolute path.
+Install Codex separately and start the shared daemon first. The templates run the checkout's build:
+replace `/absolute/path/agent-memory-service/target/fast/agent-memoryd` with its actual absolute path,
+or with the installed `~/.local/bin/agent-memoryd` (as an absolute path) that the installer writes.
 
 Register the stdio bridge with the Codex CLI:
 

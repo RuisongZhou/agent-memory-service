@@ -4,6 +4,7 @@ The end-to-end check at the bottom runs the real offline verification when a bui
 agent-memoryd exists; it starts a temporary mock daemon and a local generation stub.
 """
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -18,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts/install'))
 import checks  # noqa: E402
 import core  # noqa: E402
+import runtime  # noqa: E402
 from hosts import claude_code, codex, deepseek_harness, workbuddy  # noqa: E402
 
 BINARY = ROOT / 'target/fast/agent-memoryd'
@@ -49,8 +51,9 @@ def run(capsys, *argv):
 
 
 def install_args(host, home, binary, *extra):
+    """A platform registration only: the daemon service would start in the real login session."""
     return ['--host', host, '--home', home, '--binary', binary, '--url', UNUSED_URL,
-            '--non-interactive', '--skip-host-check', *extra]
+            '--non-interactive', '--skip-host-check', '--no-service', *extra]
 
 
 def ctx_for(host, tmp_path, *extra):
@@ -721,6 +724,259 @@ def test_argument_errors(tmp_path, capsys, fake_binary):
     assert code == 1 and 'No Codex installation backup' in output
     code, output = run(capsys, '--host', 'claude-code', '--home', tmp_path, '--rollback')
     assert code == 1 and '--workspace' in output  # rollback is per project
+
+
+# --- runtime: binary, env file and daemon service -------------------------------------
+
+KEY = 'offline-test-key-1'  # not shaped like a provider key (check_public.py)
+NOT_INSTALLED = {'manager': 'launchd', 'unit': '/nowhere/local.agent-memory-daemon.plist', 'installed': False,
+                 'managed': False, 'binary': None, 'envFile': None, 'dataDir': None, 'outbox': None, 'port': None,
+                 'llmConcurrency': None, 'maxCalls': None}
+
+
+@pytest.fixture
+def service_binary(tmp_path):
+    """An agent-memoryd stand-in: answers the installer's probes, reads its `service status --json` from
+    status.json beside it and records each `service install` in calls.jsonl (exit code from `exit`)."""
+    path = tmp_path / 'svc/agent-memoryd'
+    path.parent.mkdir()
+    path.write_text(f'''#!{sys.executable}
+import json, pathlib, sys
+here, args = pathlib.Path(sys.argv[0]).parent, sys.argv[1:]
+if '--help' in args:
+    print('--platform capture codex-notify recall --start')
+elif args[:3] == ['service', 'status', '--json']:
+    status = here / 'status.json'
+    print(status.read_text() if status.exists() else {json.dumps(NOT_INSTALLED)!r})
+elif args[:2] == ['service', 'install']:
+    with (here / 'calls.jsonl').open('a') as calls:
+        calls.write(json.dumps(args) + '\\n')
+    sys.exit(int((here / 'exit').read_text()) if (here / 'exit').exists() else 0)
+''')
+    path.chmod(0o755)
+    return path
+
+
+@pytest.fixture
+def session(tmp_path, monkeypatch, offline):
+    """The temporary directory as the login home, with no daemon answering and the outbox uploaded."""
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setattr(checks, 'daemon_health', lambda url: None)
+    monkeypatch.setattr(checks, 'uploader_running', lambda outbox: True)
+    monkeypatch.delenv('QWEN_API_KEY', raising=False)
+    key = tmp_path / 'key.txt'
+    key.write_text(KEY + '\n')
+    return tmp_path
+
+
+def service_install_args(host, home, binary, *extra):
+    return ['--host', host, '--home', home, '--binary', binary, '--non-interactive', '--skip-host-check', *extra]
+
+
+def service_calls(binary):
+    calls = binary.parent / 'calls.jsonl'
+    return [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+
+
+def flag(argv, name):
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+def installed_unit(home):
+    """A unit file where the service manager keeps it, as with an installed service."""
+    unit = runtime.unit_path(home)
+    unit.parent.mkdir(parents=True)
+    unit.write_text('unit\n')
+
+
+def test_env_file_values_follow_the_daemon_parser():
+    text = "# c\nexport QWEN_API_KEY=\"\"\nQWEN_API_KEY = 'k1'\nLLM_MODEL=\nOTHER=1"
+    assert runtime.env_value(text, 'QWEN_API_KEY') == 'k1'
+    assert runtime.env_value(text, 'LLM_MODEL') == '' and runtime.env_value(text, 'MISSING') is None
+    replaced = runtime.with_value(text, 'QWEN_API_KEY', 'k2')
+    assert replaced == "# c\nexport QWEN_API_KEY=k2\nQWEN_API_KEY =k2\nLLM_MODEL=\nOTHER=1"
+    assert runtime.with_value('A=1', 'QWEN_API_KEY', 'k') == 'A=1\nQWEN_API_KEY=k\n'
+    new = runtime.new_env_text(KEY)
+    assert runtime.env_value(new, 'QWEN_API_KEY') == KEY and new.count(KEY) == 1
+    template = (ROOT / '.env.example').read_text()
+    for key in ('QWEN_BASE_URL', 'LLM_MODEL', 'MEMORY_MODEL_PROVIDER', 'MEMORY_EMBED_MODEL'):
+        assert runtime.env_value(new, key) == runtime.env_value(template, key)
+
+
+def test_the_key_comes_from_a_file_the_environment_or_a_hidden_prompt(tmp_path, monkeypatch):
+    args = types.SimpleNamespace(key_file=None, api_key_env='MY_KEY', non_interactive=True)
+    monkeypatch.delenv('MY_KEY', raising=False)
+    with pytest.raises(core.InstallError, match='--key-file'):
+        runtime.read_key(args)
+    monkeypatch.setenv('MY_KEY', ' env-key \n')
+    assert runtime.read_key(args) == 'env-key'
+    (tmp_path / 'key').write_text('file-key\n')
+    assert runtime.read_key(types.SimpleNamespace(**dict(vars(args), key_file=tmp_path / 'key'))) == 'file-key'
+    monkeypatch.delenv('MY_KEY')
+    monkeypatch.setattr(sys, 'stdin', types.SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(runtime.getpass, 'getpass', lambda prompt: 'typed-key')
+    assert runtime.read_key(types.SimpleNamespace(**dict(vars(args), non_interactive=False))) == 'typed-key'
+    for bad in ('two words', 'quoted"', ''):
+        monkeypatch.setattr(runtime.getpass, 'getpass', lambda prompt, bad=bad: bad)
+        with pytest.raises(core.InstallError, match='one line'):
+            runtime.read_key(types.SimpleNamespace(**dict(vars(args), non_interactive=False)))
+
+
+def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys, service_binary):
+    argv = service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply',
+                                '--key-file', session / 'key.txt')
+    code, output = run(capsys, *argv)
+    assert code == 0, output
+    env = session / '.config/agent-memory-service/.env'
+    assert runtime.env_value(env.read_text(), 'QWEN_API_KEY') == KEY and KEY not in output
+    assert oct(env.stat().st_mode & 0o777) == '0o600' and oct(env.parent.stat().st_mode & 0o777) == '0o700'
+    (call,) = service_calls(service_binary)
+    assert call[:4] == ['service', 'install', '--apply', '--start'] and call[-1] == '--restart'  # a new key
+    assert flag(call, '--binary') == str(service_binary) and flag(call, '--env-file') == str(env)
+    assert flag(call, '--port') == '8765' and flag(call, '--home') == str(session)
+    assert flag(call, '--outbox') == str(session / core.OUTBOX)  # the daemon uploads what capture writes
+    assert flag(call, '--data-dir') is None and flag(call, '--max-calls') is None  # service defaults
+    # A rerun reuses the env file: no key needed, nothing rewritten, no restart; the same key from
+    # --key-file changes nothing either.
+    stamp = env.stat().st_mtime_ns
+    for rerun in (argv[:-2], argv):
+        code, output = run(capsys, *rerun)
+        assert code == 0 and env.stat().st_mtime_ns == stamp and '[backup]' not in output, output
+        assert service_calls(service_binary)[-1][-1] != '--restart'
+    (session / 'key.txt').write_text('offline-test-key-2\n')
+    code, output = run(capsys, *argv)
+    assert code == 0 and runtime.env_value(env.read_text(), 'QWEN_API_KEY') == 'offline-test-key-2', output
+    assert service_calls(service_binary)[-1][-1] == '--restart'  # the running daemon must read the new key
+    assert len(list((session / core.STATE / 'env').iterdir())) == 1  # the replaced file was backed up
+
+
+def test_mcp_only_installs_the_service_without_an_outbox(session, capsys, service_binary):
+    code, output = run(capsys, *service_install_args('deepseek-harness', session, service_binary, '--apply',
+                                                     '--key-file', session / 'key.txt'))
+    assert code == 0, output
+    (call,) = service_calls(service_binary)
+    assert '--outbox' not in call
+
+
+def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, service_binary):
+    env = session / 'checkout/.env'
+    env.parent.mkdir()
+    env.write_text(f'QWEN_API_KEY={KEY}\n')
+    status = dict(NOT_INSTALLED, installed=True, managed=True, envFile=str(env), dataDir='/data/mem0', outbox=None,
+                  port=8765, llmConcurrency=2, maxCalls=None)
+    (service_binary.parent / 'status.json').write_text(json.dumps(status))
+    installed_unit(session)
+    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
+    assert code == 0, output
+    (call,) = service_calls(service_binary)
+    assert flag(call, '--env-file') == str(env) and flag(call, '--data-dir') == '/data/mem0'
+    assert flag(call, '--llm-concurrency') == '2' and flag(call, '--max-calls') == '0'  # unguarded stays unguarded
+    assert flag(call, '--outbox') == str(session / core.OUTBOX)  # capture adds the upload
+    assert not (session / '.config/agent-memory-service/.env').exists()
+
+    (service_binary.parent / 'status.json').write_text(json.dumps(dict(status, port=9000)))
+    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
+    assert code == 1 and '--url http://127.0.0.1:9000' in output
+    (service_binary.parent / 'status.json').write_text(json.dumps(dict(status, outbox='/elsewhere/outbox.sqlite3')))
+    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
+    assert code == 1 and '--outbox /elsewhere/outbox.sqlite3' in output
+    assert len(service_calls(service_binary)) == 1
+
+
+def test_a_hand_made_unit_and_a_daemon_started_by_hand_are_left_alone(session, capsys, service_binary, monkeypatch):
+    status = dict(NOT_INSTALLED, installed=True, managed=False, port=8765)
+    (service_binary.parent / 'status.json').write_text(json.dumps(status))
+    installed_unit(session)
+    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply'))
+    assert code == 0 and 'not written by agent-memoryd service install' in output, output
+    (service_binary.parent / 'status.json').unlink()
+    runtime.unit_path(session).unlink()
+    monkeypatch.setattr(checks, 'daemon_health', lambda url: {'memoryStrategy': 'mem0'})
+    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply'))
+    assert code == 0 and 'started by hand' in output, output
+    # No key was needed: nothing under the env file's directory (on Linux the unit above lived in ~/.config too).
+    assert service_calls(service_binary) == [] and not (session / runtime.ENV_FILE).parent.exists()
+
+
+def test_the_installed_binary_and_env_file_come_back_when_a_check_fails(session, capsys, service_binary, monkeypatch):
+    monkeypatch.setattr(core, 'build_binary', lambda args, service: service_binary)
+    installed = session / runtime.BINARY
+    installed.parent.mkdir(parents=True)
+    installed.write_text('#!/bin/sh\n# the previous build\n')
+    installed.chmod(0o755)
+    argv = ['--host', 'workbuddy', '--home', session, '--project', 'p', '--apply', '--non-interactive',
+            '--skip-host-check', '--key-file', session / 'key.txt']
+
+    def fail(host, ctx):
+        assert ctx.binary == installed and installed.read_bytes() == service_binary.read_bytes()
+        raise core.InstallError('verification failed')
+    monkeypatch.setattr(checks, 'verify_local', fail)
+    code, output = run(capsys, *argv)
+    assert code == 1 and 'verification failed' in output
+    assert installed.read_text() == '#!/bin/sh\n# the previous build\n'
+    assert not (session / '.config/agent-memory-service/.env').exists() and not (session / '.workbuddy').exists()
+    assert sorted(p.name for p in installed.parent.iterdir()) == ['agent-memoryd']
+
+    monkeypatch.setattr(checks, 'verify_local', lambda host, ctx: None)
+    code, output = run(capsys, *argv)
+    assert code == 0, output
+    assert installed.read_bytes() == service_binary.read_bytes() and os.access(installed, os.X_OK)
+    (call,) = service_calls(installed)
+    assert flag(call, '--binary') == str(installed) and call[-1] == '--restart'  # a new binary restarts
+    code, output = run(capsys, *argv[:-2])
+    assert code == 0 and service_calls(installed)[-1][-1] != '--restart'  # same binary: no restart
+
+
+def test_the_key_is_asked_for_before_the_build(session, capsys, service_binary, monkeypatch):
+    events = []
+    monkeypatch.setattr(sys, 'stdin', types.SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(runtime.getpass, 'getpass', lambda prompt: events.append('prompt') or KEY)
+    monkeypatch.setattr(core, 'build_binary', lambda args, service: events.append('build') or service_binary)
+    code, output = run(capsys, '--host', 'workbuddy', '--home', session, '--project', 'p', '--apply',
+                       '--skip-host-check')
+    assert code == 0 and events == ['prompt', 'build'], output
+    assert runtime.env_value((session / '.config/agent-memory-service/.env').read_text(), 'QWEN_API_KEY') == KEY
+
+
+def test_a_service_that_does_not_start_fails_after_writing(session, capsys, service_binary):
+    (service_binary.parent / 'exit').write_text('1')
+    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply',
+                                                     '--key-file', session / 'key.txt'))
+    assert code == 1 and 'did not start' in output and 'configuration is written' in output
+    assert (session / '.workbuddy/settings.json').is_file()
+    assert (session / '.config/agent-memory-service/.env').is_file()  # kept for the rerun
+
+
+def test_service_options_need_the_login_home_and_a_loopback_url(tmp_path, capsys, fake_binary, offline):
+    code, output = run(capsys, '--host', 'workbuddy', '--home', tmp_path, '--binary', fake_binary, '--project', 'p',
+                       '--apply', '--non-interactive')
+    assert code == 1 and 'add --no-service' in output and not (tmp_path / '.workbuddy').exists()
+    with pytest.raises(SystemExit):
+        core.main([str(a) for a in install_args('workbuddy', tmp_path, fake_binary, '--key-file', 'k')])
+    assert 'leave out --no-service' in capsys.readouterr().err
+    code, output = run(capsys, '--host', 'deepseek-harness', '--home', tmp_path, '--binary', fake_binary,
+                       '--url', 'http://10.0.0.5:8765')
+    assert code == 0 and 'daemon service not managed' in output, output
+    code, output = run(capsys, '--host', 'deepseek-harness', '--home', tmp_path, '--binary', fake_binary,
+                       '--url', 'http://10.0.0.5:8765', '--verify-model', '--apply')
+    assert code == 1 and '--verify-model' in output
+
+
+def test_verify_model_needs_an_env_file_with_the_key(tmp_path):
+    ctx = types.SimpleNamespace(binary=Path('/opt/agent-memoryd'))
+    with pytest.raises(core.InstallError, match='--env-file'):
+        checks.verify_model(ctx, None)
+    (tmp_path / '.env').write_text('QWEN_API_KEY=\n')
+    with pytest.raises(core.InstallError, match='QWEN_API_KEY'):
+        checks.verify_model(ctx, tmp_path / '.env')
+
+
+def test_rollback_and_uninstall_keep_the_shared_runtime(tmp_path, capsys, fake_binary, offline):
+    run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    for argv in (['--rollback'], ['--uninstall']):
+        code, output = run(capsys, '--host', 'workbuddy', '--home', tmp_path, *argv)
+        assert code == 0 and 'kept for other platforms' in output, output
+        run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply'))
 
 
 # --- real offline verification ------------------------------------------------------

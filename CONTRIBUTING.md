@@ -21,7 +21,8 @@ make check-arch check-public
 `test-workspace` runs every crate's unit tests in one cargo invocation, so shared dependencies compile once.
 `test-rust` (pure crates) and `test-service` (domain/store/engine/algorithm/service crates) run each half alone,
 and `selftest` runs the daemon with `MEMORY_MOCK_MODELS=1`; `install-check` runs the
-one-command installer with capture and recall for every platform into a temporary home. HTTP/MCP smoke checks use temporary stores,
+one-command installer with capture and recall for every platform into a temporary home, with `--no-service`
+so that it needs no key and starts no service. HTTP/MCP smoke checks use temporary stores,
 mock retrieval and local deterministic generation stubs or raw writes. They never call paid providers.
 `serve.py --mock` does not supply a generation stub and is not a substitute for these checks.
 See the [CI workflow](.github/workflows/ci.yml) and [script inventory](scripts/README.md).

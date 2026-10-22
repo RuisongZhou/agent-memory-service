@@ -1,4 +1,4 @@
-"""Offline installation checks: nothing here reaches a model provider or the real store.
+"""Installation checks. Only the opt-in `verify_model` reaches a model provider; none touches the real store.
 
 `verify_local` runs the exact bridge and collector commands an installation
 writes against a temporary mock-retrieval daemon whose generation endpoint is a
@@ -7,9 +7,12 @@ tools, a context read and, with capture, host-format events -> outbox -> the
 daemon's own uploader (`serve --outbox`) -> formation -> search. With recall,
 host-format SessionStart / UserPromptSubmit events run through the installed
 recall command and must inject the formed fact exactly once per session.
+`verify_model` (--verify-model) starts a temporary daemon with the real env file
+instead, which forms one synthetic fact and finds it again.
 """
 
 import collections
+import datetime
 import fcntl
 import json
 import os
@@ -32,6 +35,12 @@ USER = 'Remember for this project: keep the source of every decision.'
 ASSISTANT = 'Noted; decisions will keep their sources.'
 FACT = 'Installer check: project decisions keep their sources.'
 SESSION = 'installer-check'
+# Synthetic dialogue for --verify-model, in the language of the default (zh) formation prompt; it only
+# ever reaches a temporary store and the configured model provider.
+MODEL_USER = '请记住：Boreal 项目的内部代号是 Nacre-731。'
+MODEL_ASSISTANT = '好的，已记住 Boreal 项目的内部代号是 Nacre-731。'
+MODEL_QUERY = 'Boreal 项目的内部代号是什么？'
+MODEL_TOKEN = 'Nacre-731'
 OPENER = build_opener(ProxyHandler({}))
 # The version probe the MCP TypeScript SDK 2.2 (DeepSeek Harness 0.2.1) sends to a disposable bridge process.
 DISCOVER = {'jsonrpc': '2.0', 'id': 'server-discover-probe-1', 'method': 'server/discover', 'params': {'_meta': {
@@ -50,7 +59,8 @@ def check_env(home):
     Proxy variables stay, as the host passes them on to the bridge and the user's
     shell to the uploader: both must reach the loopback daemon regardless.
     """
-    keep = ('PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'SYSTEMROOT', *PROXIES)
+    # CA settings stay too: --verify-model reaches the provider through the same proxies.
+    keep = ('PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'SSL_CERT_FILE', 'SSL_CERT_DIR', *PROXIES)
     env = {k: v for k, v in os.environ.items() if k in keep}
     env['HOME'] = str(home)
     return env
@@ -125,22 +135,35 @@ def free_port():
 @contextmanager
 def mock_daemon(binary, root, generation_url, outbox=None):
     """A daemon with mock retrieval models and a stub generation endpoint in `root`; it uploads `outbox`."""
+    env = dict(check_env(root), MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline-installer-check',
+               MEMORY_LLM_MAX_CALLS='8')
+    serve = ['--llm-base-url', generation_url, *(['--outbox', str(outbox)] if outbox else [])]
+    with temporary_daemon(binary, root, serve, env) as url:
+        yield url
+
+
+@contextmanager
+def temporary_daemon(binary, root, serve, env, wait=60, secret=None):
+    """`agent-memoryd serve [serve...]` on a free loopback port with its data in `root`; yields its URL.
+
+    A start failure shows the end of its log, with `secret` masked.
+    """
     port = free_port()
     url = f'http://127.0.0.1:{port}'
-    env = dict(check_env(root), MEMORY_MOCK_MODELS='1', QWEN_API_KEY='offline-installer-check',
-               MEMORY_LLM_MAX_CALLS='8', NO_PROXY=LOOPBACK, no_proxy=LOOPBACK)
+    env = dict(env, NO_PROXY=LOOPBACK, no_proxy=LOOPBACK)
     log_path = root / 'daemon.log'
     with log_path.open('w') as log:
         process = subprocess.Popen(
-            [str(binary), 'serve', '--data-dir', str(root / 'data'), '--port', str(port),
-             '--llm-base-url', generation_url, '--log-level', 'warn',
-             *(['--outbox', str(outbox)] if outbox else [])],
+            [str(binary), 'serve', '--data-dir', str(root / 'data'), '--port', str(port), '--log-level', 'warn',
+             *serve],
             env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
         try:
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + wait
             while daemon_health(url) is None:
                 if process.poll() is not None or time.monotonic() > deadline:
                     tail = log_path.read_text(errors='replace').splitlines()[-10:]
+                    if secret:
+                        tail = [line.replace(secret, '<api-key>') for line in tail]
                     raise InstallError('temporary daemon did not start:\n  ' + '\n  '.join(tail))
                 time.sleep(0.1)
             yield url
@@ -338,6 +361,46 @@ def verify_local(host, ctx):
     if ctx.recall:
         steps += f', {host.LABEL} recall -> SessionStart and prompt context, no repeats, silent without a daemon'
     print(f'[check] offline mock daemon: {steps} passed')
+
+
+def verify_model(ctx, env_file):
+    """--verify-model: with `env_file`, a temporary daemon's real models form one synthetic fact and find it.
+
+    Model calls: the startup probe of the retrieval models, one formation (at most four generation
+    attempts) and the embeddings of the fact and the query. The store is temporary.
+    """
+    import runtime
+    secret = runtime.env_value(runtime.read_file(env_file), runtime.KEY) if env_file else None
+    if not secret:
+        raise InstallError(f'--verify-model needs the daemon env file with {runtime.KEY}; pass --env-file')
+    with tempfile.TemporaryDirectory(prefix='agent-memory-model-check-') as temporary:
+        root = Path(temporary)
+        # The check environment drops provider variables: only the env file configures the models.
+        env = dict(check_env(root), MEMORY_LLM_MAX_CALLS='4')
+        serve = ['--env-file', str(env_file), '--llm-concurrency', '1']
+        with temporary_daemon(ctx.binary, root, serve, env, wait=120, secret=secret) as url:
+            stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            scope = {'project': 'installer-model-check', 'session': SESSION}
+            receipt = get_json(url + '/v1/add_memories', {
+                'scope': scope, 'turnId': f'installer-model-check/{SESSION}/1', 'sync': True,
+                'messages': [{'role': 'user', 'content': MODEL_USER, 'timestamp': stamp},
+                             {'role': 'assistant', 'content': MODEL_ASSISTANT, 'timestamp': stamp}]}, timeout=180)
+            deadline = time.monotonic() + 180
+            while True:
+                task = get_json(url + '/v1/get_task', {'requestId': receipt.get('requestId')}, timeout=30)
+                if task.get('status') == 'failed':
+                    reason = str(task.get('error'))[:200].replace(secret, '<api-key>')
+                    raise InstallError(f'real models: formation failed ({reason})')
+                if task.get('status') == 'completed':
+                    break
+                if time.monotonic() > deadline:
+                    raise InstallError(f"real models: formation did not complete ({task.get('status')})")
+                time.sleep(1)
+            found = get_json(url + '/v1/search_memories', {'query': MODEL_QUERY, 'scope': {'project': scope['project']},
+                                                         'topK': 5}, timeout=60)
+    if MODEL_TOKEN not in json.dumps(found.get('results', []), ensure_ascii=False):
+        raise InstallError('real models: the formed test fact was not found by search')
+    print(f'[check] real models from {env_file}: one synthetic fact formed and found (temporary store)')
 
 
 def run_host_cli(argv, env, cwd, timeout=60):

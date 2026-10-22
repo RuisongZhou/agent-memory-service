@@ -2,11 +2,12 @@
 //! systemd user unit, under the label and file name of the templates in docs/deployment.md.
 //! Previews unless `--apply`; writes only the unit file and the directories it names, backs up a
 //! file it replaces or removes, never reads the env file or puts a key in the unit, and prints the
-//! launchctl/systemctl commands instead of running them.
+//! launchctl/systemctl commands instead of running them unless `install --start` asks it to run
+//! them in the login session.
 use anyhow::{bail, ensure, Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const LAUNCHD_LABEL: &str = "local.agent-memory-daemon";
 pub const SYSTEMD_UNIT: &str = "agent-memory.service";
@@ -19,6 +20,10 @@ pub const LAUNCHD_LOGS: &str = "Library/Logs/agent-memory-service";
 /// Opening comment of every file `service install` writes.
 const MARKER: &str = "Written by agent-memoryd service install";
 const SYSTEMD_ENABLED: &str = ".config/systemd/user/default.target.wants";
+/// How long `install --start` waits for the daemon to answer; startup probes the retrieval models.
+const START_WAIT: Duration = Duration::from_secs(60);
+/// How long `install --start` waits for launchd to unload the old job before loading the new one.
+const UNLOAD_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Subcommand, Debug)]
 pub enum ServiceCmd {
@@ -36,6 +41,9 @@ pub enum ServiceCmd {
     Status {
         #[command(flatten)]
         at: Target,
+        /// Print the unit's settings as one JSON object instead, without the health check
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -88,6 +96,14 @@ pub struct InstallArgs {
     /// agent-memoryd executable the unit runs [default: this executable]
     #[arg(long, value_name = "PATH")]
     pub binary: Option<PathBuf>,
+    /// Then load the service in your login session (reloading it when the unit changed) and wait
+    /// until the daemon answers; runs launchctl or systemctl
+    #[arg(long, requires = "apply")]
+    pub start: bool,
+    /// With --start, also restart a loaded service whose unit did not change, so it runs a
+    /// replaced binary
+    #[arg(long, requires = "start")]
+    pub restart: bool,
 }
 
 impl Manager {
@@ -335,6 +351,25 @@ pub fn unit_argv(manager: Manager, text: &str) -> Option<Vec<String>> {
     }
 }
 
+/// The value a unit file, as written by `render`, sets for environment variable `key`.
+fn unit_env(manager: Manager, text: &str, key: &str) -> Option<String> {
+    match manager {
+        Manager::Launchd => {
+            let start = text.find("<key>EnvironmentVariables</key>")?;
+            let rest = &text[start..];
+            let dict = &rest[..rest.find("</dict>")?];
+            let (_, value) = dict.split_once(&format!("<key>{key}</key>"))?;
+            let (_, value) = value.split_once("<string>")?;
+            value.split_once("</string>").map(|(v, _)| xml_unescape(v))
+        }
+        Manager::Systemd => text
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("Environment="))
+            .flat_map(systemd_words)
+            .find_map(|word| Some(word.strip_prefix(key)?.strip_prefix('=')?.to_string())),
+    }
+}
+
 /// What `install` or `uninstall` did, as report lines.
 #[derive(Debug, Default)]
 pub struct Outcome {
@@ -436,6 +471,9 @@ pub fn install(args: &InstallArgs) -> Result<Outcome> {
         out.changed = true;
         out.report
             .push(format!("[write] {}; it holds no key", path.display()));
+    }
+    if args.start {
+        return Ok(out);
     }
     out.report.push(format!(
         "[next] stop any daemon you started by hand on port {}, then run:",
@@ -561,19 +599,66 @@ pub fn status_report(at: &Target) -> Result<(Vec<String>, Option<u16>)> {
         ));
     }
     report.push(format!("[next] inspect it: {}", inspect_command(manager)));
-    let port = match flag_value(&argv, "--port") {
+    Ok((report, serve_port(&argv)))
+}
+
+/// The port a unit's `serve` argv listens on: `--port`, else serve's default 8765.
+fn serve_port(argv: &[String]) -> Option<u16> {
+    match flag_value(argv, "--port") {
         Some(port) => port.parse().ok(),
         None => Some(8765),
-    };
-    Ok((report, port))
+    }
+}
+
+/// The unit file's settings as one JSON object, for scripts/install.sh; null where the unit sets
+/// nothing. `managed` says whether `service install` wrote it.
+pub fn status_json(at: &Target) -> Result<serde_json::Value> {
+    let manager = at.manager();
+    let path = manager.unit_path(&at.home()?);
+    let text = existing(&path)?;
+    let argv = text
+        .as_deref()
+        .and_then(|t| unit_argv(manager, t))
+        .unwrap_or_default();
+    let flag = |name| flag_value(&argv, name);
+    let number = |value: Option<&str>| value.and_then(|v| v.parse::<u64>().ok());
+    Ok(serde_json::json!({
+        "manager": manager_id(manager),
+        "unit": path,
+        "installed": text.is_some(),
+        "managed": text.as_deref().is_some_and(|t| t.contains(MARKER)),
+        "binary": argv.first(),
+        "envFile": flag("--env-file"),
+        "dataDir": flag("--data-dir"),
+        "outbox": flag("--outbox"),
+        "port": if text.is_some() { serve_port(&argv) } else { None },
+        "llmConcurrency": number(flag("--llm-concurrency")),
+        "maxCalls": number(
+            text.as_deref()
+                .and_then(|t| unit_env(manager, t, "MEMORY_LLM_MAX_CALLS"))
+                .as_deref()
+        ),
+    }))
 }
 
 /// Run a service command; prints its report and returns the process exit code.
 pub async fn run(cmd: ServiceCmd) -> i32 {
     let result = match cmd {
-        ServiceCmd::Install(args) => install(&args).map(|o| o.report),
+        ServiceCmd::Install(args) => match install(&args) {
+            // Starting prints each step as it runs, after the install report.
+            Ok(out) if args.start => {
+                for line in &out.report {
+                    println!("{line}");
+                }
+                start(&args.at, &out.path, out.changed || args.restart, args.port)
+                    .await
+                    .map(|()| Vec::new())
+            }
+            result => result.map(|o| o.report),
+        },
         ServiceCmd::Uninstall { at, apply } => uninstall(&at, apply).map(|o| o.report),
-        ServiceCmd::Status { at } => match status_report(&at) {
+        ServiceCmd::Status { at, json: true } => status_json(&at).map(|v| vec![v.to_string()]),
+        ServiceCmd::Status { at, json: false } => match status_report(&at) {
             Ok((mut report, port)) => {
                 if let Some(port) = port {
                     report.push(health(port).await);
@@ -599,19 +684,187 @@ pub async fn run(cmd: ServiceCmd) -> i32 {
 
 async fn health(port: u16) -> String {
     let url = format!("http://127.0.0.1:{port}/health");
+    if answers(port).await {
+        format!("[status] a daemon answers at {url}")
+    } else {
+        format!("[status] no daemon answers at {url}")
+    }
+}
+
+/// Whether a daemon answers `/health` on the loopback `port`.
+async fn answers(port: u16) -> bool {
     let answer = async {
         reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(3))
             .build()?
-            .get(&url)
+            .get(format!("http://127.0.0.1:{port}/health"))
             .send()
             .await?
             .error_for_status()
     };
-    match answer.await {
-        Ok(_) => format!("[status] a daemon answers at {url}"),
-        Err(_) => format!("[status] no daemon answers at {url}"),
+    answer.await.is_ok()
+}
+
+/// `install --start`: load the unit at `path` in the login session, reloading (launchd) or
+/// restarting (systemd) a loaded one when `reload`, then wait until a daemon answers on `port`.
+/// Prints each step as it runs.
+async fn start(at: &Target, path: &Path, reload: bool, port: u16) -> Result<()> {
+    let manager = at.manager();
+    let home = at.home()?;
+    // launchctl and systemctl act on the session of the user running them, not on --home.
+    if at.home.is_some() {
+        let own = std::env::var_os("HOME").map(|own| same_dir(Path::new(&own), &home));
+        ensure!(
+            own == Some(true),
+            "--start loads the unit into your own login session; it cannot start one under --home {}",
+            home.display()
+        );
+    }
+    let domain = match manager {
+        Manager::Launchd => format!("gui/{}", user_id()?),
+        Manager::Systemd => String::new(),
+    };
+    let loaded = is_loaded(manager, &domain);
+    if !loaded && answers(port).await {
+        bail!("a daemon this service did not start already answers on port {port}; stop it, then rerun");
+    }
+    for step in start_plan(manager, path, &domain, loaded, reload) {
+        let quoted: Vec<String> = step.iter().map(|w| sh(w)).collect();
+        println!("[start] {}", quoted.join(" "));
+        execute(&step)?;
+        if step[1] == "bootout" {
+            // Bootstrapping while the old job still exits fails with an I/O error.
+            let deadline = Instant::now() + UNLOAD_WAIT;
+            while is_loaded(manager, &domain) {
+                ensure!(
+                    Instant::now() < deadline,
+                    "launchd did not unload {LAUNCHD_LABEL} within {}s",
+                    UNLOAD_WAIT.as_secs()
+                );
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+    let url = format!("http://127.0.0.1:{port}/health");
+    let deadline = Instant::now() + START_WAIT;
+    while !answers(port).await {
+        ensure!(
+            Instant::now() < deadline,
+            "no daemon answers at {url} after {}s; inspect it with `{}` and read {}",
+            START_WAIT.as_secs(),
+            inspect_command(manager),
+            match manager {
+                Manager::Launchd => home
+                    .join(LAUNCHD_LOGS)
+                    .join("daemon.stderr.log")
+                    .display()
+                    .to_string(),
+                Manager::Systemd => format!("`journalctl --user -u {SYSTEMD_UNIT} -n 50`"),
+            }
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    println!("[start] the daemon answers at {url}");
+    Ok(())
+}
+
+/// The launchctl/systemctl commands `--start` runs: launchd boots a loaded job out before
+/// bootstrapping it again, systemd restarts it; nothing when it is loaded and `reload` is false.
+fn start_plan(
+    manager: Manager,
+    path: &Path,
+    domain: &str,
+    loaded: bool,
+    reload: bool,
+) -> Vec<Vec<String>> {
+    let command = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+    let file = path.to_string_lossy();
+    match manager {
+        Manager::Launchd => {
+            let mut plan = Vec::new();
+            if loaded && reload {
+                let job = format!("{domain}/{LAUNCHD_LABEL}");
+                plan.push(command(&["launchctl", "bootout", &job]));
+            }
+            if !loaded || reload {
+                plan.push(command(&["launchctl", "bootstrap", domain, &file]));
+            }
+            plan
+        }
+        Manager::Systemd if reload => vec![
+            command(&["systemctl", "--user", "daemon-reload"]),
+            command(&["systemctl", "--user", "enable", SYSTEMD_UNIT]),
+            command(&["systemctl", "--user", "restart", SYSTEMD_UNIT]),
+        ],
+        Manager::Systemd if !loaded => vec![
+            command(&["systemctl", "--user", "daemon-reload"]),
+            command(&["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT]),
+        ],
+        Manager::Systemd => Vec::new(),
+    }
+}
+
+/// Whether the service is loaded (launchd) or active (systemd) in the login session.
+fn is_loaded(manager: Manager, domain: &str) -> bool {
+    let mut command = match manager {
+        Manager::Launchd => {
+            let mut c = std::process::Command::new("launchctl");
+            c.arg("print").arg(format!("{domain}/{LAUNCHD_LABEL}"));
+            c
+        }
+        Manager::Systemd => {
+            let mut c = std::process::Command::new("systemctl");
+            c.args(["--user", "is-active", "--quiet", SYSTEMD_UNIT]);
+            c
+        }
+    };
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Run one `--start` step; a failure reports the tool's last line of error output.
+fn execute(argv: &[String]) -> Result<()> {
+    let output = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("cannot run {}", argv[0]))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.lines().rev().find(|l| !l.trim().is_empty());
+        bail!(
+            "`{}` failed ({}): {}",
+            argv.join(" "),
+            output.status,
+            reason.unwrap_or("no output").trim()
+        );
+    }
+    Ok(())
+}
+
+/// The login user's numeric ID, which names the launchd `gui/<uid>` domain.
+fn user_id() -> Result<String> {
+    let output = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .context("cannot run id -u")?;
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    ensure!(
+        output.status.success() && !uid.is_empty() && uid.chars().all(|c| c.is_ascii_digit()),
+        "id -u did not print a user ID"
+    );
+    Ok(uid)
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 
@@ -619,6 +872,13 @@ fn manager_name(manager: Manager) -> &'static str {
     match manager {
         Manager::Launchd => "LaunchAgent",
         Manager::Systemd => "systemd user",
+    }
+}
+
+fn manager_id(manager: Manager) -> &'static str {
+    match manager {
+        Manager::Launchd => "launchd",
+        Manager::Systemd => "systemd",
     }
 }
 
@@ -1080,6 +1340,141 @@ mod tests {
             "{report}"
         );
         assert!(report.contains("launchctl print"), "{report}");
+    }
+
+    #[test]
+    fn status_json_reads_back_every_option_install_wrote() {
+        let home = Home::new("svc-json");
+        let data = home.path().join("custom data");
+        let data = data.to_str().unwrap();
+        for (manager, m) in [("launchd", Manager::Launchd), ("systemd", Manager::Systemd)] {
+            let status = |home: &Home| match home.parse(manager, &["status", "--json"]) {
+                ServiceCmd::Status { at, json: true } => status_json(&at).unwrap(),
+                _ => unreachable!(),
+            };
+            let none = status(&home);
+            assert_eq!(none["installed"], false);
+            assert_eq!(none["port"], serde_json::Value::Null);
+            assert_eq!(none["unit"], m.unit_path(home.path()).to_str().unwrap());
+
+            let options = [
+                "--data-dir",
+                data,
+                "--outbox",
+                "--port",
+                "9003",
+                "--max-calls",
+                "7",
+                "--llm-concurrency",
+                "2",
+                "--apply",
+            ];
+            home.install(manager, &options).unwrap();
+            let json = status(&home);
+            let p = |rel: &str| home.path().join(rel).to_str().unwrap().to_string();
+            assert_eq!(json["manager"], manager);
+            assert_eq!(json["installed"], true);
+            assert_eq!(json["managed"], true);
+            assert_eq!(json["binary"], p("bin/agent-memoryd"));
+            assert_eq!(json["envFile"], p("checkout/.env"));
+            assert_eq!(json["dataDir"], data);
+            assert_eq!(json["outbox"], p(crate::harness::outbox::DEFAULT_OUTBOX));
+            assert_eq!(json["port"], 9003);
+            assert_eq!(json["llmConcurrency"], 2);
+            assert_eq!(json["maxCalls"], 7);
+
+            home.install(manager, &["--max-calls", "0", "--apply"])
+                .unwrap();
+            let json = status(&home);
+            assert_eq!(json["maxCalls"], serde_json::Value::Null);
+            assert_eq!(json["outbox"], serde_json::Value::Null);
+            assert_eq!(json["port"], 8765);
+        }
+        let unit = Manager::Systemd.unit_path(home.path());
+        std::fs::write(
+            &unit,
+            "[Service]\nExecStart=/usr/bin/python3 scripts/serve.py\n",
+        )
+        .unwrap();
+        let at = Target {
+            manager: Some(Manager::Systemd),
+            home: Some(home.path().to_path_buf()),
+        };
+        let hand_made = status_json(&at).unwrap();
+        assert_eq!(hand_made["managed"], false);
+        assert_eq!(hand_made["envFile"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn start_loads_reloads_or_leaves_the_service() {
+        let plist = Path::new("/h/Library/LaunchAgents/local.agent-memory-daemon.plist");
+        let words = |plan: Vec<Vec<String>>| -> Vec<String> {
+            plan.iter().map(|step| step.join(" ")).collect()
+        };
+        let launchd = |loaded, reload| {
+            words(start_plan(
+                Manager::Launchd,
+                plist,
+                "gui/501",
+                loaded,
+                reload,
+            ))
+        };
+        let bootstrap = format!("launchctl bootstrap gui/501 {}", plist.display());
+        let bootout = "launchctl bootout gui/501/local.agent-memory-daemon".to_string();
+        assert_eq!(launchd(false, false), [bootstrap.clone()]);
+        assert_eq!(launchd(false, true), [bootstrap.clone()]);
+        assert_eq!(launchd(true, true), [bootout, bootstrap]);
+        assert!(launchd(true, false).is_empty());
+
+        let unit = Path::new("/h/.config/systemd/user/agent-memory.service");
+        let systemd =
+            |loaded, reload| words(start_plan(Manager::Systemd, unit, "", loaded, reload));
+        let reloaded = [
+            "systemctl --user daemon-reload",
+            "systemctl --user enable agent-memory.service",
+            "systemctl --user restart agent-memory.service",
+        ];
+        assert_eq!(systemd(true, true), reloaded);
+        assert_eq!(systemd(false, true), reloaded);
+        assert_eq!(
+            systemd(false, false),
+            [
+                "systemctl --user daemon-reload",
+                "systemctl --user enable --now agent-memory.service"
+            ]
+        );
+        assert!(systemd(true, false).is_empty());
+    }
+
+    #[test]
+    fn start_needs_apply_and_replaces_the_printed_commands() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["t", "install", "--env-file", "x"];
+            argv.extend(args);
+            Cli::try_parse_from(argv)
+        };
+        assert!(parse(&["--start"]).is_err());
+        assert!(parse(&["--apply", "--restart"]).is_err());
+        assert!(parse(&["--apply", "--start", "--restart"]).is_ok());
+
+        let home = Home::new("svc-start");
+        let out = home.install("systemd", &["--apply", "--start"]).unwrap();
+        assert!(out.changed);
+        let report = out.report.join("\n");
+        assert!(!report.contains("[next]"), "{report}");
+    }
+
+    #[tokio::test]
+    async fn start_refuses_a_unit_under_another_home() {
+        let home = Home::new("svc-other-home");
+        let at = Target {
+            manager: Some(Manager::Systemd),
+            home: Some(home.path().to_path_buf()),
+        };
+        let unit = Manager::Systemd.unit_path(home.path());
+        let e = start(&at, &unit, true, 9).await.unwrap_err();
+        assert!(e.to_string().contains("--home"), "{e}");
     }
 
     #[test]
