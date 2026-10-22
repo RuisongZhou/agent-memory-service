@@ -399,14 +399,15 @@ def host_check(args, ctx, planned):
     entries = (responses[2].get('result', {}).get('data') or [{}])[0]
     for problem in entries.get('errors', []) + entries.get('warnings', []):
         print(f'[note] codex reports: {problem}')
-    loaded = lambda command: {h.get('eventName'): (h.get('timeoutSec'), h.get('statusMessage'))
-                              for h in entries.get('hooks', []) if h.get('command') == command}
+    # The name is compared only where the listing reports one, so a Codex that omits it still installs.
+    loaded = lambda command, name: {h.get('eventName'): (h.get('timeoutSec'), h.get('statusMessage', name))
+                                    for h in entries.get('hooks', []) if h.get('command') == command}
     # hooks/list names events in camelCase: UserPromptSubmit -> userPromptSubmit.
     expected = lambda events, timeout, name: {event[0].lower() + event[1:]: (timeout, name) for event in events}
-    collector = loaded(core.hook_command(ctx))
+    collector = loaded(core.hook_command(ctx), CAPTURE_NAME)
     if collector != (expected(EVENTS, core.HOOK_TIMEOUT, CAPTURE_NAME) if ctx.capture else {}):
         raise InstallError('Codex did not load the collector hooks as written')
-    recall = loaded(core.recall_command(ctx))
+    recall = loaded(core.recall_command(ctx), RECALL_NAME)
     if recall != (expected(core.RECALL_EVENTS, core.RECALL_TIMEOUT, RECALL_NAME) if ctx.recall else {}):
         raise InstallError('Codex did not load the recall hooks as written')
     print(f'[check] codex app-server loaded {len(collector)} collector and {len(recall)} recall hook(s) '
