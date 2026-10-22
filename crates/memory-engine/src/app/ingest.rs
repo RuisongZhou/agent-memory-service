@@ -1,14 +1,14 @@
 //! Shared admission, explicit instructions and durable request inspection.
 use crate::app::admission::required_scope;
 pub use crate::app::tasks::get_task;
-use crate::runtime::{engine::Engine, tenant::Tenant};
+use crate::runtime::{engine::Engine, instance::Instance};
 use memory_domain::types::*;
 use serde_json::Value;
 use std::sync::Arc;
 
 pub async fn add_memories(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     req: AddMemoriesReq,
 ) -> ApiResult<Value> {
@@ -62,6 +62,6 @@ pub async fn add_memories(
     eng.add_memories(t, c, req).await
 }
 
-pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
+pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
     eng.wait_idle(t).await
 }

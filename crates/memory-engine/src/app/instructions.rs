@@ -1,5 +1,5 @@
 //! Explicit behavioural memory. Untrusted recalled text is never promoted into instructions.
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema::{self, request_kind};
@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub async fn store(
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     caller: &Caller,
     req: &AddMemoriesReq,
     project: &str,

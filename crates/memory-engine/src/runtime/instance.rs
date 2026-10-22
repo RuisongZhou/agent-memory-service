@@ -19,7 +19,7 @@ pub struct VecCache {
     pub turn_chunks: HashMap<String, Arc<Vec<Vec<f32>>>>,
 }
 
-pub struct Tenant {
+pub struct Instance {
     pub dir: PathBuf,
     pub store: Store,
     pub ft: FullText,
@@ -36,7 +36,7 @@ pub struct Tenant {
     algorithm_states: std::sync::Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
 }
 
-impl Tenant {
+impl Instance {
     /// Open the store under `root/store`. Earlier versions kept it under `root/tenants/default`; it is moved here.
     pub async fn open(root: &Path, dim: usize, algorithm_schema: &str) -> Result<Self> {
         let dir = root.join("store");
@@ -88,7 +88,7 @@ impl Tenant {
         self.extract_lock.lock().await
     }
 
-    /// Non-blocking variant of [`Tenant::lock_formation`]; `None` while another formation job holds the lock.
+    /// Non-blocking variant of [`Instance::lock_formation`]; `None` while another formation job holds the lock.
     /// Used by mem0 `wait` to poll a background job's receipt instead of queueing behind it.
     pub fn try_lock_formation(&self) -> Option<MutexGuard<'_, ()>> {
         self.extract_lock.try_lock().ok()
@@ -121,7 +121,7 @@ impl Tenant {
         self.import_gate.read().await
     }
 
-    /// The exclusive side of [`Tenant::admit_import_turn`].
+    /// The exclusive side of [`Instance::admit_import_turn`].
     pub async fn close_import_turns(&self) -> RwLockWriteGuard<'_, ()> {
         self.import_gate.write().await
     }
@@ -132,7 +132,7 @@ impl Tenant {
         self.extract_notify.notify_one();
     }
 
-    /// Future that completes on the next [`Tenant::wake_formation`]; awaited by the formation worker loops.
+    /// Future that completes on the next [`Instance::wake_formation`]; awaited by the formation worker loops.
     pub fn formation_signal(&self) -> Notified<'_> {
         self.extract_notify.notified()
     }
@@ -142,7 +142,7 @@ impl Tenant {
         self.index_notify.notify_one();
     }
 
-    /// Future that completes on the next [`Tenant::wake_indexer`]; awaited by the index worker loop.
+    /// Future that completes on the next [`Instance::wake_indexer`]; awaited by the index worker loop.
     pub fn indexer_signal(&self) -> Notified<'_> {
         self.index_notify.notified()
     }

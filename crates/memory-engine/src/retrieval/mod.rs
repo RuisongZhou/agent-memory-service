@@ -6,7 +6,7 @@ pub mod scoring;
 pub mod vector;
 pub mod visibility;
 
-use crate::runtime::{engine::Engine, tenant::Tenant};
+use crate::runtime::{engine::Engine, instance::Instance};
 use memory_domain::types::*;
 use serde_json::Value;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub use crate::runtime::reference_time::ref_now;
 pub async fn get_context(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     req: GetContextReq,
 ) -> ApiResult<Value> {

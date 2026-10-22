@@ -14,7 +14,7 @@ use memory_domain::import::*;
 use memory_domain::types::*;
 use memory_engine::app::{import, ingest};
 use memory_engine::runtime::engine::Engine;
-use memory_engine::runtime::tenant::Tenant;
+use memory_engine::runtime::instance::Instance;
 use memory_engine::runtime::{llm::Llm, models::ModelHub};
 use memory_rules::import::units::{content_hash, turn_key, unit_key};
 use memory_store::schema;
@@ -77,7 +77,7 @@ fn submission(unit: &ImportUnit, run_id: Option<&str>) -> AddMemoriesReq {
     }
 }
 
-async fn propose(eng: &Arc<Engine>, t: &Arc<Tenant>, units: Vec<ImportUnit>) -> Value {
+async fn propose(eng: &Arc<Engine>, t: &Arc<Instance>, units: Vec<ImportUnit>) -> Value {
     let req = ImportProposeReq {
         project: PROJECT.into(),
         host: HOST.into(),
@@ -98,7 +98,7 @@ fn run_req(run_id: &str) -> ImportRunReq {
 }
 
 /// The run's row of `turn`.
-async fn row(t: &Arc<Tenant>, run_id: &str, unit: &ImportUnit) -> Value {
+async fn row(t: &Arc<Instance>, run_id: &str, unit: &ImportUnit) -> Value {
     let turn_id = &unit.turn.as_ref().unwrap().turn_id;
     let rows = import::get_run(t, run_req(run_id)).await.unwrap()["proposals"].clone();
     rows.as_array()
@@ -110,7 +110,7 @@ async fn row(t: &Arc<Tenant>, run_id: &str, unit: &ImportUnit) -> Value {
 }
 
 /// The current fact of the project with `text`.
-async fn fact(t: &Tenant, text: &str) -> MemoryRec {
+async fn fact(t: &Instance, text: &str) -> MemoryRec {
     t.store
         .current_project_facts(PROJECT)
         .await

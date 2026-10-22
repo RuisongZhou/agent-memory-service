@@ -7,7 +7,7 @@ use anyhow::{anyhow, ensure, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::runtime::{engine::Engine, llm::JsonContract, tenant::Tenant};
+use crate::runtime::{engine::Engine, instance::Instance, llm::JsonContract};
 use memory_domain::import::{ExtractedItem, ExtractedUnit, ImportUnit};
 use memory_domain::types::*;
 use memory_rules::import::units::{UnitLimits, RECORD_OVERHEAD};
@@ -139,7 +139,7 @@ fn input(
 /// `extract_log` row records the parsed output with the prompt hashes. Items are returned unvalidated.
 pub(super) async fn extract(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     project: &str,
     unit: &ImportUnit,
     limits: &UnitLimits,

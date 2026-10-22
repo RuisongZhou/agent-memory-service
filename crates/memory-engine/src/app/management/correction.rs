@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::{must_get, MAX_TEXT_BYTES};
 use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
@@ -15,7 +15,7 @@ use memory_store::store::{patch, to_doc, Tx};
 const MAX_CHAIN_HOPS: usize = 64;
 
 /// The current value of `m`'s chain: walk supersededBy forward; the first active node, else the last node.
-async fn chain_current(t: &Tenant, m: &MemoryRec) -> Result<String> {
+async fn chain_current(t: &Instance, m: &MemoryRec) -> Result<String> {
     let mut cur = m.clone();
     let mut seen = HashSet::from([m.id.clone()]);
     for _ in 0..MAX_CHAIN_HOPS {
@@ -51,7 +51,7 @@ fn valid_time(s: &str) -> bool {
 /// The formation lock prevents a concurrent extraction from superseding the same record twice.
 pub async fn correct_memory(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     req: CorrectMemoryReq,
 ) -> ApiResult<Value> {

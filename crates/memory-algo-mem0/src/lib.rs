@@ -8,7 +8,7 @@ use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps}
 use memory_domain::types::*;
 use memory_engine::runtime::algorithm::{BoxFuture, MemoryAlgorithm};
 use memory_engine::runtime::engine::Engine;
-use memory_engine::runtime::tenant::Tenant;
+use memory_engine::runtime::instance::Instance;
 use memory_store::store::Tx;
 
 pub mod config;
@@ -68,18 +68,21 @@ impl MemoryAlgorithm for Mem0 {
         SCHEMA
     }
 
-    fn foreign_unfinished_jobs<'a>(&'a self, t: &'a Tenant) -> BoxFuture<'a, anyhow::Result<i64>> {
+    fn foreign_unfinished_jobs<'a>(
+        &'a self,
+        t: &'a Instance,
+    ) -> BoxFuture<'a, anyhow::Result<i64>> {
         Box::pin(repo::foreign_unfinished_job_count(t))
     }
 
-    fn start_workers(&self, eng: Arc<Engine>, t: Arc<Tenant>) {
+    fn start_workers(&self, eng: Arc<Engine>, t: Arc<Instance>) {
         runtime::start(eng, t)
     }
 
     fn add_memories<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         c: &'a Caller,
         req: AddMemoriesReq,
     ) -> BoxFuture<'a, ApiResult<Value>> {
@@ -89,7 +92,7 @@ impl MemoryAlgorithm for Mem0 {
     fn search_memories<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         c: &'a Caller,
         req: SearchReq,
     ) -> BoxFuture<'a, ApiResult<Value>> {
@@ -99,7 +102,7 @@ impl MemoryAlgorithm for Mem0 {
     fn nearest_facts<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         project: &'a str,
         platform: &'a str,
         text: &'a str,
@@ -113,7 +116,7 @@ impl MemoryAlgorithm for Mem0 {
     fn list_turns<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         c: &'a Caller,
         req: ListTurnsReq,
     ) -> BoxFuture<'a, ApiResult<Value>> {
@@ -123,14 +126,14 @@ impl MemoryAlgorithm for Mem0 {
     fn wait_idle<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
     ) -> BoxFuture<'a, ApiResult<Value>> {
         Box::pin(formation::wait_idle(eng, t))
     }
 
     fn source_batch<'a>(
         &'a self,
-        t: &'a Tenant,
+        t: &'a Instance,
         memory_id: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Value>>> {
         Box::pin(t.store.get_doc(SOURCES, memory_id))
@@ -138,7 +141,7 @@ impl MemoryAlgorithm for Mem0 {
 
     fn source_requests<'a>(
         &'a self,
-        t: &'a Tenant,
+        t: &'a Instance,
         memory_id: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Vec<String>>>> {
         Box::pin(repo::source_requests(t, memory_id))
@@ -147,7 +150,7 @@ impl MemoryAlgorithm for Mem0 {
     fn consolidation_snapshot<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         project: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<ConsolidationSnapshot>>> {
         Box::pin(async move { consolidation::snapshot(eng, t, project).await.map(Some) })
@@ -156,7 +159,7 @@ impl MemoryAlgorithm for Mem0 {
     fn consolidation_generate<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         project: &'a str,
         cluster: &'a Cluster,
     ) -> BoxFuture<'a, anyhow::Result<GeneratedOps>> {
@@ -166,7 +169,7 @@ impl MemoryAlgorithm for Mem0 {
     fn consolidation_apply<'a>(
         &'a self,
         _eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         proposal: &'a Value,
         tx: &'a mut Tx,
     ) -> BoxFuture<'a, anyhow::Result<OpOutcome>> {
@@ -176,7 +179,7 @@ impl MemoryAlgorithm for Mem0 {
     fn consolidation_rollback<'a>(
         &'a self,
         _eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         proposal: &'a Value,
         tx: &'a mut Tx,
     ) -> BoxFuture<'a, anyhow::Result<OpOutcome>> {
@@ -185,7 +188,7 @@ impl MemoryAlgorithm for Mem0 {
 
     fn consolidation_inputs_restored<'a>(
         &'a self,
-        t: &'a Tenant,
+        t: &'a Instance,
         merged: &'a MemoryRec,
         restored: &'a [String],
         tx: &'a mut Tx,

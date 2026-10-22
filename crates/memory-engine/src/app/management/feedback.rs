@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
@@ -15,7 +15,7 @@ const SKILL_ENABLE_HELPFUL: i64 = 3;
 /// Feedback window (5.5).
 const FEEDBACK_WINDOW_HOURS: i64 = 24;
 
-pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: FeedbackReq) -> ApiResult<Value> {
+pub async fn feedback(eng: &Arc<Engine>, t: &Arc<Instance>, req: FeedbackReq) -> ApiResult<Value> {
     let _ = eng;
     let _guard = t.lock_formation().await;
     let outcome = req.outcome.trim().to_string();

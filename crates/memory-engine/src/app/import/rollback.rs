@@ -10,7 +10,7 @@ use super::{
 };
 use crate::app::consolidation::write_patch;
 use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::import::apply as plan;
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportRun, ImportRunReq, APPLIED, ROLLED_BACK, RUN_APPLIED,
@@ -39,7 +39,7 @@ fn ledger_drop(
 
 /// The inverse of one applied proposal, added to `tx`, or the reason to leave it applied.
 async fn undo(
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     run: &ImportRun,
     p: &ImportProposal,
     tx: &mut Tx,
@@ -104,7 +104,7 @@ async fn undo(
 /// run imported the unit again; the run is then `partially_rolled_back` and rollback can be retried. Session
 /// turns are closed first (`turns`): the run admits none from then on, and each submitted turn's facts formed
 /// only from the run's own requests are retired; a turn still forming stays applied until a retry.
-pub async fn rollback(eng: &Arc<Engine>, t: &Arc<Tenant>, req: ImportRunReq) -> ApiResult<Value> {
+pub async fn rollback(eng: &Arc<Engine>, t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
     let _guard = t.lock_formation().await;
     let id = req.run_id.as_str();
     let run = load_run(t, id).await?;

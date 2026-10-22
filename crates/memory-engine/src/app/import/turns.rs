@@ -12,7 +12,7 @@ use std::sync::Arc;
 use super::{invalid, load_run};
 use crate::app::consolidation::write_patch;
 use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::import::apply::turn_fact_rollback_patch;
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportRun, ImportUnit, UnitOutcome, ACCEPT, APPLIED,
@@ -78,7 +78,7 @@ pub(super) fn register(
 /// formed (or found to be a duplicate) like any captured turn, and the row records the request.
 pub async fn submit(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     req: AddMemoriesReq,
 ) -> ApiResult<Value> {
@@ -155,7 +155,7 @@ pub async fn submit(
 
 /// The run's own requests, by id: those its session turns created (`importRunId`).
 pub(super) async fn owned_requests(
-    t: &Tenant,
+    t: &Instance,
     run_id: &str,
 ) -> anyhow::Result<HashMap<String, Value>> {
     Ok(t.store
@@ -172,7 +172,7 @@ pub(super) async fn owned_requests(
 /// changed it since; a fact also formed from another request stays. A request still forming waits.
 pub(super) async fn undo(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     run: &ImportRun,
     p: &ImportProposal,
     owned: &HashMap<String, Value>,

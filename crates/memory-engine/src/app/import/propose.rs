@@ -13,7 +13,7 @@ use super::{
     run_proposals, turns, LEDGER_APPLIED,
 };
 use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::import::apply::{self as plan, INSTRUCTION};
 use memory_domain::import::{
     default_decision, is_session_turn, item_kind_for_hint, session_turn_problem, ExtractedUnit,
@@ -167,7 +167,7 @@ fn instruction_too_long(text: &str) -> Option<String> {
 /// The state of one `propose` request.
 struct Proposer<'a> {
     eng: &'a Arc<Engine>,
-    t: &'a Arc<Tenant>,
+    t: &'a Arc<Instance>,
     run: &'a ImportRun,
     limits: UnitLimits,
     prompt_hash: String,
@@ -573,7 +573,7 @@ impl Proposer<'_> {
 /// batch's unit outcomes.
 pub async fn propose(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     req: ImportProposeReq,
 ) -> ApiResult<Value> {
     let project = req.project.trim();

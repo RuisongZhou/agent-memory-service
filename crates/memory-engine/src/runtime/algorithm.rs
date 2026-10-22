@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::consolidation::apply::OpOutcome;
 use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
@@ -36,10 +36,11 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     }
 
     /// Unfinished work left in this data directory by a different algorithm.
-    fn foreign_unfinished_jobs<'a>(&'a self, t: &'a Tenant) -> BoxFuture<'a, anyhow::Result<i64>>;
+    fn foreign_unfinished_jobs<'a>(&'a self, t: &'a Instance)
+        -> BoxFuture<'a, anyhow::Result<i64>>;
 
     /// Spawn the algorithm's background workers for a freshly opened store.
-    fn start_workers(&self, eng: Arc<Engine>, t: Arc<Tenant>);
+    fn start_workers(&self, eng: Arc<Engine>, t: Arc<Instance>);
 
     /// Admit an `add_memories` request other than an explicit instruction. The request row it commits in
     /// `requests` carries the caller's `turnId` and `importRunId` in the same transaction: import finds the requests
@@ -47,7 +48,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn add_memories<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         c: &'a Caller,
         req: AddMemoriesReq,
     ) -> BoxFuture<'a, ApiResult<Value>>;
@@ -55,7 +56,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn search_memories<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         c: &'a Caller,
         req: SearchReq,
     ) -> BoxFuture<'a, ApiResult<Value>>;
@@ -66,7 +67,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn nearest_facts<'a>(
         &'a self,
         _eng: &'a Arc<Engine>,
-        _t: &'a Arc<Tenant>,
+        _t: &'a Arc<Instance>,
         _project: &'a str,
         _platform: &'a str,
         _text: &'a str,
@@ -78,7 +79,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn list_turns<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
         c: &'a Caller,
         req: ListTurnsReq,
     ) -> BoxFuture<'a, ApiResult<Value>>;
@@ -86,13 +87,13 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn wait_idle<'a>(
         &'a self,
         eng: &'a Arc<Engine>,
-        t: &'a Arc<Tenant>,
+        t: &'a Arc<Instance>,
     ) -> BoxFuture<'a, ApiResult<Value>>;
 
     /// Algorithm-specific provenance attached to `get_memory` when evidence is requested.
     fn source_batch<'a>(
         &'a self,
-        _t: &'a Tenant,
+        _t: &'a Instance,
         _memory_id: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Value>>> {
         Box::pin(async { Ok(None) })
@@ -103,7 +104,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     /// it; the fact is then left alone.
     fn source_requests<'a>(
         &'a self,
-        _t: &'a Tenant,
+        _t: &'a Instance,
         _memory_id: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Vec<String>>>> {
         Box::pin(async { Ok(None) })
@@ -114,7 +115,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn consolidation_snapshot<'a>(
         &'a self,
         _eng: &'a Arc<Engine>,
-        _t: &'a Arc<Tenant>,
+        _t: &'a Arc<Instance>,
         _project: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<ConsolidationSnapshot>>> {
         Box::pin(async { Ok(None) })
@@ -125,7 +126,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn consolidation_generate<'a>(
         &'a self,
         _eng: &'a Arc<Engine>,
-        _t: &'a Arc<Tenant>,
+        _t: &'a Arc<Instance>,
         _project: &'a str,
         _cluster: &'a Cluster,
     ) -> BoxFuture<'a, anyhow::Result<GeneratedOps>> {
@@ -138,7 +139,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn consolidation_apply<'a>(
         &'a self,
         _eng: &'a Arc<Engine>,
-        _t: &'a Arc<Tenant>,
+        _t: &'a Arc<Instance>,
         _proposal: &'a Value,
         _tx: &'a mut Tx,
     ) -> BoxFuture<'a, anyhow::Result<OpOutcome>> {
@@ -149,7 +150,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     fn consolidation_rollback<'a>(
         &'a self,
         _eng: &'a Arc<Engine>,
-        _t: &'a Arc<Tenant>,
+        _t: &'a Arc<Instance>,
         _proposal: &'a Value,
         _tx: &'a mut Tx,
     ) -> BoxFuture<'a, anyhow::Result<OpOutcome>> {
@@ -160,7 +161,7 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
     /// `current` because one of its other inputs was deleted (see `delete_memory`).
     fn consolidation_inputs_restored<'a>(
         &'a self,
-        _t: &'a Tenant,
+        _t: &'a Instance,
         _merged: &'a MemoryRec,
         _restored: &'a [String],
         _tx: &'a mut Tx,

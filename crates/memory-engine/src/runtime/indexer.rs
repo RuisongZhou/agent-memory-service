@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
@@ -106,7 +106,7 @@ pub fn turn_ftdoc(rid: &str, t: &TurnRec) -> FtDoc {
 }
 
 /// Background worker: drains index_tasks; commits Tantivy at most once per second (约 1 秒后可查).
-pub async fn run_index_worker(eng: Arc<Engine>, t: Arc<Tenant>) {
+pub async fn run_index_worker(eng: Arc<Engine>, t: Arc<Instance>) {
     loop {
         match process_batch(&eng, &t, 64).await {
             Ok(n) if n > 0 => continue,
@@ -124,12 +124,12 @@ pub async fn run_index_worker(eng: Arc<Engine>, t: Arc<Tenant>) {
 }
 
 /// Number of index tasks still pending.
-pub async fn pending(t: &Tenant) -> Result<i64> {
+pub async fn pending(t: &Instance) -> Result<i64> {
     t.store.count(schema::INDEX_TASKS, None).await
 }
 
 /// Process up to `limit` tasks in creation order. Returns the number processed.
-pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> Result<usize> {
+pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Instance>, limit: usize) -> Result<usize> {
     let _guard = t.lock_index().await;
     let tasks = t.store.pending_index_tasks(limit).await?;
     if tasks.is_empty() {
@@ -303,7 +303,7 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Tenant>, limit: usize) -> 
 }
 
 /// Drain all pending index tasks synchronously (used by /admin/wait_idle and delete_memory).
-pub async fn drain(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
+pub async fn drain(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()> {
     loop {
         let n = process_batch(eng, t, 256).await?;
         if n == 0 {
@@ -313,7 +313,7 @@ pub async fn drain(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
 }
 
 /// Queue a full rebuild (5.2): vector → re-embed every active memory and turn; full-text → clear and re-add.
-pub async fn schedule_rebuild(t: &Tenant, vectors: bool, fulltext: bool) -> Result<()> {
+pub async fn schedule_rebuild(t: &Instance, vectors: bool, fulltext: bool) -> Result<()> {
     let _guard = t.lock_index().await;
     if fulltext {
         t.ft.clear()?;

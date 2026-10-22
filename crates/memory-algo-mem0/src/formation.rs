@@ -5,7 +5,7 @@ use super::repo;
 use anyhow::{anyhow, ensure, Result};
 use memory_domain::types::*;
 use memory_engine::app::tasks;
-use memory_engine::runtime::{engine::Engine, llm::JsonContract, tenant::Tenant};
+use memory_engine::runtime::{engine::Engine, instance::Instance, llm::JsonContract};
 use memory_rules::util;
 use memory_store::schema::{self, request_kind};
 use memory_store::store::{self, Tx};
@@ -110,7 +110,7 @@ fn contract(existing: &[Value]) -> JsonContract {
 
 pub async fn enqueue(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     req: AddMemoriesReq,
 ) -> ApiResult<Value> {
@@ -210,11 +210,11 @@ pub async fn enqueue(
     Ok(out)
 }
 
-pub async fn process_jobs(eng: &Arc<Engine>, t: &Arc<Tenant>) -> Result<()> {
+pub async fn process_jobs(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()> {
     process_until(eng, t, None).await
 }
 
-async fn process_until(eng: &Arc<Engine>, t: &Arc<Tenant>, stop: Option<&str>) -> Result<()> {
+async fn process_until(eng: &Arc<Engine>, t: &Arc<Instance>, stop: Option<&str>) -> Result<()> {
     let _guard = t.lock_formation().await;
     let jobs = repo::unfinished_jobs(t).await?;
     for job in jobs {
@@ -266,7 +266,7 @@ async fn process_until(eng: &Arc<Engine>, t: &Arc<Tenant>, stop: Option<&str>) -
     Ok(())
 }
 
-async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
+async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
     let started = Instant::now();
     let id = job["requestId"]
         .as_str()
@@ -526,7 +526,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
 }
 
 /// Resume after a crash between primary/vector commit and cache publication, without generation.
-async fn publish_committed(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> Result<()> {
+async fn publish_committed(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
     let id = job["requestId"]
         .as_str()
         .ok_or_else(|| anyhow!("missing requestId"))?;
@@ -548,7 +548,7 @@ async fn publish_committed(eng: &Arc<Engine>, t: &Arc<Tenant>, job: &Value) -> R
     t.store.merge_doc(schema::REQUESTS,id,json!({"status":"completed","searchable":true,"error":null,"updatedAt":util::now_str()})).await
 }
 
-async fn wait(eng: &Arc<Engine>, t: &Arc<Tenant>, id: &str) -> ApiResult<Value> {
+async fn wait(eng: &Arc<Engine>, t: &Arc<Instance>, id: &str) -> ApiResult<Value> {
     let start = Instant::now();
     loop {
         // A background job may already hold the formation lock; poll its published receipt
@@ -588,7 +588,7 @@ async fn wait(eng: &Arc<Engine>, t: &Arc<Tenant>, id: &str) -> ApiResult<Value> 
     }
 }
 
-pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
+pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
     let start = Instant::now();
     loop {
         process_jobs(eng, t).await?;

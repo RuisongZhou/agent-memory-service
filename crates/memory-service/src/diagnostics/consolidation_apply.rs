@@ -8,7 +8,7 @@ use memory_domain::types::*;
 use memory_engine::app::{consolidation, management};
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
-use memory_engine::runtime::tenant::Tenant;
+use memory_engine::runtime::instance::Instance;
 use memory_store::schema;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -34,12 +34,12 @@ fn id_of(facts: &[MemoryRec], text: &str) -> String {
     facts.iter().find(|m| m.text == text).unwrap().id.clone()
 }
 
-async fn hash_target(t: &Tenant, project: &str, text: &str) -> Value {
+async fn hash_target(t: &Instance, project: &str, text: &str) -> Value {
     let key = memory_rules::mem0::content_key(project, text, true);
     t.store.get_doc(HASHES, &key).await.unwrap().unwrap()["memoryId"].clone()
 }
 
-async fn source_requests(t: &Tenant, id: &str) -> Value {
+async fn source_requests(t: &Instance, id: &str) -> Value {
     t.store.get_doc(SOURCES, id).await.unwrap().unwrap()["inputRequestIds"].clone()
 }
 
@@ -50,7 +50,7 @@ fn run(id: &str) -> ConsolidationRunReq {
 /// Propose for `project` and apply the run; returns the run id and the first proposal per op kind.
 async fn propose_and_apply(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     project: &str,
 ) -> (String, Vec<Value>) {
     let proposed = consolidation::consolidate(
@@ -80,7 +80,7 @@ fn applied<'a>(proposals: &'a [Value], op: &str) -> &'a Value {
 /// One merge cluster (laptop, work laptop) among ten facts in `project`.
 async fn merge_project(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     c: &Caller,
     project: &str,
 ) -> (String, String) {

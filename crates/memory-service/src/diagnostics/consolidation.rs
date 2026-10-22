@@ -114,7 +114,7 @@ pub(crate) fn engine(url: &str, enabled: bool) -> Arc<Engine> {
 
 pub(crate) async fn add(
     eng: &Arc<Engine>,
-    t: &Arc<memory_engine::runtime::tenant::Tenant>,
+    t: &Arc<memory_engine::runtime::instance::Instance>,
     c: &Caller,
     project: &str,
     turn: &str,

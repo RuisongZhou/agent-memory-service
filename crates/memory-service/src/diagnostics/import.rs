@@ -12,7 +12,7 @@ use memory_engine::app::{import, management};
 use memory_engine::retrieval;
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
-use memory_engine::runtime::tenant::Tenant;
+use memory_engine::runtime::instance::Instance;
 use memory_rules::import::units::{content_hash, unit_key};
 use memory_store::schema;
 use serde_json::{json, Value};
@@ -70,7 +70,7 @@ fn plan() -> Vec<ImportUnit> {
 
 async fn propose(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     run_id: Option<&str>,
     finish: bool,
     units: Vec<ImportUnit>,
@@ -126,7 +126,7 @@ fn str_of(v: &Value) -> String {
     v.as_str().unwrap().to_string()
 }
 
-async fn rows(eng: &Arc<Engine>, t: &Arc<Tenant>, table: &str) -> Vec<Value> {
+async fn rows(eng: &Arc<Engine>, t: &Arc<Instance>, table: &str) -> Vec<Value> {
     management::export(eng, t, json!({ "table": table }))
         .await
         .unwrap()["records"]
@@ -597,7 +597,7 @@ pub async fn selftest() {
 #[allow(clippy::too_many_arguments)]
 async fn round(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     units: Vec<ImportUnit>,
     reconsider: bool,
     limits: ImportLimits,
@@ -659,7 +659,7 @@ fn all(decision: &'static str) -> impl Fn(&Value) -> Vec<(String, String)> {
 }
 
 /// The project's current facts with `text`.
-async fn current_with(t: &Tenant, text: &str) -> Vec<MemoryRec> {
+async fn current_with(t: &Instance, text: &str) -> Vec<MemoryRec> {
     t.store
         .current_project_facts(PROJECT)
         .await

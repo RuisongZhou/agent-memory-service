@@ -9,7 +9,7 @@ pub mod selftest;
 
 use memory_config::ServiceConfig;
 use memory_domain::types::{Caller, MemoryRec};
-use memory_engine::runtime::{engine::Engine, llm::Llm, models::ModelHub, tenant::Tenant};
+use memory_engine::runtime::{engine::Engine, instance::Instance, llm::Llm, models::ModelHub};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -29,9 +29,9 @@ pub(crate) async fn fresh_store(
     eng: &Engine,
     name: &str,
     platform: &str,
-) -> (Arc<Tenant>, Caller, PathBuf) {
+) -> (Arc<Instance>, Caller, PathBuf) {
     let dir = std::env::temp_dir().join(memory_rules::util::new_id(&format!("memory-{name}-")));
-    let t = Tenant::open(&dir, eng.models.dim, eng.algorithm().schema())
+    let t = Instance::open(&dir, eng.models.dim, eng.algorithm().schema())
         .await
         .unwrap();
     let caller = Caller {
@@ -40,6 +40,6 @@ pub(crate) async fn fresh_store(
     (Arc::new(t), caller, dir)
 }
 
-pub(crate) async fn memory(t: &Tenant, id: &str) -> MemoryRec {
+pub(crate) async fn memory(t: &Instance, id: &str) -> MemoryRec {
     t.store.get_memory(id).await.unwrap().unwrap()
 }

@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::types::*;
 use memory_store::schema;
 use memory_store::store::{safe_id, session_rid, to_doc, turn_rid, Tx};
 
-pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
+pub async fn stats(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
     let mut counts = Map::new();
     let owned = eng.algorithm().owned_tables();
     for tb in schema::SHARED_TABLES.iter().chain(owned) {
@@ -64,7 +64,7 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Tenant>) -> ApiResult<Value> {
 }
 
 /// All memories (debug). Optional filters: `status`, `type`, `project` (strings or arrays of strings).
-pub async fn export(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResult<Value> {
+pub async fn export(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiResult<Value> {
     // Read-only extensions for request-level billing, proposal/discard, consolidation-run and import audits.
     if let Some(table) = body.get("table").and_then(Value::as_str) {
         if !(matches!(
@@ -121,7 +121,7 @@ pub async fn export(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResul
 /// Test-only admin action: insert records directly (bypassing extraction) and index them synchronously.
 /// Body: `{memories: [MemoryRec], turns: [TurnRec], sessions: [SessionRec], evidence: [EvidenceRec],
 /// entities: [EntityRec]}` in the API's camelCase JSON.
-pub async fn seed(eng: &Arc<Engine>, t: &Arc<Tenant>, body: Value) -> ApiResult<Value> {
+pub async fn seed(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiResult<Value> {
     if !eng.models.is_mock() {
         return Err(ApiError::InvalidArgument(
             "seed is available only with mock models".into(),

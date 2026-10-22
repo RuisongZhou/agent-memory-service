@@ -1,6 +1,6 @@
 //! Shared authoritative record, revision-chain and evidence reads.
 use super::visibility::Vis;
-use crate::runtime::{engine::Engine, tenant::Tenant};
+use crate::runtime::{engine::Engine, instance::Instance};
 use anyhow::Result;
 use memory_domain::types::*;
 use memory_store::store::safe_id;
@@ -14,7 +14,7 @@ pub const MAX_CHAIN_HOPS: usize = 64;
 
 /// Memory loader with a per-request cache (chain walks, conflict partners).
 pub struct Loader<'a> {
-    t: &'a Tenant,
+    t: &'a Instance,
     cache: HashMap<String, Option<MemoryRec>>,
 }
 
@@ -23,7 +23,7 @@ impl<'a> Loader<'a> {
         self.cache.get(id).and_then(Option::as_ref)
     }
 
-    pub fn new(t: &'a Tenant) -> Self {
+    pub fn new(t: &'a Instance) -> Self {
         Self {
             t,
             cache: HashMap::new(),
@@ -186,7 +186,10 @@ pub fn evidence_json(e: &EvidenceRec, max_chars: usize) -> Value {
 }
 
 /// Evidence rows referencing any of `ids`, grouped by memory id.
-pub async fn evidence_for(t: &Tenant, ids: &[String]) -> Result<HashMap<String, Vec<EvidenceRec>>> {
+pub async fn evidence_for(
+    t: &Instance,
+    ids: &[String],
+) -> Result<HashMap<String, Vec<EvidenceRec>>> {
     let mut out: HashMap<String, Vec<EvidenceRec>> = HashMap::new();
     if ids.is_empty() {
         return Ok(out);
@@ -204,7 +207,7 @@ pub async fn evidence_for(t: &Tenant, ids: &[String]) -> Result<HashMap<String, 
 }
 
 /// The newest non-superseded profile: user profile (global) or the notes of `project`.
-pub async fn latest_profile(t: &Tenant, project: Option<&str>) -> Result<Option<MemoryRec>> {
+pub async fn latest_profile(t: &Instance, project: Option<&str>) -> Result<Option<MemoryRec>> {
     let v = match project {
         None => {
             t.store
@@ -228,7 +231,11 @@ pub async fn latest_profile(t: &Tenant, project: Option<&str>) -> Result<Option<
     Ok(v.into_iter().next())
 }
 
-pub async fn get_memory(eng: &Arc<Engine>, t: &Arc<Tenant>, req: GetMemoryReq) -> ApiResult<Value> {
+pub async fn get_memory(
+    eng: &Arc<Engine>,
+    t: &Arc<Instance>,
+    req: GetMemoryReq,
+) -> ApiResult<Value> {
     if safe_id(&req.id).is_err() {
         return Err(ApiError::NotFound(format!("memory {} not found", req.id)));
     }

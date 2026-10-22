@@ -204,10 +204,10 @@ fn fact_doc(mid: &str, text: &str, mode: Option<&str>, time: &str) -> Value {
     doc
 }
 
-async fn tenant(eng: &Engine) -> (Arc<Tenant>, std::path::PathBuf) {
+async fn instance(eng: &Engine) -> (Arc<Instance>, std::path::PathBuf) {
     let root = std::env::temp_dir().join(util::new_id("mem0_entities_test"));
     let t = Arc::new(
-        Tenant::open(&root, eng.models.dim, crate::SCHEMA)
+        Instance::open(&root, eng.models.dim, crate::SCHEMA)
             .await
             .unwrap(),
     );
@@ -230,7 +230,7 @@ fn comparable(rows: &[EntityRow]) -> Vec<Value> {
 #[tokio::test]
 async fn typed_replay_matches_frozen_full_extraction_planner() -> Result<()> {
     let eng = engine();
-    let (t, root) = tenant(&eng).await;
+    let (t, root) = instance(&eng).await;
     let mut facts = BTreeMap::new();
     let mut old = Vec::new();
     for (batch, (id, text)) in [
@@ -289,7 +289,7 @@ async fn typed_replay_matches_frozen_full_extraction_planner() -> Result<()> {
 #[tokio::test]
 async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -> Result<()> {
     let eng = engine();
-    let (t, root) = tenant(&eng).await;
+    let (t, root) = instance(&eng).await;
     t.store
         .put_doc(
             schema::MEMORIES,
@@ -420,9 +420,9 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
     drop(t);
     let mut reopened = None;
     for _ in 0..40 {
-        match Tenant::open(&root, eng.models.dim, crate::SCHEMA).await {
-            Ok(tenant) => {
-                reopened = Some(Arc::new(tenant));
+        match Instance::open(&root, eng.models.dim, crate::SCHEMA).await {
+            Ok(instance) => {
+                reopened = Some(Arc::new(instance));
                 break;
             }
             Err(error) if error.to_string() == "open surrealkv" => {
@@ -431,7 +431,7 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
             Err(error) => return Err(error),
         }
     }
-    let reopened = reopened.expect("SurrealKV release after dropping tenant");
+    let reopened = reopened.expect("SurrealKV release after dropping the instance");
     assert!(reopened
         .algorithm_state::<ProjectionCache>()
         .lock()
@@ -447,7 +447,7 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
             .any(|current| current["mid"] == row["mid"]));
     }
     // A different store must never reuse this instance's state.
-    let (other, other_root) = tenant(&eng).await;
+    let (other, other_root) = instance(&eng).await;
     assert!(boosts(&eng, &other, "\"Eve\"", "a", "test")
         .await?
         .is_empty());
@@ -465,7 +465,7 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
 #[tokio::test]
 async fn additive_changes_use_changed_ids_and_legacy_provenance_is_reconsidered() -> Result<()> {
     let eng = engine();
-    let (t, root) = tenant(&eng).await;
+    let (t, root) = instance(&eng).await;
     t.store
         .put_doc(
             schema::MEMORIES,

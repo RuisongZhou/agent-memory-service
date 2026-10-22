@@ -10,7 +10,7 @@ use memory_domain::consolidation::apply::{self as plan, AppliedOp, ApplyContext,
 use memory_domain::consolidation::ConsolidationOp;
 use memory_domain::types::*;
 use memory_engine::app::consolidation::write_patch;
-use memory_engine::runtime::tenant::Tenant;
+use memory_engine::runtime::instance::Instance;
 use memory_rules::util;
 use memory_store::schema;
 use memory_store::store::{from_doc, to_doc, Tx};
@@ -35,7 +35,7 @@ fn history(tx: &mut Tx, memory_id: &str, event: &str, run_id: &str, extra: Value
 }
 
 /// The memory a content key currently deduplicates into.
-async fn hash_target(t: &Tenant, key: &str) -> Result<Option<String>> {
+async fn hash_target(t: &Instance, key: &str) -> Result<Option<String>> {
     Ok(t.store
         .get_doc(HASHES, key)
         .await?
@@ -43,7 +43,7 @@ async fn hash_target(t: &Tenant, key: &str) -> Result<Option<String>> {
 }
 
 /// The input request ids of `ids`' source batches, without repeats, in input order.
-async fn source_union(t: &Tenant, ids: &[String]) -> Result<Vec<String>> {
+async fn source_union(t: &Instance, ids: &[String]) -> Result<Vec<String>> {
     let mut requests: Vec<(u64, String)> = Vec::new();
     let mut seen = HashSet::new();
     for id in ids {
@@ -73,7 +73,7 @@ async fn source_union(t: &Tenant, ids: &[String]) -> Result<Vec<String>> {
 
 /// Apply one proposed op into `tx`. Skipped, writing nothing, when an input's text changed since the
 /// run (content key) or the shared plan rejects it.
-pub async fn apply(t: &Tenant, proposal: &Value, tx: &mut Tx) -> Result<OpOutcome> {
+pub async fn apply(t: &Instance, proposal: &Value, tx: &mut Tx) -> Result<OpOutcome> {
     let op: ConsolidationOp = serde_json::from_value(proposal.clone())?;
     let (project, run_id, proposal_id) = (
         field(proposal, "project")?,
@@ -185,7 +185,7 @@ pub async fn apply(t: &Tenant, proposal: &Value, tx: &mut Tx) -> Result<OpOutcom
 }
 
 /// The inverse of an applied op into `tx`, or the reason to keep it.
-pub async fn rollback(t: &Tenant, proposal: &Value, tx: &mut Tx) -> Result<OpOutcome> {
+pub async fn rollback(t: &Instance, proposal: &Value, tx: &mut Tx) -> Result<OpOutcome> {
     let applied: AppliedOp = serde_json::from_value(proposal["applied"].clone())?;
     let run_id = field(proposal, "runId")?;
     let mut ids: Vec<String> = applied.patches.iter().map(|p| p.id.clone()).collect();
@@ -270,7 +270,7 @@ pub async fn rollback(t: &Tenant, proposal: &Value, tx: &mut Tx) -> Result<OpOut
 /// `restored` inputs of the deleted merge `merged` are current again: keys that pointed at them before
 /// the merge point at them again.
 pub async fn inputs_restored(
-    t: &Tenant,
+    t: &Instance,
     merged: &MemoryRec,
     restored: &[String],
     tx: &mut Tx,

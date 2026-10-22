@@ -7,7 +7,7 @@ use super::must_get;
 use crate::app::consolidation::write_patch;
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::consolidation::apply::{is_merge, release_inputs};
 use memory_domain::types::*;
 use memory_store::schema;
@@ -22,7 +22,7 @@ use memory_store::store::{safe_id, turn_rid, Tx};
 /// A consolidation merge restates its inputs (`derivation.inputMemoryIds`). Deleting it leaves the inputs
 /// superseded without a successor; deleting one of its inputs deletes the merge too, since its text holds
 /// the deleted content, and returns the merge's other inputs to `current`.
-pub async fn delete_memory(eng: &Arc<Engine>, t: &Arc<Tenant>, req: IdReq) -> ApiResult<Value> {
+pub async fn delete_memory(eng: &Arc<Engine>, t: &Arc<Instance>, req: IdReq) -> ApiResult<Value> {
     let _guard = t.lock_formation().await;
     must_get(t, &req.id).await?;
     // Profiles and skills copy their source memories, and merges restate theirs. Delete these derived
@@ -68,7 +68,7 @@ pub async fn delete_memory(eng: &Arc<Engine>, t: &Arc<Tenant>, req: IdReq) -> Ap
 
 async fn delete_one(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     memory_id: &str,
     deleted: &HashSet<String>,
     from_input: bool,

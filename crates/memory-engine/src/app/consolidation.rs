@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::runtime::engine::Engine;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::consolidation::apply::{FieldPatch, OpOutcome};
 use memory_domain::consolidation::{self as plan, ConsolidationOp};
 use memory_domain::types::*;
@@ -65,7 +65,7 @@ pub fn write_patch(tx: &mut Tx, patch: &FieldPatch) -> anyhow::Result<()> {
 
 pub async fn consolidate(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     req: ConsolidateReq,
 ) -> ApiResult<Value> {
     if !eng.cfg.consolidation_enabled {
@@ -224,7 +224,7 @@ pub async fn consolidate(
     Ok(json!({"run": run, "proposals": proposals}))
 }
 
-async fn load_run(t: &Tenant, run_id: &str) -> ApiResult<Value> {
+async fn load_run(t: &Instance, run_id: &str) -> ApiResult<Value> {
     safe_id(run_id).map_err(|_| ApiError::InvalidArgument("invalid runId".into()))?;
     t.store
         .get_doc(schema::CONSOLIDATION_RUNS, run_id)
@@ -233,7 +233,7 @@ async fn load_run(t: &Tenant, run_id: &str) -> ApiResult<Value> {
 }
 
 /// Record an error on the run before returning it; the run keeps its in-progress status and resumes.
-async fn interrupted(t: &Tenant, run_id: &str, error: anyhow::Error) -> ApiError {
+async fn interrupted(t: &Instance, run_id: &str, error: anyhow::Error) -> ApiError {
     let message = format!("{error:#}");
     if let Err(e) = t
         .store
@@ -258,7 +258,7 @@ fn count(proposals: &[Value], status: &str) -> usize {
 /// values it replaced; an op whose inputs changed since the run is marked `skipped`.
 pub async fn apply(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     req: ConsolidationRunReq,
 ) -> ApiResult<Value> {
     if !eng.cfg.consolidation_enabled {
@@ -335,7 +335,7 @@ pub async fn apply(
 /// rollback can be retried. Not gated by `consolidationEnabled`: it is the recovery path.
 pub async fn rollback(
     eng: &Arc<Engine>,
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     req: ConsolidationRunReq,
 ) -> ApiResult<Value> {
     let _guard = t.lock_formation().await;

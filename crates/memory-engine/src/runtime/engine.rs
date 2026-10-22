@@ -6,9 +6,9 @@ use tokio::sync::OnceCell;
 
 use crate::runtime::algorithm::MemoryAlgorithm;
 use crate::runtime::indexer;
+use crate::runtime::instance::Instance;
 use crate::runtime::llm::Llm;
 use crate::runtime::models::ModelHub;
-use crate::runtime::tenant::Tenant;
 use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::types::*;
 use memory_store::schema;
@@ -19,7 +19,7 @@ pub struct Engine {
     algorithm: Arc<dyn MemoryAlgorithm>,
     pub llm: Llm,
     pub models: ModelHub,
-    store: OnceCell<Arc<Tenant>>,
+    store: OnceCell<Arc<Instance>>,
 }
 
 impl Engine {
@@ -53,7 +53,7 @@ impl Engine {
 
     pub async fn add_memories(
         self: &Arc<Self>,
-        t: &Arc<Tenant>,
+        t: &Arc<Instance>,
         c: &Caller,
         req: AddMemoriesReq,
     ) -> ApiResult<Value> {
@@ -62,7 +62,7 @@ impl Engine {
 
     pub async fn search_memories(
         self: &Arc<Self>,
-        t: &Arc<Tenant>,
+        t: &Arc<Instance>,
         c: &Caller,
         req: SearchReq,
     ) -> ApiResult<Value> {
@@ -71,24 +71,24 @@ impl Engine {
 
     pub async fn list_turns(
         self: &Arc<Self>,
-        t: &Arc<Tenant>,
+        t: &Arc<Instance>,
         c: &Caller,
         req: ListTurnsReq,
     ) -> ApiResult<Value> {
         self.algorithm.list_turns(self, t, c, req).await
     }
 
-    pub async fn wait_idle(self: &Arc<Self>, t: &Arc<Tenant>) -> ApiResult<Value> {
+    pub async fn wait_idle(self: &Arc<Self>, t: &Arc<Instance>) -> ApiResult<Value> {
         self.algorithm.wait_idle(self, t).await
     }
 
     /// The store, opened on first use: caches warmed and workers started.
-    pub async fn store(self: &Arc<Self>) -> ApiResult<Arc<Tenant>> {
+    pub async fn store(self: &Arc<Self>) -> ApiResult<Arc<Instance>> {
         let t = self
             .store
             .get_or_try_init(|| async {
                 let t = Arc::new(
-                    Tenant::open(&self.cfg.data_dir, self.models.dim, self.algorithm.schema())
+                    Instance::open(&self.cfg.data_dir, self.models.dim, self.algorithm.schema())
                         .await
                         .context("open the store")?,
                 );
@@ -103,7 +103,7 @@ impl Engine {
     }
 
     /// Load the entity dictionary and vector caches; check index_meta (5.2 一致性与重建).
-    async fn warm(&self, t: &Arc<Tenant>) -> Result<()> {
+    async fn warm(&self, t: &Arc<Instance>) -> Result<()> {
         // The demo uses one algorithm per process and data directory. Check only at startup.
         let incompatible = self.algorithm.foreign_unfinished_jobs(t).await?;
         anyhow::ensure!(incompatible == 0,

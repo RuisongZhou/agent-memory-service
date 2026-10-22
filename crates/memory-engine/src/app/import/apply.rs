@@ -11,7 +11,7 @@ use super::{
     other_units_naming, run_proposals, LedgerRow, DECLINED, LEDGER_APPLIED,
 };
 use crate::app::consolidation::write_patch;
-use crate::runtime::tenant::Tenant;
+use crate::runtime::instance::Instance;
 use memory_domain::consolidation::apply::FieldPatch;
 use memory_domain::import::apply::{self as plan, EVIDENCE_ROLE};
 use memory_domain::import::{
@@ -65,7 +65,7 @@ enum Accepted {
 /// (written by this proposal or linked to). Left alone while another unit still holds it or when the plan
 /// refuses (a person or a later run changed it). Returns the patch written, or why not.
 async fn supersede(
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     p: &ImportProposal,
     old_id: &str,
     new: &MemoryRec,
@@ -92,7 +92,7 @@ async fn supersede(
 /// The writes of one accepted proposal, added to `tx`. `global`: a person chose global scope for it (an
 /// instruction).
 async fn accept(
-    t: &Arc<Tenant>,
+    t: &Arc<Instance>,
     run: &ImportRun,
     p: &ImportProposal,
     global: bool,
@@ -195,7 +195,7 @@ async fn accept(
 /// unit's earlier import was (`supersedes`) is retired while no other unit holds it, and the unit's ledger row
 /// and the proposal's bookkeeping commit in the same transaction. A unit whose proposals were all declined
 /// gets a `declined` row, so proposing the same text again finds it unchanged unless `reconsider` is asked.
-pub async fn apply(t: &Arc<Tenant>, req: ImportRunReq) -> ApiResult<Value> {
+pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
     let id = req.run_id.as_str();
     load_run(t, id).await?;
     let ids: HashSet<String> = run_proposals(t, id)
