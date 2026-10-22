@@ -322,7 +322,8 @@ Install the supplied notification template at user level; keep project-scoped MC
 Codex runs one `notify` program. To keep one you already have, such as the Codex Computer Use client,
 let the collector wrap it: append `--` and that program's command to the collector's. The collector
 starts the wrapped program with the same event appended, as Codex would, queues the turn, and exits 1
-when either fails; a capture failure never keeps the event from the wrapped program. The installer
+when either fails; a capture failure never keeps the event from the wrapped program. It waits up to
+10 seconds for that program and then leaves it running. The installer
 does this for any notify program it finds, and `--uninstall` or `--no-capture` puts the program back:
 
 ```toml

@@ -108,10 +108,10 @@ pub async fn hook(cmd: HookCmd) -> i32 {
                 )?;
                 Ok(0)
             });
-            let forwarded = match wrapped.map(|child| child.and_then(|mut c| c.wait())) {
-                None => true,
-                Some(Ok(status)) if status.success() => true,
-                Some(Ok(status)) => {
+            let forwarded = match wrapped.map(|child| child.and_then(settle)) {
+                None | Some(Ok(None)) => true,
+                Some(Ok(Some(status))) if status.success() => true,
+                Some(Ok(Some(status))) => {
                     eprintln!("memory adapter: wrapped notify program exited with {status}");
                     false
                 }
@@ -138,6 +138,24 @@ fn forward(program: &[String], event: &str) -> std::io::Result<std::process::Chi
         .args(&program[1..])
         .arg(event)
         .spawn()
+}
+
+/// How long `codex-notify` waits for the program it wraps before leaving it running.
+const WRAPPED_WAIT: Duration = Duration::from_secs(10);
+
+/// The wrapped program's exit status, or None when it still runs after WRAPPED_WAIT; it is
+/// never killed, so a slow program finishes on its own while the collector exits.
+fn settle(mut child: std::process::Child) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let deadline = std::time::Instant::now() + WRAPPED_WAIT;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Run an outbox command.
