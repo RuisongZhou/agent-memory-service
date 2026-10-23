@@ -26,8 +26,8 @@ make fmt test-workspace build test-scripts
 make check-public
 ```
 
-For changes under `eval/`, install the evaluation dependencies and dataset once with `make setup` (see
-[evaluation setup](eval/README.md#setup-and-offline-checks)) and run `make test`; CI does not run it.
+Code under `eval/` has no tests of its own: install the evaluation dependencies and dataset once with
+`make setup` (see [evaluation setup](eval/README.md#setup)) and run the script you changed.
 
 `test-workspace` runs every crate's unit tests in one cargo invocation, so shared dependencies compile once.
 `test-rust` (pure crates) and `test-service` (domain/store/engine/algorithm/service crates) run each half alone.

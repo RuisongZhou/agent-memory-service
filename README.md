@@ -271,7 +271,6 @@ curl -fsS http://127.0.0.1:8765/health          # 健康检查：记忆策略、
 ```bash
 make fmt test-workspace build test-scripts   # 只需要 pytest，不需要评测环境
 make check-public
-make setup && make test                       # 只在改动 eval/ 时：创建 .venv、安装评测依赖并下载公开数据集
 ```
 
 所有检查都使用临时存储、mock 检索模型和本地确定性的生成桩，不会调用付费模型。临时存储同样跑在 SurrealDB 上，

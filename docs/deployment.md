@@ -157,7 +157,7 @@ target/fast/agent-memoryd serve --help
 
 `make build` uses the locked Rust dependencies and the `fast` profile, producing `target/fast/agent-memoryd`. Limit compilation parallelism with `make build JOBS=2` on a machine with limited memory. The daemon's Rust build does not embed model weights or require a GPU backend; inference runs at the configured model provider. `cargo build --locked --release -p memory-service --bin agent-memoryd` produces the optimized `target/release/agent-memoryd` that releases ship.
 
-Building needs no Python. Dialogue capture, automatic recall and the uploader are `agent-memoryd` subcommands. If you also want the offline regression suite, `make setup` creates `.venv`, installs [eval/requirements.txt](../eval/requirements.txt), and downloads the public research dataset and tokenizer caches. It makes no paid model requests.
+Building needs no Python. Dialogue capture, automatic recall and the uploader are `agent-memoryd` subcommands. To run the evaluations, `make setup` creates `.venv`, installs [eval/requirements.txt](../eval/requirements.txt), and downloads the public research dataset and tokenizer caches. It makes no paid model requests.
 
 ### 3. Configure memory formation
 

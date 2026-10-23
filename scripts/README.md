@@ -15,7 +15,7 @@ Run commands from the repository root.
 
 See [deployment instructions](../docs/deployment.md#install-and-deploy) for startup,
 [self-hosted retrieval models](../docs/self-hosted-models.md) for the model servers and
-[offline verification](../CONTRIBUTING.md#checks) for the mock/stub checks.
+[offline verification](../CONTRIBUTING.md#checks) for the tests.
 The real-model smoke is optional and is not an accuracy benchmark.
 Service logs and check artifacts belong under the root `results/`; the real-model
 smoke defaults to `results/service-smoke/llama-http-smoke.json`. Evaluation runs,
