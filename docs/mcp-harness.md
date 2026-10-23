@@ -54,8 +54,8 @@ settings, such as another generation model or [self-hosted retrieval models](sel
 are edited in that file; the service reads it at each start.
 
 The binary, env file and service are shared: a later run for another platform reuses them, so only the
-first run asks for the key. A rerun replaces the binary when the build changed and then restarts the
-service. An installed service keeps its data directory, env file, port and concurrency; only its binary
+first run asks for the key. To upgrade, pull the checkout and rerun each platform's command: a rerun
+replaces the binary when the build changed and then restarts the service. An installed service keeps its data directory, env file, port and concurrency; only its binary
 changes, and capture adds `--outbox`. A unit that `service install` did not write
 and a daemon started by hand are left alone and used as they are. `--no-service` registers the platform
 only, as for a daemon you run yourself; the installer then needs no key. A `--url` other than a loopback
@@ -509,6 +509,9 @@ agent-memoryd import apply RUN --review ~/.local/state/agent-memory-service/impo
 agent-memoryd import status RUN
 agent-memoryd import rollback RUN
 ```
+
+Every command but `plan` and `prompt` talks to the daemon at `--url` (default `http://127.0.0.1:8765`), so
+the daemon must be running.
 
 1. **`plan`** reads files only, with no network access and no daemon. Reads stay inside the host's directory and
    never follow symlinks; it skips the `MEMORY.md` index, files over 64 KiB (Claude Code) or 256 KiB (Codex),
