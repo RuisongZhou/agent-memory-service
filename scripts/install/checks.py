@@ -54,7 +54,7 @@ LOOPBACK = '127.0.0.1,localhost,::1'
 
 
 def check_env(home):
-    """A minimal environment: no provider settings or real home directory.
+    """A minimal environment: no provider settings or real home directory (except for the check daemon).
 
     Proxy variables stay, as the host passes them on to the bridge and the user's
     shell to the uploader: both must reach the loopback daemon regardless.
@@ -148,10 +148,13 @@ def temporary_daemon(binary, root, serve, env, wait=60, secret=None):
 
     A start failure shows the end of its log, with `secret` masked. Stopping it stops the SurrealDB server
     the daemon started for the temporary store.
+
+    The daemon gets the installing user's HOME: SurrealDB's install-script `surreal` is a launcher that
+    finds its database under `~/.surrealdb`, and `serve` reads nothing else from HOME.
     """
     port = free_port()
     url = f'http://127.0.0.1:{port}'
-    env = dict(env, NO_PROXY=LOOPBACK, no_proxy=LOOPBACK)
+    env = dict(env, HOME=str(Path.home()), NO_PROXY=LOOPBACK, no_proxy=LOOPBACK)
     log_path = root / 'daemon.log'
     with log_path.open('w') as log:
         process = subprocess.Popen(

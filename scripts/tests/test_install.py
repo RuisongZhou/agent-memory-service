@@ -1100,6 +1100,17 @@ def test_verify_model_needs_an_env_file_with_the_key(tmp_path):
         checks.verify_model(ctx, tmp_path / '.env')
 
 
+def test_check_daemon_runs_with_the_installing_users_home(tmp_path):
+    # SurrealDB's install-script `surreal` is a launcher that finds its database under ~/.surrealdb.
+    daemon = tmp_path / 'agent-memoryd'
+    daemon.write_text(f'#!/bin/sh\necho "$HOME" > {tmp_path / "home"}\n')
+    daemon.chmod(0o755)
+    with pytest.raises(core.InstallError, match='did not start'):
+        with checks.temporary_daemon(daemon, tmp_path, [], checks.check_env(tmp_path / 'check-home')):
+            pass
+    assert (tmp_path / 'home').read_text().strip() == str(Path.home())
+
+
 def test_rollback_and_uninstall_keep_the_shared_runtime(tmp_path, capsys, fake_binary, offline):
     run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply'))
     for argv in (['--rollback'], ['--uninstall']):
@@ -1122,7 +1133,8 @@ def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     extra += ['--project', 'install-test'] if capture else []
     result = subprocess.run(['bash', str(ROOT / 'scripts/install.sh'), *map(str, install_args(
         host, tmp_path, BINARY, '--apply', '--surreal-bin', SURREAL, *flags, *extra))],
-        capture_output=True, text=True, timeout=300, env={'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable})
+        capture_output=True, text=True, timeout=300,
+        env={'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable, 'HOME': str(Path.home())})
     assert result.returncode == 0, result.stdout + result.stderr
     check = next(line for line in result.stdout.splitlines() if line.startswith('[check] offline mock daemon'))
     assert check.startswith('[check] offline mock daemon: server/discover fallback, MCP handshake, 8 tools, get_context')
