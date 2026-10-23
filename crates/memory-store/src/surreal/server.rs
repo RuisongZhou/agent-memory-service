@@ -441,7 +441,10 @@ esac"#,
             let server = Server::spawn(program, words, "/tmp/store", "secret").unwrap();
             server.exited().await;
             let args = std::fs::read_to_string(program.with_extension("args")).unwrap();
-            assert!(args.starts_with(&format!("{start} --bind 127.0.0.1:")), "{args}");
+            assert!(
+                args.starts_with(&format!("{start} --bind 127.0.0.1:")),
+                "{args}"
+            );
             assert!(args.ends_with(" surrealkv:///tmp/store\n"), "{args}");
         }
         let neither = script(&dir, "neither", "echo 'usage: neither' >&2; exit 2");
