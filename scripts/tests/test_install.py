@@ -789,6 +789,45 @@ def test_codex_rerun_gives_notify_back_and_captures_with_hooks(tmp_path, capsys,
     assert code == 0 and config.read_bytes() == original, output
 
 
+def test_codex_installs_capture_over_a_config_toml_with_a_bom(tmp_path, capsys, fake_binary, offline):
+    """Codex accepts a UTF-8 BOM in config.toml; the check for [hooks] there must read past it."""
+    config = tmp_path / '.codex/config.toml'
+    config.parent.mkdir()
+    config.write_bytes('\ufeffmodel = "x"\n'.encode())
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    assert code == 0, output
+    assert config.read_bytes().startswith('\ufeffmodel = "x"\n'.encode())
+    assert set(json.loads((tmp_path / '.codex/hooks.json').read_text())['hooks']) == set(codex.EVENTS)
+
+
+def test_codex_host_check_loads_no_hooks_when_the_plan_deletes_hooks_json(tmp_path, monkeypatch, capsys):
+    """A --no-capture rerun over a capture install deletes hooks.json: Codex checks no hooks, not the current file."""
+    args, ctx = ctx_for(codex, tmp_path)
+    for path, data, _ in filter(None, codex.changes(args, ctx, False)):
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(data)
+    args, ctx = ctx_for(codex, tmp_path, '--no-capture')
+    planned = {path: data for path, data, _ in filter(None, codex.changes(args, ctx, False))}
+    assert planned == {ctx.hooks_json: None}
+    entry = codex.server_entry(ctx)
+    transport = json.dumps({'transport': {'command': entry['command'], 'args': entry['args']}})
+    monkeypatch.setattr(checks, 'run_host_cli', lambda argv, env, cwd: subprocess.CompletedProcess(argv, 0, transport, ''))
+    checked = []
+
+    def app_server(home, requests, env):
+        """hooks/list as Codex answers it for the hooks.json it is given."""
+        checked.append((home / 'hooks.json').read_bytes())
+        hooks = json.loads(checked[-1]).get('hooks', {})
+        listed = [{'eventName': event[0].lower() + event[1:], 'command': h['command'], 'timeoutSec': h.get('timeout'),
+                   'statusMessage': h.get('statusMessage')}
+                  for event, groups in hooks.items() for group in groups for h in group['hooks']]
+        return {2: {'result': {'data': [{'hooks': listed}]}}}
+    monkeypatch.setattr(codex, 'app_server', app_server)
+    codex.host_check(args, ctx, planned)
+    assert checked == [b'{}']
+    assert '[check] codex app-server loaded 0 collector and 0 recall hook(s)' in capsys.readouterr().out
+
+
 def test_a_binary_without_hook_commands_is_refused(tmp_path, capsys, offline):
     old = tmp_path / 'old/agent-memoryd'
     old.parent.mkdir()
