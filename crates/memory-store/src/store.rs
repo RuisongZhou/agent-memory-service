@@ -17,11 +17,12 @@ use memory_domain::integrity::WriteSet;
 use memory_domain::types::*;
 use memory_rules::util;
 
+// Earlier versions also kept a vector index of turns (`turns_vec`) that no search reads now; it is removed.
 const SCHEMA: &str = r#"
 DEFINE TABLE IF NOT EXISTS turns SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS turns_key ON turns FIELDS platform, turnId UNIQUE;
 DEFINE INDEX IF NOT EXISTS turns_session ON turns FIELDS platform, session, seq;
-DEFINE INDEX IF NOT EXISTS turns_vec ON turns FIELDS embedding HNSW DIMENSION {dim} DIST COSINE;
+REMOVE INDEX IF EXISTS turns_vec ON turns;
 DEFINE TABLE IF NOT EXISTS sessions SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS evidence SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS evidence_turn ON evidence FIELDS platform, turnId;
@@ -588,56 +589,6 @@ impl Store {
         Ok(out)
     }
 
-    /// Chunk vectors of long turns, aligned with each turn's `chunks`.
-    pub async fn load_chunk_embeddings(&self) -> Result<Vec<(String, Vec<Vec<f32>>)>> {
-        let rows = self
-            .select(
-                "SELECT mid, chunkEmbeddings FROM turns WHERE chunkEmbeddings != NONE",
-                vec![],
-            )
-            .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for r in rows {
-            let id = r.get("mid").and_then(|v| v.as_str()).unwrap_or_default();
-            let Some(Value::Array(list)) = r.get("chunkEmbeddings") else {
-                continue;
-            };
-            let embs: Vec<Vec<f32>> = list.iter().map(|v| floats(Some(v))).collect();
-            if !id.is_empty() && !embs.is_empty() && embs.iter().all(|e| !e.is_empty()) {
-                out.push((id.to_string(), embs));
-            }
-        }
-        Ok(out)
-    }
-
-    /// Store a turn's chunk vectors; an empty list clears them.
-    pub async fn set_chunk_embeddings(
-        &self,
-        id: &str,
-        embs: &[Vec<f32>],
-        model: &str,
-    ) -> Result<()> {
-        let r = rid(schema::TURNS, id)?;
-        if embs.is_empty() {
-            self.query(
-                &format!(
-                    "UPDATE {r} SET chunkEmbeddings = NONE, chunkEmbeddingModel = NONE RETURN NONE"
-                ),
-                vec![],
-            )
-            .await?;
-        } else {
-            self.query(
-                &format!(
-                    "UPDATE {r} SET chunkEmbeddings = $e, chunkEmbeddingModel = $m RETURN NONE"
-                ),
-                vec![("e", json!(embs)), ("m", json!(model))],
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
     pub async fn set_embedding(
         &self,
         table: &str,
@@ -686,11 +637,7 @@ impl Store {
     }
 }
 
-/// Stable alphanumeric record id for a session or a turn key.
-pub fn session_rid(platform: &str, session: &str) -> String {
-    hashed_id("s", &session_key(platform, session))
-}
-
+/// Stable alphanumeric record id for a turn key.
 pub fn turn_rid(platform: &str, turn_id: &str) -> String {
     hashed_id("t", &turn_key(platform, turn_id))
 }

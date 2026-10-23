@@ -4,6 +4,7 @@ pub mod consolidation_apply;
 pub mod import;
 pub mod import_sessions;
 pub mod integrity;
+pub mod legacy_turns;
 pub mod mem0;
 pub mod selftest;
 

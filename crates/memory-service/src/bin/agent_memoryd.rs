@@ -108,7 +108,7 @@ enum Cmd {
     /// Run `serve` as a LaunchAgent (macOS) or systemd user unit (Linux); writes only with --apply
     #[command(subcommand)]
     Service(ServiceCmd),
-    /// Re-embed every record on a running daemon (`--vector` and `--all` are the same)
+    /// Re-embed every memory on a running daemon (`--vector` and `--all` are the same)
     Reindex {
         #[arg(long, default_value = "http://127.0.0.1:8765")]
         url: String,

@@ -13,9 +13,6 @@ use memory_store::store::Store;
 #[derive(Default)]
 pub struct VecCache {
     pub memories: HashMap<String, Arc<Vec<f32>>>,
-    pub turns: HashMap<String, Arc<Vec<f32>>>,
-    /// Chunk vectors of long turns, aligned with `TurnRec::chunks`.
-    pub turn_chunks: HashMap<String, Arc<Vec<Vec<f32>>>>,
 }
 
 pub struct Instance {
@@ -87,7 +84,7 @@ impl Instance {
     }
 
     /// Serialises the formation pipeline and every administrative
-    /// mutation of memory records (correct, delete, feedback, resolve-uncertainty, seed),
+    /// mutation of memory records (correct, delete, feedback, resolve-uncertainty),
     /// so each batch sees earlier memories.
     ///
     /// Lock order: this lock may be held while taking `lock_ingest` (request bookkeeping) and `lock_index` (index drains); never take it while holding either of those.

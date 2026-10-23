@@ -109,10 +109,10 @@ impl Engine {
         }
     }
 
-    /// Load the vector caches; check index_meta (5.2 一致性与重建).
+    /// Load the vector cache; check index_meta (5.2 一致性与重建).
     async fn warm(&self, t: &Arc<Instance>) -> Result<()> {
         t.store.repair_integrity().await?;
-        // index meta: a different embedding model or dimension re-embeds every record
+        // index meta: a different embedding model or dimension re-embeds every memory
         let want = json!({
             "mid": "meta",
             "embeddingModel": self.models.embed_model_id,
@@ -129,17 +129,11 @@ impl Engine {
             tracing::warn!("embedding model changed; scheduling a vector rebuild");
             indexer::schedule_rebuild(t).await?;
         }
-        // vector caches
+        // vector cache
         {
             let mut v = t.vecs.write().await;
             for (id, e) in t.store.load_embeddings(schema::MEMORIES).await? {
                 v.memories.insert(id, Arc::new(e));
-            }
-            for (id, e) in t.store.load_embeddings(schema::TURNS).await? {
-                v.turns.insert(id, Arc::new(e));
-            }
-            for (id, e) in t.store.load_chunk_embeddings().await? {
-                v.turn_chunks.insert(id, Arc::new(e));
             }
         }
         Ok(())

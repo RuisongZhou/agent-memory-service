@@ -111,7 +111,6 @@ async fn admin(
             "import_rollback" => import::rollback(&eng, &t, parse(body)?).await,
             "import_run" => import::get_run(&t, parse(body)?).await,
             "import_runs" => import::list_runs(&t, parse(body)?).await,
-            "seed" if eng.models.is_mock() => management::seed(&eng, &t, body).await,
             "reindex" => {
                 indexer::schedule_rebuild(&t).await?;
                 Ok(json!({"scheduled": true}))

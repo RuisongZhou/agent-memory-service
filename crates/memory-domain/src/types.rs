@@ -196,8 +196,9 @@ impl MemoryRec {
     }
 }
 
-// ---------------------------------------------------------------- turns / sessions / evidence
+// ---------------------------------------------------------------- turns / evidence
 
+/// A `turns` row. Only the retired memos strategy wrote them; they stay readable.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnRec {
@@ -231,83 +232,10 @@ pub struct TurnRec {
     /// "pending" | "done" | "failed" (5 failures → 待处理)
     #[serde(default)]
     pub extract_state: String,
-    /// Windows of messages longer than their digest share, each indexed with its own vector.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub chunks: Vec<TurnChunk>,
-}
-
-/// A byte range of one stored message.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct TurnChunk {
-    /// "user" | "assistant"
-    pub role: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-impl TurnRec {
-    pub fn message(&self, role: &str) -> &str {
-        if role == "user" {
-            &self.user_message
-        } else {
-            &self.assistant_message
-        }
-    }
-
-    pub fn chunk_text(&self, i: usize) -> Option<&str> {
-        let c = self.chunks.get(i)?;
-        self.message(&c.role).get(c.start..c.end)
-    }
 }
 
 pub fn turn_key(platform: &str, turn_id: &str) -> String {
     format!("{platform}::{turn_id}")
-}
-
-pub fn session_key(platform: &str, session: &str) -> String {
-    format!("{platform}::{session}")
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionRec {
-    pub key: String,
-    pub platform: String,
-    pub session: String,
-    pub project: String,
-    pub goal: String,
-    #[serde(default)]
-    pub outcome: String,
-    #[serde(default)]
-    pub decisions: Vec<String>,
-    #[serde(default)]
-    pub open_issues: Vec<String>,
-    pub turn_count: i64,
-    pub updated_at: String,
-    #[serde(default)]
-    pub last_turn_at: String,
-    #[serde(default)]
-    pub ended_at: Option<String>,
-    /// Last turn covered by a successful session-end experience/summary job.
-    #[serde(default)]
-    pub last_experience_seq: i64,
-    /// Unfinished tasks retain their original turns across formation batches and buffer purge.
-    #[serde(default)]
-    pub pending_tasks: Vec<PendingTask>,
-    /// Highest turn already reported by a session-end receipt; older failures are not reported again.
-    #[serde(default)]
-    pub end_checked_seq: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingTask {
-    pub task: String,
-    pub turn_ids: Vec<String>,
-    /// Watermark of the batch that last extended this task; stale tasks expire.
-    #[serde(default)]
-    pub updated_seq: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

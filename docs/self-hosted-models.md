@@ -17,7 +17,7 @@ ship weights or supervise model processes; you set them up and point the daemon 
 | Reranking (optional) | `http://127.0.0.1:8082` (`MEMORY_RERANK_URL`) | `--reranking` | `/v1/models`, `/v1/rerank`, `/tokenize`, `/detokenize` |
 
 Each server hosts one model; the daemon reads the model name and GGUF file type from `/v1/models` and
-tags stored vectors with them, so changing either re-embeds stored records at the next start. Inputs are
+tags stored vectors with them, so changing either re-embeds stored memories at the next start. Inputs are
 truncated to 512 tokens and rerank logits are mapped to 0–1. The reranker is only contacted when
 `mem0Rerank` is enabled. Keep both servers on loopback or a trusted network; they have no authentication.
 

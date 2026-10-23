@@ -1,4 +1,4 @@
-//! Admin inspection (`stats`, `export`) and the test-only `seed` action.
+//! Admin inspection: `stats` and `export`.
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -8,7 +8,6 @@ use crate::runtime::indexer;
 use crate::runtime::instance::Instance;
 use memory_domain::types::*;
 use memory_store::schema;
-use memory_store::store::{safe_id, session_rid, to_doc, turn_rid, Tx};
 
 pub async fn stats(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
     let mut counts = Map::new();
@@ -46,18 +45,13 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
             }
         }
     }
-    let (vm, vt, vc) = {
-        let g = t.vecs.read().await;
-        let chunks: usize = g.turn_chunks.values().map(|c| c.len()).sum();
-        (g.memories.len(), g.turns.len(), chunks)
-    };
+    let vm = t.vecs.read().await.memories.len();
     let gap_searches = t.store.gap_search_count().await?;
     Ok(json!({
         "counts": counts,
         "memories": by,
         "llm": {"process": eng.llm.usage_snapshot(), "persisted": usage_sum, "rows": usage_rows.len()},
-        "index": {"memoryVectors": vm, "turnVectors": vt, "turnChunkVectors": vc,
-                  "pendingTasks": indexer::pending(t).await?},
+        "index": {"memoryVectors": vm, "pendingTasks": indexer::pending(t).await?},
         "retrieval": {"gapSearches": gap_searches},
         "jobs": {"pendingJobs": t.store.count(schema::REQUESTS, Some("status IN ['queued','running','indexing']")).await?},
     }))
@@ -116,59 +110,4 @@ pub async fn export(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiRes
     let clause = format!("{} ORDER BY recordedTs ASC", conds.join(" AND "));
     let mems = t.store.find_memories(&clause, binds).await?;
     Ok(json!({"count": mems.len(), "memories": mems}))
-}
-
-/// Test-only admin action: insert records directly (bypassing extraction) and index them synchronously.
-/// Body: `{memories: [MemoryRec], turns: [TurnRec], sessions: [SessionRec], evidence: [EvidenceRec]}` in the
-/// API's camelCase JSON.
-pub async fn seed(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiResult<Value> {
-    let _guard = t.lock_formation().await;
-    fn list<T: serde::de::DeserializeOwned>(body: &Value, k: &str) -> ApiResult<Vec<T>> {
-        match body.get(k) {
-            None | Some(Value::Null) => Ok(vec![]),
-            Some(v) => serde_json::from_value(v.clone())
-                .map_err(|e| ApiError::InvalidArgument(format!("{k}: {e}"))),
-        }
-    }
-    let mems: Vec<MemoryRec> = list(&body, "memories")?;
-    let turns: Vec<TurnRec> = list(&body, "turns")?;
-    let sessions: Vec<SessionRec> = list(&body, "sessions")?;
-    let evidence: Vec<EvidenceRec> = list(&body, "evidence")?;
-    let mut tx = Tx::new();
-    for m in &mems {
-        let mut m = m.clone();
-        if m.last_accessed_at.is_empty() {
-            m.last_accessed_at = m.recorded_at.clone();
-        }
-        safe_id(&m.id)?;
-        tx.put(schema::MEMORIES, &m.id, to_doc(&m)?)?;
-        tx.index_task(schema::MEMORIES, &m.id, "upsert")?;
-    }
-    for tr in &turns {
-        let rid = turn_rid(&tr.platform, &tr.turn_id);
-        let mut d = to_doc(tr)?;
-        d["mid"] = json!(rid);
-        tx.put(schema::TURNS, &rid, d)?;
-        tx.index_task(schema::TURNS, &rid, "upsert")?;
-    }
-    for s in &sessions {
-        let rid = session_rid(&s.platform, &s.session);
-        let mut d = to_doc(s)?;
-        d["mid"] = json!(rid);
-        tx.put(schema::SESSIONS, &rid, d)?;
-    }
-    for e in &evidence {
-        tx.put(schema::EVIDENCE, &e.id, to_doc(e)?)?;
-    }
-    t.store.commit(tx).await?;
-    indexer::drain(eng, t).await?;
-    // sanity: every seeded record can be read back
-    let back: Vec<MemoryRec> = t
-        .store
-        .get_memories(&mems.iter().map(|m| m.id.clone()).collect::<Vec<_>>())
-        .await?;
-    Ok(json!({
-        "memories": back.len(), "turns": turns.len(), "sessions": sessions.len(),
-        "evidence": evidence.len(),
-    }))
 }
