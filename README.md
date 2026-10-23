@@ -3,6 +3,8 @@
 [![CI](https://github.com/RuisongZhou/agent-memory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/RuisongZhou/agent-memory-service/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+English | [简体中文](README.zh-CN.md)
+
 **Shared memory for your local AI agents.** Carry project decisions, facts and explicitly saved instructions between
 Codex, Claude Code, WorkBuddy and DeepSeek Harness.
 
