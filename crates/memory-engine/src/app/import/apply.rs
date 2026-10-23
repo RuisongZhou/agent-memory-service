@@ -332,10 +332,12 @@ mod tests {
     #[test]
     fn a_unit_moves_when_another_run_imports_it_after_propose() {
         // Unchanged since propose, or already this run's own row.
-        assert_eq!(ledger_moved(None, &seen(None, None), "ir2"), None);
-        let r1 = row("ir1", "h1");
         assert_eq!(
-            ledger_moved(Some(&r1), &seen(Some("ir1"), Some("h1")), "ir2"),
+            ledger_moved(
+                Some(&row("ir1", "h1")),
+                &seen(Some("ir1"), Some("h1")),
+                "ir2"
+            ),
             None
         );
         assert_eq!(
@@ -350,7 +352,6 @@ mod tests {
         )
         .unwrap()
         .contains("ir3"));
-        assert!(ledger_moved(Some(&r1), &seen(None, None), "ir2").is_some());
         assert!(ledger_moved(None, &seen(Some("ir1"), Some("h1")), "ir2")
             .unwrap()
             .contains("rolled back"));

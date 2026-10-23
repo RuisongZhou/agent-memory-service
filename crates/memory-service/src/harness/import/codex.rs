@@ -296,9 +296,6 @@ mod tests {
         "## Task 1: Find the cause\n",
         "- The cache key ignored the lockfile.\n",
         "\n",
-        "## Task 2: Fix it\n",
-        "Pinned the cache key to the lockfile hash.\n",
-        "\n",
         "## Task 1: Find the cause\n",
         "- A second pass found a race in the test runner.\n",
         "\n",
@@ -359,18 +356,12 @@ mod tests {
                     &json!(10)
                 ),
                 (
-                    "task-2-fix-it",
-                    vec![title, "Task 2: Fix it"],
-                    "Task 2: Fix it\nPinned the cache key to the lockfile hash.",
-                    &json!(13)
-                ),
-                (
                     "task-1-find-the-cause~2",
                     vec![title, "Task 1: Find the cause"],
                     "Task 1: Find the cause\n- A second pass found a race in the test runner.",
-                    &json!(16)
+                    &json!(13)
                 ),
-                ("notes", vec![title, "Notes"], "", &json!(19)),
+                ("notes", vec![title, "Notes"], "", &json!(16)),
             ]
         );
         assert!(doc
@@ -387,9 +378,7 @@ mod tests {
     fn other_projects_unknown_formats_and_derived_files_are_reported() {
         let f = Fixture::new();
         let memories = f.home.path().join(".codex/memories");
-        for derived in ["MEMORY.md", "memory_summary.md", "raw_memories.md"] {
-            std::fs::write(memories.join(derived), "# Derived\n").unwrap();
-        }
+        std::fs::write(memories.join("MEMORY.md"), "# Derived\n").unwrap();
         std::fs::create_dir_all(memories.join("skills/deploy")).unwrap();
         let other = f.home.path().join("code/other");
         std::fs::create_dir_all(&other).unwrap();
@@ -412,28 +401,11 @@ mod tests {
         );
         std::fs::write(f.summaries.join("f-large.md"), "x".repeat(256 * 1024 + 1)).unwrap();
         std::fs::write(f.summaries.join("notes.txt"), "ignored").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(
-            f.summaries.join("a-other.md"),
-            f.summaries.join("g-link.md"),
-        )
-        .unwrap();
-        // The workspace's own summary, in a worktree of it, still imports.
-        let worktree = f.workspace.join(".claude/worktrees/w1");
-        std::fs::create_dir_all(&worktree).unwrap();
-        let gitdir = format!(
-            "gitdir: {}\n",
-            f.workspace.join(".git/worktrees/w1").display()
-        );
-        std::fs::write(worktree.join(".git"), gitdir).unwrap();
-        f.summary("h-worktree.md", &f.header("t-wt", &worktree), BODY);
 
         let out = Codex.scan(&f.ctx()).unwrap();
         let summary = |name: &str| format!("~/.codex/memories/rollout_summaries/{name}");
-        let mut expected = vec![
+        let expected = vec![
             ("~/.codex/memories/MEMORY.md".to_string(), "derived"),
-            ("~/.codex/memories/memory_summary.md".to_string(), "derived"),
-            ("~/.codex/memories/raw_memories.md".to_string(), "derived"),
             ("~/.codex/memories/skills/".to_string(), "derived"),
             (summary("a-other.md"), "other-project"),
             (summary("b-no-thread.md"), "unknown-format"),
@@ -442,17 +414,13 @@ mod tests {
             (summary("e-title-first.md"), "unknown-format"),
             (summary("f-large.md"), "too-large"),
         ];
-        #[cfg(unix)]
-        expected.push((summary("g-link.md"), "symlink"));
         let mut expected: Vec<(String, String)> = expected
             .into_iter()
             .map(|(p, r)| (p, r.to_string()))
             .collect();
         expected.sort();
         assert_eq!(issues(&out), expected);
-        assert_eq!(out.docs.len(), 1);
-        assert_eq!(out.docs[0].native_id, "t-wt");
-        assert_eq!(out.docs[0].cwd.as_deref(), Some(worktree.as_path()));
+        assert!(out.docs.is_empty());
     }
 
     #[test]

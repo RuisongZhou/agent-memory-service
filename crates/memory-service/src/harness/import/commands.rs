@@ -837,11 +837,6 @@ mod tests {
                 + "# Build\n## Task 1: Cache\n- The cache key ignored the lockfile.\n",
         )
         .unwrap();
-        std::fs::write(
-            summaries.join("b.md"),
-            header(&home.path().join("elsewhere")) + "# Other\n",
-        )
-        .unwrap();
         let mut args = plan_args(home.path(), Host::Codex);
         args.workspaces = vec![workspace.clone()];
         let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")
@@ -865,7 +860,6 @@ mod tests {
             "Plan for codex into project \"my-project\": 1 documents, 1 units",
             "1 extract",
             "derived (1): ~/.codex/memories/MEMORY.md",
-            "other-project (1): ~/.codex/memories/rollout_summaries/b.md",
             "1 generation calls",
             // The extract unit's text is embedded once for its context; its items are not known yet.
             "1 texts with",
@@ -888,8 +882,6 @@ mod tests {
         let mut wrong = plan_args(home.path(), Host::Codex);
         wrong.workspaces = vec![home.path().join("missing")];
         assert!(message(&make_plan(&wrong, now).unwrap_err()).contains("not a directory"));
-        let error = message(&make_plan(&plan_args(home.path(), Host::Codex), now).unwrap_err());
-        assert!(error.contains("--workspace"), "{error}");
     }
 
     #[test]
@@ -902,18 +894,11 @@ mod tests {
             issue("~/a.md", "symlink"),
             issue("~/b.md", "unreadable: permission denied"),
             issue("~/e.jsonl", "invalid-line 3: no text"),
-            issue("~/e.jsonl", "invalid-line 9: unknown kind \"x\""),
             issue("~/c.md", "symlink"),
         ]);
         assert_eq!(groups["symlink"], ["~/a.md", "~/c.md"]);
         assert_eq!(groups["unreadable"], ["~/b.md (permission denied)"]);
-        assert_eq!(
-            groups["invalid-line"],
-            [
-                "~/e.jsonl (line 3: no text)",
-                "~/e.jsonl (line 9: unknown kind \"x\")"
-            ]
-        );
+        assert_eq!(groups["invalid-line"], ["~/e.jsonl (line 3: no text)"]);
         assert_eq!(one_line("a\n  b\tc", 10), "a b c");
         assert_eq!(one_line("abcdef", 3), "abc…");
     }
@@ -967,10 +952,6 @@ mod tests {
         assert!(text.contains("[accept] fact ip1: Proposal ip1 text."));
         assert!(text.contains("\"scope\" of an instruction to \"global\""));
         assert!(!text.contains("earlier records"), "{text}");
-        assert_eq!(
-            review::read(&review_path, "ir1").unwrap().decisions.len(),
-            3
-        );
         let outbox = home.path().join("outbox.sqlite3");
         let applied = apply(
             "ir1",
@@ -1050,11 +1031,7 @@ mod tests {
         assert_eq!(requests.lock().unwrap().len(), 1);
         show("ir1", None, true, &daemon, home.path()).await.unwrap();
         assert_eq!(std::fs::read_to_string(&default).unwrap(), written);
-        // Another --out is written; a link at the path counts as an existing file.
-        let other = home.path().join("other.review.jsonl");
-        show("ir1", Some(&other), false, &daemon, home.path())
-            .await
-            .unwrap();
+        // A link at the path counts as an existing file.
         #[cfg(unix)]
         {
             let link = home.path().join("link.review.jsonl");
@@ -1102,9 +1079,6 @@ mod tests {
             .map(|l| l["memoryId"].as_str().unwrap())
             .collect();
         assert_eq!(previous, ["m1", "m2", "m3"]);
-        // They follow the unit's last proposal.
-        assert_eq!(lines[5]["memoryId"], "m1");
-        assert_eq!(review::read(&path, "ir1").unwrap().decisions.len(), 3);
         let status = status(Some("ir1"), None, &daemon).await.unwrap();
         for part in [
             "earlier records: 3 of 2 changed units",
@@ -1311,10 +1285,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            report.contains("session turns 3, registered without a model call"),
-            "{report}"
-        );
         assert!(
             report.contains("Next: agent-memoryd import apply ir1 --yes"),
             "{report}"

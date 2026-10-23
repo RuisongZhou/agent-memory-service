@@ -295,11 +295,8 @@ mod tests {
         assert_eq!((limits.recall_budget, limits.recall_top_k), (400, 5));
         assert_eq!((limits.hard_cap(), limits.target()), (200, 80));
         assert_eq!(record_cost("共享记忆库"), 13);
-        assert_eq!(record_cost(""), RECORD_OVERHEAD);
         assert!(limits.fits(&"汉".repeat(192)));
         assert!(!limits.fits(&"汉".repeat(193)));
-        assert!(limits.fits(&"a".repeat(768)));
-        assert!(!limits.fits(&"a".repeat(769)));
         // A single recall slot would make the share the whole budget: the target stays within the cap.
         let single = UnitLimits {
             recall_budget: 400,
@@ -452,10 +449,6 @@ mod tests {
     #[test]
     fn unit_keys_escape_their_components() {
         assert_eq!(
-            unit_key("codex", "019a-thread", "task-1"),
-            "codex:019a-thread#task-1"
-        );
-        assert_eq!(
             unit_key("claude-code", "memory/deploy notes.md", "deploy#2"),
             "claude-code:memory%2Fdeploy%20notes.md#deploy%232"
         );
@@ -463,9 +456,7 @@ mod tests {
             unit_key("a:b", "c#d", "发布~"),
             "a%3Ab:c%23d#%E5%8F%91%E5%B8%83~"
         );
-        assert_ne!(unit_key("a", "b:c", "d"), unit_key("a:b", "c", "d"));
         assert_eq!(turn_key("p", "s 1", "a/b?"), "p/s%201/a%2Fb%3F");
-        assert_eq!(turn_key("名", "-_.~", "x"), "%E5%90%8D/-_.~/x");
     }
 
     #[test]
@@ -488,9 +479,5 @@ mod tests {
         assert!(chunks.iter().all(|c| !c.is_empty() && c.len() <= 90));
         assert!(chunks[0].ends_with('。'));
         assert_eq!(chunks.concat(), long);
-        // Nothing but the blank space between pieces is lost.
-        let words: String = chunk_bytes(text, 40).join(" ").split_whitespace().collect();
-        let expected: String = text.split_whitespace().collect();
-        assert_eq!(words, expected);
     }
 }

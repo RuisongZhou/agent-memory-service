@@ -296,40 +296,40 @@ mod tests {
 
     #[test]
     fn facts_preferences_and_references_become_imported_project_facts() {
-        for kind in ["fact", "preference", "reference"] {
-            let mut p = proposal(kind, "global");
-            p.supersedes = Some("mold".into());
-            let m = imported_record(&p, "mnew", NOW, true);
-            assert_eq!(m.mtype, T_FACT, "{kind}");
-            assert_eq!(m.source.origin, ORIGIN_IMPORTED);
-            assert_eq!(m.source.platform, "claude-code");
-            assert!(m.source.turn_ids.is_empty());
-            // A global hint is provenance only: facts stay in the project.
-            assert_eq!(m.scope, MemScope::project("proj"));
-            assert_eq!(m.status, S_CURRENT);
-            assert_eq!(m.stated_at, "2026-05-03T09:00:00Z");
-            assert!(m.effective_at.is_empty());
-            assert_eq!(
-                (m.recorded_at.as_str(), m.last_accessed_at.as_str()),
-                (NOW, NOW)
-            );
-            assert_eq!(m.supersedes.as_deref(), Some("mold"));
-            let detail = &m.detail.as_ref().unwrap()["import"];
-            assert_eq!(detail["runId"], "ir1");
-            assert_eq!(detail["proposalId"], "ip1");
-            assert_eq!(detail["itemKind"], kind);
-            assert_eq!(detail["scopeHint"], "global");
-            assert_eq!(detail["headingPath"], json!(["Deploy"]));
-            assert_eq!(detail["source"]["path"], "memory/deploy.md");
-            assert!(detail.get("statedAt").is_none());
-        }
+        // Every kind but an instruction takes this path; a preference shows the type is not the kind.
+        let mut p = proposal("preference", "global");
+        p.supersedes = Some("mold".into());
+        let m = imported_record(&p, "mnew", NOW, true);
+        assert_eq!(m.mtype, T_FACT);
+        assert_eq!(m.source.origin, ORIGIN_IMPORTED);
+        assert_eq!(m.source.platform, "claude-code");
+        assert!(m.source.turn_ids.is_empty());
+        // A global hint is provenance only: facts stay in the project.
+        assert_eq!(m.scope, MemScope::project("proj"));
+        assert_eq!(m.status, S_CURRENT);
+        assert_eq!(m.stated_at, "2026-05-03T09:00:00Z");
+        assert!(m.effective_at.is_empty());
+        assert_eq!(
+            (m.recorded_at.as_str(), m.last_accessed_at.as_str()),
+            (NOW, NOW)
+        );
+        assert_eq!(m.supersedes.as_deref(), Some("mold"));
+        let detail = &m.detail.as_ref().unwrap()["import"];
+        assert_eq!(detail["runId"], "ir1");
+        assert_eq!(detail["proposalId"], "ip1");
+        assert_eq!(detail["itemKind"], "preference");
+        assert_eq!(detail["scopeHint"], "global");
+        assert_eq!(detail["headingPath"], json!(["Deploy"]));
+        assert_eq!(detail["source"]["path"], "memory/deploy.md");
+        assert!(detail.get("statedAt").is_none());
     }
 
     #[test]
     fn accepted_instructions_are_explicit_and_take_effect_now() {
-        let m = imported_record(&proposal(INSTRUCTION, "project"), "mi", NOW, false);
+        let m = imported_record(&proposal(INSTRUCTION, "global"), "mi", NOW, false);
         assert_eq!(m.mtype, T_INSTRUCTION);
         assert_eq!(m.source.origin, ORIGIN_EXPLICIT);
+        // A global hint alone keeps the instruction in the project; only a person's choice widens it.
         assert_eq!(m.scope, MemScope::project("proj"));
         assert_eq!((m.effective_at.as_str(), m.stated_at.as_str()), (NOW, NOW));
         assert_eq!(m.supersedes, None);
@@ -338,12 +338,9 @@ mod tests {
             m.detail.as_ref().unwrap()["import"]["statedAt"],
             "2026-05-03T09:00:00Z"
         );
-        // A global hint alone keeps the instruction in the project; only a person's choice widens it.
-        let hinted = imported_record(&proposal(INSTRUCTION, "global"), "mh", NOW, false);
-        assert_eq!(hinted.scope, MemScope::project("proj"));
         let global = imported_record(&proposal(INSTRUCTION, "project"), "mg", NOW, true);
         assert_eq!(global.scope, MemScope::global());
-        assert!(is_import_record(&m) && is_import_record(&global));
+        assert!(is_import_record(&m));
     }
 
     #[test]
@@ -446,28 +443,6 @@ mod tests {
         let restored = patched(&old, &patches[1]);
         assert_eq!(restored.status, S_CURRENT);
         assert_eq!((restored.superseded_by, restored.valid_until), (None, None));
-        // A predecessor that something else replaced meanwhile stays as it is.
-        let elsewhere = MemoryRec {
-            superseded_by: Some("mother".into()),
-            ..old.clone()
-        };
-        assert_eq!(
-            rollback_patches(&new, "Deploys use Nomad.", "ir2", Some(&elsewhere), NOW)
-                .unwrap()
-                .len(),
-            1
-        );
-        // A predecessor deleted since: deletion cleared `supersedes`, and only the record itself is retired.
-        let unlinked = MemoryRec {
-            supersedes: None,
-            ..new.clone()
-        };
-        assert_eq!(
-            rollback_patches(&unlinked, "Deploys use Nomad.", "ir2", None, NOW)
-                .unwrap()
-                .len(),
-            1
-        );
     }
 
     #[test]

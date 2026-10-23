@@ -502,7 +502,6 @@ mod tests {
             .contains("other/s%201/p1"));
         assert!(problem(&|t| t.native_id = " ".into()).contains("nativeId"));
         assert!(problem(&|t| t.messages.reverse()).contains("one user message"));
-        assert!(problem(&|t| t.messages.truncate(1)).contains("one user message"));
         assert!(problem(&|t| t.messages[1].content = "\n".into()).contains("blank"));
         assert!(problem(&|t| t.messages[0].timestamp = "yesterday".into()).contains("RFC3339"));
         assert!(

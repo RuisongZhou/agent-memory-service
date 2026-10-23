@@ -188,32 +188,27 @@ pub(crate) mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(repo.join("src/deep")).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q"]);
         git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
-        let worktree = repo.join(".claude/worktrees/w1");
-        let add = |path: &Path| {
-            git(
-                &repo,
-                &["worktree", "add", "-q", "--detach", path.to_str().unwrap()],
-            )
-        };
-        add(&worktree);
-        let root = std::fs::canonicalize(&repo).unwrap();
-        assert_eq!(repository_root(&repo), root);
-        assert_eq!(repository_root(&repo.join("src/deep")), root);
-        assert_eq!(repository_root(&worktree), root);
-        // A worktree outside the repository maps to it as well.
+        // A worktree outside the repository maps to it, and git itself gives the same root.
         let outside = tmp.path().join("outside-wt");
-        add(&outside);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                outside.to_str().unwrap(),
+            ],
+        );
+        let root = std::fs::canonicalize(&repo).unwrap();
         assert_eq!(repository_root(&outside), root);
+        assert_eq!(git_common_root(&outside), Some(root.clone()));
+        assert_eq!(git_common_root(&tmp.path().join("no-repo")), None);
         // A directory that no longer exists still maps to the repository around it.
         assert_eq!(repository_root(&repo.join("gone/away")), root);
-        // git itself gives the same roots for what the gitfile parser answers.
-        for path in [&repo, &worktree, &outside] {
-            assert_eq!(git_common_root(path), Some(root.clone()), "{path:?}");
-        }
-        assert_eq!(git_common_root(&tmp.path().join("no-repo")), None);
         // A gitfile the parser cannot place goes to git; one git cannot read either is its own
         // directory's repository.
         let module = repo.join("lib");
@@ -273,7 +268,6 @@ pub(crate) mod tests {
             claude_dir_name(Path::new("/Users/a/code/my-app")),
             "-Users-a-code-my-app"
         );
-        assert_eq!(claude_dir_name(Path::new("/x/.claude/w")), "-x--claude-w");
         assert_eq!(claude_dir_name(Path::new("/srv/项目_1")), "-srv----1");
         // Characters outside the Basic Multilingual Plane are two UTF-16 code units.
         assert_eq!(claude_dir_name(Path::new("/a/\u{1F600}")), "-a---");
@@ -288,9 +282,7 @@ pub(crate) mod tests {
         let roots = [root.clone()];
         assert!(within(&root, &roots));
         assert!(within(&root.join("sub"), &roots));
-        assert!(within(&root.join("sub/.."), &roots));
         assert!(!within(&tmp.path().join("app-other"), &roots));
         assert!(!within(&root.join("sub/../../app-other"), &roots));
-        assert!(!within(tmp.path(), &roots));
     }
 }

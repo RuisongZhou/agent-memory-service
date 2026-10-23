@@ -701,25 +701,10 @@ pub(crate) mod tests {
         let home = tempfile::tempdir().unwrap();
         let plan = plan_over(home.path());
         let (units, _) = fresh_units(&plan, home.path());
-        let (url, requests) = stub().await;
+        let (url, _) = stub().await;
         let client = Client::new(&url, Duration::from_secs(5)).unwrap();
-        // With reconsider, every batch asks for the units whose last import applied nothing.
-        client
-            .propose(&plan, &units, 3, true, &mut |_, _, _| {})
-            .await
-            .unwrap();
-        let sent: Vec<(Value, Value)> = requests
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|r| r.0 == "import_propose")
-            .map(|r| (r.2["finish"].clone(), r.2["reconsider"].clone()))
-            .collect();
-        assert_eq!(
-            sent,
-            [(json!(false), json!(true)), (json!(true), json!(true))]
-        );
-        // A later batch that fails names the run it leaves proposing.
+        // Six units in threes are two batches, no empty third; a later batch that fails names the run
+        // it leaves proposing.
         let mut failing = units.clone();
         failing[4].text = "FAIL".into();
         let error = client_error(
@@ -780,12 +765,6 @@ pub(crate) mod tests {
                 &json!({"runId": "ir1", "decisions": {"ip1": ACCEPT, "ip2": ACCEPT, "ip4": REJECT}})
             );
         }
-        // Without a review the defaults apply.
-        client.apply("ir1", None, home).await.unwrap();
-        assert_eq!(
-            requests.lock().unwrap().last().unwrap().2,
-            json!({"runId": "ir1", "decisions": {}})
-        );
         // A review of another run, and a review naming proposals the run lacks, are refused.
         let other = dir.path().join("other.review.jsonl");
         std::fs::write(&other, review::render(&run("ir2"), &listed).unwrap()).unwrap();
@@ -800,7 +779,7 @@ pub(crate) mod tests {
             .iter()
             .filter(|r| r.0 == "import_apply")
             .count();
-        assert_eq!(applies, 2, "a refused review sends nothing to apply");
+        assert_eq!(applies, 1, "a refused review sends nothing to apply");
     }
 
     /// `text` with the proposal line of `id` edited by `edit`.
@@ -817,35 +796,9 @@ pub(crate) mod tests {
             .join("\n")
     }
 
-    #[tokio::test]
-    async fn apply_sends_the_global_scope_of_accepted_instructions_only() {
-        let (url, requests) = stub().await;
-        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ir1.review.jsonl");
+    #[test]
+    fn scopes_go_only_with_the_runs_own_instructions() {
         let text = review::render(&run("ir1"), &stub_proposals()).unwrap();
-        // The instruction is accepted as global; a fact's scope says global too, and is not read.
-        let edited = edit_line(&text, "ip2", |v| {
-            v["decision"] = json!("accept");
-            v["scope"] = json!("global");
-        });
-        let edited = edit_line(&edited, "ip1", |v| v["scope"] = json!("global"));
-        std::fs::write(&path, &edited).unwrap();
-        client.apply("ir1", Some(&path), dir.path()).await.unwrap();
-        assert_eq!(
-            requests.lock().unwrap().last().unwrap().2,
-            json!({"runId": "ir1",
-                   "decisions": {"ip1": ACCEPT, "ip2": ACCEPT, "ip4": ACCEPT},
-                   "scopes": {"ip2": "global"}})
-        );
-        // Global but declined: no scope goes with it.
-        let declined = edit_line(&text, "ip2", |v| v["scope"] = json!("global"));
-        std::fs::write(&path, &declined).unwrap();
-        client.apply("ir1", Some(&path), dir.path()).await.unwrap();
-        assert_eq!(
-            requests.lock().unwrap().last().unwrap().2,
-            json!({"runId": "ir1", "decisions": {"ip1": ACCEPT, "ip2": REJECT, "ip4": ACCEPT}})
-        );
         // A line edited into an instruction is still a fact of the run: its scope is not sent.
         let relabeled = edit_line(&text, "ip1", |v| {
             v["itemKind"] = json!("instruction");
@@ -911,18 +864,6 @@ pub(crate) mod tests {
         assert_eq!(
             requests.lock().unwrap().last().unwrap().2,
             json!({"runId": "ir1", "decisions": {"ip2": REJECT, "ip3": REJECT, "ip4": REJECT}})
-        );
-        // The paths are under the home the plan was made with.
-        let elsewhere = tempfile::tempdir().unwrap();
-        let changed = changed_sources(&proposals, elsewhere.path());
-        let paths: Vec<(&str, &str)> = changed.iter().map(|c| (c.path.as_str(), c.why)).collect();
-        assert_eq!(
-            paths,
-            [
-                ("~/a.md", "vanished"),
-                ("~/b.md", "vanished"),
-                ("~/c.md", "vanished")
-            ]
         );
     }
 

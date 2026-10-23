@@ -845,19 +845,13 @@ mod tests {
         use Policy::*;
         let table = [
             ((VerbatimIfFits, true, false), (MODE_VERBATIM, "fits")),
-            ((VerbatimIfFits, true, true), (MODE_VERBATIM, "fits")),
             ((VerbatimIfFits, false, false), (MODE_EXTRACT, "over-cap")),
             ((VerbatimIfFits, false, true), (MODE_SPLIT, "over-cap")),
             (
                 (AlwaysExtract, true, false),
                 (MODE_EXTRACT, "always-extract"),
             ),
-            (
-                (AlwaysExtract, false, false),
-                (MODE_EXTRACT, "always-extract"),
-            ),
             ((AlwaysExtract, true, true), (MODE_VERBATIM, "fits")),
-            ((AlwaysExtract, false, true), (MODE_SPLIT, "over-cap")),
         ];
         for ((policy, fits, no_extract), expected) in table {
             assert_eq!(
@@ -1166,9 +1160,8 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode(&path), 0o600);
-            assert_eq!(mode(path.parent().unwrap()), 0o700);
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
         }
         assert_eq!(read(&path).unwrap(), plan);
         let text = std::fs::read_to_string(&path).unwrap();

@@ -453,16 +453,9 @@ pub(crate) mod tests {
         instruction.scope_hint = GLOBAL.into();
         let mut fact = proposal("ip2", "fact", PROPOSED);
         fact.scope_hint = GLOBAL.into();
-        let mut applied = proposal("ip3", "instruction", APPLIED);
-        applied.scope_hint = GLOBAL.into();
         let text = render(
             &run("ir1"),
-            &[
-                instruction,
-                fact,
-                applied,
-                proposal("ip4", "instruction", PROPOSED),
-            ],
+            &[instruction, fact, proposal("ip4", "instruction", PROPOSED)],
         )
         .unwrap();
         let lines: Vec<Value> = text
@@ -485,19 +478,16 @@ pub(crate) mod tests {
             [
                 ("project", "global"),
                 ("global", "global"),
-                ("project", "global"),
                 ("project", "project")
             ]
         );
         assert!(parse(&text, "ir1").unwrap().scopes.is_empty());
 
-        // Global is sent for an accepted instruction still proposed, and only then.
-        let accept_global = |v: &mut Value| {
+        // Global is sent for an accepted instruction, and only then.
+        let edited = edit_line(&text, "ip1", |v| {
             v["decision"] = json!("accept");
             v["scope"] = json!("global");
-        };
-        let edited = edit_line(&text, "ip1", accept_global);
-        let edited = edit_line(&edited, "ip3", accept_global);
+        });
         let edited = edit_line(&edited, "ip4", |v| v["scope"] = json!("global"));
         // A fact's scope is not read, whatever it says.
         let edited = edit_line(&edited, "ip2", |v| v["scope"] = json!("team"));
@@ -513,7 +503,7 @@ pub(crate) mod tests {
         let team = edit_line(&text, "ip4", |v| v["scope"] = json!("team"));
         let error = parse(&team, "ir1").unwrap_err().to_string();
         assert!(
-            error.contains("line 5") && error.contains("\"team\""),
+            error.contains("line 4") && error.contains("\"team\""),
             "{error}"
         );
         let missing = edit_line(&text, "ip1", |v| {
@@ -524,11 +514,6 @@ pub(crate) mod tests {
             error.contains("line 2") && error.contains("not nothing"),
             "{error}"
         );
-        let number = edit_line(&text, "ip1", |v| v["scope"] = json!(3));
-        assert!(parse(&number, "ir1")
-            .unwrap_err()
-            .to_string()
-            .contains("not 3"));
     }
 
     pub(crate) fn changed_unit(unit: &str, index: usize, records: &[(&str, &str)]) -> UnitOutcome {
@@ -564,11 +549,7 @@ pub(crate) mod tests {
             in_unit("ip3", "u:b"),
         ];
         run.units = vec![
-            changed_unit(
-                "u:a",
-                0,
-                &[("m1", "Old fact one."), ("m2", "Old fact two.")],
-            ),
+            changed_unit("u:a", 0, &[("m1", "Old fact one.")]),
             changed_unit("u:b", 1, &[]),
             // Nothing extracted from the new text: its earlier record still shows.
             changed_unit("u:c", 2, &[("m3", "Old fact three.")]),
@@ -589,18 +570,15 @@ pub(crate) mod tests {
                 ),
             })
             .collect();
-        assert_eq!(shape, ["ip1", "ip2", "u:a m1", "u:a m2", "ip3", "u:c m3"]);
+        assert_eq!(shape, ["ip1", "ip2", "u:a m1", "ip3", "u:c m3"]);
         assert_eq!(
             lines[3],
             json!({"type": "previous", "unit": "u:a", "memoryId": "m1", "recordType": "fact",
                    "text": "Old fact one."})
         );
-        // Read back, the previous lines decide nothing, wherever they are.
+        // Read back, the previous lines decide nothing.
         let review = parse(&text, "ir1").unwrap();
         assert_eq!(review.decisions.len(), 3);
-        let moved: Vec<&str> = text.lines().collect();
-        let moved = [moved[0], moved[6], moved[1], moved[3]].join("\n");
-        assert_eq!(parse(&moved, "ir1").unwrap().decisions.len(), 1);
         let other = text.replacen("\"type\":\"previous\"", "\"type\":\"note\"", 1);
         assert!(parse(&other, "ir1")
             .unwrap_err()

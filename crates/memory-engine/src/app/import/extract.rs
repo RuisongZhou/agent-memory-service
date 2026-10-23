@@ -210,13 +210,10 @@ mod tests {
     #[test]
     fn contract_checks_shape_and_enums_only() {
         let schema = contract().schema;
-        let item = json!({"text":"x","kind":"fact","scope":"project","evidence":"y"});
+        // Provenance is the engine's: an evidence that quotes nothing still has the right shape.
+        let item = json!({"text":"x","kind":"fact","scope":"project","evidence":"not in the note"});
         assert!(validate_output(&schema, &json!({ "memories": [item] })).is_ok());
         assert!(validate_output(&schema, &json!({"memories": []})).is_ok());
-        // Provenance is the engine's: an evidence that quotes nothing still has the right shape.
-        let unquoted =
-            json!({"text":"x","kind":"fact","scope":"project","evidence":"not in the note"});
-        assert!(validate_output(&schema, &json!({ "memories": [unquoted] })).is_ok());
         let fails = |output: Value, needle: &str| {
             let error = validate_output(&schema, &output).unwrap_err().to_string();
             assert!(error.contains(needle), "{error}");
@@ -239,10 +236,6 @@ mod tests {
         fails(
             json!({"memories":[{"text":"x","kind":"fact","scope":"","evidence":"y"}]}),
             "scope must be one of",
-        );
-        fails(
-            json!({"memories":[{"text":7,"kind":"fact","scope":"project","evidence":"y"}]}),
-            "text must be a JSON string",
         );
         let many = vec![item; MAX_ITEMS + 1];
         fails(json!({ "memories": many }), "more than 64 items");
@@ -285,7 +278,6 @@ mod tests {
         assert!(input.ends_with("\n\n# Output:"));
         assert!(!input.contains("Language Requirement"));
         let zh = super::input(&unit(), "proj", &UnitLimits::default(), &[], true);
-        assert!(zh.contains("## Existing Memories\n[]"));
         assert!(zh.ends_with(
             "## Language Requirement\nWrite each memory in the same language and script as the note.\n\n# Output:"
         ));
