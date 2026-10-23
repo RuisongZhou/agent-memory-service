@@ -75,36 +75,53 @@ brew install surrealdb/tap/surreal
 curl -sSf https://install.surrealdb.com | sh
 ```
 
-**2. 运行安装命令。** 克隆仓库，为要接入的宿主执行一条命令，以 Codex 为例：
+**2. 选择接入方式。** 安装器给宿主接上两部分：
+
+- **MCP 工具**：8 个 `shared-memory` 工具，Agent 调用它们来保存、检索和更正记忆。
+- **hooks**：捕获 hook 在每轮对话结束后自动保存对话，召回 hook（`--recall`）在会话开始和每次提问时自动注入相关记忆。
+
+推荐 MCP 和 hooks 都装，这样记忆的保存和使用都是自动的。也可以只装 MCP：不需要 `--project`，Codex 也不用信任 hooks，
+但对话不会被自动保存，提问前也不会自动查记忆，Agent 只在被明确要求时才调用工具（见 [只装 MCP 时](#只装-mcp-时)）。
+
+**3. 运行安装命令。** 克隆仓库，为要接入的宿主执行对应的命令：
 
 ```bash
 git clone https://github.com/RuisongZhou/agent-memory-service.git
 cd agent-memory-service
-bash scripts/install.sh --host codex --apply --project my-project --recall
+bash scripts/install.sh --host codex --apply --project my-project --recall   # 推荐：MCP + hooks
 ```
 
-首次运行会以隐藏输入的方式询问 API key。之后给其他宿主安装时复用同一个 daemon 和密钥，不会再问；想让几个宿主共享记忆，
-就给它们传同一个 `--project`。`--recall` 开启自动召回，不带 `--apply` 时只预览、不写文件。
-
-**3. 在宿主里确认。** 每个宿主都要你在它自己的界面里确认一次，安装器无法代劳：
-
-| 宿主 | 安装命令 | 安装后要手动做 |
+| 宿主 | 推荐：MCP + hooks | 只装 MCP |
 |---|---|---|
-| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project --recall` | 重启 Codex，在 `/hooks`（App：Settings → Hooks）里逐个信任 5 个 `shared-memory` hook；信任之前不捕获也不召回 |
-| Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project --recall` | 在该项目里重启 Claude Code，按提示批准 `shared-memory` 项目 MCP server（用 `/mcp` 查看） |
-| WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project --recall` | 重启后在「连接器 → 自定义连接器」中信任 `shared-memory`，确认 8 个工具都已启用 |
-| DeepSeek Harness（桌面版与 `dsh`） | `bash scripts/install.sh --host deepseek-harness --apply` | 重启后新建会话 |
+| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project --recall` | `bash scripts/install.sh --host codex --apply --no-capture` |
+| Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project --recall` | `bash scripts/install.sh --host claude-code --apply --workspace /absolute/path/to/project --no-capture` |
+| WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project --recall` | `bash scripts/install.sh --host workbuddy --apply --no-capture` |
+| DeepSeek Harness（桌面版与 `dsh`） | 不支持 hooks | `bash scripts/install.sh --host deepseek-harness --apply` |
+
+首次运行会以隐藏输入的方式询问 API key。之后给其他宿主安装时复用同一个 daemon 和密钥，不会再问；想让几个宿主共享记忆，
+就给它们传同一个 `--project`。不带 `--apply` 时只预览、不写文件。只装了 MCP 的宿主，以后想加上 hooks，用推荐的命令重新
+运行一次即可；只想自动保存、不想自动注入，就去掉 `--recall`。
+
+**4. 在宿主里确认。** 每个宿主都要你在它自己的界面里确认一次，安装器无法代劳：
+
+| 宿主 | 安装后要手动做 |
+|---|---|
+| Codex CLI / App | 重启 Codex。装了 hooks 时，在 `/hooks`（App：Settings → Hooks）里逐个信任 `shared-memory` 的 hook（推荐配置共 5 个），信任之前不捕获也不召回 |
+| Claude Code | 在该项目里重启 Claude Code，按提示批准 `shared-memory` 项目 MCP server（用 `/mcp` 查看） |
+| WorkBuddy | 重启后在「连接器 → 自定义连接器」中信任 `shared-memory`，确认 8 个工具都已启用 |
+| DeepSeek Harness | 重启后新建会话 |
 
 Codex 按 hook 的内容记录信任：重跑安装时换了 `--project`、二进制路径等选项，或者升级后 hook 变了，要再信任一次。
 安装器为什么不能代你信任，见 [Codex hooks](docs/mcp-harness.md#codex-hooks)。
 
-**4. 检查。** 完成一轮对话后运行：
+**5. 检查。** 装了 hooks 时，完成一轮对话后运行：
 
 ```bash
 ~/.local/bin/agent-memoryd outbox status
 ```
 
-列表里应出现这一轮；状态为 `completed` 表示已经上传并形成记忆。宿主在接入之前记下的内容不会自动进来，需要的话见
+列表里应出现这一轮；状态为 `completed` 表示已经上传并形成记忆。只装 MCP 时，在宿主里确认能看到 8 个 `shared-memory` 工具，
+再让 Agent 调用一次 `get_context`。宿主在接入之前记下的内容不会自动进来，需要的话见
 [导入宿主已有的记忆](#导入宿主已有的记忆)。
 
 安装器做的每一步、全部选项、拒绝写入的情形以及回退和卸载，见 [一键安装说明](docs/mcp-harness.md#one-command-install)。
@@ -112,7 +129,7 @@ Codex 按 hook 的内容记录信任：重跑安装时换了 `--project`、二�
 ### 其他安装方式
 
 - **让 Agent 帮你安装**：把下面这段话发给已经能执行命令的 Agent（Codex、Claude Code 或 WorkBuddy）。Agent 的执行环境通常
-  没有终端，无法隐藏输入密钥，这时安装器会报错并说明可用的密钥来源；第 3 步的确认仍要你本人完成。
+  没有终端，无法隐藏输入密钥，这时安装器会报错并说明可用的密钥来源；第 4 步的确认仍要你本人完成。
 
   > 请为当前 Agent 安装 https://github.com/RuisongZhou/agent-memory-service 。先读 README.md 和
   > docs/mcp-harness.md 的 One-command install，克隆仓库或复用本地副本，执行 `scripts/install.sh` 中对应宿主的
@@ -153,6 +170,18 @@ Codex 按 hook 的内容记录信任：重跑安装时换了 `--project`、二�
 保存普通对话。装了 `--recall` 后，会话开始时注入项目上下文，每次提问时注入本会话还没出现过的相关记忆；daemon 没有运行时
 什么也不注入，也不会阻断提问。细节见 [自动保存对话](docs/mcp-harness.md#automatically-save-conversations) 和
 [自动召回](docs/mcp-harness.md#automatic-recall)。
+
+### 只装 MCP 时
+
+没有 hooks 时，记忆的保存和使用都要显式调用工具：对话不会被自动保存，提问前也不会自动注入记忆。Agent 一般不会自己
+想到去调用，所以要在对话里明确提出，例如：
+
+- 「先用 shared-memory 的 `get_context` 加载项目 my-project 的上下文，再回答。」
+- 「用 shared-memory 的 `search_memories` 查一下我们之前关于存储方案的决定。」
+- 「用 `add_memories` 把刚才定下的存储方案记到项目 my-project。」
+
+把 [共享记忆工作流](docs/mcp-harness.md#shared-memory-workflow) 合并到 `AGENTS.md` 或 `CLAUDE.md` 后，Agent 会按说明在
+合适的时候调用这些工具，但仍不如 hooks 可靠。
 
 ### 导入宿主已有的记忆
 
