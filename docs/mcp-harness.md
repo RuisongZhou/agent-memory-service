@@ -396,9 +396,26 @@ Status output includes identifiers, receipts, and errors without dumping chat te
 | `failed` | Formation failed; input and request ID retained |
 | `cancelled` | An [import rollback](#import-past-sessions) cancelled the turn before it was submitted; never sent |
 
-Transient connection errors, lost responses, HTTP 408/429, and 5xx retry the same payload and turn ID. The service deduplicates by `platform + turnId`; retries preserve the first input and timestamps. After acceptance, the uploader polls instead of resubmitting. Failed/rejected records are not automatically resubmitted, and terminal records are not automatically deleted.
+Transient connection errors, lost responses, HTTP 408/429, and 5xx retry the same payload and turn ID. The service deduplicates by `platform + turnId`; retries preserve the first input and timestamps. After acceptance, the uploader polls instead of resubmitting. Failed/rejected records are not automatically resubmitted, and finished records are not automatically deleted.
 
 A durable request ID is not formation completion. The uploader follows the [task contract](api.md#tasks-and-completion).
+
+Finished rows keep the turn text after the daemon has stored it. Delete them after your retention period with:
+
+```sh
+/absolute/path/agent-memory-service/target/fast/agent-memoryd outbox prune --older-than 30d
+```
+
+`prune` deletes the `completed`, `rejected` and `cancelled` rows captured more than the given age ago (whole days
+such as `30d`, or hours such as `12h`); `--include-failed` also deletes `failed` rows, which are otherwise kept as
+the evidence of a failed formation. It never deletes `pending` or `accepted` rows, so it can run while the daemon
+or `outbox drain` uploads; it deletes 500 rows per write, short enough that a capture hook waiting for the lock
+does not time out. It prints the rows deleted per status, for example `{"before":"2026-09-23T08:00:00.000000+00:00","deleted":{"cancelled":0,"completed":42,"rejected":1}}`.
+A pruned turn that is captured or imported again is submitted again, and the daemon deduplicates it by
+`platform + turnId`; a session whose rows were all pruned before it ended sends no `sessionEnded` marker. SQLite
+reuses the freed space for later captures, so the file stops growing but does not shrink: `prune` does not run
+`VACUUM`, which rewrites the whole file under the write lock and could keep a capture hook waiting past its
+two-second timeout. To shrink the file, stop the uploader and the agents first, then run `sqlite3 <outbox> VACUUM`.
 
 `sessionEnded:true` is a session-close signal, not an end-of-every-turn flag. It closes an ordered input job; no experience pipeline runs. The collector does not inject context; that is the separate [recall hooks](#automatic-recall)' job.
 
