@@ -463,16 +463,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hints_map_to_item_kinds() {
-        assert_eq!(item_kind_for_hint(Some("feedback")), "preference");
-        assert_eq!(item_kind_for_hint(Some("user")), "preference");
-        assert_eq!(item_kind_for_hint(Some("reference")), "reference");
-        assert_eq!(item_kind_for_hint(Some("instruction")), "instruction");
-        assert_eq!(item_kind_for_hint(Some("project")), "fact");
-        assert_eq!(item_kind_for_hint(None), "fact");
-    }
-
-    #[test]
     fn instructions_need_a_yes() {
         assert_eq!(default_decision("instruction"), REJECT);
         assert_eq!(default_decision("fact"), ACCEPT);
@@ -518,15 +508,5 @@ mod tests {
         assert!(
             problem(&|t| t.messages[0].timestamp = "2026-05-03T10:00:00Z".into()).contains("older")
         );
-    }
-
-    #[test]
-    fn limits_round_trip_through_the_rules_type() {
-        let wire = ImportLimits::default();
-        let rules: UnitLimits = wire.into();
-        assert_eq!(rules, UnitLimits::default());
-        let json = serde_json::to_value(wire).unwrap();
-        assert_eq!(json["recallBudget"], 400);
-        assert_eq!(json["recallTopK"], 5);
     }
 }

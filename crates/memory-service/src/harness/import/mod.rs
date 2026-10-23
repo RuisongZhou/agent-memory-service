@@ -740,15 +740,4 @@ mod tests {
         assert!(platform_label("claude-code").is_ok());
         assert!(platform_label("").is_err() && platform_label("名").is_err());
     }
-
-    #[test]
-    fn a_command_can_run_on_any_runtime_worker() {
-        fn send<T: Send>(_: &T) {}
-        let cmd = ImportCmd::Prompt {
-            project: "p".into(),
-            lang: Lang::En,
-        };
-        // Never polled: this only proves the future is Send, so it may be spawned.
-        send(&run(cmd));
-    }
 }

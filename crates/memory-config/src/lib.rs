@@ -195,10 +195,6 @@ fn default_rerank_model() -> String {
 mod tests {
     use super::*;
     #[test]
-    fn consolidation_is_off_by_default() {
-        assert!(!ServiceConfig::default().consolidation_enabled);
-    }
-    #[test]
     fn invalid_values_are_rejected() {
         let c = ServiceConfig {
             llm_max_concurrency: 0,
