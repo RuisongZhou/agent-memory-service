@@ -263,7 +263,7 @@ def changes(args, ctx, uninstall):
     text = core.read_text(ctx.config_toml)
     capture = ctx.capture and not uninstall
     if capture or (ctx.recall and not uninstall):
-        refuse_toml_hooks(text)
+        refuse_toml_hooks(text.removeprefix('\ufeff'))
     config = edit_config(text, None if uninstall else server_entry(ctx))
     current = parse(text.removeprefix('\ufeff')).get('notify')
     if owned_notify(current):
@@ -350,9 +350,8 @@ def app_server(home, requests, env, timeout=30):
 def host_check(args, ctx, planned):
     """Codex itself parses copies of the planned files in a temporary CODEX_HOME."""
     config = planned.get(ctx.config_toml) or ctx.config_toml.read_bytes()
-    hooks = planned.get(ctx.hooks_json)
-    if hooks is None:
-        hooks = core.snapshot(ctx.hooks_json)[0] or b'{}'
+    # Planned as None, hooks.json is deleted and Codex loads no hooks.
+    hooks = (planned[ctx.hooks_json] if ctx.hooks_json in planned else core.snapshot(ctx.hooks_json)[0]) or b'{}'
     with tempfile.TemporaryDirectory(prefix='agent-memory-codex-check-') as temporary:
         home = Path(temporary)
         (home / 'config.toml').write_bytes(config)
