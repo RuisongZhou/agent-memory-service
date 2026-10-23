@@ -3,267 +3,341 @@
 [![CI](https://github.com/RuisongZhou/agent-memory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/RuisongZhou/agent-memory-service/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-让 Codex、Claude Code、WorkBuddy 和 DeepSeek Harness 共用一份记忆的本地服务。
+**Shared memory for your local AI agents.** Carry project decisions, facts and explicitly saved instructions between
+Codex, Claude Code, WorkBuddy and DeepSeek Harness.
 
-## 它解决什么问题
+Connect your clients to the same local service and use the same project ID. Each client can retrieve shared memories,
+inspect their sources and correct outdated information.
 
-每个 Agent 宿主都有自己的记忆：Claude Code 有 auto memory，Codex 有会话总结，WorkBuddy 有 `MEMORY.md`。
-它们互相看不到，换一个宿主，之前定下的决定和提过的要求都要重新说一遍。
+With capture and recall hooks enabled, a typical workflow looks like this:
 
-Agent Memory Service 在本机运行一个 daemon，几个宿主都连到它。装好之后大致是这样：
+> In Codex, you discuss and choose a storage design. The conversation is captured and processed into memory.
+>
+> Later, in Claude Code, you ask about that decision. The recall hook searches the project's memories and adds relevant
+> results to the conversation. The agent can inspect the original source before answering.
 
-```text
-周一，在 Codex 里
-  你：存储就用 SurrealDB，不另外部署向量库。
-      → 这一轮结束后被自动捕获，形成一条记忆
+Existing client memories and past conversations can be imported separately.
 
-周二，在 Claude Code 里
-  你：我们的存储方案是什么来着？
-      → 提问前自动召回，把「存储用 SurrealDB，不另外部署向量库」注入上下文
-  Claude：用的是 SurrealDB……
-      → 需要时，Agent 可以用 get_memory 查到这条记忆来自周一那轮 Codex 对话
-```
+## What you can do
 
-## 特性
+- **Continue work across clients** with automatic capture and recall, without copying context between conversations.
+- **Check and correct memories:** trace a record to its source, add a correction or retract it.
+- **Import existing history:** review proposed memories before importing them, with rollback support.
 
-- **跨宿主共享**：几个宿主用同一个 `--project`，就共用一份项目记忆。
-- **自动捕获和召回**：hooks 在每轮对话结束后保存对话，在会话开始和每次提问时注入相关记忆；Agent 也可以用 8 个 MCP
-  工具主动保存和检索。
-- **有来源，能更正**：每条记忆都能查到形成它的原始输入，可以追加更正或撤回。
-- **导入已有记忆**：宿主接入之前记下的内容和过去的会话可以导入，先审核再写入，能整次撤销。
-- **一条命令安装**：安装器合并宿主配置，保留你原有的 MCP server、hooks 和设置，并把 daemon 装成用户服务。
-- **数据在本机**：记忆存在本机的 SurrealDB 里，daemon 只监听回环地址。
+### Supported clients
 
-## 项目状态
+| Client | MCP tools | Automatic capture | Automatic recall |
+|---|:---:|:---:|:---:|
+| Codex CLI / App | ✓ | ✓ | ✓ |
+| Claude Code | ✓ | ✓ | ✓ |
+| WorkBuddy | ✓ | ✓ | ✓ |
+| DeepSeek Harness / `dsh` | ✓ | — | — |
 
-早期版本，适合个人在自己的机器上使用：
+MCP exposes tools that the agent can call. Hooks trigger capture and recall at specific conversation events. Without
+hooks, tool use depends on the agent's decisions, your requests and project instructions.
 
-- 只服务本机的一个用户。请求头里的 platform 只用于路由，不是认证。
-- 支持 macOS 和 Linux，Windows 请在 WSL 中运行。
-- 记忆算法目前只有 Mem0，与 Mem0 Node SDK 3.3.1 内置 NLP 回退的行为对齐。
-- DeepSeek Harness 只有 MCP 工具，没有自动捕获和自动召回。
-- 安装器的离线检查在 CI 里运行，宿主 CLI 对配置的解析在 macOS 上验证过；还没有在真实客户端会话和真实模型下完成端到端
-  验收，见 [验证范围](docs/mcp-harness.md#merges-backups-and-rollback)。安装时加 `--verify-model` 可以在本机用真实模型检查一次。
+Other clients that support local stdio MCP can connect through [examples/mcp.json](examples/mcp.json) and
+[other agent platforms](docs/mcp-harness.md#other-agent-platforms).
 
-## 数据与隐私
+## Before you install
 
-- **发给模型服务的内容**：默认使用托管模型。保存的文本会发给生成模型和嵌入模型；开启自动召回后，每次提问（最多
-  2000 个字符）都会作为查询发给嵌入 API。要让数据留在本机，改用 [自托管的检索模型](docs/self-hosted-models.md)，并把
-  生成模型换成本地的 OpenAI 兼容服务（见 [配置](docs/api.md#configuration)）。
-- **本机保存的位置**：记忆数据在 `~/.local/share/agent-memory-service/mem0`，捕获的对话先排在
-  `~/.local/share/agent-memory-service/harness-outbox.sqlite3`，模型密钥在 `~/.config/agent-memory-service/.env`（权限 600）。
-- **备份**：停掉服务后复制整个数据目录和 outbox，见 [存储、备份与升级](docs/deployment.md#storage-backups-and-upgrades)。
+This is an early-stage project for **one user on one machine**, running on macOS or Linux. On Windows, use WSL.
 
-## 快速开始
+Memory is stored locally, but **the default model configuration sends relevant text to hosted model providers**:
 
-前置条件：
+- Memory formation sends submitted text to the generation model.
+- Retrieval uses an embedding model and, optionally, a reranker.
+- Automatic recall uses each prompt as a search query, capped at 2,000 characters.
 
-- macOS 或 Linux；
-- Git、Rust stable（含 Cargo）和 C 编译工具链，用来从源码构建；
-- Python 3.11+，只有安装器需要；
-- 一个模型 API key，默认是千问 MaaS 的 key，同时用于生成和托管的嵌入、重排模型。
+To run the service's model processing locally, configure both a local OpenAI-compatible generation endpoint (see
+[configuration](docs/api.md#configuration)) and [self-hosted retrieval models](docs/self-hosted-models.md). Your agent
+client's own model configuration is separate.
 
-**1. 安装 SurrealDB** 3.2 或更高的 3.x。daemon 用它保存记忆，安装器只检查它，不替你安装。macOS 用 Homebrew：
+The daemon listens on loopback (`127.0.0.1:8765`). Project and platform labels organize requests; they are not
+authentication or access-control boundaries.
+
+## Quick start
+
+### 1. Install prerequisites
+
+The source installation requires:
+
+- Git
+- Rust stable with Cargo and a C compiler toolchain
+- Python 3.11+ for the installer
+- SurrealDB 3.2 or a later 3.x release
+- A model API key; the default configuration uses Qwen MaaS for generation, embeddings and reranking
+
+Install SurrealDB with Homebrew on macOS:
 
 ```bash
 brew install surrealdb/tap/surreal
 ```
 
-或者用官方安装脚本（macOS 和 Linux 都可以）：
+Or with the official script on macOS or Linux:
 
 ```bash
 curl -sSf https://install.surrealdb.com | sh
 ```
 
-**2. 选择接入方式。** 安装器给宿主接上两部分：
+Check that `surreal` is on your `PATH` and reports a supported version:
 
-- **MCP 工具**：8 个 `shared-memory` 工具，Agent 调用它们来保存、检索和更正记忆。
-- **hooks**：捕获 hook 在每轮对话结束后自动保存对话，召回 hook（`--recall`）在会话开始和每次提问时自动注入相关记忆。
+```bash
+surreal version
+```
 
-推荐 MCP 和 hooks 都装，这样记忆的保存和使用都是自动的。也可以只装 MCP：不需要 `--project`，Codex 也不用信任 hooks，
-但对话不会被自动保存，提问前也不会自动查记忆，Agent 只在被明确要求时才调用工具（见 [只装 MCP 时](#只装-mcp-时)）。
+The daemon starts and manages this executable for its own storage. You do not need to start a separate database
+server. Other installation methods are in [Install SurrealDB](docs/deployment.md#install-surrealdb).
 
-**3. 运行安装命令。** 克隆仓库，为要接入的宿主执行对应的命令：
+### 2. Get the repository
 
 ```bash
 git clone https://github.com/RuisongZhou/agent-memory-service.git
 cd agent-memory-service
-bash scripts/install.sh --host codex --apply --project my-project --recall   # 推荐：MCP + hooks
 ```
 
-| 宿主 | 推荐：MCP + hooks | 只装 MCP |
-|---|---|---|
-| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project --recall` | `bash scripts/install.sh --host codex --apply --no-capture` |
-| Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project --recall` | `bash scripts/install.sh --host claude-code --apply --workspace /absolute/path/to/project --no-capture` |
-| WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project --recall` | `bash scripts/install.sh --host workbuddy --apply --no-capture` |
-| DeepSeek Harness（桌面版与 `dsh`） | 不支持 hooks | `bash scripts/install.sh --host deepseek-harness --apply` |
+### 3. Connect your client
 
-首次运行会以隐藏输入的方式询问 API key。之后给其他宿主安装时复用同一个 daemon 和密钥，不会再问；想让几个宿主共享记忆，
-就给它们传同一个 `--project`。不带 `--apply` 时只预览、不写文件。只装了 MCP 的宿主，以后想加上 hooks，用推荐的命令重新
-运行一次即可；只想自动保存、不想自动注入，就去掉 `--recall`。
+Choose a stable project ID and replace `my-project` below. Clients sharing project memories must connect to the
+**same daemon** and use the **same project ID**.
 
-**4. 在宿主里确认。** 每个宿主都要你在它自己的界面里确认一次，安装器无法代劳：
+#### Codex CLI / App
 
-| 宿主 | 安装后要手动做 |
-|---|---|
-| Codex CLI / App | 重启 Codex。装了 hooks 时，在 `/hooks`（App：Settings → Hooks）里逐个信任 `shared-memory` 的 hook（推荐配置共 5 个），信任之前不捕获也不召回 |
-| Claude Code | 在该项目里重启 Claude Code，按提示批准 `shared-memory` 项目 MCP server（用 `/mcp` 查看） |
-| WorkBuddy | 重启后在「连接器 → 自定义连接器」中信任 `shared-memory`，确认 8 个工具都已启用 |
-| DeepSeek Harness | 重启后新建会话 |
+```bash
+bash scripts/install.sh --host codex --apply --project my-project --recall
+```
 
-Codex 按 hook 的内容记录信任：重跑安装时换了 `--project`、二进制路径等选项，或者升级后 hook 变了，要再信任一次。
-安装器为什么不能代你信任，见 [Codex hooks](docs/mcp-harness.md#codex-hooks)。
+Restart Codex, then trust the `shared-memory` hooks (five with `--recall`) in `/hooks`, or **Settings → Hooks** in the
+app. Capture and recall will not run until their hooks are trusted.
 
-**5. 检查。** 装了 hooks 时，完成一轮对话后运行：
+Codex records trust by hook content. If you rerun the installer with a different `--project` or binary path, or an
+upgrade changes the hooks, trust them again. See [Codex hooks](docs/mcp-harness.md#codex-hooks).
+
+#### Claude Code
+
+```bash
+bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project --recall
+```
+
+Restart Claude Code in that workspace and approve the `shared-memory` project MCP server. Use `/mcp` to inspect it.
+
+#### WorkBuddy
+
+```bash
+bash scripts/install.sh --host workbuddy --apply --project my-project --recall
+```
+
+Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memory` and enable all eight tools.
+
+#### DeepSeek Harness
+
+```bash
+bash scripts/install.sh --host deepseek-harness --apply
+```
+
+Restart DeepSeek Harness and start a new session. This integration provides MCP tools only; it does not accept
+`--project` or `--recall`. Specify the project when asking the agent to use memory.
+
+#### What the installer does
+
+On the first installation, the installer prompts for the API key with hidden input. It builds the binary, checks the
+integration, merges client configuration and starts the daemon as a user service. Subsequent client installations
+reuse the daemon and key.
+
+The installer preserves existing unrelated MCP servers, hooks and settings. Remove `--apply` to preview the
+installation.
+
+> **Project routing:** capture and recall hooks use the project ID recorded in their installed command. Codex and
+> WorkBuddy hooks are installed at user level, so they use that ID across sessions; they do not select a project from
+> the current directory. Claude Code's default installation is scoped to the specified workspace. MCP calls specify
+> their own project scope.
+
+**Other configurations:**
+
+- **MCP only:** for Codex, Claude Code or WorkBuddy, add `--no-capture` and omit `--recall`. The installer does not
+  require `--project` in this mode. To add hooks later, rerun with the full command.
+- **Capture without automatic recall:** omit `--recall`.
+- **Existing binary:** use `--binary /absolute/path/to/agent-memoryd` to skip the build, for example with a
+  [release archive](docs/deployment.md#release-archive).
+- **Custom deployment:** to choose the data directory, port or self-hosted models, follow
+  [deployment and operations](docs/deployment.md).
+- **Install through an agent:** an agent that can run commands can follow
+  [the installation guide](docs/mcp-harness.md#one-command-install). Agent shells usually cannot take hidden input, so
+  provide the key yourself with `--key-file` or in a local terminal, never in chat or command arguments. Client
+  confirmation in the steps above still needs you.
+
+Full options, configuration changes, backups and uninstall instructions are in the
+[installation guide](docs/mcp-harness.md#one-command-install).
+
+### 4. Try sharing a memory
+
+Connect two supported clients to the same daemon. In the first client, ask:
+
+> Use shared-memory to save this test fact for project `my-project`: "The project's test mascot is a copper fox." Use
+> `add_memories` with `infer:false` to store the text directly. If the write is asynchronous, poll `get_task` until it
+> completes.
+
+In the second client, ask:
+
+> Use shared-memory to search project `my-project` for its test mascot. Show the stored fact and inspect its source with
+> `get_memory`.
+
+The second client should retrieve the fact saved by the first. This checks explicit storage, retrieval and
+cross-client visibility. It may make model API calls for embeddings or reranking.
+
+To check **automatic capture** separately, complete a conversation turn in a client with trusted capture hooks, then
+run:
 
 ```bash
 ~/.local/bin/agent-memoryd outbox status
 ```
 
-列表里应出现这一轮；状态为 `completed` 表示已经上传并形成记忆。只装 MCP 时，在宿主里确认能看到 8 个 `shared-memory` 工具，
-再让 Agent 调用一次 `get_context`。宿主在接入之前记下的内容不会自动进来，需要的话见
-[导入宿主已有的记忆](#导入宿主已有的记忆)。
+A `completed` entry means upload and memory processing have finished. It does not guarantee that a new memory was
+created: extraction can produce no facts, and duplicate content can reuse an existing record.
 
-安装器做的每一步、全部选项、拒绝写入的情形以及回退和卸载，见 [一键安装说明](docs/mcp-harness.md#one-command-install)。
+For **automatic recall**, start a new session with recall enabled and ask about a stored project fact without
+requesting an MCP call. Inspect the client's hook output or injected context where available.
 
-### 其他安装方式
+## Everyday use
 
-- **让 Agent 帮你安装**：把下面这段话发给已经能执行命令的 Agent（Codex、Claude Code 或 WorkBuddy）。Agent 的执行环境通常
-  没有终端，无法隐藏输入密钥，这时安装器会报错并说明可用的密钥来源；第 4 步的确认仍要你本人完成。
+### MCP tools
 
-  > 请为当前 Agent 安装 https://github.com/RuisongZhou/agent-memory-service 。先读 README.md 和
-  > docs/mcp-harness.md 的 One-command install，克隆仓库或复用本地副本，执行 `scripts/install.sh` 中对应宿主的
-  > 一键安装命令，项目 ID 用 my-project。保留已有的其他 MCP、hooks 和配置，不改代码。需要模型 API key 时，
-  > 告诉我在本地终端用 `--key-file` 或隐藏输入提供，不要把密钥放进聊天或命令参数。
+After installation and a client restart, the agent sees eight `shared-memory` tools:
 
-- **使用 release 二进制**：下载 [release 包](docs/deployment.md#release-archive)，安装时用 `--binary` 指定，不再构建。
-- **手动部署**：要自定义数据目录、端口或自托管模型时，按 [部署与运维](docs/deployment.md) 逐步操作。
-- **其他 MCP 客户端**：支持本地 stdio MCP 的客户端可以参照 [examples/mcp.json](examples/mcp.json) 和
-  [其他平台](docs/mcp-harness.md#other-agent-platforms) 接入。
-
-## 使用
-
-### 在 Agent 里使用记忆
-
-安装完成并重启宿主后，Agent 会看到 `shared-memory` 提供的 8 个 MCP 工具：
-
-| 工具 | 用途 |
+| Tool | Purpose |
 |---|---|
-| `add_memories` | 保存对话、事实或明确的行为要求（`memoryType: "instruction"`） |
-| `search_memories` | 按问题检索相关记忆 |
-| `get_context` | 组装项目和会话上下文，以及已保存的行为要求 |
-| `get_task` | 查询异步写入是否完成（拿到 requestId 不等于完成） |
-| `list_turns` | 查看提交过的原始对话 |
-| `get_memory` | 读取单条记忆及其历史和来源 |
-| `correct_memory` | 追加更正，或撤回一条记忆 |
-| `feedback` | 记录检索结果是否被采用 |
+| `add_memories` | Save conversations, facts or explicit instructions (`memoryType: "instruction"`) |
+| `search_memories` | Find memories relevant to a question |
+| `get_context` | Assemble project and session context, including saved instructions |
+| `get_task` | Check whether an asynchronous write has completed (a `requestId` is not completion) |
+| `list_turns` | List submitted raw conversation turns |
+| `get_memory` | Read one memory with its history and sources |
+| `correct_memory` | Add a correction or retract a memory |
+| `feedback` | Record whether retrieved results were used |
 
-建议把 [共享记忆工作流](docs/mcp-harness.md#shared-memory-workflow) 中的说明合并到目标项目的 `AGENTS.md` 或
-`CLAUDE.md`，并把其中的项目 ID 换成你的 `--project`。之后可以直接这样对 Agent 说：
+Request fields are documented in the [API reference](docs/api.md#interfaces).
 
-- 「用 shared-memory 加载项目 my-project 的上下文，然后找出我们之前关于存储方案的决定，并给出来源。」
-- 「作为 my-project 的行为要求记住：汇报项目决策时附上来源。」
+You can ask the agent to use memory directly:
 
-### 自动捕获与召回
+| Task | Example request |
+|---|---|
+| Resume project work | "Load shared-memory context for `my-project`, then find our previous storage decision." |
+| Save a requirement | "Remember as an instruction for `my-project`: include sources when reporting project decisions." |
+| Check a source | "Inspect the source of that memory before relying on it." |
+| Correct a record | "Use shared-memory to correct that record: the service port is now 9000." |
+| Retract a record | "Retract this memory; it is no longer valid." |
 
-装了自动捕获后，宿主每完成一轮对话，hook 都会把它写进本地 outbox，由 daemon 上传并形成记忆，Agent 不需要自己调用工具
-保存普通对话。装了 `--recall` 后，会话开始时注入项目上下文，每次提问时注入本会话还没出现过的相关记忆；daemon 没有运行时
-什么也不注入，也不会阻断提问。细节见 [自动保存对话](docs/mcp-harness.md#automatically-save-conversations) 和
-[自动召回](docs/mcp-harness.md#automatic-recall)。
+Historical memories are reference material and may be outdated. Explicitly saved instructions are returned separately
+and remain subject to current instructions.
 
-### 只装 MCP 时
+For consistent tool use, add the [shared memory workflow](docs/mcp-harness.md#shared-memory-workflow) to your project's
+`AGENTS.md` or `CLAUDE.md`. It covers loading context, checking sources, saving instructions and waiting for
+asynchronous writes.
 
-没有 hooks 时，记忆的保存和使用都要显式调用工具：对话不会被自动保存，提问前也不会自动注入记忆。Agent 一般不会自己
-想到去调用，所以要在对话里明确提出，例如：
+### Automatic capture and recall
 
-- 「先用 shared-memory 的 `get_context` 加载项目 my-project 的上下文，再回答。」
-- 「用 shared-memory 的 `search_memories` 查一下我们之前关于存储方案的决定。」
-- 「用 `add_memories` 把刚才定下的存储方案记到项目 my-project。」
+With capture hooks enabled, ordinary completed turns are saved automatically. With recall enabled, the service loads
+context at session start and searches for relevant memories before each prompt. Retrieval is bounded by time and
+context budgets; a failed recall or a stopped daemon does not block the prompt. See
+[automatically save conversations](docs/mcp-harness.md#automatically-save-conversations) and
+[automatic recall](docs/mcp-harness.md#automatic-recall).
 
-把 [共享记忆工作流](docs/mcp-harness.md#shared-memory-workflow) 合并到 `AGENTS.md` 或 `CLAUDE.md` 后，Agent 会按说明在
-合适的时候调用这些工具，但仍不如 hooks 可靠。
+### Import existing memories
 
-### 导入宿主已有的记忆
-
-宿主接入之前记下的内容（Claude Code 的 auto memory、Codex 的会话总结、WorkBuddy 的 `MEMORY.md`，以及 ChatGPT 等平台
-让 Agent 导出的 JSONL），还有装上捕获之前的 Claude Code 和 Codex 会话，都可以导入共享记忆。先离线生成计划，再提议、
-审核，最后写入，整次导入可以撤销：
+You can import supported memory files from Claude Code, Codex and WorkBuddy, as well as JSONL exports from other
+agents. Past Claude Code and Codex sessions can also be imported. Importing is a separate, reviewed workflow:
 
 ```bash
 ~/.local/bin/agent-memoryd import plan --host codex --project my-project --workspace /absolute/path/to/project
-~/.local/bin/agent-memoryd import propose <plan 打印的计划文件>   # 打印 RUN；不写记忆
-~/.local/bin/agent-memoryd import show RUN                        # 生成评审文件，逐条改 accept / reject
-~/.local/bin/agent-memoryd import apply RUN --review <评审文件>
-~/.local/bin/agent-memoryd import rollback RUN                    # 需要时撤销整次导入
+~/.local/bin/agent-memoryd import propose <plan file printed by plan>   # prints RUN; writes no memories
+~/.local/bin/agent-memoryd import show RUN                             # writes a review file; mark accept / reject
+~/.local/bin/agent-memoryd import apply RUN --review <review file>
+~/.local/bin/agent-memoryd import rollback RUN                         # undo the whole run if needed
 ```
 
-导入的事实只作为历史参考，自动召回能找到它们；需要人确认的行为要求不会自动写入。各宿主的参数、会话导入和前置条件见
-[导入已有记忆](docs/mcp-harness.md#import-existing-memories)。
+Imported facts remain historical reference material; behavior requirements require explicit acceptance. See
+[import existing memories](docs/mcp-harness.md#import-existing-memories) for supported sources and options.
 
-## 工作原理
+## How it works
 
-```text
- Codex · Claude Code · WorkBuddy · DeepSeek Harness
-   │ stdio MCP：agent-memoryd mcp        │ hooks：agent-memoryd hook capture / recall
-   ▼                                     ▼
- agent-memoryd serve（127.0.0.1:8765，以 LaunchAgent 或 systemd 用户服务运行）
-   ├── SurrealDB：daemon 启动你安装的 surreal，数据在 ~/.local/share/agent-memory-service
-   └── 模型 API：生成（形成记忆）、嵌入与重排（检索）
-```
+`agent-memoryd` is a Rust binary that provides the HTTP service, stdio MCP bridge, capture and recall hooks, and outbox
+uploader.
 
-- **一个二进制**：`agent-memoryd` 是 Rust 写的 daemon，提供 JSON HTTP API；同一个二进制还提供 stdio MCP 桥、宿主 hooks
-  用来捕获对话和注入记忆的命令，以及把捕获的对话上传给 daemon 的上传器。
-- **写入**：按顺序增量形成记忆，保存原始输入，在作用域内做精确去重。
-- **检索**：综合语义、BM25 和实体打分。
-- **存储**：daemon 在自己的数据目录上启动你安装的 `surreal`，只监听回环地址上的随机端口，用数据目录里随机生成的 root
-  密码访问；不需要另外部署向量库。
-- **模型**：嵌入和可选的重排默认调用托管模型，也可以换成自己运行的 llama-server；生成模型是单独配置的 OpenAI 兼容服务。
+- **Capture:** hooks write completed turns to a local outbox; the uploader submits them to the daemon.
+- **Formation:** the service stores original input and uses the configured generation model to extract facts. Exact
+  duplicate content can reuse existing memories.
+- **Retrieval:** search combines semantic similarity, BM25 and entity scoring, with optional reranking.
+- **Storage:** the daemon manages a local SurrealDB process using SurrealKV. No separate vector database is required.
 
-写入与读取路径、存储和实体投影见 [架构](docs/architecture.md)。
+The memory algorithm follows the Node/TypeScript OSS `mem0ai@3.3.1` built-in NLP fallback path. The service has its
+own storage, scope rules, job processing and provenance; this is not a claim of full Mem0 SDK or Platform
+compatibility.
 
-## 日常运维
+See [architecture](docs/architecture.md) for implementation details and differences.
+
+## Operations
 
 ```bash
-~/.local/bin/agent-memoryd service status      # 服务文件、运行的命令，以及 daemon 是否在响应
-curl -fsS http://127.0.0.1:8765/health          # 健康检查：记忆策略、模型、LLM 用量
-~/.local/bin/agent-memoryd outbox status        # 捕获的对话是否已上传、形成记忆
+~/.local/bin/agent-memoryd service status    # service file, command and whether the daemon responds
+curl -fsS http://127.0.0.1:8765/health        # memory strategy, models and LLM usage
+~/.local/bin/agent-memoryd outbox status      # whether captured turns were uploaded and processed
 ```
 
-- **日志**：macOS 在 `~/Library/Logs/agent-memory-service/daemon.stderr.log`；Linux 用
-  `journalctl --user -u agent-memory.service`。
-- **升级**：`git pull` 后，对已安装的宿主重新运行原来的安装命令；二进制有变化时会被替换，服务随之重启。SurrealDB 用安装时的
-  方式升级，保持在 3.x。
-- **换密钥或模型**：编辑 `~/.config/agent-memory-service/.env`（可用的设置见 [配置参考](docs/api.md#configuration)），再重启服务。
-- **卸载**：安装命令加 `--uninstall` 去掉某个宿主的配置；停用并删除服务见 [安装服务](docs/deployment.md#install-the-service)。
-- **排查**：见 [部署排查](docs/deployment.md#common-problems) 和 [客户端排查](docs/mcp-harness.md#troubleshooting)。
+- **Logs:** `~/Library/Logs/agent-memory-service/daemon.stderr.log` on macOS;
+  `journalctl --user -u agent-memory.service` on Linux.
+- **Upgrade:** after `git pull`, rerun the original install command for each installed client; a changed binary is
+  replaced and the service restarted. Keep SurrealDB on 3.x.
+- **Change key or models:** edit `~/.config/agent-memory-service/.env` (see [configuration](docs/api.md#configuration)),
+  then restart the service.
+- **Uninstall:** add `--uninstall` to the install command to remove a client's configuration; to stop and remove the
+  service, see [install the service](docs/deployment.md#install-the-service).
+- **Troubleshooting:** see [deployment problems](docs/deployment.md#common-problems) and
+  [client troubleshooting](docs/mcp-harness.md#troubleshooting).
 
-## 文档
+Default local paths:
 
-| 要做的事 | 文档 |
+| Content | Location |
 |---|---|
-| 安装、配置模型密钥、以服务方式运行、备份与排查 | [部署与运维](docs/deployment.md) |
-| 自己运行嵌入和重排模型，代替托管 API | [自托管检索模型](docs/self-hosted-models.md) |
-| 一键安装的细节、手动接入各宿主、对话捕获与自动召回 | [MCP 与宿主集成](docs/mcp-harness.md) |
-| 请求字段、完成状态、作用域和配置默认值 | [API 与配置](docs/api.md) |
-| 写入与读取路径、存储、实体投影、与 SDK 的差异 | [架构](docs/architecture.md) |
-| 把宿主已有的记忆和过去的会话导入共享记忆 | [导入已有记忆](docs/mcp-harness.md#import-existing-memories)、[记忆导入设计](docs/design/memory-import.md) |
-| 与 Mem0 SDK 的受控对比和历史评测证据 | [评测](eval/README.md) |
-| 运维与校验脚本清单 | [脚本清单](scripts/README.md) |
+| Memory store | `~/.local/share/agent-memory-service/mem0` |
+| Captured-turn outbox | `~/.local/share/agent-memory-service/harness-outbox.sqlite3` |
+| Model configuration and key | `~/.config/agent-memory-service/.env` |
 
-除本 README 和 `docs/design/` 下的设计文档外，文档目前都是英文。
+## Documentation
 
-## 开发与贡献
+| Topic | Guide |
+|---|---|
+| Deployment, service management, backup and troubleshooting | [Deployment](docs/deployment.md) |
+| Client installation, hooks and import | [MCP and client integration](docs/mcp-harness.md) |
+| Local embedding and reranking models | [Self-hosted retrieval models](docs/self-hosted-models.md) |
+| API fields, scopes, completion states and configuration | [API reference](docs/api.md) |
+| Implementation and algorithm boundaries | [Architecture](docs/architecture.md) |
+| Memory import design | [Memory import](docs/design/memory-import.md) |
+| Evaluation methods and historical results | [Evaluation](eval/README.md) |
+| Operations and check scripts | [Scripts](scripts/README.md) |
+
+## Project status and contributing
+
+Offline installation checks run in CI. Client CLI configuration parsing has been checked on macOS. Service-manager
+commands have unit coverage, but CI does not start real user services.
+
+The documented validation does **not yet include a complete live-client, real-model end-to-end acceptance run**. See
+[what the installer verifies](docs/mcp-harness.md#merges-backups-and-rollback) for details. The installer's optional
+`--verify-model` check uses real models against a temporary store and may incur API charges.
+
+For development:
 
 ```bash
-make fmt test-workspace build test-scripts   # 只需要 pytest，不需要评测环境
+make fmt test-workspace build test-scripts
 make check-public
 ```
 
-所有检查都使用临时存储、mock 检索模型和本地确定性的生成桩，不会调用付费模型。`test-workspace` 的存储测试和端到端安装
-测试需要 PATH 上有 SurrealDB 3.2 或更高的 3.x。仓库结构、检查项和提交要求见 [贡献指南](CONTRIBUTING.md)。
+These checks use temporary storage and mock models, without paid model calls. Storage and end-to-end installer tests
+require a supported SurrealDB executable on `PATH`.
 
-## 许可证
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and contribution requirements.
 
-[MIT](LICENSE)，第三方来源见 [THIRD_PARTY.md](THIRD_PARTY.md)。复制的源码和提示词保留各自的版权声明。
-仓库不包含密钥、模型权重、生成的数据库、原始 trace 或本地缓存。本项目不是 Codex、Claude Code、WorkBuddy
-或 DeepSeek Harness 厂商的官方产品。
+## License
+
+[MIT](LICENSE). Third-party code and prompts retain their notices; see [THIRD_PARTY.md](THIRD_PARTY.md).
+
+This is an independent project, not an official product of the supported client vendors.
