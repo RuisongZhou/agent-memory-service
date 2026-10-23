@@ -15,6 +15,23 @@ Without it the store tests fail with that hint and the end-to-end installer test
 official 3.2.4 release with the [setup-surrealdb action](.github/actions/setup-surrealdb/action.yml), checked
 against its SHA-256.
 
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `crates/` | The service; [architecture](docs/architecture.md#layers-and-ownership) describes each layer |
+| `docs/` | Documentation of the current service, one topic per page; `docs/design/` holds design notes, which may describe parts not built yet |
+| `examples/` | Editable service configuration, MCP and capture templates, and the memory export prompts |
+| `scripts/` | Service operation and check scripts, including the one-command installer `scripts/install.sh` |
+| `eval/` | SDK baselines, datasets, evaluation protocol, experiments and past reports |
+| `results/` | Ignored service logs and check results |
+| `eval/results/` | Ignored evaluation evidence, run records and stores |
+
+The documentation describes the current Mem0 service. The earlier Mem0 + Memos implementation is kept on the
+[`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos) branch; earlier
+designs stay in the Git history, and the reports under `eval/` keep the version they were recorded with. Read
+[compatibility](docs/api.md#compatibility) before reusing an old data directory.
+
 ## Checks
 
 CI runs these for every pull request. None of them needs the evaluation environment or the dataset;
