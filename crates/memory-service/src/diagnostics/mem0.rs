@@ -10,7 +10,8 @@ use memory_rules::util;
 use memory_store::schema;
 use serde_json::{json, Value};
 
-pub async fn selftest() {
+#[tokio::test(flavor = "multi_thread")]
+async fn selftest() {
     let schema = json!({"x-existingIds":["0"]});
     assert!(mem0_formation::validate_output(&schema, &json!({"memory":[]})).is_ok());
     assert!(mem0_formation::validate_output(

@@ -244,13 +244,13 @@ async fn prompt_submit(
         return Ok((None, None)); // an image-only or empty prompt has nothing to search for
     }
     let found = search(args, daemon, &query).await.map_err(|e| e.kind())?;
-    let mut memories: Vec<&Map<String, Value>> = found
+    let mut memories: Vec<(&str, &Map<String, Value>)> = found
         .get("results")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|r| r.get("memory")?.as_object())
-        .filter(|m| id(m).is_some())
+        .filter_map(|m| Some((id(m)?, m)))
         .collect();
     if let Some(current) = session.clone() {
         let state = args.state.clone();
@@ -259,7 +259,7 @@ async fn prompt_submit(
             .await
             .map_err(|_| "Panic")?;
         match seen {
-            Ok(seen) => memories.retain(|m| id(m).is_some_and(|i| !seen.contains(i))),
+            Ok(seen) => memories.retain(|(id, _)| !seen.contains(*id)),
             Err(e) => {
                 // Without the record, inject unfiltered: each prompt stays within budget.
                 report(e.kind());
@@ -305,11 +305,10 @@ async fn search(args: &RecallArgs, daemon: &Daemon, query: &str) -> Result<Value
 /// (line, memory ID) for at most --top-k results in rank order, each costing its text as the
 /// daemon estimates it plus RESULT_TOKENS, within --search-budget. The first result too long for
 /// the tokens left becomes an excerpt that ends the list, unless less than MIN_EXCERPT would fit.
-fn pack(args: &RecallArgs, memories: &[&Map<String, Value>]) -> Vec<(String, String)> {
+fn pack(args: &RecallArgs, memories: &[(&str, &Map<String, Value>)]) -> Vec<(String, String)> {
     let mut left = args.search_budget;
     let mut lines = Vec::new();
-    for memory in memories {
-        let Some(id) = id(memory) else { continue };
+    for &(id, memory) in memories {
         if lines.len() == args.top_k {
             break;
         }
@@ -317,10 +316,10 @@ fn pack(args: &RecallArgs, memories: &[&Map<String, Value>]) -> Vec<(String, Str
         let cost = util::est_tokens(&text) + RESULT_TOKENS;
         if cost <= left {
             left -= cost;
-            lines.push((fact_line(memory, &text, ""), id.to_string()));
+            lines.push((fact_line(memory, id, &text, ""), id.to_string()));
         } else if left >= RESULT_TOKENS + MIN_EXCERPT {
             let cut = format!("{}…", excerpt(&text, left - RESULT_TOKENS));
-            lines.push((fact_line(memory, &cut, EXCERPT), id.to_string()));
+            lines.push((fact_line(memory, id, &cut, EXCERPT), id.to_string()));
             break;
         }
     }
@@ -396,7 +395,7 @@ fn chars(text: &str) -> i64 {
 
 /// The injected block of whole leading lines within --max-chars characters: (text, lines kept).
 fn wrap(args: &RecallArgs, event: &str, note: &str, lines: &[String]) -> (Option<String>, usize) {
-    let project = serde_json::to_string(&args.project).unwrap_or_default();
+    let project = Value::from(args.project.as_str());
     let head = format!("<{TAG} project={project} event=\"{event}\">\n{note}\n");
     let tail = format!("</{TAG}>");
     let mut room = args.max_chars as i64 - chars(&head) - chars(&tail) - chars(TRUNCATED);
@@ -457,7 +456,7 @@ fn one_line(memory: &Map<String, Value>) -> String {
 }
 
 /// `text` (from `one_line`, maybe cut) with the memory's status, date, platform and ID.
-fn fact_line(memory: &Map<String, Value>, text: &str, note: &str) -> String {
+fn fact_line(memory: &Map<String, Value>, id: &str, text: &str, note: &str) -> String {
     let day = |key: &str| {
         text_of(memory.get(key))
             .chars()
@@ -487,10 +486,7 @@ fn fact_line(memory: &Map<String, Value>, text: &str, note: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" · ");
-    format!(
-        "- {text} ({note}{status}{details}; id {})",
-        id(memory).unwrap_or_default()
-    )
+    format!("- {text} ({note}{status}{details}; id {id})")
 }
 
 /// The `tenant` column of the Python hook's schema; it always holds this value.

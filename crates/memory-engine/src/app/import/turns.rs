@@ -36,7 +36,10 @@ pub(super) fn register(
     index: usize,
     now: &str,
 ) -> (UnitOutcome, Vec<ImportProposal>) {
-    let turn = unit.turn.clone().unwrap_or_default();
+    let turn = unit
+        .turn
+        .clone()
+        .expect("a checked session-turn unit carries its turn");
     let outcome = UnitOutcome {
         unit: unit.unit.clone(),
         index,
@@ -87,10 +90,8 @@ pub async fn submit(
     if run_id.is_empty()
         || turn_id.is_empty()
         || req.messages.is_none()
-        || req.text.is_some()
         || req.sync == Some(true)
         || req.session_ended == Some(true)
-        || req.memory_type.is_some()
     {
         return Err(invalid(
             "importRunId goes only with a queued messages batch and its turnId",
@@ -122,7 +123,10 @@ pub async fn submit(
             "import run {run_id} has no session turn {turn_id}"
         )));
     };
-    let turn = row.turn.clone().unwrap_or_default();
+    let turn = row
+        .turn
+        .clone()
+        .expect("session turn rows carry their turn");
     if row.status != APPLIED
         || req.scope.session.as_deref() != Some(turn.session.as_str())
         || req.messages.as_ref() != Some(&turn.messages)
@@ -178,7 +182,12 @@ pub(super) async fn undo(
     owned: &HashMap<String, Value>,
     tx: &mut Tx,
 ) -> anyhow::Result<Result<Value, String>> {
-    let turn_id = p.turn.as_ref().map_or("", |turn| turn.turn_id.as_str());
+    let turn_id = p
+        .turn
+        .as_ref()
+        .expect("session turn rows carry their turn")
+        .turn_id
+        .as_str();
     let recorded = p
         .applied
         .as_ref()
@@ -207,8 +216,7 @@ pub(super) async fn undo(
     let algorithm = eng.algorithm();
     let mut retired = Vec::new();
     let mut kept = Vec::new();
-    let memory_ids: Vec<String> =
-        serde_json::from_value(request["memoryIds"].clone()).unwrap_or_default();
+    let memory_ids: Vec<String> = serde_json::from_value(request["memoryIds"].clone())?;
     for memory_id in &memory_ids {
         let Some(doc) = t.store.get_doc(schema::MEMORIES, memory_id).await? else {
             kept.push(json!({"memoryId": memory_id, "reason": "deleted"}));

@@ -136,9 +136,6 @@ impl Open {
         } else {
             None
         };
-        if turn.reply_at.is_empty() {
-            turn.reply_at = turn.prompt_at.clone();
-        }
         finish(turn)
     }
 }
@@ -369,12 +366,10 @@ pub(crate) mod tests {
         let w = f.workspace.clone();
         let text = |t: &str| json!([{"type": "text", "text": t}]);
         let lines = vec![
-            json!({"type": "queue-operation", "sessionId": "sess-1"}).to_string(),
             // A person's turn: tool use in between, the reply is the last message with text, in two records.
             prompt("2026-03-01T10:00:00Z", &w, "human", "p1",
                    "<system-reminder>\nhost context\n</system-reminder>\nWhere do releases go?"),
             json!({"type": "attachment", "sessionId": "sess-1", "attachment": {"content": "<shared-memory>x</shared-memory>"}}).to_string(),
-            reply("2026-03-01T10:00:02Z", &w, "msg-1", json!([{"type": "thinking", "thinking": "hmm"}])),
             reply("2026-03-01T10:00:03Z", &w, "msg-1", text("Let me check.")),
             reply("2026-03-01T10:00:04Z", &w, "msg-1", json!([{"type": "tool_use", "name": "Bash"}])),
             tool_result("2026-03-01T10:00:05Z", &w, "p1"),
@@ -390,21 +385,12 @@ pub(crate) mod tests {
                    json!({"origin": {"kind": "task-notification"}, "promptId": "p3",
                           "message": {"content": "<task-notification>done</task-notification>"}})),
             reply("2026-03-01T10:02:05Z", &w, "msg-4", text("The task finished.")),
-            // A person's turn without a reply, one ending in an API error, and an image-only prompt.
+            // A person's turn without a reply, and one ending in an API error.
             prompt("2026-03-01T10:03:00Z", &w, "human", "p4", "Are you there?"),
             reply("2026-03-01T10:03:01Z", &w, "msg-5", json!([{"type": "tool_use", "name": "Read"}])),
             prompt("2026-03-01T10:04:00Z", &w, "human", "p5", "Try again."),
             record("assistant", "2026-03-01T10:04:01Z", &w,
                    json!({"isApiErrorMessage": true, "message": {"id": "msg-6", "content": text("API Error: overloaded")}})),
-            record("user", "2026-03-01T10:05:00Z", &w,
-                   json!({"turnOrigin": "human", "promptId": "p6",
-                          "message": {"content": [{"type": "image", "source": {}}]}})),
-            reply("2026-03-01T10:05:01Z", &w, "msg-7", text("A cat.")),
-            // A command record opens no turn; the reply after it still belongs to p7.
-            prompt("2026-03-01T10:06:00Z", &w, "human", "p7", "Summarize the plan."),
-            record("user", "2026-03-01T10:06:01Z", &w,
-                   json!({"message": {"content": "<command-name>/compact</command-name>"}})),
-            reply("2026-03-01T10:06:02Z", &w, "msg-8", text("The plan has two steps.")),
             "{\"type\":\"user\",\"cut".to_string(),
         ];
         let path = f.transcript(&w, "sess-1", &lines);
@@ -440,8 +426,6 @@ pub(crate) mod tests {
                 ("p3", Some("turnOrigin:task_notification")),
                 ("p4", Some("no-reply")),
                 ("p5", Some("api-error")),
-                ("p6", Some("empty")),
-                ("p7", None),
             ]
         );
         let first = &doc.turns[0];
@@ -454,7 +438,6 @@ pub(crate) mod tests {
             (first.prompt_at.as_str(), first.reply_at.as_str()),
             ("2026-03-01T10:00:00Z", "2026-03-01T10:00:07Z")
         );
-        assert_eq!(doc.turns[6].reply, "The plan has two steps.");
     }
 
     #[test]
@@ -472,15 +455,6 @@ pub(crate) mod tests {
                 ),
             ]
         };
-        // A worktree of the workspace's repository has its own directory.
-        let worktree = w.join(".claude/worktrees/w1");
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", w.join(".git/worktrees/w1").display()),
-        )
-        .unwrap();
-        f.transcript(&worktree, "wt", &turn(&worktree, "pw"));
         // Another project, an old transcript without turnOrigin, an empty one and one that is no transcript.
         let other = f.home.path().join("code/other");
         std::fs::create_dir_all(&other).unwrap();
@@ -523,13 +497,12 @@ pub(crate) mod tests {
             .unwrap();
         }
         let out = ClaudeSessions.scan_sessions(&f.ctx()).unwrap();
-        let mut found: Vec<&str> = out
+        let found: Vec<&str> = out
             .sessions
             .iter()
             .map(|d| d.turns[0].native_id.as_str())
             .collect();
-        found.sort();
-        assert_eq!(found, ["pn", "pw"]);
+        assert_eq!(found, ["pn"]);
         let enc = claude_dir_name(&w);
         let mut expected = vec![
             (

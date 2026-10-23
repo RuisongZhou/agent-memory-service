@@ -86,12 +86,7 @@ pub async fn correct_memory(
             "text must be nonempty when provided; omit text to retract a memory".into(),
         ));
     }
-    let text = req
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let text = req.text.as_deref().map(str::trim).map(str::to_string);
     if let Some(tx) = &text {
         if tx.len() > MAX_TEXT_BYTES {
             return Err(ApiError::PayloadTooLarge(format!(

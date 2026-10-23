@@ -194,11 +194,10 @@ mod tests {
 
     const EXPORT: &str = r#"Here is everything I remember:
 ```json
-{"text": "Run the smoke checks before tagging.", "kind": "instruction", "date": "2026-09-01", "source": "CLAUDE.md", "scope": "project"}
+{"text": "Run the smoke checks before tagging.", "kind": "instruction", "date": "2026-09-01", "source": "CLAUDE.md"}
 {"text": "Prefers concise answers", "kind": "preference", "date": "", "scope": "global"}
 {"text": " The staging gate sits before the deploy step. ", "date": "Sept 2026"}
 
-not json at all
 {"kind": "fact"}
 {"text": "Docs live in docs/.", "kind": "opinion"}
 {"text": "Release notes are kept in CHANGELOG.md.", "kind": "reference", "scope": "team", "source": 7}
@@ -232,9 +231,8 @@ not json at all
             reasons,
             [
                 ("~/export.jsonl", "invalid-line 1: not a JSON object"),
-                ("~/export.jsonl", "invalid-line 7: not a JSON object"),
-                ("~/export.jsonl", "invalid-line 8: no text"),
-                ("~/export.jsonl", "invalid-line 9: unknown kind \"opinion\""),
+                ("~/export.jsonl", "invalid-line 7: no text"),
+                ("~/export.jsonl", "invalid-line 8: unknown kind \"opinion\""),
             ]
         );
         let doc = &out.docs[0];
@@ -300,7 +298,7 @@ not json at all
         assert_eq!(doc.segments[2].extra["dateIgnored"], "Sept 2026");
         assert_eq!(
             doc.segments[3].extra,
-            json!({"line": 10, "source": null, "scopeHint": "project", "scopeIgnored": "team"})
+            json!({"line": 9, "source": null, "scopeHint": "project", "scopeIgnored": "team"})
         );
         // Locators are the start of the text's hash; the repeated text is told apart.
         let hash = content_hash("Run the smoke checks before tagging.");

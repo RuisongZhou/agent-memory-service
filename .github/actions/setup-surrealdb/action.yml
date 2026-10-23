@@ -1,7 +1,7 @@
 name: Set up SurrealDB
 description: >-
   Put the official SurrealDB release on PATH, checked against its SHA-256. The daemon starts `surreal`
-  to serve its store, so the store tests, selftest, smoke checks and installer checks need it.
+  to serve its store, so the store tests and the end-to-end installer tests need it.
 runs:
   using: composite
   steps:

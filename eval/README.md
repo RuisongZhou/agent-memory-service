@@ -11,11 +11,10 @@ remain on the [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-s
 branch together with the legacy extraction examples and recovery scripts. Current Mem0/SDK comparison tools
 remain here. No frozen protocol, raw evidence or local result/store is rewritten by the branch split.
 
-## Setup and offline checks
+## Setup
 
 ```sh
 make setup
-make test
 ```
 
 `make setup` invokes `eval/setup_eval.py`: it creates the root `.venv`, installs
@@ -24,11 +23,11 @@ make test
 the dataset, use `python3 eval/download_data.py`. Neither setup command invokes a
 paid model or evaluates the dataset.
 
-`make test` runs the evaluation tests, with intercepted model calls and local Mem0/Qdrant components.
+The evaluation scripts have no test suite of their own: a change is checked by running the affected script.
 Experiments that start `agent-memoryd serve` also need SurrealDB 3.2 or a later 3.x on PATH: the daemon starts it
-for each store ([install SurrealDB](../docs/deployment.md#install-surrealdb)). `make test` does not.
+for each store ([install SurrealDB](../docs/deployment.md#install-surrealdb)).
 Service deployment and service checks do not need these dependencies or the dataset. The service's
-script tests (`make test-scripts`) and mock/stub HTTP and MCP checks are in [scripts/](../scripts/README.md).
+script tests (`make test-scripts`) are in [scripts/](../scripts/README.md).
 If invoking a vendored upstream CLI directly, use `eval/` as its working directory;
 its original relative `results/` defaults then stay under `eval/results/`.
 
@@ -38,7 +37,6 @@ its original relative `results/` defaults then stay under `eval/results/`.
 eval/
   *.py          Evaluation entry points, setup and analysis tools
   common/       Shared dataset, protocol, audit, prompt and usage helpers
-  tests/        Offline regression tests
   data/         Dataset documentation and ignored local downloads
   docs/         Evaluation protocol and curated historical benchmark summaries
   licenses/     Dataset and copied evaluation-code notices

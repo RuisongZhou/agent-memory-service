@@ -170,10 +170,7 @@ impl Shim {
     pub fn new(url: &str, platform: &str) -> Self {
         let tools = tool_specs()
             .into_iter()
-            .map(|(name, desc, schema)| {
-                let obj = schema.as_object().cloned().unwrap_or_default();
-                Tool::new(name, desc, Arc::new(obj))
-            })
+            .map(|(name, desc, schema)| Tool::new(name, desc, Arc::new(object(schema))))
             .collect();
         Self {
             url: url.trim_end_matches('/').to_string(),
@@ -183,7 +180,7 @@ impl Shim {
                 reqwest::Client::builder()
                     .no_proxy()
                     .build()
-                    .unwrap_or_default()
+                    .expect("HTTP client")
             } else {
                 reqwest::Client::new()
             },
@@ -193,10 +190,8 @@ impl Shim {
 
     /// Forward one tool call; returns (ok, body text). A model never submits the turns of an import run: only
     /// `agent-memoryd import apply` does, through the dialogue outbox, so `importRunId` is dropped here.
-    pub async fn forward(&self, name: &str, mut args: Value) -> (bool, String) {
-        if let Value::Object(fields) = &mut args {
-            fields.remove("importRunId");
-        }
+    pub async fn forward(&self, name: &str, mut args: JsonObject) -> (bool, String) {
+        args.remove("importRunId");
         let req = self
             .http
             .post(format!("{}/v1/{name}", self.url))
@@ -258,8 +253,9 @@ impl ServerHandler for Shim {
                 None,
             ));
         }
-        let args = Value::Object(request.arguments.unwrap_or_default());
-        let (ok, text) = self.forward(&name, args).await;
+        let (ok, text) = self
+            .forward(&name, request.arguments.unwrap_or_default())
+            .await;
         let content = vec![ContentBlock::text(text)];
         Ok(if ok {
             CallToolResult::success(content)
@@ -356,8 +352,10 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let shim = Shim::new(&url, "codex");
-        let args = json!({"scope": {"project": "p", "session": "s"}, "turnId": "p/s/t1",
-            "messages": [], "importRunId": "ir1"});
+        let args = object(
+            json!({"scope": {"project": "p", "session": "s"}, "turnId": "p/s/t1",
+            "messages": [], "importRunId": "ir1"}),
+        );
         let (ok, _) = shim.forward("add_memories", args).await;
         assert!(ok);
         let body = seen.lock().unwrap()[0].clone();

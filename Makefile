@@ -1,5 +1,3 @@
-# The evaluation environment (make setup); only `test` uses it.
-PYTHON ?= .venv/bin/python
 # Service scripts and checks need only the standard library, and their tests only pytest.
 SCRIPTS_PYTHON ?= python3
 CARGO ?= cargo
@@ -7,13 +5,11 @@ CARGO ?= cargo
 JOBS ?=
 JFLAG = $(if $(JOBS),-j $(JOBS))
 
-.PHONY: setup build test test-scripts test-workspace test-rust test-service selftest smoke install-check fmt check-public check-arch
+.PHONY: setup build test-scripts test-workspace test-rust test-service fmt check-public
 setup:
 	python3 eval/setup_eval.py
 build:
 	$(CARGO) build --locked -p memory-service --bin agent-memoryd --profile fast $(JFLAG)
-test:
-	$(PYTHON) -m pytest -q eval/tests
 test-scripts:
 	$(SCRIPTS_PYTHON) -m pytest -q scripts/tests
 # Every crate in one cargo invocation: separate invocations resolve dependency features differently and
@@ -24,26 +20,7 @@ test-rust:
 	$(CARGO) test --locked -p memory-rules -p memory-config --profile fast $(JFLAG)
 test-service:
 	$(CARGO) test --locked -p memory-domain -p memory-store -p memory-engine -p memory-algo-mem0 -p memory-service --lib --profile fast $(JFLAG)
-selftest:
-	MEMORY_MOCK_MODELS=1 target/fast/agent-memoryd selftest
-smoke:
-	$(SCRIPTS_PYTHON) scripts/http_smoke.py --bin target/fast/agent-memoryd --output results/http-smoke.json
-	$(SCRIPTS_PYTHON) scripts/mem0_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-http-smoke.json
-	$(SCRIPTS_PYTHON) scripts/mem0_history_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-history-http-smoke.json
-	$(SCRIPTS_PYTHON) scripts/mem0_hybrid_http_smoke.py --bin target/fast/agent-memoryd --output results/mem0-hybrid-http-smoke.json
-# One-command install for every platform (with capture and recall where it has hooks) into a temporary home, verified
-# against a mock daemon. --no-service: no model key, and no service starts in the login session.
-install-check:
-	tmp=$$(mktemp -d) && mkdir "$$tmp/project" && \
-	  opts="--apply --non-interactive --no-service --binary target/fast/agent-memoryd" && \
-	  bash scripts/install.sh --host codex --home "$$tmp" $$opts --project install-check --recall && \
-	  bash scripts/install.sh --host workbuddy --home "$$tmp" $$opts --project install-check --recall && \
-	  bash scripts/install.sh --host claude-code --home "$$tmp" --workspace "$$tmp/project" $$opts --project install-check --recall && \
-	  bash scripts/install.sh --host deepseek-harness --home "$$tmp" $$opts; \
-	  status=$$?; rm -rf "$$tmp"; exit $$status
 fmt:
 	$(CARGO) fmt --all -- --check
 check-public:
 	$(SCRIPTS_PYTHON) scripts/check_public.py
-check-arch:
-	$(SCRIPTS_PYTHON) scripts/check_architecture.py

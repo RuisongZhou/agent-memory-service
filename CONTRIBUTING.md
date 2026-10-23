@@ -9,53 +9,52 @@ itself runs without Python. Python 3.11+ is needed only for the installer (`scri
 script tests (with pytest) and evaluation.
 
 The store runs on SurrealDB, which this repository neither builds nor installs: the daemon starts the
-user's `surreal`. Every check that opens a store, the store tests in `test-workspace`, `selftest`, `smoke`,
-`install-check` and the end-to-end installer tests, needs SurrealDB 3.x's `surreal` on PATH; install it as in
-[deployment](docs/deployment.md#install-surrealdb). Without it those tests fail with that hint, and the
-end-to-end installer tests are skipped. CI installs the official 3.2.4 release with the
-[setup-surrealdb action](.github/actions/setup-surrealdb/action.yml), checked against its SHA-256.
+user's `surreal`. The store tests in `test-workspace` and the end-to-end installer tests open a store, so they
+need SurrealDB 3.x's `surreal` on PATH; install it as in [deployment](docs/deployment.md#install-surrealdb).
+Without it the store tests fail with that hint and the end-to-end installer tests are skipped. CI installs the
+official 3.2.4 release with the [setup-surrealdb action](.github/actions/setup-surrealdb/action.yml), checked
+against its SHA-256.
 
 ## Checks
 
-For changes to service behavior, run the existing local/CI workflow. None of it needs the evaluation environment
-or the dataset; `test-scripts` needs only pytest (`python3 -m pip install pytest`), and its hook tests run the
+CI runs these for every pull request. None of them needs the evaluation environment or the dataset;
+`test-scripts` needs only pytest (`python3 -m pip install pytest`), and its hook and installer tests run the
 binary that `build` produces (they are skipped without it):
 
 ```sh
-make fmt test-workspace build test-scripts selftest smoke install-check
-make check-arch check-public
+make fmt test-workspace build test-scripts
+make check-public
 ```
 
-For changes under `eval/`, install the evaluation dependencies and dataset once with `make setup` (see
-[evaluation setup](eval/README.md#setup-and-offline-checks)) and run `make test`.
+Code under `eval/` has no tests of its own: install the evaluation dependencies and dataset once with
+`make setup` (see [evaluation setup](eval/README.md#setup)) and run the script you changed.
 
 `test-workspace` runs every crate's unit tests in one cargo invocation, so shared dependencies compile once.
-`test-rust` (pure crates) and `test-service` (domain/store/engine/algorithm/service crates) run each half alone,
-and `selftest` runs the daemon with `MEMORY_MOCK_MODELS=1`; `install-check` runs the
-one-command installer with capture and recall for every platform into a temporary home, with `--no-service`
-so that it needs no key and starts no service. Each temporary store runs on its own SurrealDB server, which the
-daemon or test starts and stops. HTTP/MCP smoke checks use temporary stores,
-mock retrieval and local deterministic generation stubs or raw writes. They never call paid providers.
-`serve.py --mock` does not supply a generation stub and is not a substitute for these checks.
+`test-rust` (pure crates) and `test-service` (domain/store/engine/algorithm/service crates) run each half alone.
+The store tests drive whole use cases against a temporary store on its own SurrealDB server, with mock retrieval
+models and a local deterministic generation stub. The end-to-end installer tests run the one-command installer
+with capture and recall for every platform into a temporary home, with `--no-service` so that they need no key
+and start no service. No check calls a paid provider. `check-public` scans the Git index for credentials.
 See the [CI workflow](.github/workflows/ci.yml) and [script inventory](scripts/README.md).
 
 For documentation-only changes, verify links/anchors, source/configuration references and the Git diff;
-do not start models or rerun benchmarks. Keep staged content free of secrets and generated state with
-`make check-public`. Optional real local-model checks and paid/full-dataset evaluations are separate
-workflows; mock correctness results are not quality or performance measurements.
+do not start models or rerun benchmarks. Optional real local-model checks and paid/full-dataset evaluations are
+separate workflows; mock correctness results are not quality or performance measurements.
 
 ## Releases
 
 Pushing a version tag such as `v0.2.0` runs the [release workflow](.github/workflows/release.yml): it
-builds `agent-memoryd` with `--release` for macOS arm64/x86_64 and Linux x86_64/aarch64, runs each
-binary's `selftest` with mock models, and attaches one archive per platform (binary, `LICENSE`,
-`THIRD_PARTY.md`, `.env.example`) with SHA-256 checksums to a draft release of the tag. Check the draft,
-then publish it. A manual run of the workflow builds the archives as artifacts without a release.
-Installing a downloaded binary is described in [deployment](docs/deployment.md#release-archive).
+builds `agent-memoryd` with `--release` for macOS arm64/x86_64 and Linux x86_64/aarch64 and attaches one
+archive per platform (binary, `LICENSE`, `THIRD_PARTY.md`, `.env.example`) with SHA-256 checksums to a draft
+release of the tag. Check the draft, then publish it. A manual run of the workflow builds the archives as
+artifacts without a release. Installing a downloaded binary is described in
+[deployment](docs/deployment.md#release-archive).
 
 ## Boundaries
 
 Keep transport adapters thin; use formation and retrieval modules for behavior and storage transactions for persistence. Index work must remain durable and be queued in the record transaction. Preserve source evidence and append-based correction semantics.
+
+Validate input once, where it enters (HTTP, CLI, configuration, model output, host files). Past that point trust the types and invariants: do not repeat checks, add fallbacks for states the code cannot reach, or keep guards for removed features.
 
 Changes to HTTP headers, configuration, prompts, tokenization, thresholds or dataset mapping require documentation and protocol updates. Use new evaluation stores for incompatible configurations; run tags alone do not isolate data.
 

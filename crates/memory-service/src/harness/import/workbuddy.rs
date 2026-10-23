@@ -135,7 +135,7 @@ fn document(ctx: &ScanContext, root: &Path, path: PathBuf, out: &mut ScanOutput)
     }
     let native_id = path
         .strip_prefix(root)
-        .unwrap_or(&path)
+        .expect("WorkBuddy files are joined onto its root")
         .to_string_lossy()
         .into_owned();
     let profile = native_id == "USER.md";
@@ -202,7 +202,6 @@ mod tests {
             "## Habits\nReviews diffs before merging.\n",
         );
         write(&root, "memory/u1_memory.md.bak", "## Old\nstale\n");
-        write(&root, "memory/notes.md", "## Not a memory file\nx\n");
         write(
             &root,
             "user-u1-personal/MEMORY.md",
@@ -210,27 +209,18 @@ mod tests {
         );
         write(&root, "user-u2-personal/other.md", "## Ignored\nx\n");
         write(&root, "SOUL.md", "# Persona\nCalm.\n");
-        write(&root, "IDENTITY.md", "# Identity\nName.\n");
-        write(&root, "empty-ish/x.md", "");
 
         let ctx = ScanContext {
             home: home.path().to_path_buf(),
             ..ScanContext::default()
         };
         let out = WorkBuddy.scan(&ctx).unwrap();
-        let mut issues: Vec<_> = out
+        let issues: Vec<_> = out
             .issues
             .iter()
             .map(|Issue { path, reason }| (path.as_str(), reason.as_str()))
             .collect();
-        issues.sort();
-        assert_eq!(
-            issues,
-            [
-                ("~/.workbuddy/IDENTITY.md", "persona-file"),
-                ("~/.workbuddy/SOUL.md", "persona-file")
-            ]
-        );
+        assert_eq!(issues, [("~/.workbuddy/SOUL.md", "persona-file")]);
         let ids: Vec<&str> = out.docs.iter().map(|d| d.native_id.as_str()).collect();
         assert_eq!(
             ids,

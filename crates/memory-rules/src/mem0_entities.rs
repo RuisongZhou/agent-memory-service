@@ -314,11 +314,7 @@ fn contains_entity_span(text: &str, entity: &str) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn fixed_patterns_are_reused() {
-        fn token_pattern() -> &'static Regex {
-            re!(r"^[^A-Za-z0-9_.]+|[^A-Za-z0-9_.]+$")
-        }
-        assert!(std::ptr::eq(token_pattern(), token_pattern()));
+    fn tokens_and_text_are_cleaned() {
         assert_eq!(
             clean_token("**person.properties.email:**"),
             "person.properties.email"

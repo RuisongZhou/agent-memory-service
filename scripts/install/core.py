@@ -304,9 +304,9 @@ def bridge_args(url, platform):
     return ['mcp', '--url', url, '--platform', platform]
 
 
-def collector_argv(ctx, subcommand, outbox=None, extra=()):
-    """The collector command (`capture` or `codex-notify`) a host runs. Verification passes a temporary outbox."""
-    argv = [str(ctx.binary), 'hook', subcommand]
+def collector_argv(ctx, outbox=None, extra=()):
+    """The collector command a host runs. Verification passes a temporary outbox."""
+    argv = [str(ctx.binary), 'hook', 'capture']
     outbox = outbox or ctx.outbox_arg
     if outbox:
         argv += ['--outbox', str(outbox)]
@@ -315,7 +315,7 @@ def collector_argv(ctx, subcommand, outbox=None, extra=()):
 
 def hook_command(ctx, outbox=None, extra=()):
     """Shell command of a collector hook; the same string is installed and verified."""
-    return shlex.join(collector_argv(ctx, 'capture', outbox, extra))
+    return shlex.join(collector_argv(ctx, outbox, extra))
 
 
 def named(handler, name):
@@ -469,8 +469,8 @@ def check_url(url):
     return url.rstrip('/')
 
 
-def build_binary(args, service):
-    """The agent-memoryd to install: built from this checkout, or --binary. `service`: it must start one."""
+def build_binary(args):
+    """The agent-memoryd to install: built from this checkout, or --binary."""
     if args.binary:
         binary = args.binary
     else:
@@ -486,27 +486,16 @@ def build_binary(args, service):
         binary = DEFAULT_BINARY
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise InstallError(f'Executable not found: {binary}')
-    result = subprocess.run([str(binary), 'mcp', '--help'], capture_output=True, text=True, timeout=30)
-    if result.returncode or '--platform' not in result.stdout:
-        raise InstallError(f'{binary} is not an agent-memoryd binary with the mcp bridge')
     # Hooks of an older binary would fail on its argument parser, and exit 2 blocks a prompt.
     result = subprocess.run([str(binary), 'hook', '--help'], capture_output=True, text=True, timeout=30)
     if result.returncode or not all(name in result.stdout for name in ('capture', 'codex-notify', 'recall')):
         raise InstallError(f'{binary} has no hook commands; build this checkout (make build) or pass a newer --binary')
-    if service:
-        result = subprocess.run([str(binary), 'service', 'install', '--help'], capture_output=True, text=True,
-                                timeout=30)
-        if result.returncode or '--start' not in result.stdout:
-            raise InstallError(f'{binary} cannot start its service (no `service install --start`); build this '
-                               'checkout, pass a newer --binary, or add --no-service')
     return binary
 
 
 # --- arguments --------------------------------------------------------------
 
 def load_host(host_id):
-    if host_id not in HOSTS:
-        raise InstallError(f"Unknown host {host_id!r}; choose one of: {', '.join(HOSTS)}")
     return importlib.import_module('hosts.' + host_id.replace('-', '_'))
 
 
@@ -518,7 +507,6 @@ def arguments(argv=None):
         parser = argparse.ArgumentParser(prog='install.sh', description=__doc__.splitlines()[0])
         parser.add_argument('--host', choices=HOSTS, required=True, help='agent platform to install into')
         parser.parse_args(argv)
-        raise AssertionError('unreachable: --host is required')
     host = load_host(known.host)
     parser = argparse.ArgumentParser(prog='install.sh', description=host.DESCRIPTION)
     parser.add_argument('--host', choices=HOSTS, required=True, help='agent platform to install into')
@@ -633,9 +621,6 @@ def plan(host, args, ctx, uninstall=False):
     """Changes plus the snapshot they were computed from; writes refuse if a file moves on."""
     expected = {path: snapshot(path) for path in host.managed_files(args, ctx)}
     changes = [c for c in host.changes(args, ctx, uninstall) if c is not None]
-    unknown = [str(path) for path, _, _ in changes if path not in expected]
-    if unknown:
-        raise AssertionError(f'host module changes unmanaged files: {unknown}')
     return changes, expected
 
 
@@ -725,7 +710,7 @@ def install(host, args):
     import runtime
     runtime.check_surreal(ctx)
     runtime.prepare(args, ctx)  # the key prompt comes before the build, so the rest runs unattended
-    source = build_binary(args, ctx.manage_service)
+    source = build_binary(args)
     service = runtime.plan_service(args, ctx, source)
     with installation_lock(ctx.state_root):
         # The checks run the installed binary: exactly the commands the configuration will hold.

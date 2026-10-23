@@ -1,4 +1,4 @@
-//! Self-tests run by `agent-memoryd selftest`; compiled only with the `selftest` feature.
+//! Store-backed tests of whole use cases: each opens a temporary store on its own SurrealDB server.
 pub mod consolidation;
 pub mod consolidation_apply;
 pub mod import;

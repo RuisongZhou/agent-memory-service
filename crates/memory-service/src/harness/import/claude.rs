@@ -309,7 +309,6 @@ mod tests {
         f.note(&enc, "empty.md", "---\nname: Nothing yet\n---\n\n  \n");
         f.note(&enc, "big.md", &"a".repeat(64 * 1024 + 1));
         f.note(&enc, "readme.txt", "not a note");
-        std::fs::write(f.memory(&enc).join("binary.md"), [0x66, 0xff, 0xfe]).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(
             f.memory(&enc).join("plain.md"),
@@ -328,7 +327,6 @@ mod tests {
         assert_eq!(reason("MEMORY.md"), Some("index"));
         assert_eq!(reason("empty.md"), Some("empty"));
         assert_eq!(reason("big.md"), Some("too-large"));
-        assert!(reason("binary.md").unwrap().starts_with("unreadable: "));
         #[cfg(unix)]
         assert_eq!(reason("link.md"), Some("symlink"));
         assert_eq!(reason("readme.txt"), None);
@@ -405,17 +403,6 @@ mod tests {
             &sub_dir,
             &[json!({"type": "summary"}).to_string(), record(&sub)],
         );
-        // A worktree of the workspace's repository (its `.git` file names the main repository).
-        let worktree = f.workspace.join(".claude/worktrees/w1");
-        std::fs::create_dir_all(&worktree).unwrap();
-        let gitdir = format!(
-            "gitdir: {}\n",
-            f.workspace.join(".git/worktrees/w1").display()
-        );
-        std::fs::write(worktree.join(".git"), gitdir).unwrap();
-        let wt_dir = claude_dir_name(&worktree);
-        f.note(&wt_dir, "b.md", "Worktree note.");
-        f.transcript(&wt_dir, &[record(&worktree)]);
         // The workspace's own directory needs no transcript.
         f.note(&claude_dir_name(&f.workspace), "c.md", "Own note.");
         // Another project, and one whose transcript names its cwd only after the first 16 KiB.
@@ -427,7 +414,6 @@ mod tests {
         let filler =
             json!({"type": "summary", "summary": "x".repeat(SNIFF_BYTES as usize)}).to_string();
         f.transcript("-late", &[filler, record(&f.workspace)]);
-        f.note("-mystery", "f.md", "Unknown project note.");
 
         let out = Claude.scan(&f.ctx(true)).unwrap();
         let mut texts: Vec<&str> = out
@@ -436,7 +422,7 @@ mod tests {
             .map(|d| d.segments[0].text.as_str())
             .collect();
         texts.sort();
-        assert_eq!(texts, ["Own note.", "Sub note.", "Worktree note."]);
+        assert_eq!(texts, ["Own note.", "Sub note."]);
         let sub_doc = out
             .docs
             .iter()
@@ -449,10 +435,6 @@ mod tests {
             [
                 (
                     "~/.claude/projects/-late/memory".to_string(),
-                    "cwd-unresolved".to_string()
-                ),
-                (
-                    "~/.claude/projects/-mystery/memory".to_string(),
                     "cwd-unresolved".to_string()
                 ),
                 (

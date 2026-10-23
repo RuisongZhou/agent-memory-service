@@ -604,7 +604,15 @@ pub fn status_json(at: &Target) -> Result<serde_json::Value> {
 fn surreal_bin(given: Option<&Path>) -> Result<PathBuf> {
     let hint = memory_store::surreal::INSTALL_HINT;
     let found = match given {
-        Some(path) => std::path::absolute(path)?,
+        Some(path) => {
+            let path = std::path::absolute(path)?;
+            ensure!(
+                is_executable(&path),
+                "{} is not an executable SurrealDB `surreal`; {hint}",
+                path.display()
+            );
+            path
+        }
         None => std::env::var_os("PATH")
             .iter()
             .flat_map(std::env::split_paths)
@@ -614,11 +622,6 @@ fn surreal_bin(given: Option<&Path>) -> Result<PathBuf> {
                 format!("SurrealDB is not installed: no `surreal` on PATH; {hint}, or pass --surreal-bin")
             })?,
     };
-    ensure!(
-        is_executable(&found),
-        "{} is not an executable SurrealDB `surreal`; {hint}",
-        found.display()
-    );
     Ok(found)
 }
 
@@ -972,7 +975,10 @@ fn private_dir(dir: &Path) -> std::io::Result<()> {
 fn back_up(home: &Path, path: &Path, text: &str) -> Result<PathBuf> {
     let dir = home.join(BACKUPS);
     private_dir(&dir)?;
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let name = path
+        .file_name()
+        .expect("unit_path names a file")
+        .to_string_lossy();
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
     let backup = dir.join(format!("{name}.{stamp}-{suffix}"));
@@ -992,9 +998,12 @@ fn back_up(home: &Path, path: &Path, text: &str) -> Result<PathBuf> {
 
 /// Replace `path` with `text` (mode 0644) through a temporary file in its directory.
 fn write_atomic(path: &Path, text: &str) -> Result<()> {
-    let dir = path.parent().context("unit path has no directory")?;
+    let dir = path.parent().expect("unit_path is in a directory");
     std::fs::create_dir_all(dir)?;
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let name = path
+        .file_name()
+        .expect("unit_path names a file")
+        .to_string_lossy();
     let temp = dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
     let written = (|| -> std::io::Result<()> {
         std::fs::write(&temp, text)?;
@@ -1236,20 +1245,6 @@ mod tests {
     }
 
     #[test]
-    fn passes_the_llm_concurrency() {
-        let home = Home::new("svc-concurrency");
-        home.install("systemd", &["--llm-concurrency", "2", "--apply"])
-            .unwrap();
-        let text = std::fs::read_to_string(Manager::Systemd.unit_path(home.path())).unwrap();
-        let argv = unit_argv(Manager::Systemd, &text).unwrap();
-        assert_eq!(flag_value(&argv, "--llm-concurrency"), Some("2"));
-        assert!(
-            Cli::try_parse_from(["t", "install", "--env-file", "x", "--llm-concurrency", "0"])
-                .is_err()
-        );
-    }
-
-    #[test]
     fn refuses_a_missing_env_file_and_a_symlinked_unit() {
         let home = Home::new("svc-refuse");
         std::fs::remove_file(home.env_file()).unwrap();
@@ -1457,6 +1452,7 @@ mod tests {
         assert!(parse(&["--start"]).is_err());
         assert!(parse(&["--apply", "--restart"]).is_err());
         assert!(parse(&["--apply", "--start", "--restart"]).is_ok());
+        assert!(parse(&["--llm-concurrency", "0"]).is_err());
 
         let home = Home::new("svc-start");
         let out = home.install("systemd", &["--apply", "--start"]).unwrap();

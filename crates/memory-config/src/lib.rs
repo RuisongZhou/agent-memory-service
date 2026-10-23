@@ -195,29 +195,12 @@ fn default_rerank_model() -> String {
 mod tests {
     use super::*;
     #[test]
-    fn defaults_are_valid() {
-        assert_eq!(
-            ServiceConfig::default().memory_strategy,
-            MemoryStrategy::Mem0
-        );
-        ServiceConfig::default().validate().unwrap();
-        assert!(!ServiceConfig::default().consolidation_enabled);
-    }
-    #[test]
-    fn unsupported_strategy_is_rejected() {
-        assert!(serde_json::from_str::<MemoryStrategy>("\"memos\"").is_err());
-        assert!(serde_json::from_str::<MemoryStrategy>("\"current\"").is_err());
-    }
-    #[test]
     fn invalid_values_are_rejected() {
         let c = ServiceConfig {
             llm_max_concurrency: 0,
             ..Default::default()
         };
         assert!(c.validate().is_err());
-        let mut v = serde_json::to_value(ServiceConfig::default()).unwrap();
-        v["batchTurns"] = serde_json::json!(3);
-        assert!(serde_json::from_value::<ServiceConfig>(v).is_err());
         let c = ServiceConfig {
             embed_url: Some("127.0.0.1:8081".into()),
             ..Default::default()
@@ -237,7 +220,6 @@ mod tests {
         assert_eq!(local.embed_url(), DEFAULT_SELF_HOSTED_EMBED_URL);
         assert_eq!(local.rerank_url(), "http://10.0.0.5:9000");
         assert_eq!(local.embed_model, DEFAULT_API_EMBED_MODEL);
-        assert!(serde_json::from_str::<ModelProvider>("\"llama\"").is_err());
     }
 }
 

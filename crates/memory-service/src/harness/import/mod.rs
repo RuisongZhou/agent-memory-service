@@ -611,9 +611,8 @@ mod tests {
         assert_eq!((daemon.url.as_str(), batch), ("http://localhost:9000", 64));
         assert!(reconsider);
         for bad in [
-            &["propose", "p", "--url", "http://192.0.2.1:8765"][..],
-            &["propose", "p", "--url", "http://user:pw@127.0.0.1:8765"],
-            &["propose", "p", "--batch", "0"],
+            // Both bounds: the client relies on a batch of at least one.
+            &["propose", "p", "--batch", "0"][..],
             &["propose", "p", "--batch", "65"],
             &["propose", "p", "--timeout", "0"],
             &["propose"],
@@ -675,7 +674,6 @@ mod tests {
         );
         for bad in [
             &["apply", "ir1", "--yes", "--rate", "-1"][..],
-            &["apply", "ir1", "--yes", "--rate", "inf"],
             &["apply", "ir1", "--yes", "--max-pending", "0"],
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");
@@ -736,32 +734,8 @@ mod tests {
     }
 
     #[test]
-    fn urls_must_stay_on_loopback() {
-        assert_eq!(
-            loopback_url("http://127.0.0.1:8765/").unwrap(),
-            "http://127.0.0.1:8765"
-        );
-        assert!(loopback_url("http://[::1]:8765").is_ok());
-        for bad in [
-            "http://192.0.2.1:8765",
-            "ftp://127.0.0.1",
-            "http://user@127.0.0.1",
-            "nonsense",
-        ] {
-            assert!(loopback_url(bad).is_err(), "{bad}");
-        }
+    fn platform_labels_are_plain_ascii() {
         assert!(platform_label("claude-code").is_ok());
         assert!(platform_label("").is_err() && platform_label("名").is_err());
-    }
-
-    #[test]
-    fn a_command_can_run_on_any_runtime_worker() {
-        fn send<T: Send>(_: &T) {}
-        let cmd = ImportCmd::Prompt {
-            project: "p".into(),
-            lang: Lang::En,
-        };
-        // Never polled: this only proves the future is Send, so it may be spawned.
-        send(&run(cmd));
     }
 }

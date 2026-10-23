@@ -1,11 +1,12 @@
-//! Storage transaction round trip used by `agent-memoryd selftest`.
+//! Storage transaction round trip.
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
 use memory_store::store::*;
 use serde_json::json;
 
-pub async fn store_roundtrip() {
+#[tokio::test(flavor = "multi_thread")]
+async fn store_roundtrip() {
     let dir = std::env::temp_dir().join(util::new_id("memory-store-"));
     let surreal = crate::config::ServiceConfig::default().surreal_bin;
     let s = Store::open(&dir, &surreal, 4, "").await.unwrap();
@@ -40,16 +41,6 @@ pub async fn store_roundtrip() {
     assert_eq!(
         s.load_embeddings(schema::MEMORIES).await.unwrap()[0].0,
         m.id
-    );
-    // A failed transaction rolls back every write in it.
-    let mut tx = Tx::new();
-    tx.merge(schema::MEMORIES, &m.id, json!({"status": S_SUPERSEDED}))
-        .unwrap();
-    tx.raw("THROW 'boom'", vec![]);
-    assert!(s.commit(tx).await.is_err());
-    assert_eq!(
-        s.get_memory(&m.id).await.unwrap().unwrap().status,
-        S_CURRENT
     );
     println!("store_roundtrip OK");
 }

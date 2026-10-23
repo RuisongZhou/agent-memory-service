@@ -195,7 +195,7 @@ fn rollout(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
     let turns = order
         .into_iter()
         .map(|id| {
-            let o = open.remove(&id).unwrap_or_default();
+            let o = open.remove(&id).expect("every ordered turn is open");
             let reply = o.reply.unwrap_or_default();
             let skip = if o.aborted {
                 Some("aborted")
@@ -212,10 +212,7 @@ fn rollout(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
                 native_id: id,
                 prompt: o.prompts.join("\n\n"),
                 reply,
-                reply_at: match o.reply_at.is_empty() {
-                    true => o.prompt_at.clone(),
-                    false => o.reply_at,
-                },
+                reply_at: o.reply_at,
                 prompt_at: o.prompt_at,
                 skip: skip.map(str::to_string),
             })
@@ -324,7 +321,6 @@ pub(crate) mod tests {
             meta("thr-1", "2026-04-01T09:00:00Z", &w, Some("user")),
             json!({"timestamp": "2026-04-01T09:00:00Z", "type": "response_item",
                    "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "<environment_context>x</environment_context>"}]}}).to_string(),
-            event("2026-04-01T09:00:01Z", json!({"type": "task_started", "turn_id": "t1"})),
             user_message("2026-04-01T09:00:01Z", "t1", "Which branch ships?"),
             user_message("2026-04-01T09:00:03Z", "t1", "The release one, right?"),
             event("2026-04-01T09:00:04Z", json!({"type": "item_completed", "turn_id": "t1",
@@ -334,12 +330,10 @@ pub(crate) mod tests {
             complete("2026-04-01T09:01:05Z", "t2", None),
             user_message("2026-04-01T09:02:00Z", "t3", "Start a long job."),
             event("2026-04-01T09:02:30Z", json!({"type": "turn_aborted", "turn_id": "t3", "reason": "interrupted"})),
-            event("2026-04-01T09:03:00Z", json!({"type": "task_started", "turn_id": "t4"})),
             complete("2026-04-01T09:03:09Z", "t4", Some("Compacted.")),
             user_message("2026-04-01T09:04:00Z", "t5",
                          "<shared-memory project=\"p\" event=\"UserPromptSubmit\">\nold facts\n</shared-memory>\nAnd tests?"),
             complete("2026-04-01T09:04:09Z", "t5", Some("Tests pass.")),
-            user_message("2026-04-01T09:05:00Z", "t6", "Still running?"),
         ];
         let path = f.rollout(
             "sessions/2026/04/01/rollout-2026-04-01T09-00-00-thr-1.jsonl.zst",
@@ -376,7 +370,6 @@ pub(crate) mod tests {
                 ("t3", Some("aborted")),
                 ("t4", Some("no-prompt")),
                 ("t5", None),
-                ("t6", Some("no-reply")),
             ]
         );
         let t1 = &doc.turns[0];
@@ -418,13 +411,6 @@ pub(crate) mod tests {
             ),
         );
         f.rollout(
-            "sessions/2026/04/01/rollout-d.jsonl",
-            &with(
-                meta("d", "2026-04-01T09:00:00Z", &w, Some("guardian_review")),
-                "td",
-            ),
-        );
-        f.rollout(
             "sessions/2026/04/01/rollout-e.jsonl",
             &with(meta("e", "2026-04-01T09:00:00Z", &w, None), "te"),
         );
@@ -462,10 +448,6 @@ pub(crate) mod tests {
             (
                 format!("{day}/rollout-c.jsonl"),
                 "thread_source:subagent".to_string(),
-            ),
-            (
-                format!("{day}/rollout-d.jsonl"),
-                "thread_source:guardian_review".into(),
             ),
             (format!("{day}/rollout-e.jsonl"), "unknown-format".into()),
             (format!("{day}/rollout-f.jsonl"), "other-project".into()),

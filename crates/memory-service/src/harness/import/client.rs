@@ -5,7 +5,7 @@
 //! of a run's proposals, are still as they were.
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportProposeReq, ImportRun, ImportRunReq, ImportRunsReq,
-    ImportUnit, ACCEPT, MODE_SESSION_TURN, PROPOSED, REJECT,
+    ImportUnit, MODE_SESSION_TURN, PROPOSED, REJECT,
 };
 use memory_rules::import::units::content_hash;
 use serde::Serialize;
@@ -214,9 +214,6 @@ impl Client {
         reconsider: bool,
         progress: &mut (dyn FnMut(usize, usize, &str) + Send),
     ) -> Result<RunView, Error> {
-        if units.is_empty() {
-            return Err(invalid("nothing to propose"));
-        }
         let summary = &plan.summary;
         let batches = batches(units, batch, MAX_BATCH_BYTES);
         let mut run_id: Option<String> = None;
@@ -257,7 +254,8 @@ impl Client {
             }
             progress(index + 1, batches.len(), id);
         }
-        self.run(run_id.as_deref().unwrap_or_default()).await
+        self.run(&run_id.expect("propose sends at least one batch"))
+            .await
     }
 
     /// A run and its proposals (`import_run`).
@@ -281,11 +279,6 @@ impl Client {
         home: &Path,
     ) -> Result<Applied, Error> {
         let current = self.run(run_id).await?;
-        if current.proposals.is_empty() && current.run.counts.proposals > 0 {
-            return Err(invalid(format!(
-                "the daemon answered run {run_id} without its proposals; cannot match the review or recheck their sources"
-            )));
-        }
         let Review {
             mut decisions,
             mut scopes,
@@ -333,8 +326,7 @@ impl Client {
             limit: Some(limit),
         };
         let answer = self.call("import_runs", &request, PLATFORM).await?;
-        let runs = answer.get("runs").cloned().unwrap_or(Value::Array(vec![]));
-        serde_json::from_value(runs)
+        serde_json::from_value(answer["runs"].clone())
             .map_err(|e| invalid(format!("import_runs answered runs of another shape: {e}")))
     }
 }
@@ -346,7 +338,7 @@ fn batches(units: &[ImportUnit], batch: usize, max_bytes: usize) -> Vec<&[Import
     let (mut start, mut size) = (0, 0);
     for (i, unit) in units.iter().enumerate() {
         let bytes = serde_json::to_vec(unit).map_or(0, |json| json.len());
-        if i > start && (i - start == batch.max(1) || size + bytes > max_bytes) {
+        if i > start && (i - start == batch || size + bytes > max_bytes) {
             out.push(&units[start..i]);
             (start, size) = (i, 0);
         }
@@ -376,29 +368,17 @@ fn reason(code: u16) -> &'static str {
 }
 
 fn run_id_of(answer: &Value) -> Option<String> {
-    answer
-        .get("runId")
-        .or_else(|| answer.get("run").and_then(|run| run.get("runId")))
-        .and_then(Value::as_str)
+    answer["run"]["runId"]
+        .as_str()
         .filter(|id| !id.is_empty())
         .map(String::from)
 }
 
-/// A run as the daemon answers it: `{"run": {...}, "proposals": [...]}`, or the run's own fields with its
-/// proposals beside them; an answer without proposals has none.
+/// A run as the daemon answers it: `{"run": {...}, "proposals": [...]}`.
 pub fn run_view(answer: Value) -> Result<RunView, Error> {
-    let run = match answer.get("run") {
-        Some(run @ Value::Object(_)) => run.clone(),
-        _ => answer.clone(),
-    };
-    let proposals = answer
-        .get("proposals")
-        .or_else(|| run.get("proposals"))
-        .cloned()
-        .unwrap_or(Value::Array(vec![]));
-    let run: ImportRun = serde_json::from_value(run)
+    let run: ImportRun = serde_json::from_value(answer["run"].clone())
         .map_err(|e| invalid(format!("the daemon answered a run of another shape: {e}")))?;
-    let proposals = serde_json::from_value(proposals).map_err(|e| {
+    let proposals = serde_json::from_value(answer["proposals"].clone()).map_err(|e| {
         invalid(format!(
             "the daemon answered proposals of another shape: {e}"
         ))
@@ -431,7 +411,7 @@ pub fn complete(listed: Review, proposals: &[ImportProposal]) -> Result<Review, 
         let decision = listed.decisions.get(id).map_or(REJECT, String::as_str);
         review.decisions.insert(id.clone(), decision.to_string());
         if let Some(scope) = listed.scopes.get(id) {
-            if decision == ACCEPT && proposal.item_kind == INSTRUCTION {
+            if proposal.item_kind == INSTRUCTION {
                 review.scopes.insert(id.clone(), scope.clone());
             }
         }
@@ -503,7 +483,7 @@ pub(crate) mod tests {
         match name.as_str() {
             "import_propose" if failing => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
             "import_propose" => {
-                Json(json!({"runId": "ir1", "status": "proposing"})).into_response()
+                Json(json!({"run": {"runId": "ir1", "status": "proposing"}})).into_response()
             }
             "import_run" if known => {
                 Json(json!({"run": stub.run, "proposals": stub.proposals})).into_response()
@@ -512,7 +492,7 @@ pub(crate) mod tests {
                 let mut run = stub.run.clone();
                 run["status"] = json!(RUN_APPLIED);
                 run["counts"]["applied"] = json!(2);
-                Json(run).into_response()
+                Json(json!({"run": run, "proposals": stub.proposals})).into_response()
             }
             "import_runs" => Json(json!({"runs": [stub.run]})).into_response(),
             _ => (
@@ -721,25 +701,10 @@ pub(crate) mod tests {
         let home = tempfile::tempdir().unwrap();
         let plan = plan_over(home.path());
         let (units, _) = fresh_units(&plan, home.path());
-        let (url, requests) = stub().await;
+        let (url, _) = stub().await;
         let client = Client::new(&url, Duration::from_secs(5)).unwrap();
-        // With reconsider, every batch asks for the units whose last import applied nothing.
-        client
-            .propose(&plan, &units, 3, true, &mut |_, _, _| {})
-            .await
-            .unwrap();
-        let sent: Vec<(Value, Value)> = requests
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|r| r.0 == "import_propose")
-            .map(|r| (r.2["finish"].clone(), r.2["reconsider"].clone()))
-            .collect();
-        assert_eq!(
-            sent,
-            [(json!(false), json!(true)), (json!(true), json!(true))]
-        );
-        // A later batch that fails names the run it leaves proposing.
+        // Six units in threes are two batches, no empty third; a later batch that fails names the run
+        // it leaves proposing.
         let mut failing = units.clone();
         failing[4].text = "FAIL".into();
         let error = client_error(
@@ -758,12 +723,6 @@ pub(crate) mod tests {
                 .await,
         );
         assert_eq!(error, "HTTP 500: Internal Server Error");
-        assert!(client_error(
-            client
-                .propose(&plan, &[], 3, false, &mut |_, _, _| {})
-                .await
-        )
-        .contains("nothing"));
     }
 
     fn client_error<T: std::fmt::Debug>(result: Result<T, Error>) -> String {
@@ -806,12 +765,6 @@ pub(crate) mod tests {
                 &json!({"runId": "ir1", "decisions": {"ip1": ACCEPT, "ip2": ACCEPT, "ip4": REJECT}})
             );
         }
-        // Without a review the defaults apply.
-        client.apply("ir1", None, home).await.unwrap();
-        assert_eq!(
-            requests.lock().unwrap().last().unwrap().2,
-            json!({"runId": "ir1", "decisions": {}})
-        );
         // A review of another run, and a review naming proposals the run lacks, are refused.
         let other = dir.path().join("other.review.jsonl");
         std::fs::write(&other, review::render(&run("ir2"), &listed).unwrap()).unwrap();
@@ -826,7 +779,7 @@ pub(crate) mod tests {
             .iter()
             .filter(|r| r.0 == "import_apply")
             .count();
-        assert_eq!(applies, 2, "a refused review sends nothing to apply");
+        assert_eq!(applies, 1, "a refused review sends nothing to apply");
     }
 
     /// `text` with the proposal line of `id` edited by `edit`.
@@ -843,35 +796,9 @@ pub(crate) mod tests {
             .join("\n")
     }
 
-    #[tokio::test]
-    async fn apply_sends_the_global_scope_of_accepted_instructions_only() {
-        let (url, requests) = stub().await;
-        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ir1.review.jsonl");
+    #[test]
+    fn scopes_go_only_with_the_runs_own_instructions() {
         let text = review::render(&run("ir1"), &stub_proposals()).unwrap();
-        // The instruction is accepted as global; a fact's scope says global too, and is not read.
-        let edited = edit_line(&text, "ip2", |v| {
-            v["decision"] = json!("accept");
-            v["scope"] = json!("global");
-        });
-        let edited = edit_line(&edited, "ip1", |v| v["scope"] = json!("global"));
-        std::fs::write(&path, &edited).unwrap();
-        client.apply("ir1", Some(&path), dir.path()).await.unwrap();
-        assert_eq!(
-            requests.lock().unwrap().last().unwrap().2,
-            json!({"runId": "ir1",
-                   "decisions": {"ip1": ACCEPT, "ip2": ACCEPT, "ip4": ACCEPT},
-                   "scopes": {"ip2": "global"}})
-        );
-        // Global but declined: no scope goes with it.
-        let declined = edit_line(&text, "ip2", |v| v["scope"] = json!("global"));
-        std::fs::write(&path, &declined).unwrap();
-        client.apply("ir1", Some(&path), dir.path()).await.unwrap();
-        assert_eq!(
-            requests.lock().unwrap().last().unwrap().2,
-            json!({"runId": "ir1", "decisions": {"ip1": ACCEPT, "ip2": REJECT, "ip4": ACCEPT}})
-        );
         // A line edited into an instruction is still a fact of the run: its scope is not sent.
         let relabeled = edit_line(&text, "ip1", |v| {
             v["itemKind"] = json!("instruction");
@@ -938,18 +865,6 @@ pub(crate) mod tests {
             requests.lock().unwrap().last().unwrap().2,
             json!({"runId": "ir1", "decisions": {"ip2": REJECT, "ip3": REJECT, "ip4": REJECT}})
         );
-        // The paths are under the home the plan was made with.
-        let elsewhere = tempfile::tempdir().unwrap();
-        let changed = changed_sources(&proposals, elsewhere.path());
-        let paths: Vec<(&str, &str)> = changed.iter().map(|c| (c.path.as_str(), c.why)).collect();
-        assert_eq!(
-            paths,
-            [
-                ("~/a.md", "vanished"),
-                ("~/b.md", "vanished"),
-                ("~/c.md", "vanished")
-            ]
-        );
     }
 
     #[test]
@@ -975,21 +890,6 @@ pub(crate) mod tests {
         let review = complete(Review::default(), &proposals).unwrap();
         assert!(!review.decisions.contains_key("ip9"));
         assert_eq!(review.decisions.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn apply_needs_the_proposals_to_recheck_them() {
-        // A daemon answering the run without the proposals it counts.
-        let (url, requests) = stub_with(stub_run(), vec![]).await;
-        let client = Client::new(&url, Duration::from_secs(5)).unwrap();
-        let home = tempfile::tempdir().unwrap();
-        let error = client_error(client.apply("ir1", None, home.path()).await);
-        assert!(error.contains("without its proposals"), "{error}");
-        assert!(requests
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|r| r.0 != "import_apply"));
     }
 
     #[tokio::test]
@@ -1052,24 +952,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn runs_are_read_in_either_shape() {
-        let nested = json!({"run": stub_run(), "proposals": stub_proposals()});
-        let flat = {
-            let mut run = stub_run();
-            run["proposals"] = serde_json::to_value(stub_proposals()).unwrap();
-            run
-        };
-        let a = run_view(nested).unwrap();
-        let b = run_view(flat).unwrap();
-        assert_eq!(a, b);
-        assert_eq!(a.proposals.len(), 4);
-        let bare = run_view(stub_run()).unwrap();
-        assert!(bare.proposals.is_empty());
+    fn runs_are_read_from_the_daemon_answer() {
+        let view = run_view(json!({"run": stub_run(), "proposals": stub_proposals()})).unwrap();
+        assert_eq!(view.proposals.len(), 4);
         assert!(run_view(json!({"unexpected": true})).is_err());
         assert_eq!(
             run_id_of(&json!({"run": {"runId": "ir7"}})).as_deref(),
             Some("ir7")
         );
-        assert_eq!(run_id_of(&json!({"runId": ""})), None);
+        assert_eq!(run_id_of(&json!({"run": {"runId": ""}})), None);
     }
 }

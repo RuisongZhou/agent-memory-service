@@ -48,10 +48,7 @@ impl FieldPatch {
 
 /// A record's field as stored (camelCase); `null` when absent.
 fn field(m: &MemoryRec, key: &str) -> Value {
-    serde_json::to_value(m)
-        .ok()
-        .and_then(|doc| doc.get(key).cloned())
-        .unwrap_or(Value::Null)
+    serde_json::to_value(m).expect("a memory record serializes")[key].clone()
 }
 
 /// Whether `m` was created by a consolidation merge.

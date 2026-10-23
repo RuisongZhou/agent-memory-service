@@ -95,7 +95,6 @@ pub fn validate_output(schema: &Value, output: &Value) -> Result<()> {
 fn contract(existing: &[Value]) -> JsonContract {
     JsonContract {
         name: FORMAT,
-        echo_invalid_response: false,
         validate: validate_output,
         schema: json!({
         "type":"object","required":["memory"],"additionalProperties":false,
@@ -279,7 +278,9 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
         .ok_or_else(|| anyhow!("missing platform"))?;
 
     let messages: Vec<InMessage> = serde_json::from_value(job["inputMessages"].clone())?;
-    let inferred = job["infer"].as_bool().unwrap_or(true);
+    let inferred = job["infer"]
+        .as_bool()
+        .ok_or_else(|| anyhow!("missing infer"))?;
     let observed = messages
         .first()
         .map(|m| m.timestamp.as_str())
@@ -532,16 +533,11 @@ async fn publish_committed(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) ->
         .ok_or_else(|| anyhow!("missing requestId"))?;
     let ids: Vec<String> = serde_json::from_value(job["memoryIds"].clone())?;
     for mid in ids {
-        ensure!(
-            t.store.get_memory(&mid).await?.is_some(),
-            "committed memory missing"
-        );
         let vector = t
             .store
             .memory_embedding(&mid)
             .await?
             .ok_or_else(|| anyhow!("committed vector missing"))?;
-        ensure!(!vector.is_empty(), "committed vector missing");
         t.vecs.write().await.memories.insert(mid, Arc::new(vector));
     }
     super::entities::reconcile_locked(eng, t).await?;
@@ -604,6 +600,3 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value>
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
-
-// Compatibility alias; raw-input inspection belongs to this algorithm's retrieval module.
-pub use super::retrieval::list_inputs;

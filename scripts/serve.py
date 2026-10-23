@@ -18,7 +18,7 @@ def main():
                         help='embedding/rerank source; the daemon defaults to api (docs/self-hosted-models.md for self-hosted)')
     parser.add_argument('--embed-url', help='embedding base URL; defaults depend on the model provider')
     parser.add_argument('--rerank-url', help='rerank base URL; defaults depend on the model provider')
-    parser.add_argument('--memory-strategy', choices=['mem0'])
+    parser.add_argument('--memory-strategy')
     parser.add_argument('--config', type=Path)
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--mock', action='store_true')
@@ -39,7 +39,6 @@ def main():
         env.pop('MEMORY_MODEL_API_KEY', None)
     else:
         env.pop('MEMORY_MOCK_MODELS', None)
-    if args.llm_concurrency<1: parser.error('llm-concurrency must be positive')
     command = [str(args.bin.resolve()), 'serve', '--data-dir', str(args.data_dir),
                '--port', str(args.port),'--llm-concurrency',str(args.llm_concurrency)]
     # Let the daemon apply environment/config/default precedence when no CLI override is given.

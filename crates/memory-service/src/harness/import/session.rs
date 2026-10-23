@@ -234,7 +234,6 @@ mod tests {
         let prompt = "<system-reminder>\nAs you answer, use this context.\n</system-reminder>\nShip the fix.\n\
                       <shared-memory project=\"p\" event=\"UserPromptSubmit\">\nRecalled: x\n</shared-memory>";
         assert_eq!(strip_injected(prompt), "Ship the fix.");
-        assert_eq!(strip_injected("  plain  "), "plain");
         // An unclosed block is the person's text, not an injection.
         assert_eq!(
             strip_injected("<shared-memory> left open"),
@@ -291,11 +290,11 @@ mod tests {
             assert_eq!(lines[3], "{\"b\":2}");
             let stored = std::fs::read(path).unwrap();
             assert_eq!(hash, blake3::hash(&stored).to_hex().to_string());
-            assert_eq!(first_cwd(path, 1 << 10), Some(PathBuf::from("/w")));
             // A cap below the decompressed size refuses the file.
             assert_eq!(read_lines(path, 10, |_| true).unwrap_err(), "too-large");
         }
-        // Only the first bytes are searched for a cwd.
+        // The first cwd is found, but only in the first bytes.
+        assert_eq!(first_cwd(&plain, 1 << 10), Some(PathBuf::from("/w")));
         assert_eq!(first_cwd(&plain, 4), None);
         #[cfg(unix)]
         {

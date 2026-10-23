@@ -35,7 +35,7 @@ fn caller(h: &HeaderMap) -> Caller {
 }
 
 fn err_response(e: ApiError) -> Response {
-    let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status = StatusCode::from_u16(e.status_code()).expect("ApiError status codes are valid");
     let mut body = json!({"code": e.code(), "message": e.to_string()});
     if let ApiError::NotCurrent(id) = &e {
         body["currentId"] = json!(id);

@@ -42,7 +42,6 @@ fn contract(members: usize) -> JsonContract {
     let ids = json!({"type":"array","items":id,"minItems":2});
     JsonContract {
         name: FORMAT,
-        echo_invalid_response: false,
         validate: validate_output,
         schema: json!({
         "type":"object","required":["operations"],"additionalProperties":false,

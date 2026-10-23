@@ -29,24 +29,9 @@ pub(crate) async fn prepare(store: &Store, tx: &mut Tx) -> Result<()> {
     Ok(())
 }
 
-/// Full replacement is rare outside formation. Existing semantic changes must invalidate
-/// views even if a caller preserved the record ID and its current status.
+/// Current views whose inputs this transaction made unavailable go stale in the same transaction.
 async fn invalidate_views(store: &Store, tx: &mut Tx) -> Result<()> {
-    let mut changed = Vec::new();
-    for (id, doc) in &tx.writes.memory_docs {
-        if let Some(previous) = store.get_doc(schema::MEMORIES, id).await? {
-            if rules::semantic_change(&previous, doc) {
-                changed.push(id.clone());
-            }
-        }
-    }
-    tx.writes.unavailable.extend(changed);
-    let has_new_view = tx.writes.memory_docs.values().any(|doc| {
-        from_doc::<MemoryRec>(doc.clone())
-            .ok()
-            .is_some_and(|m| rules::introduces_view(&m))
-    });
-    if tx.writes.unavailable.is_empty() && !has_new_view {
+    if tx.writes.unavailable.is_empty() {
         return Ok(());
     }
     let mut records: HashMap<String, MemoryRec> = store

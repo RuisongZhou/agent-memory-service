@@ -222,13 +222,10 @@ pub async fn search(
             .collect::<Vec<_>>();
         // SDK degrades to hybrid ordering if the optional reranker fails.
         if let Ok(Some(scores)) = eng.models.rerank(query, &docs).await {
-            if scores.len() == candidates.len() && scores.iter().all(|score| score.is_finite()) {
-                for ((m, _), score) in candidates.iter().zip(scores) {
-                    rerank_scores.insert(m.id.clone(), score);
-                }
-                candidates
-                    .sort_by(|a, b| rerank_scores[&b.0.id].total_cmp(&rerank_scores[&a.0.id]));
+            for ((m, _), score) in candidates.iter().zip(scores) {
+                rerank_scores.insert(m.id.clone(), score);
             }
+            candidates.sort_by(|a, b| rerank_scores[&b.0.id].total_cmp(&rerank_scores[&a.0.id]));
         }
     }
     let rerank_ms = tick.elapsed().as_secs_f64() * 1000.0;

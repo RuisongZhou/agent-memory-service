@@ -1,6 +1,6 @@
 //! Rebuildable Mem0 entity projection. Primary memories remain authoritative.
 //! The regex fallback is a supported Node SDK configuration; compromise NLP is not used.
-use anyhow::{ensure, Result};
+use anyhow::Result;
 use memory_engine::runtime::{engine::Engine, instance::Instance};
 use memory_rules::util;
 use memory_store::{schema, store::Tx};
@@ -63,7 +63,7 @@ async fn inferred(t: &Instance, doc: &Value) -> Result<bool> {
             for request in source["inputRequestIds"].as_array().into_iter().flatten() {
                 if let Some(id) = request.as_str() {
                     if let Some(input) = t.store.get_doc(schema::REQUESTS, id).await? {
-                        if input["formed"] == true && input["infer"].as_bool().unwrap_or(true) {
+                        if input["formed"] == true && input["infer"] == true {
                             return Ok(true);
                         }
                     }
@@ -267,12 +267,7 @@ async fn project(
         }
     }
     let embedded = eng.models.embed(&texts).await?;
-    ensure!(
-        embedded.len() == needed.len(),
-        "entity embedding batch length mismatch"
-    );
     for (key, vector) in needed.into_iter().zip(embedded) {
-        ensure!(!vector.is_empty(), "empty entity embedding");
         vectors.insert(key, (*vector).clone());
     }
     let active_ids: HashSet<_> = facts
@@ -463,8 +458,7 @@ pub async fn reconcile_locked(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()
             && prior.as_ref().is_some_and(|state| {
                 model_matches
                     && state["fingerprint"] == fingerprint
-                    && (state["preparedFingerprint"].is_null()
-                        || state["preparedFingerprint"] == prepared_fingerprint)
+                    && state["preparedFingerprint"] == prepared_fingerprint
                     && state["entityCount"].as_u64() == Some(old.len() as u64)
             });
         let rows = if manifest_matches {
@@ -559,10 +553,6 @@ pub async fn boosts(
     }
     let texts = entities.iter().map(|e| e.text.clone()).collect::<Vec<_>>();
     let vectors = eng.models.embed(&texts).await?;
-    ensure!(
-        vectors.len() == entities.len(),
-        "query entity batch length mismatch"
-    );
     let cache = t.algorithm_state::<ProjectionCache>();
     let cached = cache.lock().await;
     let snapshot = cached.as_ref().expect("reconciled projection snapshot");
@@ -619,4 +609,4 @@ mod tests {
 }
 
 #[cfg(test)]
-mod reference_tests;
+mod projection_tests;

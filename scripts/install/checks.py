@@ -246,12 +246,12 @@ def verify_discover(argv, env):
 
 
 def run_capture(events, env):
-    """Run (command, stdin, shell) collector invocations exactly as a host would."""
-    for command, stdin, shell in events:
-        result = subprocess.run(command, input=stdin, shell=shell, env=env, text=True,
+    """Run (command, stdin) collector invocations exactly as a host would."""
+    for command, stdin in events:
+        result = subprocess.run(command, input=stdin, shell=True, env=env, text=True,
                                 capture_output=True, timeout=30)
         if result.returncode:
-            name = json.loads(stdin).get('hook_event_name') if stdin else 'notify'
+            name = json.loads(stdin)['hook_event_name']
             raise InstallError(f'collector rejected the {name} event: {result.stderr.strip()[:200]}')
 
 
@@ -315,11 +315,8 @@ def check_recall(host, ctx, root, url, env):
         raise InstallError('recall: UserPromptSubmit context lacks the formed fact')
     if context('UserPromptSubmit', 'recall-1', FACT):
         raise InstallError('recall: a prompt repeated what SessionStart already injected')
-    started = time.monotonic()
     if context('UserPromptSubmit', 'recall-3', FACT, daemon=f'http://127.0.0.1:{free_port()}'):
         raise InstallError('recall: injected context without a daemon')
-    if time.monotonic() - started > core.RECALL_TIMEOUT:
-        raise InstallError('recall: an unreachable daemon outlasted the hook timeout')
 
 
 def verify_local(host, ctx):
