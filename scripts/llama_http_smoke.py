@@ -227,8 +227,8 @@ def main():
                     report["statsAfterIngest"] = stats
                     if stats["counts"]["index_tasks"] != 0 or stats["index"]["pendingTasks"] != 0 or stats["jobs"]["pendingJobs"] != 0:
                         raise AssertionError("real model indexing is still pending")
-                    if stats["index"]["memoryVectors"] != 3 or stats["index"]["turnVectors"] != 0:
-                        raise AssertionError("real vector index has unexpected counts")
+                    if stats["index"]["memoryVectors"] != 3:
+                        raise AssertionError("real vector index has an unexpected count")
                     exported = request(base, "/admin/export", {})["memories"]
                     if sorted(memory["text"] for memory in exported) != sorted(FACT_TEXTS):
                         raise AssertionError("the exact three facts were not persisted")

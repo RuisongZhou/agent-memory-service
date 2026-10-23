@@ -1,4 +1,4 @@
-//! 纠正、删除、反馈 (2.5, 5.5) and admin inspection (stats, export) plus the test-only `seed` admin action.
+//! 纠正、删除、反馈 (2.5, 5.5) and admin inspection (stats, export).
 //! One file per operation; `must_get` and the correction text limit are shared.
 use crate::runtime::instance::Instance;
 use memory_domain::types::*;
@@ -10,7 +10,7 @@ mod deletion;
 mod feedback;
 mod uncertainty;
 
-pub use admin::{export, seed, stats};
+pub use admin::{export, stats};
 pub use correction::correct_memory;
 pub use deletion::delete_memory;
 pub use feedback::feedback;

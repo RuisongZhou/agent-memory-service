@@ -131,12 +131,11 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /admin/wait_idle` | Drain formation/index work and report remaining or failed requests |
 | `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs |
 | `POST /admin/export` | Read memories or selected audit tables of the store; not a full backup |
-| `POST /admin/reindex` | Queue a vector rebuild (re-embed every record); CLI requires `--all` or `--vector` |
+| `POST /admin/reindex` | Queue a vector rebuild (re-embed every memory); CLI requires `--all` or `--vector` |
 | `POST /admin/consolidate` | Propose consolidation ops for one project and store the run; requires `consolidationEnabled` and `dryRun:true` |
 | `POST /admin/consolidation_apply` | Apply a proposed run's ops, one transaction per op; requires `consolidationEnabled` |
 | `POST /admin/consolidation_rollback` | Undo an applied run's ops, newest first; ops changed since stay applied |
 | `POST /admin/import_propose`, `import_run`, `import_runs`, `import_apply`, `import_rollback` | [Import runs](#import-runs): a host's existing memories as reviewable proposals, applied and rolled back on request |
-| `POST /admin/seed` | Direct fixture admission, available only with mock models |
 
 Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `requests`,
 `store_revisions`, `uncertainties`, `proposals`, `consolidation_runs`, `import_runs`, `import_ledger`,
@@ -339,15 +338,17 @@ store at the next start. The former `scripts/llama_models.sh` and `scripts/llama
 Only Mem0 is available on main. The previous dual-strategy implementation is preserved on
 [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos),
 starting at `971ac13`. Retired strategies and buffer/batch/maintenance tunables are rejected;
-`/admin/run_jobs` has been removed and returns HTTP 404.
+`/admin/run_jobs` and the mock-only `/admin/seed` have been removed and return HTTP 404.
 
 SurrealDB is no longer compiled into the daemon: install SurrealDB 3.2 or a later 3.x
 ([install SurrealDB](deployment.md#install-surrealdb)). An existing `store/db` opens in place; its first start
 creates the datastore's root user and `store/db.password`. Without `surreal` on PATH or `--surreal-bin`, the
 daemon does not start.
 
-Existing Mem0 stores retain their schema and historical records. Main does not process unfinished formation
+Existing Mem0 stores retain their historical records. Main does not process unfinished formation
 work of a retired strategy; finish it with the matching preserved binary first. Switching branches
 does not migrate or clear a database. Historical profiles/skills and conflict records remain readable
-and repairable, but main does not generate them. See [storage integrity](architecture.md#entity-projection-and-storage)
+and repairable, but main does not generate them. Turns stored by a retired strategy stay readable but are
+no longer vector-indexed: each store drops its `turns_vec` index at its next start, and a reindex or
+embedding-model change re-embeds memories only. See [storage integrity](architecture.md#entity-projection-and-storage)
 for dependency invalidation and recovery behavior.

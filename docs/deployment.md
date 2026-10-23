@@ -208,7 +208,7 @@ small embedding request to check the key and read the vector dimension, and one 
 reranking is enabled. Stored texts and queries are sent to the provider; use `self-hosted` if they must
 stay on your machines.
 
-Switching provider or embedding model on an existing data directory re-embeds its records at the next
+Switching provider or embedding model on an existing data directory re-embeds its memories at the next
 start. The hosted default and BGE-M3 both use 1024 dimensions; for a model with another dimension, start
 with a new data directory.
 
@@ -491,7 +491,7 @@ For a consistent backup, pause new submissions, stop the uploader and daemon (wh
 
 Before upgrading, make that backup, rebuild the binary from the updated source or install the new release binary at the same path, restart with the same data path/strategy, and check health and a known record. Upgrade SurrealDB the way you installed it (`brew upgrade surrealdb/tap/surreal`, or the install script again), within 3.x and while the daemon is stopped, after the same backup; the daemon starts the new `surreal` at its next start. Do not run two daemons against one data directory; the second one refuses to start. Restore with services stopped and a matching version/configuration. For unfinished legacy jobs, use the preserved version or a fresh store; see [compatibility](api.md#compatibility).
 
-To re-embed every record on a running daemon:
+To re-embed every memory on a running daemon:
 
 ```sh
 target/fast/agent-memoryd reindex --all --url http://127.0.0.1:8765

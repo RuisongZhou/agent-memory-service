@@ -184,7 +184,6 @@ async fn delete_one(
             &rid,
             json!({"derivedMemoryIds": ids, "derivedText": text.join("\n")}),
         )?;
-        tx.index_task(schema::TURNS, &rid, "upsert")?;
     }
     tx.index_task(schema::MEMORIES, &id, "delete")?;
     t.store.commit(tx).await?;

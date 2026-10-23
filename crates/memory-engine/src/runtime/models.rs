@@ -45,11 +45,6 @@ impl ModelHub {
         }
     }
 
-    /// True for the hashed bag-of-words hub selected by `MEMORY_MOCK_MODELS=1`.
-    pub fn is_mock(&self) -> bool {
-        self.backend == "mock"
-    }
-
     /// Connect to the configured provider's embedding model and, when `rerank` is set, its
     /// reranker, then probe both once. `api_key` authenticates the api provider only.
     pub async fn connect(cfg: &ServiceConfig, api_key: &str, rerank: bool) -> Result<Self> {
