@@ -95,10 +95,11 @@ The script installs to `/usr/local/bin`, or to `~/.surrealdb` when it cannot wri
 PATH. Then check the version:
 
 ```sh
-surreal version
+surreal db version   # the install script's `surreal`; Homebrew's: surreal version
 ```
 
-You do not run or configure SurrealDB yourself. The daemon starts `surreal start` on its store's datastore
+You do not run or configure SurrealDB yourself. The daemon starts `surreal db start` (`surreal start` for a
+`surreal` without the `db` command, such as Homebrew's) on its store's datastore
 (`<data root>/store/db`, SurrealKV), bound to a random port on 127.0.0.1, signs in as root with a password it
 generates for that datastore, and stops it when the daemon stops; a small shell watchdog stops it as well
 when the daemon dies without stopping it. If SurrealDB exits, the daemon exits too, so that its service
@@ -517,7 +518,7 @@ With the LaunchAgent setup, use `launchctl bootout` for the selected service lab
 | `LLM API key not configured` or provider 401 | Check the env file, exported overrides, and provider access; direct binary launches read a dotenv file only with `--env-file` |
 | Legacy jobs at startup | Complete them with the preserved version or use a fresh store; see [compatibility](api.md#compatibility) |
 | `SurrealDB is not installed` or `not an executable SurrealDB` | [Install SurrealDB](#install-surrealdb), or name it with `--surreal-bin`. A service runs the path it was installed with; after moving `surreal`, rerun `service install` (or the one-command installer) |
-| `SurrealDB (...) did not start on ...` | The lines after it are SurrealDB's own output. Check `surreal version` (3.2 or a later 3.x) and that the data directory is writable |
+| `SurrealDB (...) did not start on ...` | The lines after it are SurrealDB's own output. Check `surreal db version` or `surreal version` (3.2 or a later 3.x) and that the data directory is writable |
 | `... is in use by another agent-memoryd` | Another daemon serves that data directory; stop it first (`agent-memoryd service status` shows the service's) |
 | `cannot sign in to SurrealDB as root` | `store/db.password` does not belong to `store/db`; restore both from the same backup |
 | `the store's SurrealDB server stopped` in the daemon log | SurrealDB exited under the daemon, which then exits so its service restarts both; the log line carries SurrealDB's last output |

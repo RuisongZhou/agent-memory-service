@@ -76,19 +76,27 @@ def check_surreal(ctx):
     if ctx.surreal is None:
         raise InstallError(f'SurrealDB is not installed (no `surreal` on PATH); {INSTALL_SURREAL}, '
                            'or pass --surreal-bin PATH')
-    try:
-        result = subprocess.run([str(ctx.surreal), 'version'], stdin=subprocess.DEVNULL, capture_output=True,
-                                text=True, timeout=30)
-    except OSError as error:
-        raise InstallError(f'Cannot run {ctx.surreal} ({error}); {INSTALL_SURREAL}') from error
-    version = re.search(r'\b(\d+)\.(\d+)\.\d+\S*', result.stdout)
-    if result.returncode or not version:
-        raise InstallError(f'{ctx.surreal} is not SurrealDB (`surreal version` failed); {INSTALL_SURREAL}')
+    # SurrealDB's install-script launcher deprecates `surreal version` for `surreal db version`; the server
+    # binary itself (Homebrew, releases before 3.3) has no `db` command. The daemon probes the same way.
+    version = surreal_version(ctx.surreal, 'db', 'version') or surreal_version(ctx.surreal, 'version')
+    if not version:
+        raise InstallError(f'{ctx.surreal} is not SurrealDB (`surreal db version` and `surreal version` failed); '
+                           f'{INSTALL_SURREAL}')
     oldest, newer = SURREAL_VERSIONS
     if not oldest <= (int(version.group(1)), int(version.group(2))) < newer:
         raise InstallError(f'{ctx.surreal} is SurrealDB {version.group(0)}; the daemon needs SurrealDB 3.2 or a later '
                            f'3.x: {INSTALL_SURREAL}')
     print(f'[check] SurrealDB {version.group(0)} at {ctx.surreal}')
+
+
+def surreal_version(surreal, *args):
+    """The version match `surreal *args` prints when it succeeds, else None."""
+    try:
+        result = subprocess.run([str(surreal), *args], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                timeout=30)
+    except OSError as error:
+        raise InstallError(f'Cannot run {surreal} ({error}); {INSTALL_SURREAL}') from error
+    return None if result.returncode else re.search(r'\b(\d+)\.(\d+)\.\d+\S*', result.stdout)
 
 
 # --- env file -----------------------------------------------------------------------

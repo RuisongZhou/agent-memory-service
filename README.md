@@ -85,7 +85,7 @@ curl -sSf https://install.surrealdb.com | sh
 Check that `surreal` is on your `PATH` and reports a supported version:
 
 ```bash
-surreal version
+surreal db version   # the install script's `surreal`; Homebrew's: surreal version
 ```
 
 The daemon starts and manages this executable for its own storage. You do not need to start a separate database

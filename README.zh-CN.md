@@ -82,7 +82,7 @@ curl -sSf https://install.surrealdb.com | sh
 确认 `surreal` 在 `PATH` 上，且版本受支持：
 
 ```bash
-surreal version
+surreal db version   # 安装脚本装的 `surreal`；Homebrew 装的用 surreal version
 ```
 
 daemon 会自己启动和管理这个可执行文件作为存储，不需要另外启动数据库服务。其他安装方式见

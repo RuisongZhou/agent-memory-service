@@ -1,4 +1,5 @@
-//! The SurrealDB server process: the user's `surreal start` on the store's SurrealKV datastore,
+//! The SurrealDB server process: the user's `surreal start` (`surreal db start` with SurrealDB's launcher)
+//! on the store's SurrealKV datastore,
 //! bound to a free loopback port. A shell watchdog between this process and the server stops the
 //! server when the store closes the watchdog's stdin and also when this process exits however it
 //! exits (a crash, `panic = abort`, SIGKILL): the pipe then reaches end of file. So a server never
@@ -12,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
-/// Runs `"$@"` (`surreal start ...`) and sends it SIGTERM once stdin reaches end of file, then exits
+/// Runs `"$@"` (`surreal [db] start ...`) and sends it SIGTERM once stdin reaches end of file, then exits
 /// with the server's status. Background commands read /dev/null, so the watcher reads the pipe as fd 3.
 const WATCHDOG: &str = r#"exec 3<&0
 "$@" </dev/null 3<&- 1>&2 &
@@ -57,7 +58,7 @@ impl Server {
     pub async fn start(surreal: &Path, datastore: &Path, password: &str) -> Result<Server> {
         let program = executable(surreal)?;
         // Before the server touches the datastore: another major release could rewrite it.
-        supported(&program).await?;
+        let start = supported(&program).await?;
         let path = datastore
             .to_str()
             .filter(|p| !p.contains('?'))
@@ -69,7 +70,7 @@ impl Server {
             })?;
         let started = Instant::now();
         loop {
-            let server = Server::spawn(&program, path, password)?;
+            let server = Server::spawn(&program, start, path, password)?;
             let reason = match server.ready(started + READY_TIMEOUT).await {
                 Ok(()) => return Ok(server),
                 Err(NotReady::Exited(reason)) if started.elapsed() < RETRY_FOR => {
@@ -90,7 +91,7 @@ impl Server {
         }
     }
 
-    fn spawn(program: &Path, datastore: &str, password: &str) -> Result<Server> {
+    fn spawn(program: &Path, start: &[&str], datastore: &str, password: &str) -> Result<Server> {
         let port = std::net::TcpListener::bind(("127.0.0.1", 0))?
             .local_addr()?
             .port();
@@ -100,7 +101,7 @@ impl Server {
             .arg(WATCHDOG)
             .arg("surreal-watchdog")
             .arg(program)
-            .arg("start")
+            .args(start)
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
             // Warnings include one about the root user on every start after the first.
@@ -209,27 +210,21 @@ fn forward(stderr: ChildStderr, log: &Mutex<VecDeque<String>>) {
     }
 }
 
-/// Refuse a `surreal` outside `VERSIONS`, by what `surreal version` prints ("3.2.4 for macos on aarch64").
-async fn supported(program: &Path) -> Result<()> {
-    let output = tokio::process::Command::new(program)
-        .arg("version")
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .with_context(|| format!("cannot run {} version", program.display()))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let version = text
-        .split_whitespace()
-        .find_map(|word| {
-            let mut parts = word.split('.').map(|p| p.parse::<u64>().ok());
-            Some((parts.next()??, parts.next()??, word))
-        })
-        .filter(|_| output.status.success());
-    let Some((major, minor, word)) = version else {
-        bail!(
-            "{} is not SurrealDB: `surreal version` printed no version; {INSTALL_HINT}",
-            program.display()
-        );
+/// Refuse a `surreal` outside `VERSIONS`, by what its version command prints ("3.2.4 for macos on
+/// aarch64"), and return the words that start its server. SurrealDB's install script installs a launcher
+/// whose `version` and `start` are deprecated for `db version` and `db start`; the server binary itself
+/// (Homebrew, releases before 3.3) has no `db` command.
+async fn supported(program: &Path) -> Result<&'static [&'static str]> {
+    let (start, (major, minor, word)) = match version(program, &["db", "version"]).await? {
+        Some(found) => (&["db", "start"][..], found),
+        None => match version(program, &["version"]).await? {
+            Some(found) => (&["start"][..], found),
+            None => bail!(
+                "{} is not SurrealDB: `surreal db version` and `surreal version` printed no version; \
+                 {INSTALL_HINT}",
+                program.display()
+            ),
+        },
     };
     let (oldest, newer) = VERSIONS;
     ensure!(
@@ -237,7 +232,26 @@ async fn supported(program: &Path) -> Result<()> {
         "{} is SurrealDB {word}; the store needs SurrealDB 3.2 or a later 3.x: {INSTALL_HINT}",
         program.display()
     );
-    Ok(())
+    Ok(start)
+}
+
+/// The version `program args` prints when it succeeds: major, minor and the whole word.
+async fn version(program: &Path, args: &[&str]) -> Result<Option<(u64, u64, String)>> {
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .with_context(|| format!("cannot run {} {}", program.display(), args.join(" ")))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .find_map(|word| {
+            let mut parts = word.split('.').map(|p| p.parse::<u64>().ok());
+            Some((parts.next()??, parts.next()??, word.to_string()))
+        }))
 }
 
 /// `program` as an executable file: a path as given, a bare name looked up on PATH.
@@ -386,6 +400,53 @@ mod tests {
             let e = supported(&fake("other", old)).await.unwrap_err();
             assert!(e.to_string().contains(message), "{e}");
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn the_launcher_is_started_with_db_start_and_the_server_binary_with_start() {
+        let dir = marker();
+        std::fs::create_dir_all(&dir).unwrap();
+        // SurrealDB's install-script launcher: `version` still answers, with a deprecation warning.
+        let launcher = script(
+            &dir,
+            "launcher",
+            r#"case "$*" in
+  "db version") echo "3.3.4 for macos on aarch64" ;;
+  version) echo 'warning: `surreal version` is deprecated' >&2; echo "3.3.4 for macos on aarch64" ;;
+  *) echo "$*" > "$0.args" ;;
+esac"#,
+        );
+        // The server binary (Homebrew, 3.2.x) has no `db` command.
+        let binary = script(
+            &dir,
+            "binary",
+            r#"case "$1" in
+  db) echo "error: unrecognized subcommand 'db'" >&2; exit 2 ;;
+  version) echo "3.2.4 for linux on x86_64" ;;
+  *) echo "$*" > "$0.args" ;;
+esac"#,
+        );
+        for (program, start) in [(&launcher, "db start"), (&binary, "start")] {
+            let words = supported(program).await.unwrap();
+            assert_eq!(words.join(" "), start);
+            let server = Server::spawn(program, words, "/tmp/store", "secret").unwrap();
+            server.exited().await;
+            let args = std::fs::read_to_string(program.with_extension("args")).unwrap();
+            assert!(args.starts_with(&format!("{start} --bind 127.0.0.1:")), "{args}");
+            assert!(args.ends_with(" surrealkv:///tmp/store\n"), "{args}");
+        }
+        let neither = script(&dir, "neither", "echo 'usage: neither' >&2; exit 2");
+        let e = supported(&neither).await.unwrap_err();
+        assert!(e.to_string().contains("is not SurrealDB"), "{e}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

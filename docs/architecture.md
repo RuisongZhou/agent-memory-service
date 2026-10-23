@@ -117,8 +117,9 @@ entities in one batch do not semantically merge with each other. Formation posit
 order; older records without it use stable ID order, which cannot recover lost original ordering.
 
 The database is the user's own SurrealDB 3.x; no part of it is compiled into the service. Opening a store
-checks `surreal version` (3.2 or a later 3.x), starts `surreal start` on the store's SurrealKV datastore under
-a shell watchdog, on a random loopback port, signs in as root with the datastore's generated password and
+checks `surreal db version` (3.2 or a later 3.x) and starts `surreal db start` on the store's SurrealKV datastore
+(`surreal version` and `surreal start` for a `surreal` without the `db` command, such as Homebrew's) under a
+shell watchdog, on a random loopback port, signs in as root with the datastore's generated password and
 selects (in a new datastore, creates) the `memory` namespace and `main` database. Queries are SurrealQL sent as SurrealDB RPC
 `query` calls over HTTP with CBOR bodies, the encoding SurrealDB's SDKs use; its JSON format would turn
 strings that look like datetimes or record IDs into those types. Each statement batch, including a

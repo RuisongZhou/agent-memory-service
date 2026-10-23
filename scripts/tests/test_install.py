@@ -602,6 +602,25 @@ def test_apply_needs_surrealdb_3_before_anything_else(tmp_path, capsys, fake_bin
     assert offline == [] and not (tmp_path / '.workbuddy').exists()
 
 
+
+@pytest.mark.parametrize('script, version', [
+    # SurrealDB's install-script launcher, which deprecates `surreal version`.
+    ('case "$*" in "db version") echo "3.3.4 for macos on aarch64";; *) echo "deprecated" >&2; exit 2;; esac',
+     '3.3.4'),
+    # The server binary (Homebrew, 3.2.x): no `db` command.
+    ('case "$1" in version) echo "3.2.4 for linux on x86_64";; *) echo "unrecognized" >&2; exit 2;; esac',
+     '3.2.4'),
+])
+def test_check_surreal_knows_the_launcher_and_the_server_binary(tmp_path, capsys, script, version):
+    surreal = tmp_path / 'surreal'
+    surreal.write_text(f'#!/bin/sh\n{script}\n')
+    surreal.chmod(0o755)
+    runtime.check_surreal(types.SimpleNamespace(surreal=surreal))
+    assert f'[check] SurrealDB {version} at {surreal}' in capsys.readouterr().out
+    surreal.write_text('#!/bin/sh\nexit 2\n')
+    with pytest.raises(core.InstallError, match='is not SurrealDB'):
+        runtime.check_surreal(types.SimpleNamespace(surreal=surreal))
+
 def test_apply_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary, offline):
     settings = tmp_path / '.workbuddy/settings.json'
     settings.parent.mkdir()
