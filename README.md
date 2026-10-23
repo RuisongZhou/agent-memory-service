@@ -129,7 +129,7 @@ Restart Claude Code in that workspace and approve the `shared-memory` project MC
 bash scripts/install.sh --host workbuddy --apply --project my-project --recall
 ```
 
-Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memory` and enable all eight tools.
+Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memory` and enable all six tools.
 
 #### DeepSeek Harness
 
@@ -176,8 +176,7 @@ Full options, configuration changes, backups and uninstall instructions are in t
 Connect two supported clients to the same daemon. In the first client, ask:
 
 > Use shared-memory to save this test fact for project `my-project`: "The project's test mascot is a copper fox." Use
-> `add_memories` with `infer:false` to store the text directly. If the write is asynchronous, poll `get_task` until it
-> completes.
+> `add_memories` with `infer:false` to store the text directly.
 
 In the second client, ask:
 
@@ -204,18 +203,16 @@ requesting an MCP call. Inspect the client's hook output or injected context whe
 
 ### MCP tools
 
-After installation and a client restart, the agent sees eight `shared-memory` tools:
+After installation and a client restart, the agent sees six `shared-memory` tools:
 
 | Tool | Purpose |
 |---|---|
 | `add_memories` | Save conversations, facts or explicit instructions (`memoryType: "instruction"`) |
 | `search_memories` | Find memories relevant to a question |
 | `get_context` | Assemble project and session context, including saved instructions |
-| `get_task` | Check whether an asynchronous write has completed (a `requestId` is not completion) |
 | `list_turns` | List submitted raw conversation turns |
 | `get_memory` | Read one memory with its history and sources |
 | `correct_memory` | Add a correction or retract a memory |
-| `feedback` | Record whether retrieved results were used |
 
 Request fields are documented in the [API reference](docs/api.md#interfaces).
 

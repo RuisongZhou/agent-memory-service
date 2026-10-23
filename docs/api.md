@@ -12,17 +12,17 @@ and [HTTP dispatcher](../crates/memory-service/src/api/http.rs) define the accep
 | Interface | Main arguments | MCP | Purpose |
 |---|---|---|---|
 | `add_memories` | `scope`, `messages`/`text`, `turnId`, `sync`, `infer`, `memoryType`, `memoryScope`, `sessionEnded`; `importRunId` (HTTP only) | yes | Submit facts, raw input or explicit instructions |
-| `get_task` | `requestId` | yes | Inspect a durable write request |
+| `get_task` | `requestId` | no | Inspect a durable write request |
 | `search_memories` | `query`, `scope`, `topK`, `tokenBudget`, `types`, `rerank`, `includeEvidence`, `touch` | yes | Retrieve bounded memories; facts by default |
 | `get_context` | `scope`, `tokenBudget` | yes | Assemble project/session context and explicit instructions |
 | `list_turns` | `scope`, `turnIds`, `since`, `tokenBudget` | yes | Inspect complete submitted message batches |
 | `get_memory` | `id`, `includeHistory`, `includeEvidence` | yes | Read one record and optional history/provenance |
 | `correct_memory` | `id`, optional `text`, `effectiveAt`, `reason` | yes | Append a correction; omission of text retracts |
-| `feedback` | `retrievalId`, `used`, `outcome` | yes | Record use of actual retrieved memories |
+| `feedback` | `retrievalId`, `used`, `outcome` | no | Record use of actual retrieved memories |
 | `delete_memory` | `id` | no | Delete a record and repair references/indexes |
 | `resolve_uncertainty` | `id`, `keepMemoryId`, `reason` | no | Explicitly resolve a legacy competing assertion |
 
-The stdio bridge forwards the eight marked tools to HTTP. Success content is JSON text;
+The stdio bridge forwards the six marked tools to HTTP. Success content is JSON text;
 HTTP errors become MCP `isError:true` results. There is no HTTP MCP, SSE or `/mcp` endpoint.
 
 ## Scope and idempotency

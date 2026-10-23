@@ -126,7 +126,7 @@ bash scripts/install.sh --host claude-code --apply --project my-project --worksp
 bash scripts/install.sh --host workbuddy --apply --project my-project --recall
 ```
 
-重启 WorkBuddy。在 **连接器 → 自定义连接器** 中信任 `shared-memory`，并启用全部 8 个工具。
+重启 WorkBuddy。在 **连接器 → 自定义连接器** 中信任 `shared-memory`，并启用全部 6 个工具。
 
 #### DeepSeek Harness
 
@@ -166,7 +166,7 @@ bash scripts/install.sh --host deepseek-harness --apply
 把两个支持的客户端连到同一个 daemon。在第一个客户端里说：
 
 > 用 shared-memory 给项目 `my-project` 保存这条测试事实："The project's test mascot is a copper fox." 用
-> `add_memories` 并设置 `infer:false`，直接存储原文。如果写入是异步的，轮询 `get_task` 直到完成。
+> `add_memories` 并设置 `infer:false`，直接存储原文。
 
 在第二个客户端里说：
 
@@ -190,18 +190,16 @@ bash scripts/install.sh --host deepseek-harness --apply
 
 ### MCP 工具
 
-安装并重启客户端后，Agent 会看到 8 个 `shared-memory` 工具：
+安装并重启客户端后，Agent 会看到 6 个 `shared-memory` 工具：
 
 | 工具 | 用途 |
 |---|---|
 | `add_memories` | 保存对话、事实或明确的行为要求（`memoryType: "instruction"`） |
 | `search_memories` | 按问题检索相关记忆 |
 | `get_context` | 组装项目和会话上下文，包括已保存的行为要求 |
-| `get_task` | 查询异步写入是否完成（拿到 `requestId` 不等于完成） |
 | `list_turns` | 列出提交过的原始对话 |
 | `get_memory` | 读取单条记忆及其历史和来源 |
 | `correct_memory` | 追加更正，或撤回一条记忆 |
-| `feedback` | 记录检索结果是否被采用 |
 
 请求字段见 [API 参考](docs/api.md#interfaces)。
 

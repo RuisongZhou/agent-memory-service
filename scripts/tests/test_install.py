@@ -1156,7 +1156,7 @@ def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
         env={'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable, 'HOME': str(Path.home())})
     assert result.returncode == 0, result.stdout + result.stderr
     check = next(line for line in result.stdout.splitlines() if line.startswith('[check] offline mock daemon'))
-    assert check.startswith('[check] offline mock daemon: server/discover fallback, MCP handshake, 8 tools, get_context')
+    assert check.startswith('[check] offline mock daemon: server/discover fallback, MCP handshake, 6 tools, get_context')
     assert ('capture -> outbox -> uploader -> formation -> search' in check) == (capture and '--no-capture' not in flags)
     assert ('recall -> SessionStart and prompt context, no repeats, silent without a daemon' in check) == ('--recall' in flags)
     assert check.endswith(' passed')
