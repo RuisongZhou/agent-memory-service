@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     request_id TEXT, error TEXT, created_at TEXT NOT NULL,
     UNIQUE (tenant, platform, turn_id)
 );";
+/// Finished statuses `prune` deletes; `failed` only on request, since those rows are the evidence for debugging.
+const PRUNED: [&str; 3] = ["completed", "rejected", "cancelled"];
+/// Rows `prune` deletes per write transaction: each holds the write lock briefly, well inside a hook's busy timeout.
+const PRUNE_BATCH: usize = 500;
 const SESSION_KEY: &str = "tenant=?1 AND platform=?2 AND project=?3 AND session=?4";
 /// The `tenant` column of the Python collector's schema; it always holds this value.
 const TENANT: &str = "default";
@@ -445,6 +449,36 @@ impl Outbox {
             Ok((row.get::<_, String>(0)?, json!(row.get::<_, i64>(1)?)))
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Delete the completed, rejected and cancelled jobs (and the failed ones with `failed`) captured before
+    /// `before`, a time in `now()`'s form; returns how many per status. Pending and accepted jobs, the only ones
+    /// an uploader reads, are never deleted, and the uploader updates rows by `seq`, which AUTOINCREMENT never
+    /// reuses, so a running uploader is unaffected. The deleted pages are reused by later captures; the file
+    /// does not shrink.
+    pub fn prune(&mut self, before: &str, failed: bool) -> Result<Map<String, Value>, Error> {
+        let mut deleted = Map::new();
+        for status in PRUNED.into_iter().chain(failed.then_some("failed")) {
+            // Read first, without the write lock; then delete by key in short transactions.
+            let seqs: Vec<i64> = self
+                .db
+                .prepare("SELECT seq FROM jobs WHERE status=?1 AND created_at<?2")?
+                .query_map(params![status, before], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+            let mut count = 0;
+            for batch in seqs.chunks(PRUNE_BATCH) {
+                let tx = self.db.transaction()?;
+                for seq in batch {
+                    count += tx.execute(
+                        "DELETE FROM jobs WHERE seq=?1 AND status=?2",
+                        params![seq, status],
+                    )?;
+                }
+                tx.commit()?;
+            }
+            deleted.insert(status.into(), json!(count));
+        }
+        Ok(deleted)
     }
 
     fn jobs(&self, status: &str) -> Result<Vec<Job>, Error> {
@@ -1001,6 +1035,93 @@ mod tests {
         )
         .unwrap();
         assert_eq!(o.status().unwrap().len(), 1);
+    }
+
+    fn turn_ids(o: &Outbox) -> Vec<String> {
+        o.status()
+            .unwrap()
+            .iter()
+            .map(|j| j["turn_id"].as_str().unwrap().into())
+            .collect()
+    }
+
+    #[test]
+    fn prune_deletes_only_finished_jobs_captured_before_the_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut o = outbox(&dir);
+        let old = "2026-01-01T00:00:00.000000+00:00";
+        let cutoff = "2026-02-01T00:00:00.500000+00:00";
+        for (turn, status, created) in [
+            ("queued", "pending", old),
+            ("forming", "accepted", old),
+            ("done", "completed", old),
+            // The Python collector wrote no fraction when the microseconds were zero.
+            ("done-just-before", "completed", "2026-02-01T00:00:00+00:00"),
+            ("done-just-after", "completed", "2026-02-01T00:00:01+00:00"),
+            (
+                "done-recently",
+                "completed",
+                "2026-03-01T00:00:00.000000+00:00",
+            ),
+            ("refused", "rejected", old),
+            ("rolled-back", "cancelled", old),
+            ("broken", "failed", old),
+        ] {
+            let body = json!({"scope": {"project": "p", "session": "s"}, "turnId": turn, "sessionEnded": true});
+            o.enqueue("codex", &body).unwrap();
+            o.db.execute(
+                "UPDATE jobs SET status=?1,created_at=?2 WHERE turn_id=?3",
+                params![status, created, turn],
+            )
+            .unwrap();
+        }
+        let deleted = o.prune(cutoff, false).unwrap();
+        assert_eq!(
+            Value::Object(deleted),
+            json!({"completed": 2, "rejected": 1, "cancelled": 1})
+        );
+        assert_eq!(
+            turn_ids(&o),
+            [
+                "queued",
+                "forming",
+                "done-just-after",
+                "done-recently",
+                "broken"
+            ]
+        );
+        // Failed jobs go only on request; pending and accepted ones never, however old.
+        let last = o.status().unwrap().last().unwrap()["seq"].as_i64().unwrap();
+        let deleted = o.prune("2027-01-01T00:00:00.000000+00:00", true).unwrap();
+        assert_eq!(
+            Value::Object(deleted),
+            json!({"completed": 2, "rejected": 0, "cancelled": 0, "failed": 1})
+        );
+        assert_eq!(turn_ids(&o), ["queued", "forming"]);
+        assert_eq!(o.backlog().unwrap(), 2);
+        // A deleted seq is never reused, so an uploader's update by seq never reaches a newer job.
+        o.capture_notify(&notify("t1", "reply"), "p", "codex")
+            .unwrap();
+        assert!(o.jobs("pending").unwrap()[1].seq > last);
+    }
+
+    #[test]
+    fn prune_deletes_more_jobs_than_one_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut o = outbox(&dir);
+        let tx = o.db.transaction().unwrap();
+        for i in 0..=PRUNE_BATCH {
+            tx.execute(
+                "INSERT INTO jobs (tenant,platform,turn_id,body,status,created_at) \
+                 VALUES (?1,'codex',?2,'{}','completed','2026-01-01T00:00:00.000000+00:00')",
+                params![TENANT, format!("t{i}")],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        let deleted = o.prune("2026-02-01T00:00:00.000000+00:00", false).unwrap();
+        assert_eq!(deleted["completed"], PRUNE_BATCH + 1);
+        assert!(o.status().unwrap().is_empty());
     }
 
     /// Answers add_memories and get_task like a daemon; the first add_memories response is lost.

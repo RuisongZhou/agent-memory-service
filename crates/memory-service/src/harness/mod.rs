@@ -9,7 +9,7 @@ pub mod recall;
 pub mod uploader;
 
 use clap::Subcommand;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -76,6 +76,18 @@ pub enum OutboxCmd {
         outbox: PathBuf,
         #[arg(long, default_value = "codex")]
         platform: String,
+    },
+    /// Delete completed, rejected and cancelled jobs captured more than AGE ago; never pending or accepted
+    /// ones, so it is safe while an uploader runs. Prints the count per status
+    Prune {
+        #[arg(long, default_value_os_t = outbox::default_path())]
+        outbox: PathBuf,
+        /// Whole days (30d) or hours (12h)
+        #[arg(long = "older-than", value_name = "AGE", value_parser = cutoff)]
+        before: String,
+        /// Also delete failed jobs, the evidence of a failed formation
+        #[arg(long)]
+        include_failed: bool,
     },
 }
 
@@ -172,6 +184,15 @@ pub async fn outbox(cmd: OutboxCmd) -> i32 {
             outbox::Outbox::open(&outbox)?.enqueue(&platform, &body)?;
             Ok(0)
         }),
+        OutboxCmd::Prune {
+            outbox,
+            before,
+            include_failed,
+        } => adapter(|| {
+            let deleted = outbox::Outbox::open(&outbox)?.prune(&before, include_failed)?;
+            println!("{}", json!({"deleted": deleted, "before": before}));
+            Ok(0)
+        }),
         OutboxCmd::Drain {
             outbox,
             url,
@@ -215,6 +236,19 @@ fn positive_seconds(value: &str) -> Result<f64, String> {
         Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
         _ => Err("must be a positive number of seconds".into()),
     }
+}
+
+/// An age such as `30d` or `12h`, as the time that long ago in `now()`'s form.
+fn cutoff(value: &str) -> Result<String, String> {
+    let count = |n: &str| n.parse::<u32>().ok().map(i64::from);
+    let age = match (value.strip_suffix('d'), value.strip_suffix('h')) {
+        (Some(days), _) => count(days).and_then(chrono::TimeDelta::try_days),
+        (_, Some(hours)) => count(hours).and_then(chrono::TimeDelta::try_hours),
+        _ => None,
+    };
+    age.and_then(|age| chrono::Utc::now().checked_sub_signed(age))
+        .map(stamp)
+        .ok_or_else(|| "must be a whole number of days (30d) or hours (12h)".into())
 }
 
 fn positive(value: &str) -> Result<usize, String> {
@@ -303,7 +337,12 @@ pub fn expand(path: &Path) -> PathBuf {
 
 /// UTC now in Python's `datetime.now(timezone.utc).isoformat()` form.
 pub fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
+    stamp(chrono::Utc::now())
+}
+
+/// `time` in [`now`]'s form; outbox times in this form order as strings.
+fn stamp(time: chrono::DateTime<chrono::Utc>) -> String {
+    time.to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
 }
 
 /// Create `path` private: new parent directories 0700, the file 0600 (an existing one is narrowed).
@@ -525,6 +564,45 @@ mod tests {
         .unwrap();
         assert_eq!(args, ["/apps/Client", "--flag", "turn-ended", "{}"]);
         assert!(codex_notify(&["--project", "p"]).is_err());
+    }
+
+    #[derive(clap::Parser)]
+    struct OutboxCli {
+        #[command(subcommand)]
+        cmd: OutboxCmd,
+    }
+
+    fn prune(argv: &[&str]) -> Result<(String, bool), clap::Error> {
+        let argv = ["agent-memoryd", "prune"].iter().chain(argv);
+        match <OutboxCli as clap::Parser>::try_parse_from(argv)?.cmd {
+            OutboxCmd::Prune {
+                before,
+                include_failed,
+                ..
+            } => Ok((before, include_failed)),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn prune_takes_a_required_age_in_days_or_hours() {
+        let ago = |age: chrono::TimeDelta| stamp(chrono::Utc::now() - age);
+        let (before, failed) = prune(&["--older-than", "30d"]).unwrap();
+        assert!(
+            ago(chrono::TimeDelta::days(30)) >= before && before > ago(chrono::TimeDelta::days(31))
+        );
+        assert!(!failed);
+        let (before, failed) = prune(&["--older-than", "12h", "--include-failed"]).unwrap();
+        assert!(
+            ago(chrono::TimeDelta::hours(12)) >= before
+                && before > ago(chrono::TimeDelta::hours(13))
+        );
+        assert!(failed);
+        assert!(prune(&["--older-than", "0d"]).is_ok());
+        for age in ["30", "30m", "-1d", "1.5d", "d", "4294967295d", "30日"] {
+            assert!(prune(&["--older-than", age]).is_err(), "{age}");
+        }
+        assert!(prune(&[]).is_err());
     }
 
     /// A wrapped notify program that records its arguments, as `<file>`: `<arg>|<event>`.

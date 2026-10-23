@@ -286,6 +286,8 @@ curl -fsS http://127.0.0.1:8765/health        # memory strategy, models and LLM 
   `journalctl --user -u agent-memory.service` on Linux.
 - **Upgrade:** after `git pull`, rerun the original install command for each installed client; a changed binary is
   replaced and the service restarted. Keep SurrealDB on 3.x.
+- **Outbox retention:** uploaded turns stay in the outbox; `~/.local/bin/agent-memoryd outbox prune --older-than 30d`
+  deletes the finished ones captured more than 30 days ago (see [the uploader](docs/mcp-harness.md#run-and-inspect-the-uploader)).
 - **Change key or models:** edit `~/.config/agent-memory-service/.env` (see [configuration](docs/api.md#configuration)),
   then restart the service.
 - **Uninstall:** add `--uninstall` to the install command to remove a client's configuration; to stop and remove the

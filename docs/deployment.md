@@ -486,7 +486,8 @@ an unused full-text index at `store/fulltext`, which it removes. Versions before
 dependency ran SurrealDB 3.2 inside the daemon on the same `store/db`: it opens in place with SurrealDB 3.2 or a
 later 3.x, and its first start creates the root user and the password file. Primary inputs, memories,
 provenance, request receipts, and durable index work belong in the database; search indexes are rebuildable.
-The capture outbox is a separate database and also needs a retention/backup policy.
+The capture outbox is a separate database and also needs a retention/backup policy; `agent-memoryd outbox prune`
+applies the retention (see below).
 
 For a consistent backup, pause new submissions, stop the uploader and daemon (which stops its SurrealDB server), then copy the **entire data root** and the outbox database with any `-wal`/`-shm` companions while no collector is writing. Keep `store/db.password` with `store/db`: the daemon cannot sign in to a datastore without its password. A copy of an active database directory is not a documented snapshot method. Preserve the matching configuration, strategy, source revision, and model identities. `/admin/export` provides selected audit tables; it is not a complete restore backup.
 
@@ -498,7 +499,7 @@ To re-embed every memory on a running daemon:
 target/fast/agent-memoryd reindex --all --url http://127.0.0.1:8765
 ```
 
-`--vector` does the same; the vector index is the only rebuildable index. Changing the model provider, embedding model, or a self-hosted model's alias/quantization causes re-embedding at the next start; expect rebuild work and verify retrieval afterwards. Review local outbox retention periodically: `completed`, `failed`, and `rejected` rows remain until deliberately cleaned up.
+`--vector` does the same; the vector index is the only rebuildable index. Changing the model provider, embedding model, or a self-hosted model's alias/quantization causes re-embedding at the next start; expect rebuild work and verify retrieval afterwards. Finished outbox rows keep the captured turn text until you prune them: run `agent-memoryd outbox prune --older-than 30d` (with the age your retention policy allows) periodically, for example from cron; it can run while the daemon uploads. It deletes `completed`, `rejected` and `cancelled` rows, and `failed` ones only with `--include-failed`; it never deletes rows still being uploaded and does not shrink the file ([details](mcp-harness.md#run-and-inspect-the-uploader)).
 
 ### Stop and restart
 
