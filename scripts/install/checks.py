@@ -2,7 +2,7 @@
 
 `verify_local` runs the exact bridge and collector commands an installation
 writes against a temporary mock-retrieval daemon whose generation endpoint is a
-local deterministic stub: the version-probe fallback, MCP handshake, the eight
+local deterministic stub: the version-probe fallback, MCP handshake, the six
 tools, a context read and, with capture, host-format events -> outbox -> the
 daemon's own uploader (`serve --outbox`) -> formation -> search. With recall,
 host-format SessionStart / UserPromptSubmit events run through the installed
@@ -356,7 +356,7 @@ def verify_local(host, ctx):
                 bridge.close()
         if len(calls) > 2:
             raise InstallError(f'unexpected generation calls during the check: {len(calls)}')
-    steps = 'server/discover fallback, MCP handshake, 8 tools, get_context'
+    steps = 'server/discover fallback, MCP handshake, 6 tools, get_context'
     if ctx.capture:
         steps += f', {host.LABEL} capture -> outbox -> uploader -> formation -> search'
     if ctx.recall:

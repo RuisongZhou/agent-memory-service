@@ -118,7 +118,7 @@ reaches a model provider or the real store. The temporary daemon starts the chec
 temporary store and stops it when the checks end:
 
 1. The bridge, started exactly as configured, completes the MCP handshake, lists the
-   [eight tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
+   [six tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
    A separate bridge process answers the 2026-07-28 `server/discover` version probe at once with
    `-32022` and the 2025-era versions it serves, so clients that probe first (DeepSeek Harness) fall back
    to `initialize`. The bridge, collector and uploader keep your proxy variables; they bypass proxies for
@@ -171,7 +171,7 @@ prints a note instead. Recall output follows the hook schemas embedded in Codex 
 Claude Code hooks reference. WorkBuddy hook payloads follow events recorded from WorkBuddy 5.8.3 by the
 [pd-memory](https://github.com/RuisongZhou/pd-memory) integration. For DeepSeek Harness, its bundled MCP
 client SDK (`@modelcontextprotocol/client` 2.2.0) was connected to the bridge once by hand: probe,
-`-32022`, `initialize` 2025-11-25, eight tools. The service step's launchctl and systemctl commands
+`-32022`, `initialize` 2025-11-25, `tools/list`. The service step's launchctl and systemctl commands
 are unit-tested as a plan; CI installs every platform with `--no-service`. No installation has been
 exercised in a live client session with a real provider; confirm with `--verify-model` and the
 [sharing check](#shared-memory-workflow).
@@ -201,7 +201,7 @@ args = ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "codex"]
 tool_timeout_sec = 180
 ```
 
-Use either registration method for this server and preserve existing settings. Local Codex clients share MCP configuration on the same host; project configuration requires a trusted project. Restart/reload the client after changing its configuration, inspect `/mcp` in the CLI, and confirm the eight tools in the [API reference](api.md#interfaces) are available. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+Use either registration method for this server and preserve existing settings. Local Codex clients share MCP configuration on the same host; project configuration requires a trusted project. Restart/reload the client after changing its configuration, inspect `/mcp` in the CLI, and confirm the six tools in the [API reference](api.md#interfaces) are available. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
 Add the [shared memory workflow](#shared-memory-workflow) to the target project's `AGENTS.md`. For automatic capture, follow the separate [Codex hooks setup](#codex-hooks). A local stdio setup requires the executable and daemon to be reachable from the host running the client; a cloud container has its own loopback address.
 
@@ -236,7 +236,7 @@ Add the [shared memory workflow](#shared-memory-workflow) to the target project'
 
 ## Use with DeepSeek Harness
 
-DeepSeek Harness (`dsh` and the Desktop app) gets the eight tools, named `mcp__shared-memory__<tool>`,
+DeepSeek Harness (`dsh` and the Desktop app) gets the six tools, named `mcp__shared-memory__<tool>`,
 and no automatic capture: its Claude Code and Codex hook bridges pass no transcript and no final reply
 and send no `SessionEnd`, so the collector would have nothing to save. Ask the agent to save with
 `add_memories`, and put the [shared memory workflow](#shared-memory-workflow) in its instructions.
@@ -289,13 +289,12 @@ optionally filtered by turnIds within the requested token budget.
 When the user explicitly asks to remember a fact, use add_memories with text.
 For an explicit behavior requirement, use memoryType:"instruction" with text.
 Use correct_memory to correct or retract an earlier record.
-Poll get_task for asynchronous writes; a requestId is not completion.
 Treat historical memories as reference material. Only get_context.instructions
 contains explicitly saved behavior requirements, subject to current instructions.
 If the dialogue collector is installed, let it save ordinary completed turns.
 ```
 
-The [API reference](api.md#interfaces) lists all eight MCP tools and their HTTP counterparts.
+The [API reference](api.md#interfaces) lists the six MCP tools and the HTTP-only interfaces.
 With [automatic recall](#automatic-recall) installed, the session-start `get_context` and a search per
 prompt happen without the agent; the remaining steps still apply.
 

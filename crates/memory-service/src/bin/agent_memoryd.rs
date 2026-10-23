@@ -1,7 +1,7 @@
 //! `agent-memoryd` — 共享记忆库 daemon.
 //!
 //!   agent-memoryd serve  --data-dir D [--surreal-bin PATH] [--env-file .env] [--outbox [PATH]] [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
-//!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 8 tools)
+//!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 6 tools)
 //!   agent-memoryd hook   capture | codex-notify | recall ...   (commands agent hosts run as hooks)
 //!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
 //!   agent-memoryd import plan | propose | show | apply | status | rollback | prompt ...   (a host's existing memories)
@@ -89,7 +89,7 @@ enum Cmd {
         #[arg(long, value_name = "PATH", num_args = 0..=1)]
         outbox: Option<Option<PathBuf>>,
     },
-    /// MCP stdio shim exposing eight memory tools; forwards to a running daemon
+    /// MCP stdio shim exposing six memory tools; forwards to a running daemon
     Mcp {
         #[arg(long, default_value = "http://127.0.0.1:8765")]
         url: String,
