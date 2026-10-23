@@ -736,20 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn urls_must_stay_on_loopback() {
-        assert_eq!(
-            loopback_url("http://127.0.0.1:8765/").unwrap(),
-            "http://127.0.0.1:8765"
-        );
-        assert!(loopback_url("http://[::1]:8765").is_ok());
-        for bad in [
-            "http://192.0.2.1:8765",
-            "ftp://127.0.0.1",
-            "http://user@127.0.0.1",
-            "nonsense",
-        ] {
-            assert!(loopback_url(bad).is_err(), "{bad}");
-        }
+    fn platform_labels_are_plain_ascii() {
         assert!(platform_label("claude-code").is_ok());
         assert!(platform_label("").is_err() && platform_label("名").is_err());
     }

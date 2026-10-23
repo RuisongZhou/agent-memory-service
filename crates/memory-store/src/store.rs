@@ -234,7 +234,7 @@ impl Tx {
         self.put(
             schema::INDEX_TASKS,
             &id,
-            json!({"mid": id, "target": format!("{target_table}:{target_id}"), "table": target_table,
+            json!({"target": format!("{target_table}:{target_id}"), "table": target_table,
                    "targetId": target_id, "op": op, "createdAt": util::fmt_ts(&now),
                    "createdTs": now.timestamp_nanos_opt().unwrap_or(0)}),
         )
@@ -268,8 +268,11 @@ impl Store {
         };
         if let Some(state) = store.get_doc(schema::STORE_REVISIONS, "committed").await? {
             let mut revisions = store.revisions.lock().expect("revisions poisoned");
-            revisions.generation = state["generation"].as_u64().unwrap_or(0);
-            revisions.tables = serde_json::from_value(state["tables"].clone()).unwrap_or_default();
+            revisions.generation = state["generation"]
+                .as_u64()
+                .context("store_revisions:committed has no generation")?;
+            revisions.tables = serde_json::from_value(state["tables"].clone())
+                .context("store_revisions:committed has malformed tables")?;
         }
         Ok(store)
     }
@@ -664,12 +667,8 @@ impl Store {
 
     pub async fn log(&self, table: &str, doc: Value) -> Result<String> {
         let id = util::new_id("l");
-        let mut d = doc;
-        if let Value::Object(m) = &mut d {
-            m.insert("mid".into(), json!(id));
-        }
         let mut tx = Tx::new();
-        tx.put(table, &id, d)?;
+        tx.put(table, &id, doc)?;
         self.commit(tx).await?;
         Ok(id)
     }

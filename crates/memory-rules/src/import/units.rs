@@ -38,10 +38,10 @@ impl UnitLimits {
         self.recall_budget / 2
     }
 
-    /// Record cost extraction aims for: recall_budget / max(recall_top_k, 1), at least RECORD_OVERHEAD + 1 and
+    /// Record cost extraction aims for: recall_budget / recall_top_k, at least RECORD_OVERHEAD + 1 and
     /// never above `hard_cap` (with recall_top_k 1 the share would be the whole budget).
     pub fn target(&self) -> usize {
-        (self.recall_budget / self.recall_top_k.max(1))
+        (self.recall_budget / self.recall_top_k)
             .min(self.hard_cap())
             .max(RECORD_OVERHEAD + 1)
     }
@@ -301,11 +301,6 @@ mod tests {
         assert!(limits.fits(&"a".repeat(768)));
         assert!(!limits.fits(&"a".repeat(769)));
         // A single recall slot would make the share the whole budget: the target stays within the cap.
-        let one = UnitLimits {
-            recall_budget: 20,
-            recall_top_k: 0,
-        };
-        assert_eq!((one.hard_cap(), one.target()), (10, 10));
         let single = UnitLimits {
             recall_budget: 400,
             recall_top_k: 1,

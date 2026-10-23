@@ -264,12 +264,15 @@ pub fn build(scan: ScanOutput, opts: &PlanOptions) -> Result<Plan, Error> {
                 // Mem0 formation: one generation call per turn; the facts it writes are embedded then.
                 counts.session_turns += 1;
                 estimates.generation_calls += 1;
-                estimates.chars_to_generation += unit.turn.as_ref().map_or(0, |turn| {
-                    turn.messages
-                        .iter()
-                        .map(|m| m.content.chars().count())
-                        .sum()
-                });
+                let turn = unit
+                    .turn
+                    .as_ref()
+                    .expect("a session-turn unit carries its turn");
+                estimates.chars_to_generation += turn
+                    .messages
+                    .iter()
+                    .map(|m| m.content.chars().count())
+                    .sum::<usize>();
             }
             MODE_VERBATIM => {
                 counts.verbatim += 1;

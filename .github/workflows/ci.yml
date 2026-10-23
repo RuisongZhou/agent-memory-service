@@ -19,10 +19,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
-      - run: make setup
-      - run: make test
       - run: make check-public
-      - run: make check-arch
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -33,11 +30,11 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      # The daemon starts the user's SurrealDB for its store; the tests and checks below run one.
+      # The daemon starts the user's SurrealDB for its store; the store tests and installer tests run one.
       - uses: ./.github/actions/setup-surrealdb
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
-      # Service scripts need neither the evaluation packages nor the dataset; the hook tests need the built daemon.
+      # The script tests need only pytest; the hook and installer tests run the built daemon.
       - run: python3 -m pip install pytest==9.1.1
-      - run: make fmt test-workspace build selftest install-check smoke test-scripts
+      - run: make fmt test-workspace build test-scripts

@@ -31,20 +31,15 @@ const INGESTION_MODE: &str = "imported";
 
 /// Why `p`'s unit may no longer be applied by `run_id`: another run imported it (or rolled its import
 /// back) after this run was proposed. `None` while the row is what propose saw or this run's own.
-fn ledger_moved(
-    row: Option<&LedgerRow>,
-    seen: Option<&UnitOutcome>,
-    run_id: &str,
-) -> Option<String> {
+fn ledger_moved(row: Option<&LedgerRow>, seen: &UnitOutcome, run_id: &str) -> Option<String> {
     if row.is_some_and(|row| row.run_id == run_id) {
         return None;
     }
     let now = row.map(|row| (row.run_id.as_str(), row.unit_hash.as_str()));
-    let then = seen.and_then(|o| {
-        o.ledger_run_id
-            .as_deref()
-            .zip(Some(o.ledger_unit_hash.as_deref().unwrap_or("")))
-    });
+    let then = seen
+        .ledger_run_id
+        .as_deref()
+        .zip(Some(seen.ledger_unit_hash.as_deref().unwrap_or("")));
     if now == then {
         return None;
     }
@@ -99,18 +94,14 @@ async fn accept(
     global: bool,
     tx: &mut Tx,
 ) -> anyhow::Result<Accepted> {
-    let seen = run.units.iter().find(|u| u.index == p.cluster);
-    let fallback = UnitOutcome {
-        unit: p.unit.clone(),
-        index: p.cluster,
-        unit_hash: p.unit_hash.clone(),
-        file_hash: p.file_hash.clone(),
-        ..Default::default()
-    };
-    let unit = seen.unwrap_or(&fallback);
+    let unit = run
+        .units
+        .iter()
+        .find(|u| u.index == p.cluster)
+        .ok_or_else(|| anyhow::anyhow!("proposal {} without its unit outcome", p.proposal_id))?;
     let lid = ledger_id(&run.project, &p.unit);
     let row = ledger(t, &lid).await?;
-    if let Some(reason) = ledger_moved(row.as_ref().map(|(_, r)| r), seen, &run.run_id) {
+    if let Some(reason) = ledger_moved(row.as_ref().map(|(_, r)| r), unit, &run.run_id) {
         return Ok(Accepted::Skipped(reason));
     }
     let now = util::now_str();
@@ -286,7 +277,7 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
             Ok(row) => row,
             Err(e) => return Err(interrupted(t, id, e).await),
         };
-        let moved = ledger_moved(row.as_ref().map(|(_, r)| r), Some(unit), id).is_some();
+        let moved = ledger_moved(row.as_ref().map(|(_, r)| r), unit, id).is_some();
         if moved || row.as_ref().is_some_and(|(_, r)| r.run_id == id) {
             continue;
         }
@@ -341,29 +332,27 @@ mod tests {
     #[test]
     fn a_unit_moves_when_another_run_imports_it_after_propose() {
         // Unchanged since propose, or already this run's own row.
-        assert_eq!(ledger_moved(None, Some(&seen(None, None)), "ir2"), None);
+        assert_eq!(ledger_moved(None, &seen(None, None), "ir2"), None);
         let r1 = row("ir1", "h1");
         assert_eq!(
-            ledger_moved(Some(&r1), Some(&seen(Some("ir1"), Some("h1"))), "ir2"),
+            ledger_moved(Some(&r1), &seen(Some("ir1"), Some("h1")), "ir2"),
             None
         );
         assert_eq!(
-            ledger_moved(Some(&row("ir2", "h2")), Some(&seen(None, None)), "ir2"),
+            ledger_moved(Some(&row("ir2", "h2")), &seen(None, None), "ir2"),
             None
         );
         // Imported by another run, or rolled back, since propose.
         assert!(ledger_moved(
             Some(&row("ir3", "h3")),
-            Some(&seen(Some("ir1"), Some("h1"))),
+            &seen(Some("ir1"), Some("h1")),
             "ir2"
         )
         .unwrap()
         .contains("ir3"));
-        assert!(ledger_moved(Some(&r1), Some(&seen(None, None)), "ir2").is_some());
-        assert!(
-            ledger_moved(None, Some(&seen(Some("ir1"), Some("h1"))), "ir2")
-                .unwrap()
-                .contains("rolled back")
-        );
+        assert!(ledger_moved(Some(&r1), &seen(None, None), "ir2").is_some());
+        assert!(ledger_moved(None, &seen(Some("ir1"), Some("h1")), "ir2")
+            .unwrap()
+            .contains("rolled back"));
     }
 }

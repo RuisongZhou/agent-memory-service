@@ -88,14 +88,7 @@ pub async fn consolidate(
         ));
     }
     let algorithm = eng.algorithm();
-    let snapshot = algorithm
-        .consolidation_snapshot(eng, t, project)
-        .await?
-        .ok_or_else(|| {
-            ApiError::InvalidArgument(
-                "the active memory algorithm does not support consolidation".into(),
-            )
-        })?;
+    let snapshot = algorithm.consolidation_snapshot(eng, t, project).await?;
     if !snapshot.clusters.is_empty() && !eng.llm.is_configured() {
         return Err(ApiError::ModelUnavailable(
             "generation model API key not configured".into(),

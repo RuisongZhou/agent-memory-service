@@ -1,5 +1,4 @@
 //! Shared authoritative record, revision-chain and evidence reads.
-use super::visibility::Vis;
 use crate::runtime::{engine::Engine, instance::Instance};
 use anyhow::Result;
 use memory_domain::types::*;
@@ -19,10 +18,6 @@ pub struct Loader<'a> {
 }
 
 impl<'a> Loader<'a> {
-    pub fn cached(&self, id: &str) -> Option<&MemoryRec> {
-        self.cache.get(id).and_then(Option::as_ref)
-    }
-
     pub fn new(t: &'a Instance) -> Self {
         Self {
             t,
@@ -45,20 +40,12 @@ impl<'a> Loader<'a> {
         Ok(m)
     }
     /// Older values of `m` (nearest first) with their validity end (`validUntil` = the next value's
-    /// effectiveAt); invisible nodes are skipped (chains crossing scopes). Stops after `max` visible nodes.
-    pub async fn older(
-        &mut self,
-        m: &MemoryRec,
-        vis: Option<&Vis>,
-        max: usize,
-    ) -> Result<Vec<MemoryRec>> {
+    /// effectiveAt).
+    pub async fn older(&mut self, m: &MemoryRec) -> Result<Vec<MemoryRec>> {
         let mut out = Vec::new();
         let mut next = m.clone();
         let mut seen = HashSet::from([m.id.clone()]);
         for _ in 0..MAX_CHAIN_HOPS {
-            if out.len() >= max {
-                break;
-            }
             let Some(prev_id) = next.supersedes.clone() else {
                 break;
             };
@@ -69,12 +56,8 @@ impl<'a> Loader<'a> {
                 break;
             };
             prev.valid_until = Some(next.effective_at.clone());
-            let keep = vis.map(|v| v.sees(&prev.scope)).unwrap_or(true);
-            let p2 = prev.clone();
-            if keep {
-                out.push(prev);
-            }
-            next = p2;
+            out.push(prev.clone());
+            next = prev;
         }
         Ok(out)
     }
@@ -113,14 +96,14 @@ pub(crate) async fn with_validity(l: &mut Loader<'_>, mut m: MemoryRec) -> Resul
     Ok(m)
 }
 
-pub fn evidence_json(e: &EvidenceRec, max_chars: usize) -> Value {
+pub fn evidence_json(e: &EvidenceRec) -> Value {
     json!({
         "turnId": e.turn_id,
         "platform": e.platform,
         "role": e.role,
-        "span": e.span.chars().take(max_chars).collect::<String>(),
+        "span": e.span,
         "statedAt": e.stated_at,
-        "context": e.context.as_ref().map(|context| json!({"span":context.span.chars().take(max_chars).collect::<String>(),"statedAt":context.stated_at})),
+        "context": e.context.as_ref().map(|context| json!({"span":context.span,"statedAt":context.stated_at})),
     })
 }
 
@@ -187,7 +170,7 @@ pub async fn get_memory(
     let mut out = json!({"memory": m.public()});
     if req.include_history.unwrap_or(false) {
         // whole chain in both directions, oldest first; each old value carries validUntil
-        let mut older = l.older(&m, None, MAX_CHAIN_HOPS).await?;
+        let mut older = l.older(&m).await?;
         older.reverse();
         let mut chain: Vec<Value> = older.iter().map(|x| x.public()).collect();
         chain.push(json!(m.public()));
@@ -208,7 +191,7 @@ pub async fn get_memory(
             .map(|v| v
                 .iter()
                 .map(|e| {
-                    let mut j = evidence_json(e, usize::MAX);
+                    let mut j = evidence_json(e);
                     j["id"] = json!(e.id);
                     j["createdAt"] = json!(e.created_at);
                     j

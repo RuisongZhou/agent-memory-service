@@ -97,7 +97,7 @@ pub async fn hook(cmd: HookCmd) -> i32 {
         }),
         HookCmd::CodexNotify { at, mut args } => {
             // clap requires one value: the event Codex appends comes last.
-            let event = args.pop().unwrap_or_default();
+            let event = args.pop().expect("clap requires the event");
             // The wrapped program starts first, so a capture failure never keeps the event from it.
             let wrapped = (!args.is_empty()).then(|| forward(&args, &event));
             let captured = adapter(|| {
@@ -332,10 +332,7 @@ pub fn private_file(path: &Path) -> std::io::Result<()> {
 
 /// Whether a daemon URL names this machine; such requests never go through a configured proxy.
 pub fn loopback(url: &reqwest::Url) -> bool {
-    matches!(
-        url.host_str(),
-        Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
-    )
+    matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
 }
 
 /// Why a daemon call failed. A status is the daemon's answer; the rest are client-side.

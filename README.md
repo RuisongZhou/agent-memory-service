@@ -168,7 +168,7 @@ Agent 的执行环境通常没有终端，无法使用隐藏输入，这时安�
 
 ### 验证范围
 
-CI 装上官方 SurrealDB 3.2.4 后，对四个宿主运行完整的离线安装检查（`make install-check`，使用 `--no-service`）。宿主 CLI 解析检查在 macOS
+CI 装上官方 SurrealDB 3.2.4 后，对四个宿主运行完整的离线安装检查（`make test-scripts` 中的端到端安装测试，使用 `--no-service`）。宿主 CLI 解析检查在 macOS
 上用 Codex CLI 0.163.0、Claude Code 2.1.305 和 DeepSeek Harness 0.2.1-rc.2 的 `dsh` 运行过；WorkBuddy 没有可用的
 CLI，只由安装器检查 JSON 结构。服务启动这一步（`launchctl` / `systemctl`）的命令序列有单元测试，CI 不会真正
 启动服务。目前还没有在真实客户端会话和真实模型下完成端到端验收，可以用 `--verify-model` 和
@@ -269,13 +269,13 @@ curl -fsS http://127.0.0.1:8765/health          # 健康检查：记忆策略、
 ## 开发与验证
 
 ```bash
-make fmt test-workspace build test-scripts selftest smoke install-check   # 只需要 pytest，不需要评测环境
-make check-arch check-public
-make setup && make test                           # 只在改动 eval/ 时：创建 .venv、安装评测依赖并下载公开数据集
+make fmt test-workspace build test-scripts   # 只需要 pytest，不需要评测环境
+make check-public
+make setup && make test                       # 只在改动 eval/ 时：创建 .venv、安装评测依赖并下载公开数据集
 ```
 
 所有检查都使用临时存储、mock 检索模型和本地确定性的生成桩，不会调用付费模型。临时存储同样跑在 SurrealDB 上，
-所以 `test-workspace`、`selftest`、`smoke` 和 `install-check` 需要 PATH 上有 SurrealDB 3.2 或更高的 3.x。
+所以 `test-workspace` 的存储测试和端到端安装测试需要 PATH 上有 SurrealDB 3.2 或更高的 3.x。
 详见 [贡献指南](CONTRIBUTING.md#checks)。
 
 ## 仓库结构

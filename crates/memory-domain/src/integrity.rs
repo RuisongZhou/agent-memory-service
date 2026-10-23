@@ -40,13 +40,6 @@ pub fn current_dependency(m: &MemoryRec) -> Option<Dependency> {
     })
 }
 
-/// A full replacement that changes a semantic field of an existing document.
-pub fn semantic_change(previous: &Value, next: &Value) -> bool {
-    SEMANTIC_FIELDS
-        .iter()
-        .any(|key| previous.get(*key) != next.get(*key))
-}
-
 fn touches_semantics(patch: &Value) -> bool {
     SEMANTIC_FIELDS.iter().any(|key| patch.get(*key).is_some())
 }
@@ -120,11 +113,6 @@ impl WriteSet {
             .values()
             .filter(|doc| doc["status"] == "open")
     }
-}
-
-/// Whether a full replacement introduces a current view whose sources must be checked.
-pub fn introduces_view(rec: &MemoryRec) -> bool {
-    current_dependency(rec).is_some()
 }
 
 /// Views invalidated by `unavailable` sources among `records` (the stored records overlaid with
@@ -343,12 +331,6 @@ mod tests {
         assert!(writes.unavailable.is_empty());
         writes.merge_memory("fact", &json!({"text": "new text"}));
         assert!(writes.unavailable.contains("fact"));
-        let previous = json!({"text": "a", "retrievalCount": 1});
-        assert!(!semantic_change(
-            &previous,
-            &json!({"text": "a", "retrievalCount": 2})
-        ));
-        assert!(semantic_change(&previous, &json!({"text": "b"})));
     }
 
     #[test]

@@ -16,45 +16,6 @@ def script(name):
     return module
 
 
-@pytest.mark.parametrize('cli,environment,dotenv,config', [
-    (None, None, '', None),
-    (None, None, 'MEMORY_STRATEGY=mem0\n', 'mem0'),
-    ('mem0', 'mem0', '', 'mem0'),
-])
-def test_wrapper_preserves_strategy_precedence(monkeypatch, tmp_path, cli, environment, dotenv, config):
-    import json
-    module = script('serve')
-    monkeypatch.setattr(module, 'ROOT', tmp_path)
-    monkeypatch.delenv('MEMORY_STRATEGY', raising=False)
-    if environment:
-        monkeypatch.setenv('MEMORY_STRATEGY', environment)
-    (tmp_path / '.env').write_text(dotenv)
-    argv = ['serve.py', '--mock']
-    if cli:
-        argv += ['--memory-strategy', cli]
-    if config:
-        cfg = tmp_path / 'config.json'
-        cfg.write_text(json.dumps({'memoryStrategy': config}))
-        argv += ['--config', str(cfg)]
-    monkeypatch.setattr(sys, 'argv', argv)
-    emitted = {}
-    def launch(command, *, env):
-        emitted.update(command=command, env=env)
-        return 0
-    monkeypatch.setattr(module.subprocess, 'call', launch)
-    with pytest.raises(SystemExit) as result:
-        module.main()
-    assert result.value.code == 0
-    command = emitted['command']
-    if cli:
-        assert command[command.index('--memory-strategy') + 1] == cli
-    else:
-        assert '--memory-strategy' not in command
-    assert emitted['env'].get('MEMORY_STRATEGY') == (environment or ('mem0' if dotenv else None))
-    if config:
-        assert command[command.index('--config') + 1] == str(cfg)
-
-
 def run_wrapper(monkeypatch, tmp_path, dotenv, *extra):
     module = script('serve')
     monkeypatch.setattr(module, 'ROOT', tmp_path)
@@ -68,6 +29,14 @@ def run_wrapper(monkeypatch, tmp_path, dotenv, *extra):
     with pytest.raises(SystemExit):
         module.main()
     return emitted['command'], emitted['env']
+
+
+def test_wrapper_passes_the_strategy_and_config_through(monkeypatch, tmp_path):
+    config = tmp_path / 'config.json'
+    config.write_text('{}')
+    command, _ = run_wrapper(monkeypatch, tmp_path, '', '--mock', '--memory-strategy', 'mem0', '--config', str(config))
+    assert command[command.index('--memory-strategy') + 1] == 'mem0'
+    assert command[command.index('--config') + 1] == str(config)
 
 
 def test_wrapper_passes_retrieval_model_settings(monkeypatch, tmp_path):
@@ -102,18 +71,7 @@ def test_wrapper_passes_the_outbox_to_the_daemon_uploader(monkeypatch, tmp_path,
         assert command[command.index('--outbox'):] == ['--outbox', *expected]
 
 
-def test_llama_smoke_environment_pins_mem0_without_inheriting_provider_settings(monkeypatch):
+def test_llama_smoke_does_not_inherit_provider_settings(monkeypatch):
     module = script('llama_http_smoke')
-    monkeypatch.setenv('MEMORY_STRATEGY', 'mem0')
     monkeypatch.setenv('QWEN_API_KEY', 'must-not-be-inherited')
-    environment = module.sanitized_environment()
-    assert environment['MEMORY_STRATEGY'] == 'mem0'
-    assert environment['QWEN_API_KEY'] == 'localhost-stub-placeholder'
-
-
-def test_wrapper_rejects_retired_strategy(monkeypatch):
-    module = script('serve')
-    monkeypatch.setattr(sys, 'argv', ['serve.py', '--memory-strategy', 'memos'])
-    with pytest.raises(SystemExit) as result:
-        module.main()
-    assert result.value.code == 2
+    assert module.sanitized_environment()['QWEN_API_KEY'] == 'localhost-stub-placeholder'

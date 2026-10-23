@@ -92,7 +92,6 @@ fn validate_output(_schema: &Value, output: &Value) -> Result<()> {
 fn contract() -> JsonContract {
     JsonContract {
         name: FORMAT,
-        echo_invalid_response: false,
         validate: validate_output,
         schema: json!({
         "type":"object","required":["memories"],"additionalProperties":false,

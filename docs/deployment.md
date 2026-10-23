@@ -135,8 +135,7 @@ install -m 755 "$name/agent-memoryd" "$HOME/.local/bin/agent-memoryd"
 
 The macOS binaries are not notarized. Downloads made with `curl` are not quarantined; for an archive saved
 by a browser, run `xattr -d com.apple.quarantine "$name/agent-memoryd"` before installing the binary.
-The [release workflow](../.github/workflows/release.yml) builds the archives with `--release` and runs
-each binary's mock-model `selftest` first.
+The [release workflow](../.github/workflows/release.yml) builds the archives with `--release`.
 
 The daemon needs nothing else from the repository. To deploy this binary and register agent clients
 with it, run the [installer](mcp-harness.md#one-command-install) from a checkout of the same version with

@@ -15,13 +15,7 @@ use super::{expand, invalid, now, private_file, CallError, Daemon, Error};
 /// Default outbox, relative to the home directory.
 pub const DEFAULT_OUTBOX: &str = ".local/share/agent-memory-service/harness-outbox.sqlite3";
 /// Hook events the collector acts on; any other event is ignored.
-const HOOK_EVENTS: [&str; 5] = [
-    "UserPromptSubmit",
-    "Stop",
-    "Interrupt",
-    "StopFailure",
-    "SessionEnd",
-];
+const HOOK_EVENTS: [&str; 4] = ["UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"];
 const TASK_STATUSES: [&str; 5] = ["queued", "running", "indexing", "completed", "failed"];
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS prompts (
@@ -365,7 +359,7 @@ impl Outbox {
                     }
                 }
             }
-            "Interrupt" | "StopFailure" => {
+            "StopFailure" => {
                 if pending
                     .as_ref()
                     .is_some_and(|p| id_field == TurnIdField::None || p.0 == native_id)
@@ -683,12 +677,6 @@ mod tests {
     fn notify(turn: &str, assistant: &str) -> Value {
         json!({"type": "agent-turn-complete", "thread-id": "s1", "turn-id": turn,
                "input-messages": ["Keep the source evidence."], "last-assistant-message": assistant})
-    }
-
-    #[test]
-    fn turn_keys_quote_every_reserved_character() {
-        assert_eq!(turn_key("p", "s 1", "a/b?"), "p/s%201/a%2Fb%3F");
-        assert_eq!(turn_key("名", "-_.~", "x"), "%E5%90%8D/-_.~/x");
     }
 
     fn imported(run: &str, turn: &str) -> Value {

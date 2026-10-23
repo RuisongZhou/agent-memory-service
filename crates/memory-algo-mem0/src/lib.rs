@@ -68,13 +68,6 @@ impl MemoryAlgorithm for Mem0 {
         SCHEMA
     }
 
-    fn foreign_unfinished_jobs<'a>(
-        &'a self,
-        t: &'a Instance,
-    ) -> BoxFuture<'a, anyhow::Result<i64>> {
-        Box::pin(repo::foreign_unfinished_job_count(t))
-    }
-
     fn start_workers(&self, eng: Arc<Engine>, t: Arc<Instance>) {
         runtime::start(eng, t)
     }
@@ -152,8 +145,8 @@ impl MemoryAlgorithm for Mem0 {
         eng: &'a Arc<Engine>,
         t: &'a Arc<Instance>,
         project: &'a str,
-    ) -> BoxFuture<'a, anyhow::Result<Option<ConsolidationSnapshot>>> {
-        Box::pin(async move { consolidation::snapshot(eng, t, project).await.map(Some) })
+    ) -> BoxFuture<'a, anyhow::Result<ConsolidationSnapshot>> {
+        Box::pin(consolidation::snapshot(eng, t, project))
     }
 
     fn consolidation_generate<'a>(

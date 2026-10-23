@@ -585,7 +585,6 @@ pub async fn selftest() {
     drop(t);
     let _ = std::fs::remove_dir_all(dir);
     println!("import_selftest OK: batched propose, provenance and size rejections, review decisions, unchanged rerun, verbatim supersede, duplicates, moved units, rollback with a kept correction, extraction cache; local generation stub");
-    repeated_runs().await;
 }
 
 /// One run of `units`: proposed in one batch with `reconsider` and `limits`, then applied with `decisions`

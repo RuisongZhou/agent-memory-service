@@ -108,9 +108,6 @@ enum Cmd {
     /// Run `serve` as a LaunchAgent (macOS) or systemd user unit (Linux); writes only with --apply
     #[command(subcommand)]
     Service(ServiceCmd),
-    /// Run storage self-tests
-    #[cfg(feature = "selftest")]
-    Selftest,
     /// Re-embed every record on a running daemon (`--vector` and `--all` are the same)
     Reindex {
         #[arg(long, default_value = "http://127.0.0.1:8765")]
@@ -265,13 +262,11 @@ fn main() -> anyhow::Result<()> {
                     .map_err(|e| anyhow::anyhow!("--outbox: {e}"))?;
                 let mut cfg = ServiceConfig::default();
                 if let Some(p) = config {
-                    let over: serde_json::Value = serde_json::from_slice(&std::fs::read(p)?)?;
-                    anyhow::ensure!(over.is_object(), "configuration must be a JSON object");
+                    let over: serde_json::Map<String, serde_json::Value> =
+                        serde_json::from_slice(&std::fs::read(p)?)?;
                     let mut base = serde_json::to_value(&cfg)?;
-                    if let (Some(b), Some(o)) = (base.as_object_mut(), over.as_object()) {
-                        for (k, v) in o {
-                            b.insert(k.clone(), v.clone());
-                        }
+                    for (k, v) in over {
+                        base[k] = v;
                     }
                     cfg = serde_json::from_value(base)?;
                 }
@@ -297,10 +292,6 @@ fn main() -> anyhow::Result<()> {
                     cfg.rerank_model = model;
                 }
                 cfg.prompt_variant = prompt_variant;
-                anyhow::ensure!(
-                    matches!(cfg.prompt_variant.as_str(), "zh" | "en"),
-                    "prompt variant must be zh or en"
-                );
                 cfg.llm_model = llm_model.clone();
                 cfg.llm_base_url = llm_base_url.clone();
                 cfg.llm_max_concurrency = llm_concurrency;
@@ -339,16 +330,6 @@ fn main() -> anyhow::Result<()> {
                 let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
                 tracing::info!("agent-memoryd listening on http://{host}:{port}");
                 axum::serve(listener, app).await?;
-            }
-            #[cfg(feature = "selftest")]
-            Cmd::Selftest => {
-                memory_service::selftest::store_roundtrip().await;
-                memory_service::integrity_tests::selftest().await;
-                memory_service::mem0_tests::selftest().await;
-                memory_service::consolidation_tests::selftest().await;
-                memory_service::consolidation_apply_tests::selftest().await;
-                memory_service::import_tests::selftest().await;
-                memory_service::import_session_tests::selftest().await;
             }
             Cmd::Mcp { url, platform } => {
                 memory_service::mcp::run_stdio(&url, &platform).await?;

@@ -122,11 +122,6 @@ pub async fn export(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiRes
 /// Body: `{memories: [MemoryRec], turns: [TurnRec], sessions: [SessionRec], evidence: [EvidenceRec]}` in the
 /// API's camelCase JSON.
 pub async fn seed(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiResult<Value> {
-    if !eng.models.is_mock() {
-        return Err(ApiError::InvalidArgument(
-            "seed is available only with mock models".into(),
-        ));
-    }
     let _guard = t.lock_formation().await;
     fn list<T: serde::de::DeserializeOwned>(body: &Value, k: &str) -> ApiResult<Vec<T>> {
         match body.get(k) {

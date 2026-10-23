@@ -136,9 +136,6 @@ impl Open {
         } else {
             None
         };
-        if turn.reply_at.is_empty() {
-            turn.reply_at = turn.prompt_at.clone();
-        }
         finish(turn)
     }
 }

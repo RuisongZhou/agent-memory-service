@@ -426,7 +426,7 @@ Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` �
 - 交互运行时，安装结束后执行 `agent-memoryd import plan` 并显示汇总。汇总里有生成调用时，先问是否 propose；propose 之后
   显示提议汇总，再问是否 apply。非交互运行只有显式传了 `--import` 才导入，而且只到 propose 为止，apply 要单独执行。
 - 导入需要 daemon 已经运行，安装器在服务启动之后再做。`--no-service` 时只生成计划，并打印后续命令。
-- `install-check` 用合成的宿主目录覆盖 plan、propose 和 apply，抽取使用本地确定性的生成桩，不访问模型。
+- 安装器的端到端测试用合成的宿主目录覆盖 plan、propose 和 apply，抽取使用本地确定性的生成桩，不访问模型。
 
 ## 7. 代码位置
 
@@ -434,14 +434,13 @@ Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` �
 切分、脱敏、单元键、抽取校验）在 `memory-rules`，类型和写入、回滚的记录计划在 `memory-domain`，`import_runs`、`import_ledger`
 和抽取缓存 `import_extractions` 表在 `memory-store`（提议复用共享的 `proposals` 表），用例、抽取提示词和台账在
 `memory-engine` 的 `app/import/`，宿主适配器和命令在 `memory-service` 的 `harness/import/`。算法 crate 没有导入代码，只提供
-`nearest_facts` 和 `source_requests` 两个通用钩子；[check_architecture.py](../../scripts/check_architecture.py) 规定算法
-crate 不能引用导入的模块，导入的代码不会进到算法里。
+`nearest_facts` 和 `source_requests` 两个通用钩子，导入的代码不会进到算法里。
 
 ## 8. 验证
 
 - 纯规则（单元划分、`--no-extract` 切分、脱敏、抽取校验）和各宿主适配器用合成的宿主目录做单元测试，覆盖 6.3 的筛选规则、
   worktree 归并和导出 JSONL 的解析。fixture 只放编造的内容，不复制真实会话，也不提交生成的 trace。
-- `selftest` 用临时存储、`MEMORY_MOCK_MODELS=1` 和本地确定性的生成桩跑完整流程（[import.rs](../../crates/memory-service/src/diagnostics/import.rs)、
+- 存储测试用临时存储、mock 检索模型和本地确定性的生成桩跑完整流程（[import.rs](../../crates/memory-service/src/diagnostics/import.rs)、
   [import_sessions.rs](../../crates/memory-service/src/diagnostics/import_sessions.rs)）：propose 不写记忆，评审决定，apply 的
   复查和跳过，重跑不写入，原样单元的取代，回滚和回滚跳过，抽取缓存；导入的记录能被 `search_memories` 找到，`get_context`
   不把它们当作已确立的事实；同一轮先捕获再导入时 daemon 返回 `duplicate:true`。

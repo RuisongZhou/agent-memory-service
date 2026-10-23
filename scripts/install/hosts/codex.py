@@ -78,7 +78,7 @@ def wrapped_notify(value):
 
 def released_notify(current):
     """`notify` without the collector: the program an owned entry wraps, or nothing; any other value stays."""
-    if current is not None and owned_notify(current):
+    if owned_notify(current):
         return wrapped_notify(current) or None
     return current
 
@@ -170,7 +170,7 @@ def edit_config(text, server):
     current_notify = before.get('notify')
     final_notify = released_notify(current_notify)
     edit_notify = final_notify != current_notify
-    drop_server = existing is not None and core.owned_server(existing)
+    drop_server = core.owned_server(existing)
     if server is None and not drop_server and not edit_notify:
         return original
     newline = '\r\n' if '\r\n' in text else '\n'
@@ -266,7 +266,7 @@ def changes(args, ctx, uninstall):
         refuse_toml_hooks(text)
     config = edit_config(text, None if uninstall else server_entry(ctx))
     current = parse(text.removeprefix('\ufeff')).get('notify')
-    if current is not None and owned_notify(current):
+    if owned_notify(current):
         wrapped = wrapped_notify(current)
         ctx.notify_released = shlex.join(wrapped)
         print('[plan] notify: remove the collector an earlier install set'
@@ -293,7 +293,7 @@ def capture_events(ctx, outbox):
     events = [prompt('installer-turn-0', 'Run the tool only.'), stop('installer-turn-0', None),
               prompt('installer-turn-1', checks.USER), stop('installer-turn-1', checks.ASSISTANT),
               dict(base, hook_event_name='SessionEnd', reason='other')]
-    return [(command, json.dumps(event), True) for event in events], 2
+    return [(command, json.dumps(event)) for event in events], 2
 
 
 def recall_event(ctx, name, session, prompt=None):

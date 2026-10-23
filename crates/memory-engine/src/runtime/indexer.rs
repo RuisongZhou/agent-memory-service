@@ -62,6 +62,16 @@ pub async fn pending(t: &Instance) -> Result<i64> {
     t.store.count(schema::INDEX_TASKS, None).await
 }
 
+/// An `index_tasks` row as `Tx::index_task` writes it.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Task {
+    mid: String,
+    table: String,
+    target_id: String,
+    op: String,
+}
+
 /// Process up to `limit` tasks in creation order. Returns the number processed.
 pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Instance>, limit: usize) -> Result<usize> {
     let _guard = t.lock_index().await;
@@ -73,29 +83,15 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Instance>, limit: usize) -
     let mut order: Vec<(String, String)> = Vec::new(); // (table, id)
     let mut last_op: std::collections::HashMap<(String, String), String> = Default::default();
     let mut task_ids = Vec::new();
-    for task in &tasks {
-        let table = task
-            .get("table")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let id = task
-            .get("targetId")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let op = task
-            .get("op")
-            .and_then(|v| v.as_str())
-            .unwrap_or("upsert")
-            .to_string();
-        task_ids.push(
-            task.get("mid")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        );
-        let key = (table, id);
+    for task in tasks {
+        let Task {
+            mid,
+            table,
+            target_id,
+            op,
+        } = serde_json::from_value(task)?;
+        task_ids.push(mid);
+        let key = (table, target_id);
         if !last_op.contains_key(&key) {
             order.push(key.clone());
         }
@@ -210,9 +206,7 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Instance>, limit: usize) -
 
     let mut tx = Tx::new();
     for tid in &task_ids {
-        if !tid.is_empty() {
-            tx.delete(schema::INDEX_TASKS, tid)?;
-        }
+        tx.delete(schema::INDEX_TASKS, tid)?;
     }
     t.store.commit(tx).await?;
     Ok(task_ids.len())

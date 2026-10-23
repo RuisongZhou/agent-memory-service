@@ -27,12 +27,11 @@ and [SQLite vector/BM25 store](https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem
 | `memory-store` | The store's SurrealDB server and RPC client, transactions, repositories, revisions and integrity glue | domain, rules |
 | `memory-engine` | The store, workers, model clients, context and application operations | config, domain, store, rules |
 | `memory-algo-mem0` | Formation, search, entity projection, consolidation prompt and ordered worker | engine and its dependencies |
-| `memory-service` | HTTP/MCP, composition, diagnostics and daemon | service layers |
+| `memory-service` | HTTP/MCP, composition, hooks, import and daemon | service layers |
 
 The engine holds a `MemoryAlgorithm` interface; only the service composition root selects the concrete
 Mem0 implementation. This keeps runtime and storage independent of algorithm logic despite having one
-strategy. The [architecture checker](../scripts/check_architecture.py) enforces crate dependencies,
-SQL placement and the service/evaluation boundary.
+strategy.
 
 ## Write path
 
@@ -145,7 +144,7 @@ mislabelled as inferred. Entity-count checks detect missing rows, not arbitrary 
 Shared integrity rules retain historical record compatibility: retiring a source invalidates dependent
 current views, repairs conflict references and queues index changes in the same transaction. Historical
 experiences keep their lineage. Main does not form profiles, skills or session experiences, and no read
-regenerates them. Startup rejects unfinished legacy formation work; see [compatibility](api.md#compatibility).
+regenerates them. Unfinished formation work of a retired strategy is not processed; see [compatibility](api.md#compatibility).
 
 ## Consolidation
 
@@ -327,8 +326,7 @@ Import is a shared use case, not part of an algorithm: the engine owns its promp
 algorithm two generic questions through `MemoryAlgorithm`: `nearest_facts`, the facts formation would recall for a
 text (the extraction context and the reviewer's `similar`), and `source_requests`, the requests a fact was formed
 from (rolling back session turns). An algorithm's `add_memories` keeps `importRunId` on the request row it commits.
-Import writes no algorithm history; its runs' proposals record what each one wrote, superseded and rolled back. The
-[architecture checker](../scripts/check_architecture.py) keeps import modules out of algorithm crates.
+Import writes no algorithm history; its runs' proposals record what each one wrote, superseded and rolled back.
 
 `imported` is not in `context_origins`, so `get_context` never presents imported facts as established; search
 and recall find them. They are consolidation candidates, and a merge with an imported input is never `user`.

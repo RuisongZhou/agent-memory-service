@@ -749,7 +749,7 @@ def test_installed_commands_stay_recognizable(tmp_path):
         assert core.owned_handler({'command': core.hook_command(ctx)})
         assert core.owned_recall({'command': core.recall_command(ctx)})
     # notify entries earlier installers wrote, plain or wrapping another program, are recognized for removal.
-    notify = core.collector_argv(ctx, 'codex-notify')
+    notify = NOTIFY
     assert codex.owned_notify(notify) and codex.released_notify(notify) is None
     wrapping = [*notify, '--', CLIENT, '--', 'turn-ended']
     assert codex.owned_notify(wrapping) and codex.released_notify(wrapping) == [CLIENT, '--', 'turn-ended']
@@ -989,7 +989,7 @@ def test_a_hand_made_unit_and_a_daemon_started_by_hand_are_left_alone(session, c
 
 
 def test_the_installed_binary_and_env_file_come_back_when_a_check_fails(session, capsys, service_binary, monkeypatch):
-    monkeypatch.setattr(core, 'build_binary', lambda args, service: service_binary)
+    monkeypatch.setattr(core, 'build_binary', lambda args: service_binary)
     installed = session / runtime.BINARY
     installed.parent.mkdir(parents=True)
     installed.write_text('#!/bin/sh\n# the previous build\n')
@@ -1021,7 +1021,7 @@ def test_the_key_is_asked_for_before_the_build(session, capsys, service_binary, 
     events = []
     monkeypatch.setattr(sys, 'stdin', types.SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(runtime.getpass, 'getpass', lambda prompt: events.append('prompt') or KEY)
-    monkeypatch.setattr(core, 'build_binary', lambda args, service: events.append('build') or service_binary)
+    monkeypatch.setattr(core, 'build_binary', lambda args: events.append('build') or service_binary)
     code, output = run(capsys, '--host', 'workbuddy', '--home', session, '--project', 'p', '--apply',
                        '--skip-host-check')
     assert code == 0 and events == ['prompt', 'build'], output
@@ -1074,7 +1074,7 @@ def test_rollback_and_uninstall_keep_the_shared_runtime(tmp_path, capsys, fake_b
 @pytest.mark.skipif(not BINARY.is_file() or not SURREAL,
                     reason='needs `make build` (target/fast/agent-memoryd) and SurrealDB (`surreal` on PATH)')
 @pytest.mark.parametrize('host,flags', [(host, ['--recall'] if core.load_host(host).RECALL else []) for host in core.HOSTS]
-                         + [('workbuddy', ['--no-capture', '--recall']), ('codex', [])])
+                         + [('workbuddy', ['--no-capture', '--recall'])])
 def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     workspace = tmp_path / 'project'
     workspace.mkdir()
@@ -1092,37 +1092,3 @@ def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     assert check.endswith(' passed')
     assert not (tmp_path / core.OUTBOX).exists()  # verification used a temporary outbox
     assert not (tmp_path / core.RECALL_STATE).exists()  # and a temporary recall record
-
-
-@pytest.mark.skipif(not BINARY.is_file() or not SURREAL,
-                    reason='needs `make build` (target/fast/agent-memoryd) and SurrealDB (`surreal` on PATH)')
-def test_end_to_end_codex_moves_capture_from_notify_to_hooks(tmp_path):
-    """A rerun over a notify-based install gives notify back; the installed hooks then capture a turn."""
-    record = tmp_path / 'record'
-    program = [sys.executable, '-I', '-c', 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[-1])',
-               str(record)]
-    earlier = [str(BINARY), 'hook', 'codex-notify', '--project', 'install-test', '--platform', 'codex', '--',
-               *program]
-    config = tmp_path / '.codex/config.toml'
-    config.parent.mkdir()
-    config.write_text(f'notify = {json.dumps(earlier)}\n')
-    env = {'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable, 'HOME': str(tmp_path)}
-    result = subprocess.run(['bash', str(ROOT / 'scripts/install.sh'), *map(str, install_args(
-        'codex', tmp_path, BINARY, '--apply', '--surreal-bin', SURREAL, '--project', 'install-test'))],
-        capture_output=True, text=True, timeout=300, env=env)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert 'capture -> outbox -> uploader -> formation -> search' in result.stdout
-    assert tomllib.loads(config.read_text())['notify'] == program and not record.exists()
-    hooks = json.loads((tmp_path / '.codex/hooks.json').read_text())['hooks']
-    (command,) = {group['hooks'][0]['command'] for event in codex.EVENTS for group in hooks[event]}
-    base = {'session_id': 's1', 'transcript_path': None, 'cwd': str(tmp_path), 'model': 'm', 'permission_mode': 'default'}
-    for event in (dict(base, hook_event_name='UserPromptSubmit', turn_id='t1', prompt='Keep the source.'),
-                  dict(base, hook_event_name='Stop', turn_id='t1', stop_hook_active=False,
-                       last_assistant_message='Kept.')):
-        ran = subprocess.run(command, shell=True, input=json.dumps(event), capture_output=True, text=True,
-                             timeout=30, env=env)
-        assert ran.returncode == 0 and json.loads(ran.stdout) == {}, ran.stderr
-    status = subprocess.run([str(BINARY), 'outbox', 'status', '--outbox', str(tmp_path / core.OUTBOX)],
-                            capture_output=True, text=True, timeout=30, env=env)
-    assert [(row['status'], row['turn_id']) for row in json.loads(status.stdout)] == [
-        ('pending', 'install-test/s1/t1')]

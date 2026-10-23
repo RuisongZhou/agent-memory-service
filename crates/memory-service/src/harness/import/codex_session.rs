@@ -195,7 +195,7 @@ fn rollout(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
     let turns = order
         .into_iter()
         .map(|id| {
-            let o = open.remove(&id).unwrap_or_default();
+            let o = open.remove(&id).expect("every ordered turn is open");
             let reply = o.reply.unwrap_or_default();
             let skip = if o.aborted {
                 Some("aborted")
@@ -212,10 +212,7 @@ fn rollout(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
                 native_id: id,
                 prompt: o.prompts.join("\n\n"),
                 reply,
-                reply_at: match o.reply_at.is_empty() {
-                    true => o.prompt_at.clone(),
-                    false => o.reply_at,
-                },
+                reply_at: o.reply_at,
                 prompt_at: o.prompt_at,
                 skip: skip.map(str::to_string),
             })

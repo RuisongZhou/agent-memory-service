@@ -24,7 +24,6 @@ use memory_store::store::{safe_id, turn_rid, Tx};
 /// the deleted content, and returns the merge's other inputs to `current`.
 pub async fn delete_memory(eng: &Arc<Engine>, t: &Arc<Instance>, req: IdReq) -> ApiResult<Value> {
     let _guard = t.lock_formation().await;
-    must_get(t, &req.id).await?;
     // Profiles and skills copy their source memories, and merges restate theirs. Delete these derived
     // records transitively; otherwise a deleted fact would still be disclosed through the next context
     // injection. `true` marks a merge reached through one of its inputs.

@@ -41,7 +41,7 @@ For the 2026-10-11 experiment the ignored protocol/results live in `eval/results
 four conv-26 sessions (76 utterances) and all 35 supported category 1–4 questions. This is a small development
 cohort, not held-out evidence of generalization. No retrieval parameters are tuned from its scores.
 
-Offline checks: `make build selftest smoke` and `make test`. All compilation uses the Fast profile; these
+Offline checks: `make test-workspace build` and `make test`. All compilation uses the Fast profile; these
 checks never call a paid provider or run the dataset.
 
 ## Explicit full LoCoMo comparison

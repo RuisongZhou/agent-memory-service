@@ -4,8 +4,8 @@
 //! (correct a record after apply with `correct_memory`). `previous` lines list, after a changed unit's
 //! proposals, the records its earlier text became; they are for reading only.
 use memory_domain::import::{
-    default_decision, is_session_turn, ImportProposal, ImportRun, SimilarMemory, UnitOutcome,
-    ACCEPT, PROPOSED, REJECT, REJECTED,
+    is_session_turn, ImportProposal, ImportRun, SimilarMemory, UnitOutcome, ACCEPT, PROPOSED,
+    REJECT, REJECTED,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,12 +66,9 @@ pub struct ProposalLine {
 
 impl ProposalLine {
     pub fn new(proposal: &ImportProposal) -> Self {
-        let decision = if proposal.status == REJECTED {
-            REJECT.to_string()
-        } else if proposal.default_decision.is_empty() {
-            default_decision(&proposal.item_kind).to_string()
-        } else {
-            proposal.default_decision.clone()
+        let decision = match proposal.status == REJECTED {
+            true => REJECT.to_string(),
+            false => proposal.default_decision.clone(),
         };
         let scope = match proposal.item_kind == INSTRUCTION {
             true => PROJECT.to_string(),
@@ -299,7 +296,7 @@ pub fn parse(text: &str, run_id: &str) -> Result<Review, Error> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use memory_domain::import::{RecordRef, APPLIED, KIND, RUN_PROPOSED};
+    use memory_domain::import::{default_decision, RecordRef, APPLIED, KIND, RUN_PROPOSED};
     use serde_json::json;
 
     pub(crate) fn run(id: &str) -> ImportRun {

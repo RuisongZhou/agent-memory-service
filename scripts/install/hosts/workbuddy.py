@@ -83,7 +83,7 @@ def capture_events(ctx, outbox):
               dict(base, hook_event_name='Stop', stop_hook_active=True,
                    last_assistant_message=checks.ASSISTANT),
               dict(base, hook_event_name='SessionEnd', reason='other')]
-    return [(command, json.dumps(event), True) for event in events], 2
+    return [(command, json.dumps(event)) for event in events], 2
 
 
 def recall_event(ctx, name, session, prompt=None):

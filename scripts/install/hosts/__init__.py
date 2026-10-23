@@ -11,7 +11,7 @@
     default_project(args, ctx)         suggested project ID for the prompt, or None
     changes(args, ctx, uninstall)      [(path, bytes, mode) or None]: the desired state;
                                        uninstall (or ctx.capture False) drops our entries
-    capture_events(ctx, outbox)        ([(command, stdin, shell)], expected outbox jobs):
+    capture_events(ctx, outbox)        ([(command, stdin)], expected outbox jobs):
                                        host-format events run through the installed collector
                                        (CAPTURE hosts only)
     recall_event(ctx, name, session, prompt)

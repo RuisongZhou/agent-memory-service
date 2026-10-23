@@ -135,7 +135,7 @@ fn document(ctx: &ScanContext, root: &Path, path: PathBuf, out: &mut ScanOutput)
     }
     let native_id = path
         .strip_prefix(root)
-        .unwrap_or(&path)
+        .expect("WorkBuddy files are joined onto its root")
         .to_string_lossy()
         .into_owned();
     let profile = native_id == "USER.md";

@@ -27,7 +27,6 @@ pub struct JsonContract {
     pub name: &'static str,
     pub schema: Value,
     pub validate: fn(&Value, &Value) -> Result<()>,
-    pub echo_invalid_response: bool,
 }
 
 /// HTTP client for hosted model APIs. Trusts an extra CA bundle when one is configured
@@ -77,7 +76,7 @@ impl Llm {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             model: model.to_string(),
-            sem: Arc::new(Semaphore::new(max_concurrency.max(1))),
+            sem: Arc::new(Semaphore::new(max_concurrency)),
             total_prompt: AtomicU64::new(0),
             total_completion: AtomicU64::new(0),
             total_cache_hit: AtomicU64::new(0),
@@ -100,24 +99,6 @@ impl Llm {
         store: &memory_store::store::Store,
         stage: &str,
         contract: &JsonContract,
-    ) -> Result<LlmReply> {
-        self.json_call_impl(
-            system,
-            user,
-            max_tokens,
-            Some((store, stage)),
-            Some(contract),
-        )
-        .await
-    }
-
-    async fn json_call_impl(
-        &self,
-        system: &str,
-        user: &str,
-        max_tokens: u32,
-        usage_log: Option<(&memory_store::store::Store, &str)>,
-        contract: Option<&JsonContract>,
     ) -> Result<LlmReply> {
         if !self.is_configured() {
             return Err(anyhow!("LLM API key not configured"));
@@ -157,16 +138,14 @@ impl Llm {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = anyhow!("request error: {e}");
-                    if let Some((store, stage)) = usage_log {
-                        store
-                            .log(
-                                schema::LLM_RESPONSES,
-                                json!({"stage":stage,"model":self.model,
+                    store
+                        .log(
+                            schema::LLM_RESPONSES,
+                            json!({"stage":stage,"model":self.model,
                             "createdAt":memory_rules::util::fmt_ts(&request_time),"attempt":attempt+1,
                             "request":body,"transportError":last_err.to_string()}),
-                            )
-                            .await?;
-                    }
+                        )
+                        .await?;
                     continue;
                 }
             };
@@ -175,23 +154,17 @@ impl Llm {
                 Ok(t) => t,
                 Err(e) => {
                     last_err = anyhow!("read error: {e}");
-                    if let Some((store, stage)) = usage_log {
-                        store.log(schema::LLM_RESPONSES, json!({"stage":stage,"model":self.model,
-                            "createdAt":memory_rules::util::fmt_ts(&request_time),"attempt":attempt+1,
-                            "request":body,"httpStatus":status.as_u16(),"transportError":last_err.to_string()})).await?;
-                    }
+                    store.log(schema::LLM_RESPONSES, json!({"stage":stage,"model":self.model,
+                        "createdAt":memory_rules::util::fmt_ts(&request_time),"attempt":attempt+1,
+                        "request":body,"httpStatus":status.as_u16(),"transportError":last_err.to_string()})).await?;
                     continue;
                 }
             };
             // Persist the exact HTTP body before decoding, including non-2xx and malformed replies.
-            let response_log_id = if let Some((store, stage)) = usage_log {
-                Some(store.log(schema::LLM_RESPONSES, json!({"stage":stage,"model":self.model,
-                    "createdAt":memory_rules::util::fmt_ts(&request_time),"receivedAt":memory_rules::util::now_str(),
-                    "attempt":attempt+1,"httpStatus":status.as_u16(),"request":body,
-                    "rawBody":text,"latencyMs":started.elapsed().as_millis() as u64})).await?)
-            } else {
-                None
-            };
+            let response_log_id = store.log(schema::LLM_RESPONSES, json!({"stage":stage,"model":self.model,
+                "createdAt":memory_rules::util::fmt_ts(&request_time),"receivedAt":memory_rules::util::now_str(),
+                "attempt":attempt+1,"httpStatus":status.as_u16(),"request":body,
+                "rawBody":text,"latencyMs":started.elapsed().as_millis() as u64})).await?;
             if status.as_u16() == 429 || status.is_server_error() {
                 last_err = anyhow!(
                     "HTTP {status}: {}",
@@ -221,24 +194,20 @@ impl Llm {
                 Err(anyhow!("model output truncated at token limit"))
             } else {
                 parse_json_loose(&content).and_then(|value| {
-                    if let Some(contract) = contract {
-                        (contract.validate)(&contract.schema, &value)?;
-                    }
+                    (contract.validate)(&contract.schema, &value)?;
                     Ok(value)
                 })
             };
-            if let (Some((store, _)), Some(id)) = (usage_log, response_log_id.as_deref()) {
-                store
-                    .merge_doc(
-                        schema::LLM_RESPONSES,
-                        id,
-                        json!({"rawContent":content,
+            store
+                .merge_doc(
+                    schema::LLM_RESPONSES,
+                    &response_log_id,
+                    json!({"rawContent":content,
                     "providerResponseId":v["id"],"finishReason":finish,
                     "validationError":parsed.as_ref().err().map(ToString::to_string),
                     "validOutputShape":parsed.is_ok()}),
-                    )
-                    .await?;
-            }
+                )
+                .await?;
             let usage = Usage {
                 prompt_tokens: v["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
                 completion_tokens: v["usage"]["completion_tokens"].as_u64().unwrap_or(0),
@@ -254,11 +223,10 @@ impl Llm {
             self.total_cache_hit
                 .fetch_add(usage.cache_hit_tokens, Ordering::Relaxed);
             self.total_calls.fetch_add(1, Ordering::Relaxed);
-            if let Some((store, stage)) = usage_log {
-                store
-                    .log(
-                        schema::LLM_USAGE,
-                        json!({"stage":stage,"model":self.model,
+            store
+                .log(
+                    schema::LLM_USAGE,
+                    json!({"stage":stage,"model":self.model,
                     "createdAt":memory_rules::util::fmt_ts(&request_time),"receivedAt":memory_rules::util::now_str(),"attempt":attempt+1,
                     "promptTokens":usage.prompt_tokens,"completionTokens":usage.completion_tokens,
                     "cacheHitTokens":usage.cache_hit_tokens,
@@ -266,9 +234,8 @@ impl Llm {
                     "latencyMs":started.elapsed().as_millis() as u64,"finishReason":finish,"responseLogId":response_log_id,
                     "validJson":finish!="length" && parse_json_loose(&content).is_ok(),
                     "validOutputShape":parsed.is_ok()}),
-                    )
-                    .await?;
-            }
+                )
+                .await?;
             match parsed {
                 Ok(json) => {
                     return Ok(LlmReply {
@@ -276,29 +243,19 @@ impl Llm {
                         raw: content,
                         usage,
                         latency_ms: started.elapsed().as_millis() as u64,
-                        response_log_id,
+                        response_log_id: Some(response_log_id),
                     })
                 }
                 Err(e) => {
                     last_err = anyhow!("model output failed validation (finish={finish}): {e}");
-                    let mut error = e.to_string();
-                    if let Some(contract) = contract {
-                        // Only the public shape belongs in the repair instruction. Private local
-                        // provenance metadata can contain entire source turns and is never sent.
-                        let mut shape = contract.schema.clone();
-                        if let Some(fields) = shape.as_object_mut() {
-                            fields.retain(|key, _| !key.starts_with("x-"));
-                        }
-                        error.push_str(&format!(". Required {} schema: {shape}", contract.name));
+                    // Only the public shape belongs in the repair instruction. Private local
+                    // provenance metadata can contain entire source turns and is never sent.
+                    let mut shape = contract.schema.clone();
+                    if let Some(fields) = shape.as_object_mut() {
+                        fields.retain(|key, _| !key.starts_with("x-"));
                     }
-                    corrective_messages(
-                        &mut body,
-                        system,
-                        user,
-                        &content,
-                        &error,
-                        contract.is_none_or(|c| c.echo_invalid_response),
-                    );
+                    let error = format!("{e}. Required {} schema: {shape}", contract.name);
+                    corrective_messages(&mut body, system, user, &error);
                     continue;
                 }
             }
@@ -318,30 +275,15 @@ impl Llm {
     }
 }
 
-fn corrective_messages(
-    body: &mut Value,
-    system: &str,
-    user: &str,
-    raw: &str,
-    error: &str,
-    echo_invalid_response: bool,
-) {
+fn corrective_messages(body: &mut Value, system: &str, user: &str, error: &str) {
     // Replace the repair exchange, rather than growing the prompt on every retry.
     let correction = format!("Your previous response failed output validation: {error}. Return the complete corrected JSON matching the requested JSON structure, retaining every required section. Use only the original evidence; do not invent missing facts or verified outcomes. No Markdown or explanations.");
-    body["messages"] = if echo_invalid_response {
-        json!([
-        {"role":"system","content":system}, {"role":"user","content":user},
-        {"role":"assistant","content":raw.chars().take(32768).collect::<String>()},
-        {"role":"user","content":correction}
-        ])
-    } else {
-        // Persisted raw replies remain available for diagnostics. Regenerating from
-        // evidence avoids anchoring additive extraction on a malformed prior JSON.
-        json!([
-            {"role":"system","content":system},
-            {"role":"user","content":format!("{user}\n\n{correction}")}
-        ])
-    };
+    // Persisted raw replies remain available for diagnostics. Regenerating from
+    // evidence avoids anchoring additive extraction on a malformed prior JSON.
+    body["messages"] = json!([
+        {"role":"system","content":system},
+        {"role":"user","content":format!("{user}\n\n{correction}")}
+    ]);
 }
 
 /// Parse JSON, tolerating ```json fences and leading/trailing prose.

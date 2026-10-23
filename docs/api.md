@@ -346,8 +346,8 @@ SurrealDB is no longer compiled into the daemon: install SurrealDB 3.2 or a late
 creates the datastore's root user and `store/db.password`. Without `surreal` on PATH or `--surreal-bin`, the
 daemon does not start.
 
-Existing Mem0 stores retain their schema and historical records. Startup rejects unfinished legacy
-formation work; finish it with the matching preserved binary or use a fresh store. Switching branches
+Existing Mem0 stores retain their schema and historical records. Main does not process unfinished formation
+work of a retired strategy; finish it with the matching preserved binary first. Switching branches
 does not migrate or clear a database. Historical profiles/skills and conflict records remain readable
 and repairable, but main does not generate them. See [storage integrity](architecture.md#entity-projection-and-storage)
 for dependency invalidation and recovery behavior.

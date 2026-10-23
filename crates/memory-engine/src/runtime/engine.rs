@@ -29,11 +29,6 @@ impl Engine {
         models: ModelHub,
         algorithm: Arc<dyn MemoryAlgorithm>,
     ) -> Arc<Self> {
-        assert_eq!(
-            algorithm.strategy(),
-            cfg.memory_strategy,
-            "algorithm does not match the configured memory strategy"
-        );
         Arc::new(Self {
             algorithm,
             cfg,
@@ -116,10 +111,6 @@ impl Engine {
 
     /// Load the vector caches; check index_meta (5.2 一致性与重建).
     async fn warm(&self, t: &Arc<Instance>) -> Result<()> {
-        // The demo uses one algorithm per process and data directory. Check only at startup.
-        let incompatible = self.algorithm.foreign_unfinished_jobs(t).await?;
-        anyhow::ensure!(incompatible == 0,
-            "data directory has unfinished jobs from another algorithm; use the selected algorithm's data directory");
         t.store.repair_integrity().await?;
         // index meta: a different embedding model or dimension re-embeds every record
         let want = json!({

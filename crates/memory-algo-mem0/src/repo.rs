@@ -54,22 +54,8 @@ pub async fn failed_job_count(t: &Instance) -> Result<i64> {
         .await
 }
 
-/// Unfinished legacy work: reject these stores rather than silently abandoning their jobs.
-pub async fn foreign_unfinished_job_count(t: &Instance) -> Result<i64> {
-    Ok(t.store
-        .count(schema::TURNS, Some("extractState = 'pending'"))
-        .await?
-        + t.store
-            .count(
-                schema::REQUESTS,
-                Some("kind IN ['text','session_end'] AND status IN ['queued','running']"),
-            )
-            .await?)
-}
-
 /// Up to ten latest non-empty, durably formed inferred batches in the same conversation.
-/// Missing `infer` retains the legacy formation default of true. `formed` is committed
-/// with primary memories and sources, including successful extraction of zero memories.
+/// `formed` is committed with primary memories and sources, including successful extraction of zero memories.
 /// Index publication need not finish before a batch supplies extraction context.
 pub async fn previous_inputs(
     t: &Instance,
@@ -78,7 +64,7 @@ pub async fn previous_inputs(
     session: &str,
     seq: Value,
 ) -> Result<Vec<Value>> {
-    t.store.select("SELECT inputMessages, inputSeq FROM requests WHERE kind = 'mem0' AND platform = $p AND project = $r AND session = $s AND (infer = NONE OR infer != false) AND formed = true AND status IN ['indexing', 'completed'] AND array::len(inputMessages) > 0 AND inputSeq < $seq ORDER BY inputSeq DESC LIMIT 10",
+    t.store.select("SELECT inputMessages, inputSeq FROM requests WHERE kind = 'mem0' AND platform = $p AND project = $r AND session = $s AND infer = true AND formed = true AND status IN ['indexing', 'completed'] AND array::len(inputMessages) > 0 AND inputSeq < $seq ORDER BY inputSeq DESC LIMIT 10",
         vec![("p",json!(platform)),("r",json!(project)),("s",json!(session)),("seq",seq)]).await
 }
 

@@ -8,7 +8,8 @@ use memory_store::schema;
 use memory_store::store::{to_doc, Tx};
 use serde_json::json;
 
-pub async fn selftest() {
+#[tokio::test(flavor = "multi_thread")]
+async fn selftest() {
     let eng = engine(ServiceConfig::default());
     let (t, caller, dir) = fresh_store(&eng, "integrity", "agent").await;
     let fact = MemoryRec {
