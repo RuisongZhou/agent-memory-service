@@ -155,10 +155,15 @@ impl MemoryAlgorithm for NoAlgorithm {
 
 /// An engine on mock embeddings whose generation endpoint is unreachable.
 pub(crate) fn engine() -> Arc<Engine> {
+    engine_with_models(ModelHub::mock())
+}
+
+/// An engine on `models` whose generation endpoint is unreachable.
+pub(crate) fn engine_with_models(models: ModelHub) -> Arc<Engine> {
     Engine::new(
         ServiceConfig::default(),
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
-        ModelHub::mock(),
+        models,
         Arc::new(NoAlgorithm),
     )
 }

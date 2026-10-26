@@ -227,7 +227,11 @@ async fn post(client: &reqwest::Client, base: &str, path: &str, body: &Value) ->
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
-        bail!("llama-server {base}{path} returned {status}: {text}");
+        let message = format!("llama-server {base}{path} returned {status}: {text}");
+        if status.is_client_error() && !matches!(status.as_u16(), 408 | 429) {
+            return Err(super::models::Refused(message).into());
+        }
+        bail!("{message}");
     }
     Ok(serde_json::from_str(&text)?)
 }
