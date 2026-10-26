@@ -386,7 +386,7 @@ impl Store {
         }
         sql.push_str("COMMIT TRANSACTION;");
         self.db
-            .query(&sql, tx.binds)
+            .transaction(&sql, tx.binds)
             .await?
             .check()
             .context("transaction")?;
