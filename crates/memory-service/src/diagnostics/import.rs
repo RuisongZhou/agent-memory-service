@@ -93,6 +93,7 @@ fn run_req(run_id: &str, decisions: &[(&str, &str)]) -> ImportRunReq {
             .iter()
             .map(|(id, d)| (id.to_string(), d.to_string()))
             .collect::<BTreeMap<_, _>>(),
+        confirmed_via: None,
     }
 }
 
@@ -248,16 +249,29 @@ pub async fn selftest() {
         import::apply(&t, run_req("irmissing", &[])).await,
         Err(ApiError::NotFound(_))
     ));
+    let by_mail = ImportRunReq {
+        confirmed_via: Some("mail".into()),
+        ..run_req(&r1, &[])
+    };
+    assert!(matches!(
+        import::apply(&t, by_mail).await,
+        Err(ApiError::InvalidArgument(_))
+    ));
+    // Confirmed in a conversation: the run keeps how.
     let out = import::apply(
         &t,
-        run_req(
-            &r1,
-            &[(dropped_id.as_str(), REJECT), (always_id.as_str(), ACCEPT)],
-        ),
+        ImportRunReq {
+            confirmed_via: Some(CONFIRMED_CHAT.into()),
+            ..run_req(
+                &r1,
+                &[(dropped_id.as_str(), REJECT), (always_id.as_str(), ACCEPT)],
+            )
+        },
     )
     .await
     .unwrap();
     assert_eq!(out["run"]["status"], RUN_APPLIED, "{out}");
+    assert_eq!(out["run"]["confirmedVia"], CONFIRMED_CHAT);
     let counts = &out["run"]["counts"];
     assert_eq!(
         (&counts["applied"], &counts["dropped"], &counts["skipped"]),
@@ -579,6 +593,7 @@ async fn round(
     let req = ImportRunReq {
         run_id,
         decisions: decide(&proposed["proposals"]).into_iter().collect(),
+        confirmed_via: None,
     };
     let applied = import::apply(t, req).await.unwrap();
     (proposed, applied)

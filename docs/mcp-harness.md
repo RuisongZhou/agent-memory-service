@@ -118,7 +118,7 @@ reaches a model provider or the real store. The temporary daemon starts the chec
 temporary store and stops it when the checks end:
 
 1. The bridge, started exactly as configured, completes the MCP handshake, lists the
-   [six tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
+   [eight tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
    A separate bridge process answers the 2026-07-28 `server/discover` version probe at once with
    `-32022` and the 2025-era versions it serves, so clients that probe first (DeepSeek Harness) fall back
    to `initialize`. The bridge, collector and uploader keep your proxy variables; they bypass proxies for
@@ -201,7 +201,7 @@ args = ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "codex"]
 tool_timeout_sec = 180
 ```
 
-Use either registration method for this server and preserve existing settings. Local Codex clients share MCP configuration on the same host; project configuration requires a trusted project. Restart/reload the client after changing its configuration, inspect `/mcp` in the CLI, and confirm the six tools in the [API reference](api.md#interfaces) are available. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+Use either registration method for this server and preserve existing settings. Local Codex clients share MCP configuration on the same host; project configuration requires a trusted project. Restart/reload the client after changing its configuration, inspect `/mcp` in the CLI, and confirm the eight tools in the [API reference](api.md#interfaces) are available. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
 Add the [shared memory workflow](#shared-memory-workflow) to the target project's `AGENTS.md`. For automatic capture, follow the separate [Codex hooks setup](#codex-hooks). A local stdio setup requires the executable and daemon to be reachable from the host running the client; a cloud container has its own loopback address.
 
@@ -236,7 +236,7 @@ Add the [shared memory workflow](#shared-memory-workflow) to the target project'
 
 ## Use with DeepSeek Harness
 
-DeepSeek Harness (`dsh` and the Desktop app) gets the six tools, named `mcp__shared-memory__<tool>`,
+DeepSeek Harness (`dsh` and the Desktop app) gets the eight tools, named `mcp__shared-memory__<tool>`,
 and no automatic capture: its Claude Code and Codex hook bridges pass no transcript and no final reply
 and send no `SessionEnd`, so the collector would have nothing to save. Ask the agent to save with
 `add_memories`, and put the [shared memory workflow](#shared-memory-workflow) in its instructions.
@@ -294,7 +294,7 @@ contains explicitly saved behavior requirements, subject to current instructions
 If the dialogue collector is installed, let it save ordinary completed turns.
 ```
 
-The [API reference](api.md#interfaces) lists the six MCP tools and the HTTP-only interfaces.
+The [API reference](api.md#interfaces) lists the eight MCP tools and the HTTP-only interfaces.
 With [automatic recall](#automatic-recall) installed, the session-start `get_context` and a search per
 prompt happen without the agent; the remaining steps still apply.
 
@@ -606,14 +606,44 @@ that several hosts remembered; imported facts are candidates.
 
 For a host whose memory is not on disk, such as ChatGPT, Gemini or Cursor, `agent-memoryd import prompt
 --project ID [--lang en]` prints a request for that host's agent. Save its JSONL answer and plan it with
-`--host jsonl --from FILE --label chatgpt`. The prompt asks the agent to list entries verbatim, not to
-organize them: extraction and consolidation do that here.
+`--host jsonl --from FILE --label chatgpt`, or import it in a conversation as described
+[below](#import-from-another-assistant-in-a-conversation). The prompt asks the agent to list entries verbatim,
+not to organize them: extraction and consolidation do that here.
 
 Privacy: plan and review files stay under `~/.local/state/agent-memory-service/imports/`. With the default
 hosted models, `propose` sends unit texts to the embedding API and extract units to the generation model, after
 redaction; the plan summary says how many characters go to each. Extraction shares the daemon's generation
 concurrency with formation (one call at a time with `service install`), so a large import can delay newly
 captured turns. Propose a plan in parts if that matters.
+
+### Import from another assistant in a conversation
+
+Memories the CLI cannot read from disk (ChatGPT, Gemini, Claude.ai) can also be imported by the agent of a
+connected host, in its conversation, with nothing saved to a file ([design](design/memory-import-mcp.md)):
+
+1. Run the MCP prompt `import_memories` with the project and the source's platform label: in Claude Code
+   `/shared-memory:import_memories my-project chatgpt`, in WorkBuddy `/shared-memory:import_memories`. An optional
+   third argument picks `en` instead of `zh`. Where a host offers no MCP prompts (Codex), paste the output of
+   `agent-memoryd import prompt --for host --project my-project --source chatgpt` instead. With the source `self`, an
+   agent exports what it remembers itself; on Claude Code, Codex and WorkBuddy the prompt sends you to
+   `agent-memoryd import plan`, which reads their memory files.
+2. The agent gives you the export prompt for the other assistant; paste its answer back. The agent may delete
+   lines (instructions to an AI, sensitive personal information, credentials) but never rewrites one, and tells
+   you what it kept before it submits anything.
+3. With your go-ahead it calls `propose_import` once per page. The bridge plans each page as `import plan --host
+   jsonl` plans a file: credentials redacted, a line over the unit cap extracted, or split at sentences when the
+   daemon has no generation model, under the connection's platform with `via: "mcp-export"` and the named source
+   kept as `exportedFrom`. Nothing is written yet; the result lists the proposals and how many wait for a
+   decision.
+4. When you agree in your own reply, the agent calls `apply_import` with the run ID and that number. The bridge
+   applies only a `proposed` run of its own platform whose proposals all came from `propose_import`, only when the
+   number matches, and at most 200 proposals at once; the run records `confirmedVia: "chat"`. To decide item by
+   item instead, run `agent-memoryd import show RUN` and `agent-memoryd import apply RUN --review FILE`.
+5. Undo the whole run with `agent-memoryd import rollback RUN`.
+
+A conversation writes imported reference facts only, never instructions. The bridge cannot tell whether you
+agreed or the agent was misled by the pasted text, so a host that asks before each MCP tool call gives you a
+second check on `apply_import`.
 
 ## Troubleshooting
 

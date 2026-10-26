@@ -37,16 +37,9 @@ impl Adapter for Export {
         let (raw, _) = read_text(&path, MAX_EXPORT)
             .map_err(|reason| invalid(format!("--from {shown}: {reason}")))?;
         let mut out = ScanOutput::default();
-        let mut locators = Locators::default();
-        let mut segments = Vec::new();
-        for (index, line) in raw.lines().enumerate() {
-            match parse_line(line) {
-                Line::Ignored => {}
-                Line::Invalid(why) => {
-                    out.issue(shown.clone(), format!("invalid-line {}: {why}", index + 1))
-                }
-                Line::Memory(entry) => segments.push(entry.segment(index + 1, &mut locators)),
-            }
+        let (segments, invalid_lines) = segments(&raw);
+        for why in invalid_lines {
+            out.issue(shown.clone(), why);
         }
         if segments.is_empty() {
             out.issue(shown, "empty");
@@ -70,6 +63,21 @@ impl Adapter for Export {
         });
         Ok(out)
     }
+}
+
+/// The segments of an export's text, one per memory line, and why each other line that is not blank, a code
+/// fence or a page marker was left out (`invalid-line N: why`, numbered from 1).
+pub fn segments(raw: &str) -> (Vec<Segment>, Vec<String>) {
+    let mut locators = Locators::default();
+    let (mut segments, mut invalid_lines) = (Vec::new(), Vec::new());
+    for (index, line) in raw.lines().enumerate() {
+        match parse_line(line) {
+            Line::Ignored => {}
+            Line::Invalid(why) => invalid_lines.push(format!("invalid-line {}: {why}", index + 1)),
+            Line::Memory(entry) => segments.push(entry.segment(index + 1, &mut locators)),
+        }
+    }
+    (segments, invalid_lines)
 }
 
 #[derive(Debug, PartialEq)]

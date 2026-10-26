@@ -10,7 +10,7 @@ use memory_domain::import::{
 use memory_rules::import::units::content_hash;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ const MAX_SOURCE: u64 = 8 << 20;
 /// Characters of the daemon's refusal message shown on the `[error]` line.
 const MAX_MESSAGE: usize = 300;
 /// JSON bytes of units per `import_propose` request, well under the daemon's 2 MB body limit.
-const MAX_BATCH_BYTES: usize = 1 << 20;
+pub(crate) const MAX_BATCH_BYTES: usize = 1 << 20;
 
 /// A run and its proposals, in the run's order.
 #[derive(Debug, Clone, PartialEq)]
@@ -175,16 +175,26 @@ impl Client {
         body: &impl Serialize,
         platform: &str,
     ) -> Result<Value, Error> {
-        let body = serde_json::to_value(body).map_err(|_| Error::Json)?;
-        self.daemon
-            .admin(name, &body, platform)
+        self.call_admin(name, body, platform)
             .await
             .map_err(|e| self.failed(e))
     }
 
+    /// One admin call that keeps the daemon's status, for a caller that acts on it (`chat` proposes a page
+    /// again without extraction when the daemon has no generation model).
+    pub(crate) async fn call_admin(
+        &self,
+        name: &str,
+        body: &impl Serialize,
+        platform: &str,
+    ) -> Result<Value, AdminError> {
+        let body = serde_json::to_value(body).map_err(|_| AdminError::from(CallError::Invalid))?;
+        self.daemon.admin(name, &body, platform).await
+    }
+
     /// One line for a failed call: the daemon's status with its own reason (the API's validation
     /// message, flattened and shortened), or why it could not answer.
-    fn failed(&self, AdminError { error, message }: AdminError) -> Error {
+    pub(crate) fn failed(&self, AdminError { error, message }: AdminError) -> Error {
         invalid(match error {
             CallError::Status(code) => match message.as_deref().map(one_line) {
                 Some(message) if !message.is_empty() => format!("HTTP {code}: {message}"),
@@ -262,7 +272,7 @@ impl Client {
     pub async fn run(&self, run_id: &str) -> Result<RunView, Error> {
         let request = ImportRunReq {
             run_id: run_id.into(),
-            decisions: BTreeMap::new(),
+            ..ImportRunReq::default()
         };
         run_view(self.call("import_run", &request, PLATFORM).await?)
     }
@@ -288,6 +298,7 @@ impl Client {
         let request = ImportRunReq {
             run_id: run_id.into(),
             decisions,
+            confirmed_via: None,
         };
         let answer = self
             .call("import_apply", &request, &current.run.host)
@@ -298,12 +309,28 @@ impl Client {
         })
     }
 
+    /// Apply a run with every proposal accepted, confirmed `via` a conversation rather than a review file
+    /// (`chat`). Its proposals came from no file, so no source is read again. Calls as the run's host.
+    pub async fn apply_confirmed(
+        &self,
+        run_id: &str,
+        host: &str,
+        via: &str,
+    ) -> Result<RunView, Error> {
+        let request = ImportRunReq {
+            run_id: run_id.into(),
+            confirmed_via: Some(via.into()),
+            ..ImportRunReq::default()
+        };
+        run_view(self.call("import_apply", &request, host).await?)
+    }
+
     /// Roll an applied run back (`import_rollback`), as the run's host.
     pub async fn rollback(&self, run_id: &str) -> Result<RunView, Error> {
         let current = self.run(run_id).await?;
         let request = ImportRunReq {
             run_id: run_id.into(),
-            decisions: BTreeMap::new(),
+            ..ImportRunReq::default()
         };
         let answer = self
             .call("import_rollback", &request, &current.run.host)
@@ -325,7 +352,7 @@ impl Client {
 
 /// `units` in order, at most `batch` units and about `max_bytes` of JSON per request; a unit larger than
 /// that goes alone.
-fn batches(units: &[ImportUnit], batch: usize, max_bytes: usize) -> Vec<&[ImportUnit]> {
+pub(crate) fn batches(units: &[ImportUnit], batch: usize, max_bytes: usize) -> Vec<&[ImportUnit]> {
     let mut out = Vec::new();
     let (mut start, mut size) = (0, 0);
     for (i, unit) in units.iter().enumerate() {
@@ -359,7 +386,7 @@ fn reason(code: u16) -> &'static str {
         .unwrap_or("error")
 }
 
-fn run_id_of(answer: &Value) -> Option<String> {
+pub(crate) fn run_id_of(answer: &Value) -> Option<String> {
     answer["run"]["runId"]
         .as_str()
         .filter(|id| !id.is_empty())

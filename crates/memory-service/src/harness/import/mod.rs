@@ -2,11 +2,13 @@
 //! into a plan file to review (`plan`: files only, no network), send the plan to the daemon as one run of
 //! proposals (`propose`: writes no memory), review the proposals (`show`), write the accepted ones
 //! (`apply`), and inspect or undo runs (`status`, `rollback`). `prompt` prints the request that has a
-//! host's own agent export its memories as JSONL. Host knowledge lives in the adapters (`claude`, `codex`,
+//! host's own agent export its memories as JSONL, or the one that has a connected host's agent import such an
+//! export in its conversation through the MCP tools `propose_import` and `apply_import` (`chat`). Host knowledge lives in the adapters (`claude`, `codex`,
 //! `workbuddy`, `jsonl`), generic policy in `plan`, the commands' work and reports in `commands`. Past session
 //! transcripts (`--include sessions`) come from `claude_session` and `codex_session`; their turns are queued into
 //! the dialogue outbox at apply, so Mem0 formation forms them as it forms captured turns. Every command prints to
 //! stdout and exits 0; an error is one `[error] …` line on stderr and exit 1.
+pub mod chat;
 pub mod claude;
 pub mod claude_session;
 pub mod client;
@@ -253,13 +255,29 @@ pub enum ImportCmd {
         #[arg(long, default_value_os_t = outbox::default_path())]
         outbox: PathBuf,
     },
-    /// Print the prompt that has a host's agent export its memories for `plan --host jsonl`
+    /// Print the prompt that has an assistant export its memories for `plan --host jsonl`, or with
+    /// `--for host` the prompt that walks a connected host's agent through an import in its conversation
     Prompt {
         #[arg(long, value_parser = nonblank)]
         project: String,
         #[arg(long, value_enum, default_value_t = Lang::Zh)]
         lang: Lang,
+        /// Who reads the prompt: the assistant that exports, or the agent of a host connected to shared-memory
+        #[arg(long = "for", value_enum, default_value_t = Audience::Source)]
+        audience: Audience,
+        /// --for host: the platform label of the assistant the memories come from (`chatgpt`), or `self`
+        #[arg(long, value_parser = platform_label, required_if_eq("audience", "host"))]
+        source: Option<String>,
     },
+}
+
+/// Who an `import prompt` is for.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Audience {
+    /// The assistant whose memories are exported
+    Source,
+    /// The agent of a host connected to shared-memory, which imports the export through MCP
+    Host,
 }
 
 /// Run an import command; returns the process exit code.
@@ -343,7 +361,25 @@ async fn execute(cmd: ImportCmd) -> Result<(), Error> {
             daemon,
             outbox,
         } => commands::rollback(&run, &daemon, &expand(&outbox)).await?,
-        ImportCmd::Prompt { project, lang } => prompt::text(&project, lang),
+        ImportCmd::Prompt {
+            project,
+            lang,
+            audience: Audience::Source,
+            ..
+        } => prompt::text(&project, lang),
+        ImportCmd::Prompt {
+            project,
+            lang,
+            audience: Audience::Host,
+            source,
+        } => prompt::host_text(
+            &project,
+            source
+                .as_deref()
+                .expect("clap requires --source for --for host"),
+            None,
+            lang,
+        ),
     };
     print!("{output}");
     Ok(())
@@ -351,7 +387,7 @@ async fn execute(cmd: ImportCmd) -> Result<(), Error> {
 
 /// The message of the `[error]` line: field names and reasons, never file contents; from the daemon only
 /// its validation `message`, on one line.
-fn message(error: &Error) -> String {
+pub(crate) fn message(error: &Error) -> String {
     match error {
         Error::Invalid(message) => message.clone(),
         other => other.to_string(),
@@ -409,7 +445,7 @@ fn batch_size(value: &str) -> Result<usize, String> {
 }
 
 /// A platform label, as sent in `X-Memory-Platform`: ASCII letters, digits, `.`, `_` and `-`.
-fn platform_label(value: &str) -> Result<String, String> {
+pub(crate) fn platform_label(value: &str) -> Result<String, String> {
     let valid = (1..=64).contains(&value.len())
         && value
             .chars()
@@ -728,9 +764,48 @@ mod tests {
         ));
         assert!(matches!(
             parse(&["prompt", "--project", "p", "--lang", "en"]).unwrap(),
-            ImportCmd::Prompt { lang: Lang::En, .. }
+            ImportCmd::Prompt {
+                lang: Lang::En,
+                audience: Audience::Source,
+                source: None,
+                ..
+            }
         ));
         assert!(parse(&["prompt"]).is_err());
+        let ImportCmd::Prompt {
+            audience, source, ..
+        } = parse(&[
+            "prompt",
+            "--project",
+            "p",
+            "--for",
+            "host",
+            "--source",
+            "chatgpt",
+        ])
+        .unwrap()
+        else {
+            panic!("prompt")
+        };
+        assert_eq!(
+            (audience, source.as_deref()),
+            (Audience::Host, Some("chatgpt"))
+        );
+        for bad in [
+            &["prompt", "--project", "p", "--for", "host"][..],
+            &[
+                "prompt",
+                "--project",
+                "p",
+                "--for",
+                "host",
+                "--source",
+                "chat gpt",
+            ],
+            &["prompt", "--project", "p", "--for", "everyone"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

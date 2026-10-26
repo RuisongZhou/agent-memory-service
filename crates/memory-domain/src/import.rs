@@ -51,6 +51,10 @@ pub const ROLLED_BACK: &str = "rolled_back";
 pub const ACCEPT: &str = "accept";
 pub const REJECT: &str = "reject";
 
+/// `confirmedVia` of a run an agent applied after the person agreed in the conversation (MCP `apply_import`,
+/// docs/design/memory-import-mcp.md §5.3). The CLI's review file and `--yes` send none.
+pub const CONFIRMED_CHAT: &str = "chat";
+
 /// Unit outcomes recorded on the run.
 pub const UNIT_NEW: &str = "new";
 pub const UNIT_CHANGED: &str = "changed";
@@ -198,13 +202,16 @@ pub struct ImportProposeReq {
 }
 
 /// `import_run`, `import_apply` and `import_rollback`. `decisions` (apply only) maps proposal ids to
-/// `accept` or `reject`; a proposal without one is accepted.
+/// `accept` or `reject`; a proposal without one is accepted. `confirmedVia` (apply only) is `chat` when the
+/// person agreed in a conversation rather than in a review file; it is kept on the run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRunReq {
     pub run_id: String,
     #[serde(default)]
     pub decisions: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_via: Option<String>,
 }
 
 /// `import_runs`: the newest runs first, optionally of one project.
@@ -423,6 +430,9 @@ pub struct ImportRun {
     pub units: Vec<UnitOutcome>,
     #[serde(default)]
     pub counts: RunCounts,
+    /// How the person confirmed the apply, when not with the CLI (`chat`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_via: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
 }

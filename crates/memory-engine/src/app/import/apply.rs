@@ -17,8 +17,8 @@ use memory_domain::consolidation::apply::FieldPatch;
 use memory_domain::import::apply::{self as plan, EVIDENCE_ROLE};
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportRun, ImportRunReq, UnitOutcome, ACCEPT, APPLIED,
-    DROPPED, MODE_SESSION_TURN, PROPOSED, REJECT, RUN_APPLIED, RUN_APPLYING, RUN_PROPOSED, SKIPPED,
-    UNIT_CHANGED, UNIT_NEW, UNIT_RECONSIDERED,
+    CONFIRMED_CHAT, DROPPED, MODE_SESSION_TURN, PROPOSED, REJECT, RUN_APPLIED, RUN_APPLYING,
+    RUN_PROPOSED, SKIPPED, UNIT_CHANGED, UNIT_NEW, UNIT_RECONSIDERED,
 };
 use memory_domain::types::*;
 use memory_rules::import::units;
@@ -194,6 +194,15 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
             return Err(invalid(format!("{pid} is not a proposal of run {id}")));
         }
     }
+    if let Some(via) = req
+        .confirmed_via
+        .as_deref()
+        .filter(|via| *via != CONFIRMED_CHAT)
+    {
+        return Err(invalid(format!(
+            "confirmedVia must be {CONFIRMED_CHAT:?} or absent, not {via:?}"
+        )));
+    }
     let _guard = t.lock_formation().await;
     let run = load_run(t, id).await?;
     if run.status != RUN_PROPOSED && run.status != RUN_APPLYING {
@@ -203,13 +212,12 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
         )));
     }
     let now = util::now_str();
-    t.store
-        .merge_doc(
-            schema::IMPORT_RUNS,
-            id,
-            json!({"status": RUN_APPLYING, "applyStartedAt": now, "updatedAt": now, "error": null}),
-        )
-        .await?;
+    let mut started =
+        json!({"status": RUN_APPLYING, "applyStartedAt": now, "updatedAt": now, "error": null});
+    if let Some(via) = &req.confirmed_via {
+        started["confirmedVia"] = json!(via);
+    }
+    t.store.merge_doc(schema::IMPORT_RUNS, id, started).await?;
     for p in run_proposals(t, id).await? {
         if p.status != PROPOSED {
             continue;

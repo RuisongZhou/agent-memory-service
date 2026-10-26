@@ -44,7 +44,7 @@ LEGACY_RECALL = 'harness_recall.py'
 HOSTS = ('codex', 'claude-code', 'workbuddy', 'deepseek-harness')
 SERVER = 'shared-memory'
 TOOLS = {'add_memories', 'search_memories', 'get_context', 'list_turns', 'get_memory',
-         'correct_memory'}
+         'correct_memory', 'propose_import', 'apply_import'}
 OUTBOX = Path('.local/share/agent-memory-service/harness-outbox.sqlite3')  # relative to home
 STATE = Path('.local/state/agent-memory-service/installations')
 HOOK_TIMEOUT = 3  # seconds; the collector only writes local SQLite

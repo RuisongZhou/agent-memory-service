@@ -126,7 +126,7 @@ bash scripts/install.sh --host claude-code --apply --project my-project --worksp
 bash scripts/install.sh --host workbuddy --apply --project my-project --recall
 ```
 
-重启 WorkBuddy。在 **连接器 → 自定义连接器** 中信任 `shared-memory`，并启用全部 6 个工具。
+重启 WorkBuddy。在 **连接器 → 自定义连接器** 中信任 `shared-memory`，并启用全部 8 个工具。
 
 #### DeepSeek Harness
 
@@ -190,7 +190,7 @@ bash scripts/install.sh --host deepseek-harness --apply
 
 ### MCP 工具
 
-安装并重启客户端后，Agent 会看到 6 个 `shared-memory` 工具：
+安装并重启客户端后，Agent 会看到 8 个 `shared-memory` 工具：
 
 | 工具 | 用途 |
 |---|---|
@@ -200,8 +200,12 @@ bash scripts/install.sh --host deepseek-harness --apply
 | `list_turns` | 列出提交过的原始对话 |
 | `get_memory` | 读取单条记忆及其历史和来源 |
 | `correct_memory` | 追加更正，或撤回一条记忆 |
+| `propose_import` | 把另一个助手的记忆导出提交成导入提议，不写记忆 |
+| `apply_import` | 你在对话里同意后，写入提议的导入 |
 
-请求字段见 [API 参考](docs/api.md#interfaces)。
+请求字段见 [API 参考](docs/api.md#interfaces)。要在对话里导入另一个助手记得的内容，运行 MCP 提示词 `import_memories`
+（Claude Code 里是 `/shared-memory:import_memories my-project chatgpt`），见
+[在对话里导入另一个助手的记忆](docs/mcp-harness.md#import-from-another-assistant-in-a-conversation)。
 
 可以直接让 Agent 使用记忆：
 

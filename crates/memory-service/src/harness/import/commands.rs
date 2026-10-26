@@ -461,7 +461,7 @@ fn proposal_counts(proposals: &[ImportProposal]) -> String {
 }
 
 /// `text` on one line, cut to `max` characters.
-fn one_line(text: &str, max: usize) -> String {
+pub(crate) fn one_line(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     match flat.chars().count() > max {
         true => flat.chars().take(max).collect::<String>() + "…",

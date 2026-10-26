@@ -18,7 +18,6 @@ use memory_engine::runtime::instance::Instance;
 use memory_rules::import::units::{content_hash, turn_key, unit_key};
 use memory_store::schema;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 const PROJECT: &str = "atlas";
@@ -91,7 +90,7 @@ async fn propose(eng: &Arc<Engine>, t: &Arc<Instance>, units: Vec<ImportUnit>) -
 fn run_req(run_id: &str) -> ImportRunReq {
     ImportRunReq {
         run_id: run_id.into(),
-        decisions: BTreeMap::new(),
+        ..ImportRunReq::default()
     }
 }
 
