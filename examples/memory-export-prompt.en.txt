@@ -10,4 +10,5 @@ Requirements:
    - scope: project if it concerns only this project, global if it applies across projects.
 3. Do not merge, summarize, rewrite or leave out entries, and do not add anything you are not sure of.
 4. Do not output keys, tokens, passwords or other credentials; write [redacted] in their place.
-5. If there are more than 100 entries, output them in parts: end each part with the line {"continued": true} and wait for my reply "continue" before the next part.
+5. Do not output sensitive personal information: health or mental-health conditions, financial amounts, ID numbers, home addresses or personal phone numbers, or the names of family members or partners.
+6. If there are more than 100 entries, output them in parts: end each part with the line {"continued": true} and wait for my reply "continue" before the next part.

@@ -430,11 +430,14 @@ fn plan_unit(
 
 /// Provenance for the record's `detail.import`: where the unit came from, then the document's and the
 /// segment's own fields, their strings redacted; null fields are left out. The path and native id stay as
-/// they are: propose reads the file there again, and the id is part of the unit key.
+/// they are: propose reads the file there again, and the id is part of the unit key. A document read from no
+/// file (an export page sent through MCP) has no path.
 fn source(doc: &SourceDoc, segment: &Segment, home: &Path, redactor: &mut Redactor) -> Value {
     let mut map = Map::new();
     map.insert("via".into(), json!(doc.via));
-    map.insert("path".into(), json!(doc.display_path));
+    if !doc.display_path.is_empty() {
+        map.insert("path".into(), json!(doc.display_path));
+    }
     map.insert("nativeId".into(), json!(doc.native_id));
     if let Some(title) = &doc.title {
         map.insert("title".into(), json!(redactor.clean(title)));
