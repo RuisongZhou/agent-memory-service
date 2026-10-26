@@ -181,3 +181,36 @@ pub async fn schedule_rebuild(t: &Instance) -> Result<()> {
     t.wake_indexer();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{engine, fresh_store, legacy_turn};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_turn_tasks_are_consumed_without_embedding_and_rebuilds_queue_memories_only() {
+        let eng = engine();
+        let (t, _, dir) = fresh_store(&eng, "legacy-turns", "test").await;
+        let (fact, turn) = legacy_turn(&t, eng.models.dim).await;
+        drain(&eng, &t).await.unwrap();
+        assert_eq!(pending(&t).await.unwrap(), 0);
+        assert_eq!(
+            t.vecs.read().await.memories.keys().collect::<Vec<_>>(),
+            [&fact.id]
+        );
+        let stored = t
+            .store
+            .get_doc(schema::TURNS, &turn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["embeddingModel"], "retired");
+        assert_eq!(stored["chunkEmbeddingModel"], "retired");
+        schedule_rebuild(&t).await.unwrap();
+        assert_eq!(pending(&t).await.unwrap(), 1);
+        drain(&eng, &t).await.unwrap();
+        assert_eq!(pending(&t).await.unwrap(), 0);
+        drop(t);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

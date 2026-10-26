@@ -97,3 +97,75 @@ pub async fn resolve_uncertainty(
     t.wake_indexer();
     Ok(json!({"id":req.id,"status":"resolved","keepMemoryId":req.keep_memory_id}))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{engine, fresh_store, llm_calls, memory};
+    use memory_store::store::to_doc;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolving_a_question_keeps_the_chosen_record_and_supersedes_the_other() {
+        let eng = engine();
+        let (t, caller, dir) = fresh_store(&eng, "uncertainty", "agent").await;
+        // A legacy conflict pair: the store's startup repair opens a question for it.
+        let edge = |id: &str| RelEdge {
+            id: id.into(),
+            relation: "conflicts".into(),
+        };
+        let port = MemoryRec {
+            id: "port".into(),
+            mtype: T_FACT.into(),
+            text: "Port is 8200".into(),
+            status: S_CONFLICT.into(),
+            scope: MemScope::project("project"),
+            related: vec![edge("newport")],
+            ..Default::default()
+        };
+        let new_port = MemoryRec {
+            id: "newport".into(),
+            text: "Port is 8100".into(),
+            related: vec![edge("port")],
+            ..port.clone()
+        };
+        let mut tx = Tx::new();
+        for rec in [&port, &new_port] {
+            tx.put(schema::MEMORIES, &rec.id, to_doc(rec).unwrap())
+                .unwrap();
+        }
+        t.store.commit(tx).await.unwrap();
+        t.store.repair_integrity().await.unwrap();
+        let open: Vec<UncertaintyRec> = t
+            .store
+            .select_as(
+                "SELECT * OMIT id FROM uncertainties WHERE status = 'open'",
+                vec![],
+            )
+            .await
+            .unwrap();
+        assert_eq!(open.len(), 1);
+        resolve_uncertainty(
+            &t,
+            &caller,
+            ResolveUncertaintyReq {
+                id: open[0].id.clone(),
+                keep_memory_id: new_port.id.clone(),
+                reason: "Verified the configured port".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(memory(&t, &new_port.id).await.status, S_CURRENT);
+        assert_eq!(memory(&t, &port.id).await.status, S_SUPERSEDED);
+        assert_eq!(
+            t.store
+                .count(schema::UNCERTAINTIES, Some("status = 'open'"))
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(llm_calls(&eng), 0);
+        drop(t);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

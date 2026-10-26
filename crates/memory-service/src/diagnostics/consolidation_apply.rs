@@ -1,8 +1,8 @@
 //! Applying and rolling back consolidation runs end to end, with the local generation stub and mock
 //! embeddings: merge, supersede and conflict, deduplication into a merged record, rollback, rollback
 //! after a user correction, and deletion of a merged record or one of its inputs.
-use super::consolidation::{add, engine, generation_stub};
-use super::{fresh_store, memory};
+use super::consolidation::{add, engine};
+use crate::test_support::{fresh_store, generation_stub, memory};
 use memory_algo_mem0::{HASHES, SOURCES};
 use memory_domain::types::*;
 use memory_engine::app::{consolidation, management};

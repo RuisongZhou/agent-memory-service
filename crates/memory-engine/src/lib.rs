@@ -3,3 +3,5 @@
 pub mod app;
 pub mod retrieval;
 pub mod runtime;
+#[cfg(test)]
+mod test_support;
