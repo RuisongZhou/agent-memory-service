@@ -18,13 +18,15 @@ With capture and recall hooks enabled, a typical workflow looks like this:
 > Later, in Claude Code, you ask about that decision. The recall hook searches the project's memories and adds relevant
 > results to the conversation. The agent can inspect the original source before answering.
 
-Existing client memories and past conversations can be imported separately.
+Existing client memories, past conversations and what other assistants such as ChatGPT remember can be imported
+separately.
 
 ## What you can do
 
 - **Continue work across clients** with automatic capture and recall, without copying context between conversations.
 - **Check and correct memories:** trace a record to its source, add a correction or retract it.
-- **Import existing history:** review proposed memories before importing them, with rollback support.
+- **Import existing history:** from client memory files with the CLI, or from another assistant right in the
+  conversation over MCP; review proposed memories before they are written, with rollback support.
 
 ### Supported clients
 
@@ -216,10 +218,8 @@ After installation and a client restart, the agent sees eight `shared-memory` to
 | `propose_import` | Submit another assistant's memory export as import proposals; writes nothing |
 | `apply_import` | Write a proposed import after you agree in the conversation |
 
-Request fields are documented in the [API reference](docs/api.md#interfaces). To import what another assistant
-remembers in a conversation, run the MCP prompt `import_memories` (in Claude Code
-`/shared-memory:import_memories my-project chatgpt`); see
-[import from another assistant](docs/mcp-harness.md#import-from-another-assistant-in-a-conversation).
+Request fields are documented in the [API reference](docs/api.md#interfaces). `propose_import` and `apply_import`
+import what another assistant remembers; see [import existing memories](#import-existing-memories).
 
 You can ask the agent to use memory directly:
 
@@ -248,8 +248,12 @@ context budgets; a failed recall or a stopped daemon does not block the prompt. 
 
 ### Import existing memories
 
-You can import supported memory files from Claude Code, Codex and WorkBuddy, as well as JSONL exports from other
-agents. Past Claude Code and Codex sessions can also be imported. Importing is a separate, reviewed workflow:
+There are two ways to import. Both propose first, write only what you accept, and can be undone as one run.
+Imported memories are historical reference material, never instructions; save a rule yourself if every host should
+follow it.
+
+**From memory files, with the CLI.** Supported memory files of Claude Code, Codex and WorkBuddy, JSONL exports from
+other agents, and past Claude Code and Codex sessions:
 
 ```bash
 ~/.local/bin/agent-memoryd import plan --host codex --project my-project --workspace /absolute/path/to/project
@@ -259,9 +263,22 @@ agents. Past Claude Code and Codex sessions can also be imported. Importing is a
 ~/.local/bin/agent-memoryd import rollback RUN                         # undo the whole run if needed
 ```
 
-Imported memories are historical reference material, never instructions; save a rule yourself if every host
-should follow it. See
-[import existing memories](docs/mcp-harness.md#import-existing-memories) for supported sources and options.
+See [import existing memories](docs/mcp-harness.md#import-existing-memories) for supported sources and options.
+
+**From another assistant, in a conversation, over MCP.** For memories kept by ChatGPT, Gemini or Claude.ai, with
+nothing saved to a file:
+
+1. In a connected host, run `/shared-memory:import_memories my-project chatgpt` (Claude Code). On hosts without
+   MCP prompts, such as Codex, paste the output of
+   `agent-memoryd import prompt --for host --project my-project --source chatgpt` instead.
+2. Run the export prompt the agent gives you in the other assistant, and paste its answer back.
+3. The agent drops the lines it must not import and submits the rest with `propose_import`. Nothing is written yet;
+   it shows you the proposals.
+4. Reply "write them" to agree. The agent calls `apply_import`, which writes the run; undo it with
+   `agent-memoryd import rollback RUN`.
+
+Step-by-step guide, limits and troubleshooting:
+[import from another assistant in a conversation](docs/mcp-harness.md#import-from-another-assistant-in-a-conversation).
 
 ## How it works
 

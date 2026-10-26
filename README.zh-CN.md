@@ -17,13 +17,14 @@ DeepSeek Harness 之间延续。
 > 之后在 Claude Code 里，你问起这个决定。召回 hook 检索该项目的记忆，把相关结果加入对话。Agent 回答前可以先查看
 > 原始来源。
 
-客户端已有的记忆和过去的对话可以另外导入。
+客户端已有的记忆、过去的对话，以及 ChatGPT 等其他助手记得的内容，都可以另外导入。
 
 ## 能做什么
 
 - **跨客户端继续工作**：自动捕获和召回，不用在对话之间手动复制上下文。
 - **检查和更正记忆**：追溯一条记录的来源，追加更正或撤回。
-- **导入已有历史**：导入前先审核提议的记忆，整次导入可以回滚。
+- **导入已有历史**：用 CLI 导入客户端的记忆文件，或者通过 MCP 直接在对话里导入另一个助手的记忆；写入前先审核提议
+  的记忆，整次导入可以回滚。
 
 ### 支持的客户端
 
@@ -203,9 +204,8 @@ bash scripts/install.sh --host deepseek-harness --apply
 | `propose_import` | 把另一个助手的记忆导出提交成导入提议，不写记忆 |
 | `apply_import` | 你在对话里同意后，写入提议的导入 |
 
-请求字段见 [API 参考](docs/api.md#interfaces)。要在对话里导入另一个助手记得的内容，运行 MCP 提示词 `import_memories`
-（Claude Code 里是 `/shared-memory:import_memories my-project chatgpt`），见
-[在对话里导入另一个助手的记忆](docs/mcp-harness.md#import-from-another-assistant-in-a-conversation)。
+请求字段见 [API 参考](docs/api.md#interfaces)。`propose_import` 和 `apply_import` 用来导入另一个助手记得的内容，见
+[导入已有记忆](#导入已有记忆)。
 
 可以直接让 Agent 使用记忆：
 
@@ -230,8 +230,11 @@ bash scripts/install.sh --host deepseek-harness --apply
 
 ### 导入已有记忆
 
-可以导入 Claude Code、Codex 和 WorkBuddy 支持的记忆文件，以及其他 Agent 导出的 JSONL；过去的 Claude Code 和 Codex
-会话也可以导入。导入是一个单独的、需要审核的流程：
+有两种导入方式。两种都先生成提议，只写入你接受的内容，整次导入可以回滚。导入的记忆都是历史参考材料，不会变成指令；
+需要每个宿主都遵守的规则请自己保存。
+
+**用 CLI 导入记忆文件。** 支持 Claude Code、Codex 和 WorkBuddy 的记忆文件、其他 Agent 导出的 JSONL，以及过去的
+Claude Code 和 Codex 会话：
 
 ```bash
 ~/.local/bin/agent-memoryd import plan --host codex --project my-project --workspace /absolute/path/to/project
@@ -241,8 +244,18 @@ bash scripts/install.sh --host deepseek-harness --apply
 ~/.local/bin/agent-memoryd import rollback RUN                    # 需要时撤销整次导入
 ```
 
-导入的记忆都是历史参考材料，不会变成指令；需要每个宿主都遵守的规则请自己保存。支持的来源和参数见
-[导入已有记忆](docs/mcp-harness.md#import-existing-memories)。
+支持的来源和参数见 [导入已有记忆](docs/mcp-harness.md#import-existing-memories)。
+
+**通过 MCP 在对话里导入另一个助手的记忆。** 适合 ChatGPT、Gemini、Claude.ai 保存的记忆，不用存文件：
+
+1. 在已连接的宿主里运行 `/shared-memory:import_memories my-project chatgpt`（Claude Code；Codex 这类不支持 MCP 提示词
+   的宿主，把 `agent-memoryd import prompt --for host --project my-project --source chatgpt` 的输出贴进对话）。
+2. 把 Agent 给你的导出提示词拿到原来的助手里运行，再把它的回答贴回来。
+3. Agent 删掉不该导入的行，用 `propose_import` 提交其余的行。这时还没有写入，Agent 会把提议给你看。
+4. 回复"写入"表示同意，Agent 调用 `apply_import` 写入这次导入；要撤销，运行 `agent-memoryd import rollback RUN`。
+
+详细步骤、限制和常见问题见
+[在对话里导入另一个助手的记忆](docs/mcp-harness.md#import-from-another-assistant-in-a-conversation)。
 
 ## 工作原理
 
