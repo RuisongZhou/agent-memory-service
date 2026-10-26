@@ -40,7 +40,7 @@ pub const RUN_PARTIALLY_ROLLED_BACK: &str = "partially_rolled_back";
 pub const PROPOSED: &str = "proposed";
 /// Failed the size or provenance checks when proposed; never applied.
 pub const REJECTED: &str = "rejected";
-/// Declined at apply time, by a review decision or by the proposal's default decision.
+/// Declined at apply time, by a review decision or because its source changed since propose.
 pub const DROPPED: &str = "dropped";
 pub const APPLIED: &str = "applied";
 /// Rechecked at apply time and left alone (`skipReason`).
@@ -115,9 +115,6 @@ pub struct ImportUnit {
     /// blake3 of the whole source file when the plan was made, and of `text`.
     pub file_hash: String,
     pub unit_hash: String,
-    /// Also offer the unit as an explicit-instruction candidate (Claude `feedback` notes, exported instructions).
-    #[serde(default)]
-    pub instruction_candidate: bool,
     /// Provenance copied into the record's `detail.import`: path, nativeId, title, cwd, via, line, ...
     #[serde(default)]
     pub source: Value,
@@ -201,17 +198,13 @@ pub struct ImportProposeReq {
 }
 
 /// `import_run`, `import_apply` and `import_rollback`. `decisions` (apply only) maps proposal ids to
-/// `accept` or `reject`; a proposal without one gets its `defaultDecision`. `scopes` (apply only) maps the
-/// ids of accepted instructions to `project` or `global`; an instruction without one is the project's,
-/// whatever the extraction suggested.
+/// `accept` or `reject`; a proposal without one is accepted.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRunReq {
     pub run_id: String,
     #[serde(default)]
     pub decisions: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub scopes: BTreeMap<String, String>,
 }
 
 /// `import_runs`: the newest runs first, optionally of one project.
@@ -281,7 +274,7 @@ pub struct ImportProposal {
     pub position: usize,
     pub unit: String,
     pub mode: String,
-    /// `fact`, `preference`, `instruction` or `reference`.
+    /// `fact`, `preference` or `reference`; every one is written as an imported fact.
     pub item_kind: String,
     /// `project` or `global`. A hint only: facts are written project-scoped.
     pub scope_hint: String,
@@ -299,8 +292,6 @@ pub struct ImportProposal {
     pub status: String,
     #[serde(default)]
     pub reject_reason: Option<String>,
-    /// What apply does without a review decision: `accept`, or `reject` for instruction candidates.
-    pub default_decision: String,
     /// A current imported record of the project with the same text.
     #[serde(default)]
     pub duplicate_of: Option<String>,
@@ -384,7 +375,6 @@ pub struct RunCounts {
     pub unchanged: usize,
     pub proposals: usize,
     pub rejected: usize,
-    pub instruction_candidates: usize,
     pub duplicates: usize,
     pub generation_calls: usize,
     pub cache_hits: usize,
@@ -444,29 +434,13 @@ pub fn item_kind_for_hint(hint: Option<&str>) -> &'static str {
     match hint {
         Some("user" | "feedback" | "preference") => "preference",
         Some("reference") => "reference",
-        Some("instruction") => "instruction",
         _ => "fact",
-    }
-}
-
-/// Apply's decision when the review names none: an explicit instruction needs a person's yes.
-pub fn default_decision(item_kind: &str) -> &'static str {
-    if item_kind == "instruction" {
-        REJECT
-    } else {
-        ACCEPT
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn instructions_need_a_yes() {
-        assert_eq!(default_decision("instruction"), REJECT);
-        assert_eq!(default_decision("fact"), ACCEPT);
-    }
 
     fn turn() -> SessionTurn {
         let message = |role: &str, content: &str, timestamp: &str| InMessage {

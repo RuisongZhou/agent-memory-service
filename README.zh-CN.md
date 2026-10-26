@@ -237,7 +237,7 @@ bash scripts/install.sh --host deepseek-harness --apply
 ~/.local/bin/agent-memoryd import rollback RUN                    # 需要时撤销整次导入
 ```
 
-导入的事实仍是历史参考材料；行为要求需要明确接受才会写入。支持的来源和参数见
+导入的记忆都是历史参考材料，不会变成指令；需要每个宿主都遵守的规则请自己保存。支持的来源和参数见
 [导入已有记忆](docs/mcp-harness.md#import-existing-memories)。
 
 ## 工作原理

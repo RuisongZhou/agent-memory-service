@@ -92,7 +92,6 @@ fn run_req(run_id: &str) -> ImportRunReq {
     ImportRunReq {
         run_id: run_id.into(),
         decisions: BTreeMap::new(),
-        scopes: BTreeMap::new(),
     }
 }
 
@@ -187,12 +186,8 @@ pub async fn selftest() {
         import::turn_proposal_id(&r1, &s1_1.turn.as_ref().unwrap().turn_id)
     );
     assert_eq!(
-        (
-            &first["itemKind"],
-            &first["status"],
-            &first["defaultDecision"]
-        ),
-        (&json!(ITEM_SESSION_TURN), &json!(PROPOSED), &json!(ACCEPT))
+        (&first["itemKind"], &first["status"]),
+        (&json!(ITEM_SESSION_TURN), &json!(PROPOSED))
     );
     assert_eq!(t.store.count(schema::MEMORIES, None).await.unwrap(), 0);
     // A turn twice in one run is refused.

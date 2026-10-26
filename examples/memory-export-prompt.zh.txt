@@ -4,7 +4,7 @@
 1. 只输出一个代码块。每条记忆占一行，是一个 JSON 对象。代码块外不要写别的内容。
 2. 字段：
    - text：记忆内容。尽量保留原话，一条只写一件事。
-   - kind：instruction（我要求你怎么做）、preference（我的偏好）、fact（事实或决定）、reference（去哪里找信息）之一。
+   - kind：preference（我的偏好，包括我要求你怎么做）、fact（事实或决定）、reference（去哪里找信息）之一。
    - date：保存或得知的日期，格式 YYYY-MM-DD，不知道就留空。
    - source：来自哪个记忆文件；来自对话就写 conversation。
    - scope：只和这个项目有关写 project，跨项目适用写 global。

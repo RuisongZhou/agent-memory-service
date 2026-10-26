@@ -303,11 +303,11 @@ protocols never call it.
    is written to `memories`, and no lock is held during model calls.
 3. **Apply**, under the formation lock, one proposal per transaction. A declined proposal is `dropped`. An accepted
    fact becomes a `fact` with origin `imported`, project scope, the source's `statedAt`, `ingestionMode:
-   imported`, `detail.import` provenance and an `evidence` row; the indexer embeds it. A current record of the
-   same text is linked instead of duplicated, and an instruction a person accepted becomes an explicit
-   instruction (global only when the person chose so). A ledger row holds the unit's live links, carried from
-   import to import: a changed one-record unit's new fact, and its new accepted instruction, supersede the ones
-   its earlier import wrote, unless another unit's row still holds them. A unit of which nothing was applied gets
+   imported`, `detail.import` provenance and an `evidence` row; the indexer embeds it. A current imported fact of
+   the same text is linked instead of duplicated. Import never writes an instruction: a rule from a source is a
+   `preference` fact. A ledger row holds the unit's live links, carried from import to import: a changed
+   one-record unit's new fact supersedes the one its earlier import wrote, unless another unit's row still
+   holds it. A unit of which nothing was applied gets
    a `declined` row that keeps its earlier links, so the same text is not offered again unless proposed with
    `reconsider`.
 4. **Rollback** inverts applied proposals newest first: a written record becomes `superseded` with

@@ -15,7 +15,7 @@ use crate::runtime::engine::Engine;
 use crate::runtime::instance::Instance;
 use memory_domain::import::apply::turn_fact_rollback_patch;
 use memory_domain::import::{
-    is_session_turn, ImportProposal, ImportRun, ImportUnit, UnitOutcome, ACCEPT, APPLIED,
+    is_session_turn, ImportProposal, ImportRun, ImportUnit, UnitOutcome, APPLIED,
     ITEM_SESSION_TURN, KIND, PROPOSED, RUN_APPLIED, RUN_APPLYING, UNIT_NEW,
 };
 use memory_domain::types::*;
@@ -68,7 +68,6 @@ pub(super) fn register(
         file_hash: unit.file_hash.clone(),
         source: unit.source.clone(),
         status: PROPOSED.into(),
-        default_decision: ACCEPT.into(),
         created_at: now.into(),
         turn: Some(turn),
         ..Default::default()

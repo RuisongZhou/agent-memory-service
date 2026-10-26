@@ -72,13 +72,12 @@ pub struct Segment {
     /// Per-segment overrides of the document's values (an export line carries its own).
     pub stated_at: Option<String>,
     pub kind_hint: Option<String>,
-    pub instruction_candidate: Option<bool>,
     /// Merged into the unit's `source` after the document's `extra`.
     pub extra: Value,
 }
 
 impl Segment {
-    /// A segment with the document's time, kind and instruction flag.
+    /// A segment with the document's time and kind.
     pub fn new(locator: String, heading_path: Vec<String>, text: String, policy: Policy) -> Self {
         Segment {
             locator,
@@ -87,7 +86,6 @@ impl Segment {
             policy,
             stated_at: None,
             kind_hint: None,
-            instruction_candidate: None,
             extra: Value::Null,
         }
     }
@@ -113,7 +111,6 @@ pub struct SourceDoc {
     /// RFC3339 UTC, or "" when unknown.
     pub stated_at: String,
     pub kind_hint: Option<String>,
-    pub instruction_candidate: bool,
     pub segments: Vec<Segment>,
     pub extra: Value,
 }

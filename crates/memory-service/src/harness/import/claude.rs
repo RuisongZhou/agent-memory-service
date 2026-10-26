@@ -196,7 +196,6 @@ fn notes(ctx: &ScanContext, project: &ProjectDir, memory: &Path, out: &mut ScanO
             user_level: false,
             file_hash: content_hash(&raw),
             stated_at,
-            instruction_candidate: front.kind.as_deref() == Some("feedback"),
             kind_hint: front.kind,
             segments: vec![Segment::new(
                 "note".into(),
@@ -338,7 +337,6 @@ mod tests {
         assert_eq!(deploy.title.as_deref(), Some("Deploy notes"));
         assert_eq!(deploy.stated_at, "2026-10-01T08:00:00Z");
         assert_eq!(deploy.kind_hint.as_deref(), Some("feedback"));
-        assert!(deploy.instruction_candidate);
         assert_eq!(deploy.cwd.as_deref(), Some(f.workspace.as_path()));
         assert_eq!(
             deploy.segments[0].text,
@@ -359,7 +357,6 @@ mod tests {
         let plain = &out.docs[1];
         assert_eq!(plain.stated_at, "2026-09-21T14:13:20Z");
         assert_eq!(plain.kind_hint, None);
-        assert!(!plain.instruction_candidate);
         assert_eq!(plain.segments[0].text, "Builds use the fast profile.");
         assert!(plain.segments[0].heading_path.is_empty());
     }

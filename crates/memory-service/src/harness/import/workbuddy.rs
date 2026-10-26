@@ -151,7 +151,6 @@ fn document(ctx: &ScanContext, root: &Path, path: PathBuf, out: &mut ScanOutput)
         file_hash: content_hash(&raw),
         stated_at: mtime(&meta),
         kind_hint: profile.then(|| "user".to_string()),
-        instruction_candidate: false,
         segments,
         extra: Value::Null,
     });

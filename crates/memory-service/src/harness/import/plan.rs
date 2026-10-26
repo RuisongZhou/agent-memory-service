@@ -422,9 +422,6 @@ fn plan_unit(
             kind_hint: segment.kind_hint.clone().or_else(|| doc.kind_hint.clone()),
             heading_path,
             file_hash: doc.file_hash.clone(),
-            instruction_candidate: segment
-                .instruction_candidate
-                .unwrap_or(doc.instruction_candidate),
             source,
             turn: None,
         },
@@ -740,7 +737,6 @@ mod tests {
             file_hash: content_hash(path),
             stated_at: stated_at.into(),
             kind_hint: Some("project".into()),
-            instruction_candidate: false,
             segments,
             extra: json!({"threadId": "t-1", "memoriesHead": null}),
         }
@@ -929,8 +925,7 @@ mod tests {
     fn segment_overrides_and_provenance_reach_the_unit() {
         let mut line = segment("0123abcd", "Use tabs in Go files.", Policy::VerbatimIfFits);
         line.stated_at = Some("2026-03-04T00:00:00Z".into());
-        line.kind_hint = Some("instruction".into());
-        line.instruction_candidate = Some(true);
+        line.kind_hint = Some("reference".into());
         line.extra = json!({"line": 7, "source": null});
         let plan = build(
             scan(vec![doc("x.md", "2026-01-01T00:00:00Z", vec![line])]),
@@ -939,8 +934,7 @@ mod tests {
         .unwrap();
         let unit = &plan.units[0].unit;
         assert_eq!(unit.stated_at, "2026-03-04T00:00:00Z");
-        assert_eq!(unit.kind_hint.as_deref(), Some("instruction"));
-        assert!(unit.instruction_candidate);
+        assert_eq!(unit.kind_hint.as_deref(), Some("reference"));
         assert_eq!(unit.unit_hash, content_hash("Use tabs in Go files."));
         assert_eq!(unit.file_hash, content_hash("x.md"));
         assert_eq!(

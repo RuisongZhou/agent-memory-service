@@ -4,7 +4,7 @@ Requirements:
 1. Output a single code block and nothing outside it. Each memory takes one line and is one JSON object.
 2. Fields:
    - text: the memory. Keep the original wording where you can; one thing per line.
-   - kind: one of instruction (how I asked you to work), preference (what I prefer), fact (a fact or decision) or reference (where to find information).
+   - kind: one of preference (what I prefer, including how I asked you to work), fact (a fact or decision) or reference (where to find information).
    - date: the date it was saved or learned, as YYYY-MM-DD; leave it empty if you do not know.
    - source: the memory file it comes from; write conversation if it comes from a conversation.
    - scope: project if it concerns only this project, global if it applies across projects.

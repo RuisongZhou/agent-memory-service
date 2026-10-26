@@ -2,7 +2,7 @@
 //! with the prompt of `agent-memoryd import prompt`, for hosts whose memory cannot be read from disk. One
 //! memory per line; the answer may wrap the lines in a code fence and pause with `{"continued": true}`.
 //! Every line is one segment of one document for the file. An export is untrusted data like any host
-//! file: the planner redacts it, and an exported instruction is only ever a candidate.
+//! file: the planner redacts it, and an exported rule is imported as a preference, never as an instruction.
 use memory_rules::import::units::content_hash;
 use memory_rules::util::is_valid_date;
 use serde_json::{Map, Value};
@@ -18,7 +18,7 @@ const VIA: &str = "agent-export";
 /// Largest export read.
 const MAX_EXPORT: u64 = 8 << 20;
 /// Kinds an export line may name; `fact` when it names none.
-pub const KINDS: [&str; 4] = ["instruction", "preference", "fact", "reference"];
+pub const KINDS: [&str; 3] = ["preference", "fact", "reference"];
 /// Scopes an export line may name; `project` when it names none. Only a hint: facts are project-scoped.
 const SCOPES: [&str; 2] = ["project", "global"];
 
@@ -65,7 +65,6 @@ impl Adapter for Export {
             // Only a dated line has a time: an undated one must not look newer than dated memories.
             stated_at: String::new(),
             kind_hint: None,
-            instruction_candidate: false,
             segments,
             extra: Value::Null,
         });
@@ -102,7 +101,6 @@ impl Entry {
         extra.insert("source".into(), self.source.into());
         extra.insert("scopeHint".into(), self.scope.into());
         extra.extend(self.notes);
-        let instruction = self.kind == "instruction";
         Segment {
             locator,
             heading_path: Vec::new(),
@@ -110,7 +108,6 @@ impl Entry {
             policy: Policy::VerbatimIfFits,
             stated_at: self.date.map(|date| format!("{date}T00:00:00Z")),
             kind_hint: Some(self.kind),
-            instruction_candidate: Some(instruction),
             extra: Value::Object(extra),
         }
     }
@@ -154,6 +151,8 @@ fn parse_line(line: &str) -> Line {
     };
     let kind = match given(&fields, "kind") {
         Ok(None) => "fact",
+        // An agent may still label a rule it was asked to follow: import never writes instructions.
+        Ok(Some("instruction")) => "preference",
         Ok(Some(kind)) if KINDS.contains(&kind) => kind,
         Ok(Some(_)) | Err(_) => {
             return Line::Invalid(format!("unknown kind {:?}", shown(&fields["kind"])))
@@ -242,7 +241,7 @@ mod tests {
         );
         assert_eq!(doc.stated_at, "");
         assert_eq!(doc.file_hash, content_hash(EXPORT));
-        type Seen<'a> = (&'a str, Option<&'a str>, Option<&'a str>, Option<bool>);
+        type Seen<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
         let got: Vec<Seen> = doc
             .segments
             .iter()
@@ -251,43 +250,30 @@ mod tests {
                     s.text.as_str(),
                     s.kind_hint.as_deref(),
                     s.stated_at.as_deref(),
-                    s.instruction_candidate,
                 )
             })
             .collect();
         assert_eq!(
             got,
             [
+                // An exported instruction is a preference.
                 (
                     "Run the smoke checks before tagging.",
-                    Some("instruction"),
-                    Some("2026-09-01T00:00:00Z"),
-                    Some(true)
-                ),
-                (
-                    "Prefers concise answers",
                     Some("preference"),
-                    None,
-                    Some(false)
+                    Some("2026-09-01T00:00:00Z"),
                 ),
+                ("Prefers concise answers", Some("preference"), None),
                 (
                     "The staging gate sits before the deploy step.",
                     Some("fact"),
                     None,
-                    Some(false)
                 ),
                 (
                     "Release notes are kept in CHANGELOG.md.",
                     Some("reference"),
                     None,
-                    Some(false)
                 ),
-                (
-                    "Run the smoke checks before tagging.",
-                    Some("fact"),
-                    None,
-                    Some(false)
-                ),
+                ("Run the smoke checks before tagging.", Some("fact"), None),
             ]
         );
         assert_eq!(

@@ -6,14 +6,10 @@ use crate::consolidation::{unsupported_entities, unsupported_numbers};
 use crate::util::is_cjk;
 use std::collections::BTreeSet;
 
-/// Kinds an extracted item may have.
-pub const ITEM_KINDS: [&str; 4] = ["fact", "preference", "instruction", "reference"];
+/// Kinds an extracted item may have. Every one becomes an imported fact; a rule about how to work is a preference.
+pub const ITEM_KINDS: [&str; 3] = ["fact", "preference", "reference"];
 /// Scope hints an extracted item may carry.
 pub const ITEM_SCOPES: [&str; 2] = ["project", "global"];
-/// Explicit instruction limit in characters (`memoryType:"instruction"` in crates/memory-engine/src/app/instructions.rs).
-pub const MAX_INSTRUCTION_CHARS: usize = 1024;
-/// Explicit instruction limit in bytes (`memoryType:"instruction"` in crates/memory-engine/src/app/instructions.rs).
-pub const MAX_INSTRUCTION_BYTES: usize = 4096;
 /// Longest evidence quote, in characters.
 pub const MAX_EVIDENCE_CHARS: usize = 600;
 /// Shortest evidence quote, in characters, unless it is the whole unit.
@@ -36,10 +32,9 @@ pub struct ItemRef<'a> {
 
 /// Provenance and size checks of one extracted item (design §6.6), first failure wins, in this order:
 /// empty text; unknown kind; unknown scope; cost over `limits.hard_cap()` ("text costs N, more than the unit cap M");
-/// instruction over MAX_INSTRUCTION_CHARS chars or MAX_INSTRUCTION_BYTES bytes; empty evidence; evidence longer than
-/// MAX_EVIDENCE_CHARS; evidence not a quote of `unit_text` (`evidence_in`); evidence shorter than 8 characters unless
-/// it is the whole unit; evidence holding fewer than 30% (rounded up) of the text's content words ("evidence shares
-/// N of M content words with the text"); numbers in text found in neither `unit_text` nor `context`
+/// empty evidence; evidence longer than MAX_EVIDENCE_CHARS; evidence not a quote of `unit_text` (`evidence_in`);
+/// evidence shorter than 8 characters unless it is the whole unit; evidence holding fewer than 30% (rounded up) of
+/// the text's content words ("evidence shares N of M content words with the text"); numbers in text found in neither `unit_text` nor `context`
 /// (consolidation::unsupported_numbers, list them); named entities likewise (unsupported_entities).
 /// `context` holds the unit's metadata strings (project, host, heading path, statedAt) that a self-contained text may name.
 /// Error strings are short, lowercase, and name the offending values.
@@ -70,20 +65,6 @@ pub fn check_item(
     let (cost, cap) = (record_cost(item.text), limits.hard_cap());
     if cost > cap {
         return Err(format!("text costs {cost}, more than the unit cap {cap}"));
-    }
-    if item.kind == "instruction" {
-        let chars = item.text.chars().count();
-        if chars > MAX_INSTRUCTION_CHARS {
-            return Err(format!(
-                "instruction has {chars} characters, more than {MAX_INSTRUCTION_CHARS}"
-            ));
-        }
-        if item.text.len() > MAX_INSTRUCTION_BYTES {
-            return Err(format!(
-                "instruction has {} bytes, more than {MAX_INSTRUCTION_BYTES}",
-                item.text.len()
-            ));
-        }
     }
     if item.evidence.trim().is_empty() {
         return Err("empty evidence".into());
@@ -318,44 +299,6 @@ mod tests {
     }
 
     #[test]
-    fn instructions_keep_the_explicit_instruction_limits() {
-        // A budget large enough that the unit cap is not what rejects the text.
-        let limits = UnitLimits {
-            recall_budget: 100_000,
-            recall_top_k: 5,
-        };
-        // Two content words repeated, so a short quote holds them all.
-        let long = format!("{}notes", "note ".repeat(204));
-        assert_eq!(long.chars().count(), MAX_INSTRUCTION_CHARS + 1);
-        let unit = format!("{long} end");
-        let item = ItemRef {
-            text: &long,
-            kind: "instruction",
-            scope: "project",
-            evidence: "note notes end",
-        };
-        assert_eq!(
-            check_item(&item, &unit, &[], &limits),
-            Err("instruction has 1025 characters, more than 1024".into())
-        );
-        // A fact of the same length passes, and an instruction at the limit too. MAX_INSTRUCTION_BYTES is four
-        // bytes per allowed character, so the character limit always trips first; it is kept to mirror the API.
-        let fact = ItemRef {
-            kind: "fact",
-            ..item
-        };
-        assert_eq!(check_item(&fact, &unit, &[], &limits), Ok(()));
-        let at_limit = "😀".repeat(MAX_INSTRUCTION_CHARS);
-        let unit = format!("{at_limit} end");
-        let item = ItemRef {
-            text: &at_limit,
-            evidence: "😀😀😀😀 end",
-            ..item
-        };
-        assert_eq!(check_item(&item, &unit, &[], &limits), Ok(()));
-    }
-
-    #[test]
     fn evidence_must_hold_a_share_of_the_claim() {
         let unit = concat!(
             "- Alice Smith owns the payments service.\n",
@@ -392,7 +335,7 @@ mod tests {
         assert_eq!(check(quote, quote), Ok(()));
         let whole = ItemRef {
             text: "Always use pnpm.",
-            kind: "instruction",
+            kind: "preference",
             scope: "project",
             evidence: "pnpm",
         };

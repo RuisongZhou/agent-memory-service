@@ -9,23 +9,12 @@ use super::ImportProposal;
 use crate::consolidation::apply::FieldPatch;
 use crate::types::*;
 
-/// The item kind written as an explicit instruction; every other kind becomes an imported fact.
-pub const INSTRUCTION: &str = "instruction";
 /// `role` of the evidence row that quotes the unit an imported record came from.
 pub const EVIDENCE_ROLE: &str = "import";
 
-/// Whether `p` writes an instruction rather than a fact.
-pub fn is_instruction(p: &ImportProposal) -> bool {
-    p.item_kind == INSTRUCTION
-}
-
-/// Whether import wrote `m`: an imported fact, or an instruction a person accepted from an import.
+/// Whether import wrote `m`.
 pub fn is_import_record(m: &MemoryRec) -> bool {
     m.source.origin == ORIGIN_IMPORTED
-        || (m.mtype == T_INSTRUCTION
-            && m.detail
-                .as_ref()
-                .is_some_and(|detail| detail.get("import").is_some()))
 }
 
 /// `detail.import` of a record written from `p`: where it came from and how it was proposed.
@@ -47,43 +36,11 @@ fn provenance(p: &ImportProposal) -> Value {
     })
 }
 
-/// The record an accepted proposal writes, with id `id`, at `now`.
-///
-/// - Facts, preferences and references become a `fact` with origin `imported`, scoped to the project
-///   (a `global` scope hint is kept in the provenance only), stated when the source states it. The effective
-///   time is unknown, as for Mem0 facts. `supersedes` is the proposal's: the record a changed verbatim unit
-///   replaces.
-/// - An instruction a person accepted becomes an explicit `instruction`, the project's unless the person
-///   chose `global` (a `global` scope hint alone never widens it), in effect from now like any explicit
-///   instruction; the source's own statement time stays in `detail.import.statedAt`.
-pub fn imported_record(p: &ImportProposal, id: &str, now: &str, global: bool) -> MemoryRec {
-    let mut detail = provenance(p);
-    if is_instruction(p) {
-        detail["statedAt"] = json!(p.stated_at);
-        let scope = if global {
-            MemScope::global()
-        } else {
-            MemScope::project(&p.project)
-        };
-        return MemoryRec {
-            id: id.into(),
-            mtype: T_INSTRUCTION.into(),
-            text: p.text.clone(),
-            scope,
-            status: S_CURRENT.into(),
-            effective_at: now.into(),
-            recorded_at: now.into(),
-            stated_at: now.into(),
-            last_accessed_at: now.into(),
-            source: Source {
-                platform: p.host.clone(),
-                turn_ids: vec![],
-                origin: ORIGIN_EXPLICIT.into(),
-            },
-            detail: Some(json!({ "import": detail })),
-            ..Default::default()
-        };
-    }
+/// The record an accepted proposal writes, with id `id`, at `now`: whatever its item kind (fact, preference
+/// or reference), a `fact` with origin `imported`, scoped to the project (a `global` scope hint is kept in the
+/// provenance only), stated when the source states it. The effective time is unknown, as for Mem0 facts.
+/// `supersedes` is the proposal's: the record a changed verbatim unit replaces.
+pub fn imported_record(p: &ImportProposal, id: &str, now: &str) -> MemoryRec {
     MemoryRec {
         id: id.into(),
         mtype: T_FACT.into(),
@@ -100,28 +57,21 @@ pub fn imported_record(p: &ImportProposal, id: &str, now: &str, global: bool) ->
             origin: ORIGIN_IMPORTED.into(),
         },
         supersedes: p.supersedes.clone(),
-        detail: Some(json!({ "import": detail })),
+        detail: Some(json!({ "import": provenance(p) })),
         ..Default::default()
     }
 }
 
 /// Retire `old`, the record a changed unit was imported as, for `new`: the record its new text became, or
 /// the current record of the same text it is linked to. `old` becomes `superseded`, linked to `new`, valid
-/// until `new` was stated (`now` when that is unknown). Only a current record import wrote, of the same type
-/// as `new`, is replaced; one a person corrected, a consolidation run merged or a question disputes is left
-/// alone (`Err` is the reason, and `new` is then written without `supersedes`). Whether another unit still
+/// until `new` was stated (`now` when that is unknown). Only a current record import wrote is replaced; one a
+/// person corrected, a consolidation run merged or a question disputes is left alone (`Err` is the reason, and `new` is then written without `supersedes`). Whether another unit still
 /// holds `old` is the caller's check: this plan only sees the records.
 pub fn supersede_patch(old: &MemoryRec, new: &MemoryRec, now: &str) -> Result<FieldPatch, String> {
     if !is_import_record(old) {
         return Err(format!(
             "{} is not an imported record (origin {})",
             old.id, old.source.origin
-        ));
-    }
-    if old.mtype != new.mtype {
-        return Err(format!(
-            "{} has type {}, not {}",
-            old.id, old.mtype, new.mtype
         ));
     }
     if old.status != S_CURRENT {
@@ -240,7 +190,7 @@ pub fn restore_patch(previous: &MemoryRec, successor: &str) -> Option<FieldPatch
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::import::{default_decision, KIND, MODE_VERBATIM, PROPOSED};
+    use crate::import::{KIND, MODE_VERBATIM, PROPOSED};
 
     const NOW: &str = "2026-10-22T10:00:00Z";
 
@@ -263,7 +213,6 @@ mod tests {
             file_hash: "fh".into(),
             source: json!({"path": "memory/deploy.md"}),
             status: PROPOSED.into(),
-            default_decision: default_decision(kind).into(),
             created_at: NOW.into(),
             ..Default::default()
         }
@@ -277,7 +226,6 @@ mod tests {
             },
             id,
             NOW,
-            false,
         )
     }
 
@@ -296,10 +244,10 @@ mod tests {
 
     #[test]
     fn facts_preferences_and_references_become_imported_project_facts() {
-        // Every kind but an instruction takes this path; a preference shows the type is not the kind.
+        // A preference shows the type is not the kind.
         let mut p = proposal("preference", "global");
         p.supersedes = Some("mold".into());
-        let m = imported_record(&p, "mnew", NOW, true);
+        let m = imported_record(&p, "mnew", NOW);
         assert_eq!(m.mtype, T_FACT);
         assert_eq!(m.source.origin, ORIGIN_IMPORTED);
         assert_eq!(m.source.platform, "claude-code");
@@ -325,47 +273,13 @@ mod tests {
     }
 
     #[test]
-    fn accepted_instructions_are_explicit_and_take_effect_now() {
-        let m = imported_record(&proposal(INSTRUCTION, "global"), "mi", NOW, false);
-        assert_eq!(m.mtype, T_INSTRUCTION);
-        assert_eq!(m.source.origin, ORIGIN_EXPLICIT);
-        // A global hint alone keeps the instruction in the project; only a person's choice widens it.
-        assert_eq!(m.scope, MemScope::project("proj"));
-        assert_eq!((m.effective_at.as_str(), m.stated_at.as_str()), (NOW, NOW));
-        assert_eq!(m.supersedes, None);
-        // The note's own time is kept with the provenance.
-        assert_eq!(
-            m.detail.as_ref().unwrap()["import"]["statedAt"],
-            "2026-05-03T09:00:00Z"
-        );
-        let global = imported_record(&proposal(INSTRUCTION, "project"), "mg", NOW, true);
-        assert_eq!(global.scope, MemScope::global());
-        assert!(is_import_record(&m));
-    }
-
-    #[test]
-    fn instructions_supersede_instructions_only() {
-        let old = imported_record(&proposal(INSTRUCTION, "project"), "mi1", NOW, false);
-        let new = imported_record(&proposal(INSTRUCTION, "project"), "mi2", NOW, false);
-        let patch = supersede_patch(&old, &new, NOW).unwrap();
-        assert_eq!(patch.after["supersededBy"], "mi2");
-        let fact = imported("mf", "Deploys use Nomad.");
-        assert!(supersede_patch(&old, &fact, NOW)
-            .unwrap_err()
-            .contains("has type instruction, not fact"));
-        // An explicit instruction a person wrote is not import's to replace.
-        let typed = MemoryRec {
-            detail: None,
-            ..old.clone()
-        };
-        assert!(supersede_patch(&typed, &new, NOW)
-            .unwrap_err()
-            .contains("not an imported record"));
-        // A supersede by a linked record can be undone while that record still supersedes it.
-        let retired = patched(&old, &patch);
-        assert!(restore_patch(&retired, "mi2").is_some());
-        assert!(restore_patch(&retired, "mi9").is_none());
-        assert!(restore_patch(&old, "mi2").is_none());
+    fn a_supersede_is_undone_while_its_successor_still_supersedes() {
+        let old = imported("mold", "Deploys use Ansible.");
+        let new = imported("mnew", "Deploys use Nomad.");
+        let retired = patched(&old, &supersede_patch(&old, &new, NOW).unwrap());
+        assert!(restore_patch(&retired, "mnew").is_some());
+        assert!(restore_patch(&retired, "mother").is_none());
+        assert!(restore_patch(&old, "mnew").is_none());
     }
 
     #[test]

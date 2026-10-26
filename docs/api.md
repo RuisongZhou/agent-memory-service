@@ -229,11 +229,11 @@ field. They are not gated by a configuration flag and are not MCP tools.
 | `POST /admin/import_propose` | `{project, host, runId?, finish, limits: {recallBudget, recallTopK}, planHash?, reconsider?, units: [...]}`, at most 64 units | `{run, proposals, units}` of this batch |
 | `POST /admin/import_run` | `{runId}` | `{run, proposals}` |
 | `POST /admin/import_runs` | `{project?, limit?}` (1–200, default 20) | `{runs}`, newest first |
-| `POST /admin/import_apply` | `{runId, decisions: {proposalId: "accept" \| "reject"}, scopes?: {proposalId: "project" \| "global"}}` | `{run, proposals}` |
+| `POST /admin/import_apply` | `{runId, decisions: {proposalId: "accept" \| "reject"}}` | `{run, proposals}` |
 | `POST /admin/import_rollback` | `{runId}` | `{run, proposals}` |
 
-A unit is `{unit, host, mode, text, pieces?, statedAt, kindHint?, headingPath, fileHash, unitHash,
-instructionCandidate, source, turn?}`: `mode` is `verbatim` (the text is one proposal), `split` (each piece is one),
+A unit is `{unit, host, mode, text, pieces?, statedAt, kindHint?, headingPath, fileHash, unitHash, source,
+turn?}`: `mode` is `verbatim` (the text is one proposal), `split` (each piece is one),
 `extract` (one generation call; the text is at most 8 KB) or `session-turn`. The first batch omits `runId` and
 creates the run; later batches name it, one at a time; the batch with `finish:true` makes the run `proposed`.
 `recallBudget` must be at least 40 and `recallTopK` positive. `unitHash` must be the blake3 hex of `text`, unit
@@ -256,11 +256,11 @@ rollback. Run counts keep session turns apart from proposals: `sessionTurns`, `t
 | Proposal | `proposed` or `rejected` (with `rejectReason`); then `dropped`, `applied` or `skipped` (with `skipReason`); then `rolled_back`, or still `applied` with `rollbackSkipReason` |
 | Unit outcome | `new`, `changed`, `unchanged`, `reconsidered` or `failed` (with `error`; the run continues); a changed unit lists the current records its earlier import left in `previousRecords` |
 
-Each proposal carries `itemKind` (`fact`, `preference`, `instruction`, `reference`), `scopeHint`, `evidence`,
-`defaultDecision` (`reject` for instructions), `duplicateOf` (accepting it links the unit to that record),
-`supersedes` (the record the unit's earlier import wrote that this one replaces) and up to three `similar`
-memories. `import_apply` takes each proposal's decision from `decisions` or its default; an accepted instruction
-is global only when `scopes` says so. `reconsider` proposes again the units whose last import applied nothing
+Each proposal carries `itemKind` (`fact`, `preference` or `reference`; each is written as an imported fact, and
+import never writes an instruction), `scopeHint`, `evidence`, `duplicateOf` (accepting it links the unit to that
+record), `supersedes` (the record the unit's earlier import wrote that this one replaces) and up to three
+`similar` memories. `import_apply` takes each proposal's decision from `decisions` and accepts a proposal it does
+not name. `reconsider` proposes again the units whose last import applied nothing
 although their text is unchanged. Errors are `INVALID_ARGUMENT` (400) for validation, a bad `runId` or a run in the
 wrong status, `NOT_FOUND` (404), `MODEL_UNAVAILABLE` (503) for extract units without a generation key, and
 `INTERNAL` (500) during apply or rollback, which is recorded on `run.error`; repeating the call resumes.
