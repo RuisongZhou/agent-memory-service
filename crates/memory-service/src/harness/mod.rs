@@ -489,6 +489,31 @@ impl Daemon {
     }
 }
 
+/// How long an operator command waits for the daemon: proposing a consolidation run makes one generation call
+/// per cluster.
+const ADMIN_COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// One admin call of an operator command (`agent-memoryd reindex`, `consolidate`) on the daemon at `url`, with
+/// the client of every other daemon call, so a loopback daemon is reached without a configured proxy. A refusal
+/// keeps the daemon's message.
+pub async fn admin_command(url: &str, name: &str, body: &Value) -> anyhow::Result<Value> {
+    let daemon = Daemon::new(url, ADMIN_COMMAND_TIMEOUT)
+        .map_err(|e| anyhow::anyhow!("--url {url}: {}", e.kind()))?;
+    daemon
+        .admin(name, body, "cli")
+        .await
+        .map_err(|AdminError { error, message }| {
+            let reason = match error {
+                CallError::Status(code) => format!("HTTP {code}"),
+                other => other.kind().to_string(),
+            };
+            match message {
+                Some(message) => anyhow::anyhow!("{reason}: {message}"),
+                None => anyhow::anyhow!("{reason}"),
+            }
+        })
+}
+
 /// The body of `response` as a JSON object of at most `max` bytes.
 async fn json_object(mut response: reqwest::Response, max: usize) -> Result<Value, CallError> {
     let mut data = Vec::new();
@@ -507,6 +532,92 @@ async fn json_object(mut response: reqwest::Response, max: usize) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Set in the child process that checks `admin_command` under a configured proxy.
+    const PROXY_CHILD: &str = "MEMORY_ADMIN_PROXY_TEST";
+
+    /// A daemon's admin routes on a loopback port: `reindex` is scheduled, anything else refused with a message.
+    async fn admin_stub() -> String {
+        use axum::extract::Path as UrlPath;
+        use axum::http::StatusCode;
+        use axum::routing::post;
+        use axum::{Json, Router};
+        let app = Router::new().route(
+            "/admin/{name}",
+            post(|UrlPath(name): UrlPath<String>| async move {
+                if name == "reindex" {
+                    (StatusCode::OK, Json(json!({"scheduled": true})))
+                } else {
+                    let refusal = json!({"code": "invalid_argument", "message": "consolidationEnabled is off"});
+                    (StatusCode::BAD_REQUEST, Json(refusal))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    #[tokio::test]
+    async fn admin_commands_return_the_answer_or_the_daemons_refusal() {
+        let url = admin_stub().await;
+        let scheduled = admin_command(&url, "reindex", &json!({})).await.unwrap();
+        assert_eq!(scheduled, json!({"scheduled": true}));
+        let refused = admin_command(
+            &url,
+            "consolidate",
+            &json!({"project": "p", "dryRun": true}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.to_string(), "HTTP 400: consolidationEnabled is off");
+        let closed = admin_command("http://127.0.0.1:1", "reindex", &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(closed.to_string(), "ConnectionError");
+    }
+
+    /// Operator commands reach a loopback daemon although the environment names a proxy. Checked in a child
+    /// process whose environment names a proxy that refuses every connection, so no other test sees it.
+    #[test]
+    fn admin_commands_reach_a_loopback_daemon_past_a_configured_proxy() {
+        let name = "harness::tests::admin_commands_reach_a_loopback_daemon_past_a_configured_proxy";
+        if std::env::var_os(PROXY_CHILD).is_none() {
+            let dead = "http://127.0.0.1:1";
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([name, "--exact"])
+                .env(PROXY_CHILD, "1")
+                .env("HTTP_PROXY", dead)
+                .env("http_proxy", dead)
+                .env("ALL_PROXY", dead)
+                .env("all_proxy", dead)
+                .env_remove("NO_PROXY")
+                .env_remove("no_proxy")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let url = admin_stub().await;
+            // The proxy is in effect: a client that does not bypass it cannot reach the daemon.
+            let proxied = reqwest::Client::new()
+                .post(format!("{url}/admin/reindex"))
+                .json(&json!({}))
+                .send()
+                .await;
+            assert!(proxied.is_err(), "{proxied:?}");
+            let scheduled = admin_command(&url, "reindex", &json!({})).await.unwrap();
+            assert_eq!(scheduled, json!({"scheduled": true}));
+        });
+    }
 
     #[test]
     fn only_loopback_hosts_bypass_proxies() {
