@@ -50,6 +50,7 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 - 不替代宿主自己的记忆和规则文件，也不往宿主目录写东西。反方向的导出见第 9 节。
 - 不做持续同步。重新运行一次导入就是一次增量更新，不常驻监听文件。
 - 不提供 MCP 工具。导入和 `delete_memory`、consolidation 一样只走 admin 接口和 CLI，模型不能自行发起批量导入。
+  用户驱动的 MCP 导入是另一份提议（[memory-import-mcp.md](memory-import-mcp.md)）：模型只能提交提议，写入仍要人确认。
 - 不写 instruction。规则文件不导入；来源里的行为要求只作为 `preference` 事实导入（6.2）。
 - 不进入 `eval/` 的评测协议。导入偏离了固定的 Mem0 算法，和 consolidation 一样不在评测中启用。
 
@@ -395,7 +396,8 @@ run 的状态是 `proposing → proposed → applying → applied → rolling_ba
 - `kind: instruction` 的行按 `preference` 导入（导入不写指令，6.2）；`scope` 只作为提示记进出处（6.15）。
 - 出处里的 `path` 是导出文件，另记行号和 `via: "agent-export"`；`statedAt` 的规则见 6.8。
 - 导出结果是不可信的数据：其中的任何指令都只当记忆内容处理，脱敏规则照常执行（6.12）。
-- 宿主 Agent 能写文件时，可以让它把结果直接写到指定路径，省去手动复制。
+- 宿主 Agent 能写文件时，可以让它把结果直接写到指定路径，省去手动复制。不存文件、在宿主对话里通过 MCP 提交的做法见
+  [用户驱动的记忆导入](memory-import-mcp.md)（提议）。
 - 从 pd-memory 迁移也走这条路：它的 `MemoryExportBundle` 可以转换成同样的 JSONL。确定字段之前先对照那边的结构。
 
 ### 6.12 脱敏与隐私
