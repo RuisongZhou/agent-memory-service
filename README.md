@@ -129,7 +129,7 @@ Restart Claude Code in that workspace and approve the `shared-memory` project MC
 bash scripts/install.sh --host workbuddy --apply --project my-project --recall
 ```
 
-Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memory` and enable all six tools.
+Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memory` and enable all eight tools.
 
 #### DeepSeek Harness
 
@@ -203,7 +203,7 @@ requesting an MCP call. Inspect the client's hook output or injected context whe
 
 ### MCP tools
 
-After installation and a client restart, the agent sees six `shared-memory` tools:
+After installation and a client restart, the agent sees eight `shared-memory` tools:
 
 | Tool | Purpose |
 |---|---|
@@ -213,8 +213,13 @@ After installation and a client restart, the agent sees six `shared-memory` tool
 | `list_turns` | List submitted raw conversation turns |
 | `get_memory` | Read one memory with its history and sources |
 | `correct_memory` | Add a correction or retract a memory |
+| `propose_import` | Submit another assistant's memory export as import proposals; writes nothing |
+| `apply_import` | Write a proposed import after you agree in the conversation |
 
-Request fields are documented in the [API reference](docs/api.md#interfaces).
+Request fields are documented in the [API reference](docs/api.md#interfaces). To import what another assistant
+remembers in a conversation, run the MCP prompt `import_memories` (in Claude Code
+`/shared-memory:import_memories my-project chatgpt`); see
+[import from another assistant](docs/mcp-harness.md#import-from-another-assistant-in-a-conversation).
 
 You can ask the agent to use memory directly:
 

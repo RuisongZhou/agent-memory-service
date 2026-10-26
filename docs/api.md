@@ -23,7 +23,12 @@ and [HTTP dispatcher](../crates/memory-service/src/api/http.rs) define the accep
 | `resolve_uncertainty` | `id`, `keepMemoryId`, `reason` | no | Explicitly resolve a legacy competing assertion |
 
 The stdio bridge forwards the six marked tools to HTTP. Success content is JSON text;
-HTTP errors become MCP `isError:true` results. There is no HTTP MCP, SSE or `/mcp` endpoint.
+HTTP errors become MCP `isError:true` results. There is no HTTP MCP, SSE or `/mcp` endpoint. Two more MCP
+tools are the bridge's own and have no `/v1` route: `propose_import` (`scope.project`, `export` page of at most
+64 KiB, `source?`, `runId?`, `finish?`) plans one page of an assistant's memory export and proposes it, and
+`apply_import` (`runId`, `expectedProposals`) applies the run after the person agreed in the conversation. Both
+call the [import endpoints](#import-runs) as the connection's platform; the MCP prompt `import_memories`
+(`project`, `source`, `lang?`) tells the agent the steps ([guide](mcp-harness.md#import-from-another-assistant-in-a-conversation)).
 
 ## Scope and idempotency
 
@@ -222,14 +227,15 @@ in `restoredInputs`.
 
 `agent-memoryd import` drives these endpoints ([commands](mcp-harness.md#import-existing-memories),
 [processing](architecture.md#import)); the [Rust types](../crates/memory-domain/src/import.rs) define every
-field. They are not gated by a configuration flag and are not MCP tools.
+field. They are not gated by a configuration flag and are not MCP tools themselves; the bridge's `propose_import` and
+`apply_import` call `import_propose`, `import_run` and `import_apply` for an export pasted into a conversation.
 
 | Endpoint | Body | Answer |
 |---|---|---|
 | `POST /admin/import_propose` | `{project, host, runId?, finish, limits: {recallBudget, recallTopK}, planHash?, reconsider?, units: [...]}`, at most 64 units | `{run, proposals, units}` of this batch |
 | `POST /admin/import_run` | `{runId}` | `{run, proposals}` |
 | `POST /admin/import_runs` | `{project?, limit?}` (1–200, default 20) | `{runs}`, newest first |
-| `POST /admin/import_apply` | `{runId, decisions: {proposalId: "accept" \| "reject"}}` | `{run, proposals}` |
+| `POST /admin/import_apply` | `{runId, decisions: {proposalId: "accept" \| "reject"}, confirmedVia?: "chat"}` | `{run, proposals}` |
 | `POST /admin/import_rollback` | `{runId}` | `{run, proposals}` |
 
 A unit is `{unit, host, mode, text, pieces?, statedAt, kindHint?, headingPath, fileHash, unitHash, source,
@@ -260,7 +266,8 @@ Each proposal carries `itemKind` (`fact`, `preference` or `reference`; each is w
 import never writes an instruction), `scopeHint`, `evidence`, `duplicateOf` (accepting it links the unit to that
 record), `supersedes` (the record the unit's earlier import wrote that this one replaces) and up to three
 `similar` memories. `import_apply` takes each proposal's decision from `decisions` and accepts a proposal it does
-not name. `reconsider` proposes again the units whose last import applied nothing
+not name; `confirmedVia: "chat"` (sent by `apply_import`) is kept on the run, so runs a person confirmed only in a
+conversation can be found. `reconsider` proposes again the units whose last import applied nothing
 although their text is unchanged. Errors are `INVALID_ARGUMENT` (400) for validation, a bad `runId` or a run in the
 wrong status, `NOT_FOUND` (404), `MODEL_UNAVAILABLE` (503) for extract units without a generation key, and
 `INTERNAL` (500) during apply or rollback, which is recorded on `run.error`; repeating the call resumes.

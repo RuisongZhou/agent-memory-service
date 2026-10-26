@@ -285,7 +285,10 @@ summaries, WorkBuddy memory files, JSONL a host's agent exported, and past Claud
 store; the
 [design](design/memory-import.md) explains the choices and the [harness guide](mcp-harness.md#import-existing-memories)
 the commands. Like consolidation it proposes first and changes records only on request, and evaluation
-protocols never call it.
+protocols never call it. The MCP bridge's `propose_import` and `apply_import` run the same steps for an export a
+person pastes into a conversation ([design](design/memory-import-mcp.md)): the bridge plans each page as the CLI
+plans an export file, under the connection's platform, and applies the run after the person agrees, recording
+`confirmedVia: "chat"` on it.
 
 1. **Plan, in the client.** Host adapters only read files; a host-agnostic planner turns each section into a
    unit, redacts credentials, and picks its mode from the unit cap: the record cost (`est_tokens + 8`) may be at
