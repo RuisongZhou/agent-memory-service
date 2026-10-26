@@ -10,7 +10,7 @@ use memory_domain::import::{
 use memory_rules::import::units::content_hash;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -262,7 +262,7 @@ impl Client {
     pub async fn run(&self, run_id: &str) -> Result<RunView, Error> {
         let request = ImportRunReq {
             run_id: run_id.into(),
-            decisions: BTreeMap::new(),
+            ..ImportRunReq::default()
         };
         run_view(self.call("import_run", &request, PLATFORM).await?)
     }
@@ -288,6 +288,7 @@ impl Client {
         let request = ImportRunReq {
             run_id: run_id.into(),
             decisions,
+            confirmed_via: None,
         };
         let answer = self
             .call("import_apply", &request, &current.run.host)
@@ -303,7 +304,7 @@ impl Client {
         let current = self.run(run_id).await?;
         let request = ImportRunReq {
             run_id: run_id.into(),
-            decisions: BTreeMap::new(),
+            ..ImportRunReq::default()
         };
         let answer = self
             .call("import_rollback", &request, &current.run.host)
