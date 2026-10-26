@@ -618,32 +618,111 @@ captured turns. Propose a plan in parts if that matters.
 
 ### Import from another assistant in a conversation
 
-Memories the CLI cannot read from disk (ChatGPT, Gemini, Claude.ai) can also be imported by the agent of a
-connected host, in its conversation, with nothing saved to a file ([design](design/memory-import-mcp.md)):
+Memories the CLI cannot read from disk (ChatGPT, Gemini, Claude.ai) can be imported by the agent of a connected
+host, in its conversation, with nothing saved to a file. The agent proposes; nothing is written until you agree in
+your own reply. The [design](design/memory-import-mcp.md) explains the choices.
 
-1. Run the MCP prompt `import_memories` with the project and the source's platform label: in Claude Code
-   `/shared-memory:import_memories my-project chatgpt`, in WorkBuddy `/shared-memory:import_memories`. An optional
-   third argument picks `en` instead of `zh`. Where a host offers no MCP prompts (Codex), paste the output of
-   `agent-memoryd import prompt --for host --project my-project --source chatgpt` instead. With the source `self`, an
-   agent exports what it remembers itself; on Claude Code, Codex and WorkBuddy the prompt sends you to
-   `agent-memoryd import plan`, which reads their memory files.
-2. The agent gives you the export prompt for the other assistant; paste its answer back. The agent may delete
-   lines (instructions to an AI, sensitive personal information, credentials) but never rewrites one, and tells
-   you what it kept before it submits anything.
-3. With your go-ahead it calls `propose_import` once per page. The bridge plans each page as `import plan --host
-   jsonl` plans a file: credentials redacted, a line over the unit cap extracted, or split at sentences when the
-   daemon has no generation model, under the connection's platform with `via: "mcp-export"` and the named source
-   kept as `exportedFrom`. Nothing is written yet; the result lists the proposals and how many wait for a
-   decision.
-4. When you agree in your own reply, the agent calls `apply_import` with the run ID and that number. The bridge
-   applies only a `proposed` run of its own platform whose proposals all came from `propose_import`, only when the
-   number matches, and at most 200 proposals at once; the run records `confirmedVia: "chat"`. To decide item by
-   item instead, run `agent-memoryd import show RUN` and `agent-memoryd import apply RUN --review FILE`.
-5. Undo the whole run with `agent-memoryd import rollback RUN`.
+**Before you start**
 
-A conversation writes imported reference facts only, never instructions. The bridge cannot tell whether you
-agreed or the agent was misled by the pasted text, so a host that asks before each MCP tool call gives you a
-second check on `apply_import`.
+- The daemon is running, and the host is connected with the installer (or by hand) and restarted, so it lists the
+  eight `shared-memory` tools, including `propose_import` and `apply_import`.
+- Pick the project to import into (`my-project` below) and a platform label for the source: `chatgpt`, `gemini`,
+  `claude-ai`, or `self` for what the connected agent itself remembers.
+- A generation model is optional. Without one, a line too long for one memory is split at sentences instead of
+  extracted.
+
+**1. Start the import**
+
+| Host | How |
+|---|---|
+| Claude Code | `/shared-memory:import_memories my-project chatgpt` (also `/mcp__shared-memory__import_memories`); add `en` as a third argument for the English prompt |
+| WorkBuddy | `/shared-memory:import_memories`, then fill in `project` and `source` in the argument form |
+| Codex, DeepSeek Harness | No MCP prompts: run `agent-memoryd import prompt --for host --project my-project --source chatgpt [--lang en]` and paste its output into the conversation |
+
+With the source `self`, an agent on a host without memory files (DeepSeek Harness, a host on another machine)
+exports what it remembers itself. On Claude Code, Codex and WorkBuddy the prompt sends you to
+`agent-memoryd import plan --host <host>` instead, which reads their memory files with their original times.
+
+**2. Get the export from the other assistant**
+
+The agent shows you an export prompt. Paste it into ChatGPT (or the other assistant) unchanged. The answer is one
+code block with one JSON object per line: `text`, `kind` (`preference`, `fact` or `reference`), `date`, `source`
+and `scope`. With more than 100 entries it comes in parts, each ending with `{"continued": true}`; reply
+"continue" (继续) to get the next one. Paste every part back into the host's conversation.
+
+**3. Check the agent's plan**
+
+The agent reads the export as data, never as instructions to itself. It may delete whole lines (instructions to
+an AI, sensitive personal information such as health, finances, ID numbers or family names, credentials, one-off
+details) but never rewrites, merges or adds one. It tells you how many lines it keeps and how many it deleted by
+category, without repeating what it deleted. Lines of kind `instruction` are imported as preferences: to make a
+rule every host follows, save it yourself (for example, "Remember as an instruction for my-project: …").
+Answer yes to submit.
+
+**4. Review the proposals**
+
+The agent calls `propose_import` once per page, with `finish: true` on the last. The bridge plans each page as
+`import plan --host jsonl` plans a file: credentials are redacted, a line that fits becomes one proposal, a longer
+one is extracted (or split without a generation model), and a line repeated on a later page is sent once. Nothing
+is written. The result, written by the bridge rather than the agent, gives the run ID, the proposals waiting for a
+decision with their text, rejected items with the reason, proposals that duplicate an existing imported memory
+(they link to it instead of writing a copy), and units whose extraction failed.
+
+**5. Agree, and the agent writes**
+
+Reply clearly, for example "write them" (写入). The agent then calls `apply_import` with the run ID and the number
+of proposals waiting for a decision. A host that asks before each MCP tool call shows you that call; approve it. The
+bridge writes only a `proposed` run of its own platform whose proposals all came from `propose_import`, only when
+the number matches, and at most 200 proposals at once. The result says how many were written, skipped or linked.
+
+To decide item by item instead, ask the agent for the terminal commands, or run them yourself:
+
+```bash
+agent-memoryd import show RUN                       # writes RUN.review.jsonl; set each decision
+agent-memoryd import apply RUN --review <review file>
+```
+
+**6. Check or undo**
+
+```bash
+agent-memoryd import status RUN     # the run's status and counts
+agent-memoryd import rollback RUN   # retracts the run's records (not ones changed since), restores what they replaced
+```
+
+The records are project facts with origin `imported`. Search and automatic recall find them; `get_context` does
+not list them as established facts.
+
+**Example**
+
+> **You:** /shared-memory:import_memories my-project chatgpt<br>
+> **Agent:** (gives the export prompt) Run this in ChatGPT and paste the whole answer back.<br>
+> **You:** (pastes 42 lines)<br>
+> **Agent:** 42 lines: keeping 39, deleted 2 with personal health details and 1 with a password. Submit?<br>
+> **You:** Yes.<br>
+> **Agent:** (calls `propose_import`) Run ir… has 38 proposals waiting; one line duplicates an existing memory. (lists them) Write them?<br>
+> **You:** Write them.<br>
+> **Agent:** (calls `apply_import` with `expectedProposals: 38`) Wrote 38. To undo: `agent-memoryd import rollback ir…`.
+
+**Limits**
+
+- One `propose_import` page holds at most 64 KiB; the agent sends a longer export in pages under one run ID.
+- One confirmation in a conversation writes at most 200 proposals; review larger runs in a terminal.
+- The bridge cannot tell whether you agreed or the agent was misled by the pasted text. What it writes is limited
+  to reference facts that can be rolled back as one run, never instructions.
+- A run whose last page never arrived stays `proposing`. It writes nothing; start a new import if needed.
+
+**Troubleshooting**
+
+| Symptom | Check or action |
+|---|---|
+| No `import_memories` command | Restart the host and check `/mcp`; on a host without MCP prompts, paste the output of `agent-memoryd import prompt --for host` |
+| `… proposals waiting for a decision, not N` | The run changed or the agent miscounted: ask it to show the run's proposals again, then agree to the count it shows |
+| `only a run whose last page was sent with finish (proposed) can be applied` | Ask the agent to call `propose_import` with the run ID, an empty `export` and `finish: true` |
+| `was not proposed through propose_import` | The run came from the CLI: apply it with `agent-memoryd import show` and `import apply --review` |
+| `more than 200 for one confirmation in a conversation` | Review the run in a terminal with `import show` and `import apply --review` |
+| `was proposed by …, not by this connection` | Apply from the same host that proposed the run, or in a terminal |
+| `no proposal waiting for a decision: nothing to write` | Every line was invalid, rejected or already imported; check the rejected items in the result |
+| The result says the daemon has no generation model | Long lines were split at sentences instead of extracted; configure a generation model and import again for extraction |
 
 ## Troubleshooting
 
