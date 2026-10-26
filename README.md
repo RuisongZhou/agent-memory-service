@@ -254,7 +254,8 @@ agents. Past Claude Code and Codex sessions can also be imported. Importing is a
 ~/.local/bin/agent-memoryd import rollback RUN                         # undo the whole run if needed
 ```
 
-Imported facts remain historical reference material; behavior requirements require explicit acceptance. See
+Imported memories are historical reference material, never instructions; save a rule yourself if every host
+should follow it. See
 [import existing memories](docs/mcp-harness.md#import-existing-memories) for supported sources and options.
 
 ## How it works

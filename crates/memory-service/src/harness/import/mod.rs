@@ -213,7 +213,7 @@ pub enum ImportCmd {
         #[command(flatten)]
         daemon: DaemonArgs,
     },
-    /// Write a run's accepted proposals, as a review file decides or with --yes as each proposal's default
+    /// Write a run's accepted proposals, as a review file decides or with --yes all of them
     #[command(group(clap::ArgGroup::new("decisions").required(true).args(["review", "yes"])))]
     Apply {
         #[arg(value_name = "RUN")]
@@ -221,7 +221,7 @@ pub enum ImportCmd {
         /// Review file from `import show`; a proposal it no longer lists is declined
         #[arg(long, value_name = "FILE")]
         review: Option<PathBuf>,
-        /// Apply the default decisions: facts accepted, instruction candidates and duplicates not written
+        /// Accept every proposal; a duplicate is linked to its record, not written again
         #[arg(long)]
         yes: bool,
         #[command(flatten)]

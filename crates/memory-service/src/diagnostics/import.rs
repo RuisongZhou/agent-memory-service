@@ -1,5 +1,5 @@
 //! Memory import end to end, with the local generation stub and mock embeddings: propose in batches
-//! (verbatim, split, extract with a provenance rejection, instruction candidates, an over-cap unit), apply
+//! (verbatim, split, extract with a provenance rejection, a feedback note, an over-cap unit), apply
 //! with review decisions, unchanged reruns, a changed verbatim unit superseding its record, a duplicate of
 //! another unit, a unit imported by another run after propose, rollback with a corrected record kept, and
 //! the extraction cache. No external model call.
@@ -30,7 +30,6 @@ const FACT: &str = "The atlas staging cluster lives in eu-west.";
 const ALWAYS: &str = "Always run make check before pushing atlas.";
 const FEEDBACK: &str =
     "Prefer small pull requests for atlas.\n\nThe team reviews them within a day.";
-const FIRST_PARAGRAPH: &str = "Prefer small pull requests for atlas.";
 const NIGHTLY: &str = "Atlas nightly builds publish artifacts to the release bucket.";
 
 fn unit(native: &str, mode: &str, text: &str) -> ImportUnit {
@@ -57,7 +56,6 @@ fn plan() -> Vec<ImportUnit> {
     split.pieces = vec![PIECE_KEPT.into(), PIECE_DROPPED.into()];
     let mut feedback = unit("memory/reviews.md", MODE_VERBATIM, FEEDBACK);
     feedback.kind_hint = Some("feedback".into());
-    feedback.instruction_candidate = true;
     let archive = "The atlas archive keeps every build log for audits. ".repeat(20);
     vec![
         unit("memory/deploy.md", MODE_VERBATIM, VERBATIM),
@@ -95,7 +93,6 @@ fn run_req(run_id: &str, decisions: &[(&str, &str)]) -> ImportRunReq {
             .iter()
             .map(|(id, d)| (id.to_string(), d.to_string()))
             .collect::<BTreeMap<_, _>>(),
-        scopes: BTreeMap::new(),
     }
 }
 
@@ -185,11 +182,10 @@ pub async fn selftest() {
         (
             &run["counts"]["proposals"],
             &run["counts"]["rejected"],
-            &run["counts"]["instructionCandidates"],
             &run["counts"]["generationCalls"],
             &run["counts"]["cacheHits"],
         ),
-        (&json!(9), &json!(2), &json!(2), &json!(1), &json!(0)),
+        (&json!(8), &json!(2), &json!(1), &json!(0)),
         "{run}"
     );
     assert_eq!(llm_calls(&eng) - before, 1, "one generation call");
@@ -207,32 +203,25 @@ pub async fn selftest() {
         trap["rejectReason"].as_str().unwrap().contains("2031"),
         "{trap}"
     );
-    let archive = &proposals.as_array().unwrap()[8];
+    let archive = &proposals.as_array().unwrap()[7];
     assert_eq!(archive["status"], REJECTED);
     assert!(archive["rejectReason"]
         .as_str()
         .unwrap()
         .contains("more than the unit cap 200"));
+    // A rule about how to work is a preference, and a feedback note offers no instruction.
     let always = find(&proposals, ALWAYS);
     assert_eq!(
-        (
-            &always["itemKind"],
-            &always["defaultDecision"],
-            &always["mode"]
-        ),
-        (&json!("instruction"), &json!(REJECT), &json!(MODE_EXTRACT))
+        (&always["itemKind"], &always["mode"]),
+        (&json!("preference"), &json!(MODE_EXTRACT))
     );
     assert_eq!(always["responseLogId"], extract["responseLogId"]);
-    let candidate = find(&proposals, FIRST_PARAGRAPH);
-    assert_eq!(
-        (&candidate["itemKind"], &candidate["defaultDecision"]),
-        (&json!("instruction"), &json!(REJECT))
-    );
-    let preference = find(&proposals, FEEDBACK);
-    assert_eq!(
-        (&preference["itemKind"], &preference["defaultDecision"]),
-        (&json!("preference"), &json!(ACCEPT))
-    );
+    assert_eq!(find(&proposals, FEEDBACK)["itemKind"], "preference");
+    assert!(proposals
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p["itemKind"] != "instruction"));
     let dropped = find(&proposals, PIECE_DROPPED);
     assert_eq!(
         (dropped["cluster"].clone(), dropped["position"].clone()),
@@ -241,9 +230,9 @@ pub async fn selftest() {
     // Proposing writes no memory record.
     assert_eq!(t.store.count(schema::MEMORIES, None).await.unwrap(), 0);
     let stored = import::get_run(&t, run_req(&r1, &[])).await.unwrap();
-    assert_eq!(stored["proposals"].as_array().unwrap().len(), 9);
+    assert_eq!(stored["proposals"].as_array().unwrap().len(), 8);
 
-    // ---- 2. apply: one fact rejected by decision, one instruction accepted
+    // ---- 2. apply: one fact rejected by decision, the rest accepted without one
     let always_id = str_of(&always["proposalId"]);
     let dropped_id = str_of(&dropped["proposalId"]);
     for decisions in [
@@ -272,25 +261,24 @@ pub async fn selftest() {
     let counts = &out["run"]["counts"];
     assert_eq!(
         (&counts["applied"], &counts["dropped"], &counts["skipped"]),
-        (&json!(5), &json!(2), &json!(0)),
+        (&json!(5), &json!(1), &json!(0)),
         "{counts}"
     );
     let applied = &out["proposals"];
     assert_eq!(find(applied, PIECE_DROPPED)["status"], DROPPED);
-    assert_eq!(find(applied, FIRST_PARAGRAPH)["status"], DROPPED);
     assert_eq!(
         find(applied, "The TRAP job retries flaky tests. in 2031")["status"],
         REJECTED
     );
     let id_of = |text: &str| str_of(&find(applied, text)["memoryId"]);
-    let (verbatim, kept, fact, instruction, feedback) = (
+    let (verbatim, kept, fact, always, feedback) = (
         id_of(VERBATIM),
         id_of(PIECE_KEPT),
         id_of(FACT),
         id_of(ALWAYS),
         id_of(FEEDBACK),
     );
-    for id in [&verbatim, &kept, &fact, &feedback] {
+    for id in [&verbatim, &kept, &fact, &always, &feedback] {
         let m = memory(&t, id).await;
         assert_eq!(m.mtype, T_FACT);
         assert_eq!(m.source.origin, ORIGIN_IMPORTED);
@@ -320,13 +308,6 @@ pub async fn selftest() {
     assert_eq!(doc["ingestionMode"], "imported");
     assert_eq!(doc["contentHash"], content_hash(VERBATIM).as_str());
     assert_eq!(t.store.count(HASHES, None).await.unwrap(), 0);
-    let rule = memory(&t, &instruction).await;
-    assert_eq!(
-        (rule.mtype.as_str(), rule.source.origin.as_str()),
-        (T_INSTRUCTION, ORIGIN_EXPLICIT)
-    );
-    assert_eq!(rule.scope, MemScope::project(PROJECT));
-    assert_eq!(rule.detail.as_ref().unwrap()["import"]["statedAt"], STATED);
     assert_eq!(rows(&eng, &t, schema::IMPORT_LEDGER).await.len(), 5);
     indexer::drain(&eng, &t).await.unwrap();
     let scope = ReqScope {
@@ -351,12 +332,8 @@ pub async fn selftest() {
             .map(|m| str_of(&m["id"]))
             .collect()
     };
-    assert_eq!(
-        ids(&context["instructions"]),
-        std::slice::from_ref(&instruction),
-        "{context}"
-    );
-    for imported in [&verbatim, &kept, &fact, &feedback] {
+    assert_eq!(context["instructions"], json!([]), "{context}");
+    for imported in [&verbatim, &kept, &fact, &always, &feedback] {
         assert!(
             !ids(&context["projectFacts"]).contains(imported),
             "{context}"
@@ -431,10 +408,8 @@ pub async fn selftest() {
     // other unit later replaces its own copy.
     let copy = pick(&out["proposals"], 1, PIECE_KEPT);
     assert_eq!(copy["duplicateOf"], kept.as_str());
-    assert_eq!(copy["defaultDecision"], ACCEPT);
     let own = pick(&out["proposals"], 2, PIECE_KEPT);
     assert_eq!(own["duplicateOf"], kept.as_str());
-    assert_eq!(own["defaultDecision"], ACCEPT);
     assert_eq!(out["units"][2]["outcome"], UNIT_CHANGED);
     assert_eq!(out["units"][2]["previousMemoryIds"], json!([kept]));
     assert_eq!(out["units"][2]["previousRecords"][0]["text"], PIECE_KEPT);
@@ -518,7 +493,7 @@ pub async fn selftest() {
     ));
     let out = import::rollback(&eng, &t, run_req(&r1, &[])).await.unwrap();
     assert_eq!(out["run"]["status"], RUN_PARTIALLY_ROLLED_BACK, "{out}");
-    for id in [&verbatim, &kept, &fact, &instruction] {
+    for id in [&verbatim, &kept, &fact, &always] {
         assert_eq!(memory(&t, id).await.status, S_SUPERSEDED, "{id}");
     }
     let kept_back = find(&out["proposals"], FEEDBACK);
@@ -533,18 +508,6 @@ pub async fn selftest() {
             .status,
         S_CURRENT
     );
-    let context = retrieval::get_context(
-        &eng,
-        &t,
-        &caller,
-        GetContextReq {
-            scope,
-            token_budget: None,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(context["instructions"], json!([]), "{context}");
     // Only the unit whose record a person corrected keeps a ledger row.
     let ledger = rows(&eng, &t, schema::IMPORT_LEDGER).await;
     assert_eq!(ledger.len(), 1, "{ledger:?}");
@@ -584,12 +547,11 @@ pub async fn selftest() {
     assert_eq!(rows(&eng, &t, schema::IMPORT_EXTRACTIONS).await.len(), 1);
     drop(t);
     let _ = std::fs::remove_dir_all(dir);
-    println!("import_selftest OK: batched propose, provenance and size rejections, review decisions, unchanged rerun, verbatim supersede, duplicates, moved units, rollback with a kept correction, extraction cache; local generation stub");
+    println!("import_selftest OK: batched propose, provenance and size rejections, no instructions, review decisions, unchanged rerun, verbatim supersede, duplicates, moved units, rollback with a kept correction, extraction cache; local generation stub");
 }
 
-/// One run of `units`: proposed in one batch with `reconsider` and `limits`, then applied with `decisions`
-/// and `scopes`. Returns the proposed and the applied answers.
-#[allow(clippy::too_many_arguments)]
+/// One run of `units`: proposed in one batch with `reconsider` and `limits`, then applied with the decisions
+/// `decide` gives. Returns the proposed and the applied answers.
 async fn round(
     eng: &Arc<Engine>,
     t: &Arc<Instance>,
@@ -597,7 +559,6 @@ async fn round(
     reconsider: bool,
     limits: ImportLimits,
     decide: impl Fn(&Value) -> Vec<(String, String)>,
-    scopes: impl Fn(&Value) -> Vec<(String, String)>,
 ) -> (Value, Value) {
     let proposed = import::propose(
         eng,
@@ -618,7 +579,6 @@ async fn round(
     let req = ImportRunReq {
         run_id,
         decisions: decide(&proposed["proposals"]).into_iter().collect(),
-        scopes: scopes(&proposed["proposals"]).into_iter().collect(),
     };
     let applied = import::apply(t, req).await.unwrap();
     (proposed, applied)
@@ -626,19 +586,6 @@ async fn round(
 
 fn none(_: &Value) -> Vec<(String, String)> {
     vec![]
-}
-
-/// Every proposal with `text` gets `decision`.
-fn on(text: &'static str, decision: &'static str) -> impl Fn(&Value) -> Vec<(String, String)> {
-    move |proposals: &Value| {
-        proposals
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|p| p["text"] == text)
-            .map(|p| (str_of(&p["proposalId"]), decision.to_string()))
-            .collect()
-    }
 }
 
 /// Every proposal gets `decision`.
@@ -665,9 +612,8 @@ async fn current_with(t: &Instance, text: &str) -> Vec<MemoryRec> {
 }
 
 /// Repeated imports of the same sources (the review findings): a duplicate linked to another unit keeps its
-/// content when that unit changes; a changed note replaces its fact and its accepted instruction by role; a
-/// declined change keeps the old record for the next version to replace; `reconsider`; extraction cache keys
-/// and retries; instruction scope and size.
+/// content when that unit changes; a changed note replaces its record; a declined change keeps the old record
+/// for the next version to replace; `reconsider`; extraction cache keys and retries.
 pub async fn repeated_runs() {
     let url = generation_stub().await;
     let eng = engine(&url, true);
@@ -684,7 +630,6 @@ pub async fn repeated_runs() {
         false,
         limits,
         none,
-        none,
     )
     .await;
     let original = str_of(&find(&a1["proposals"], SHARED)["memoryId"]);
@@ -695,12 +640,11 @@ pub async fn repeated_runs() {
         false,
         limits,
         none,
-        none,
     )
     .await;
     assert_eq!(
-        find(&p2["proposals"], SHARED)["defaultDecision"],
-        ACCEPT,
+        find(&p2["proposals"], SHARED)["duplicateOf"],
+        original.as_str(),
         "{p2}"
     );
     assert_eq!(
@@ -713,7 +657,6 @@ pub async fn repeated_runs() {
         vec![unit("memory/gw.md", MODE_VERBATIM, SHARED_NEXT)],
         false,
         limits,
-        none,
         none,
     )
     .await;
@@ -735,52 +678,31 @@ pub async fn repeated_runs() {
         false,
         limits,
         none,
-        none,
     )
     .await;
     assert_eq!(rerun["units"][0]["outcome"], UNIT_UNCHANGED);
     assert_eq!(current_with(&t, SHARED).await.len(), 1);
 
-    // ---- a changed feedback note replaces its fact and its accepted instruction, by role
+    // ---- a changed feedback note is one preference, and its new text replaces the old record
     const RULE: &str = "Prefer small pull requests for orbit.";
     const RULE_NEXT: &str = "Prefer tiny pull requests for orbit.";
+    let text = |rule: &str| format!("{rule}\n\nReviews stay quick.");
     let note = |rule: &str| {
-        let mut u = unit(
-            "memory/prs.md",
-            MODE_VERBATIM,
-            &format!("{rule}\n\nReviews stay quick."),
-        );
+        let mut u = unit("memory/prs.md", MODE_VERBATIM, &text(rule));
         u.kind_hint = Some("feedback".into());
-        u.instruction_candidate = true;
         u
     };
-    let (_, b1) = round(
-        &eng,
-        &t,
-        vec![note(RULE)],
-        false,
-        limits,
-        on(RULE, ACCEPT),
-        none,
-    )
-    .await;
-    let first_rule = str_of(&find(&b1["proposals"], RULE)["memoryId"]);
-    let (p2, b2) = round(
-        &eng,
-        &t,
-        vec![note(RULE_NEXT)],
-        false,
-        limits,
-        on(RULE_NEXT, ACCEPT),
-        none,
-    )
-    .await;
-    let next_rule = find(&p2["proposals"], RULE_NEXT);
-    assert_eq!(next_rule["supersedes"], first_rule.as_str(), "{p2}");
+    let (p1, b1) = round(&eng, &t, vec![note(RULE)], false, limits, none).await;
+    assert_eq!(p1["proposals"].as_array().unwrap().len(), 1, "{p1}");
+    assert_eq!(p1["proposals"][0]["itemKind"], "preference");
+    let first = str_of(&find(&b1["proposals"], &text(RULE))["memoryId"]);
+    let (p2, b2) = round(&eng, &t, vec![note(RULE_NEXT)], false, limits, none).await;
+    let next = find(&p2["proposals"], &text(RULE_NEXT));
+    assert_eq!(next["supersedes"], first.as_str(), "{p2}");
     assert_eq!(p2["units"][0]["previousRecords"], Value::Null, "{p2}");
-    let retired = memory(&t, &first_rule).await;
+    let retired = memory(&t, &first).await;
     assert_eq!(retired.status, S_SUPERSEDED);
-    let newest = str_of(&find(&b2["proposals"], RULE_NEXT)["memoryId"]);
+    let newest = str_of(&find(&b2["proposals"], &text(RULE_NEXT))["memoryId"]);
     assert_eq!(retired.superseded_by.as_deref(), Some(newest.as_str()));
     let facts = t.store.current_project_facts(PROJECT).await.unwrap();
     assert_eq!(
@@ -802,7 +724,6 @@ pub async fn repeated_runs() {
         false,
         limits,
         none,
-        none,
     )
     .await;
     let v1 = str_of(&find(&c1["proposals"], V1)["memoryId"]);
@@ -813,7 +734,6 @@ pub async fn repeated_runs() {
         false,
         limits,
         all(REJECT),
-        none,
     )
     .await;
     assert_eq!(find(&c2["proposals"], V2)["status"], DROPPED);
@@ -824,7 +744,6 @@ pub async fn repeated_runs() {
         false,
         limits,
         all(REJECT),
-        none,
     )
     .await;
     assert_eq!(again["units"][0]["outcome"], UNIT_UNCHANGED, "{again}");
@@ -835,7 +754,6 @@ pub async fn repeated_runs() {
         true,
         limits,
         all(REJECT),
-        none,
     )
     .await;
     assert_eq!(back["units"][0]["outcome"], UNIT_RECONSIDERED, "{back}");
@@ -846,7 +764,6 @@ pub async fn repeated_runs() {
         vec![unit("memory/logs.md", MODE_VERBATIM, V3)],
         false,
         limits,
-        none,
         none,
     )
     .await;
@@ -871,7 +788,6 @@ pub async fn repeated_runs() {
         false,
         limits,
         all(REJECT),
-        none,
     )
     .await;
     assert_eq!(llm_calls(&eng) - before, 1);
@@ -882,7 +798,6 @@ pub async fn repeated_runs() {
         true,
         limits,
         all(REJECT),
-        none,
     )
     .await;
     assert_eq!(llm_calls(&eng) - before, 1, "same input: cached");
@@ -897,7 +812,6 @@ pub async fn repeated_runs() {
         true,
         wide,
         all(REJECT),
-        none,
     )
     .await;
     assert_eq!(llm_calls(&eng) - before, 2, "other limits: extracted again");
@@ -910,7 +824,6 @@ pub async fn repeated_runs() {
         false,
         limits,
         none,
-        none,
     )
     .await;
     round(
@@ -920,67 +833,13 @@ pub async fn repeated_runs() {
         true,
         limits,
         none,
-        none,
     )
     .await;
     assert_eq!(llm_calls(&eng) - before, 2, "every item failed: not cached");
 
-    // ---- instructions: project scope unless a person chooses global; the instruction limits apply
-    const DEPLOY: &str = "Always tag orbit releases before deploying.";
-    let mut rule = unit("export/rule-1", MODE_VERBATIM, DEPLOY);
-    rule.kind_hint = Some("instruction".into());
-    let global = |proposals: &Value| -> Vec<(String, String)> { on(DEPLOY, "global")(proposals) };
-    let (_, d1) = round(
-        &eng,
-        &t,
-        vec![rule],
-        false,
-        limits,
-        on(DEPLOY, ACCEPT),
-        global,
-    )
-    .await;
-    let deploy = memory(&t, &str_of(&find(&d1["proposals"], DEPLOY)["memoryId"])).await;
-    assert_eq!(
-        (deploy.mtype.as_str(), deploy.scope.kind.as_str()),
-        (T_INSTRUCTION, "global")
-    );
-    const CHECK: &str = "Always run the orbit checks before pushing.";
-    let mut local = unit("export/rule-2", MODE_VERBATIM, CHECK);
-    local.kind_hint = Some("instruction".into());
-    let (_, d2) = round(
-        &eng,
-        &t,
-        vec![local],
-        false,
-        limits,
-        on(CHECK, ACCEPT),
-        none,
-    )
-    .await;
-    let check = memory(&t, &str_of(&find(&d2["proposals"], CHECK)["memoryId"])).await;
-    assert_eq!(check.scope, MemScope::project(PROJECT));
-    let long_rule = "Always explain orbit changes. ".repeat(40);
-    let mut long = unit("export/rule-3", MODE_VERBATIM, long_rule.trim());
-    long.kind_hint = Some("instruction".into());
-    let roomy = ImportLimits {
-        recall_budget: 3000,
-        recall_top_k: 5,
-    };
-    let (p4, _) = round(&eng, &t, vec![long], false, roomy, none, none).await;
-    let refused = &p4["proposals"][0];
-    assert_eq!(refused["status"], REJECTED, "{p4}");
-    assert!(
-        refused["rejectReason"]
-            .as_str()
-            .unwrap()
-            .contains("more than 1024"),
-        "{refused}"
-    );
-
     drop(t);
     let _ = std::fs::remove_dir_all(dir);
-    println!("import_repeated_selftest OK: linked duplicates survive their source's change, supersede by role, declined changes, reconsider, extraction cache key and retries, instruction scope and size; local generation stub");
+    println!("import_repeated_selftest OK: linked duplicates survive their source's change, a changed note's supersede, declined changes, reconsider, extraction cache key and retries; local generation stub");
 }
 
 #[cfg(test)]

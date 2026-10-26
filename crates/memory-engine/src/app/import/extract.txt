@@ -20,7 +20,7 @@ Write each memory about one thing, in one or two sentences that can be understoo
 
 For each memory return:
 - "text": the memory
-- "kind": "instruction" when it tells an agent how to behave or work (always, never, prefer, required steps); "preference" for the user's personal tastes; "reference" for where to find something; otherwise "fact"
+- "kind": "preference" for the user's tastes and for how the user wants agents to work (always, never, prefer, required steps); "reference" for where to find something; otherwise "fact"
 - "scope": "global" when it holds for the user across all projects, otherwise "project"
 - "evidence": the shortest exact quote from the note that supports it, copied character for character
 

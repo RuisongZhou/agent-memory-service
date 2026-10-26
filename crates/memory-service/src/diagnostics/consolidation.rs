@@ -26,7 +26,7 @@ fn section<'a>(prompt: &'a str, header: &str) -> &'a str {
 
 /// Formation: every user message line becomes one fact. Consolidation: a fixed decision per topic.
 /// Import: every `- ` line of the note becomes one quoted memory; a `TRAP` line gains a number the note
-/// does not contain, and an `Always` line is an instruction.
+/// does not contain, and an `Always` line is a preference.
 fn reply(system: &str, prompt: &str) -> Value {
     if system.contains("Memory Importer") {
         let start = prompt
@@ -45,7 +45,7 @@ fn reply(system: &str, prompt: &str) -> Value {
                     line.to_string()
                 };
                 let kind = if line.starts_with("Always") {
-                    "instruction"
+                    "preference"
                 } else {
                     "fact"
                 };

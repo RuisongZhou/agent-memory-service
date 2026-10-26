@@ -1,7 +1,7 @@
 # 宿主已有记忆的导入
 
 > 状态：笔记导入已实现，覆盖 Claude Code、Codex、WorkBuddy 和宿主 Agent 导出的 JSONL；Claude Code 和 Codex 的会话导入
-> （6.10、6.14、6.16）也已实现。尚未实现：规则文件的指令候选（`--include rules`，6.2）、安装器的 `--import`（6.18）和
+> （6.10、6.14、6.16）也已实现。导入从不写指令（6.2）。尚未实现：安装器的 `--import`（6.18）和
 > DeepSeek Harness 的会话导入（它的日志是压缩的私有格式 `session.v4`，但它没有自动捕获，会话导入是它唯一的自动来源）。
 > 用法见 [MCP 与宿主集成](../mcp-harness.md#import-existing-memories)，端点见 [API 与配置](../api.md#import-runs)，daemon 一侧的
 > 处理见 [架构](../architecture.md#import)。本文只记设计取舍，细节以这些文档和代码为准。2026-10-26 按代码逐节核对过一遍。
@@ -50,7 +50,7 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 - 不替代宿主自己的记忆和规则文件，也不往宿主目录写东西。反方向的导出见第 9 节。
 - 不做持续同步。重新运行一次导入就是一次增量更新，不常驻监听文件。
 - 不提供 MCP 工具。导入和 `delete_memory`、consolidation 一样只走 admin 接口和 CLI，模型不能自行发起批量导入。
-- 不把规则文件自动变成 instruction。
+- 不写 instruction。规则文件不导入；来源里的行为要求只作为 `preference` 事实导入（6.2）。
 - 不进入 `eval/` 的评测协议。导入偏离了固定的 Mem0 算法，和 consolidation 一样不在评测中启用。
 
 ## 3. 其他项目的做法
@@ -110,7 +110,7 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 | `messages` 加 `infer:false` | 时间保留，但 origin 记成 `explicit`。`get_context` 把 `explicit` 和 `user` 当作已确立的事实（[algorithm.rs](../../crates/memory-engine/src/runtime/algorithm.rs) 的 `context_origins`），consolidation 又排除 `explicit`（[domain consolidation](../../crates/memory-domain/src/consolidation.rs)）。导入的笔记会被当成用户明确说过的话，而且永远不会被合并 |
 | `messages` 加 `infer:true` | 用面向对话的 additive 提示词把已经提炼过的文本再抽取一遍，origin 仍是 user 或 assistant，没有依据片段的校验 |
 | `correct_memory` | 更正记录的 origin 是 `explicit`（[correction.rs](../../crates/memory-engine/src/app/management/correction.rs)），不能用来表示"源笔记改了" |
-| `memoryType:"instruction"` | 同步、原样保存、最多 1024 个字符，只用于用户明确提出的行为要求。可以承接人确认过的指令候选，不适合批量导入 |
+| `memoryType:"instruction"` | 同步、原样保存、最多 1024 个字符，只用于用户明确提出的行为要求，不适合批量导入；导入也不写指令（6.2） |
 
 另外几条约束也会影响设计：
 
@@ -135,7 +135,7 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 
 笔记和宿主 Agent 的导出走 plan（离线、只读，筛选、映射项目、切出导入单元，写成人可以删改的计划文件）→ propose（daemon
 对小单元原样采用，其余调模型抽取，`--no-extract` 时改为在计划里切分，存成提议，不写记忆）→ 审核（`import show` 写出评审
-文件，指令候选逐条确认）→ apply（写入 `imported` 记录和导入台账），rollback 可以整体撤销。历史会话在 propose 时只登记、
+文件，逐条决定接受或拒绝）→ apply（写入 `imported` 记录和导入台账），rollback 可以整体撤销。历史会话在 propose 时只登记、
 不调模型；daemon 的 apply 只把它们标为已排队，再由 `import apply` 命令写进 outbox，走正常的 Mem0 形成，turnId 和捕获的
 相同。每一步的命令和输出见 [导入已有记忆](../mcp-harness.md#import-existing-memories)。
 
@@ -143,7 +143,7 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 
 | 来源 | 例子 | 默认 | 写入方式 |
 |---|---|---|---|
-| 人写的规则文件 | `CLAUDE.md`、`AGENTS.md`、`.claude/rules/`、`.cursor/rules` | 不导入 | 宿主自己会加载，导入后会重复注入。仓库里的文件不可信，自动变成 instruction 就等于埋下一条对所有宿主生效的持久提示注入。设想中的 `--include rules`（未实现）按标题切成最多 1024 个字符的指令候选，由人逐条确认后写成 instruction |
+| 人写的规则文件 | `CLAUDE.md`、`AGENTS.md`、`.claude/rules/`、`.cursor/rules` | 不导入 | 宿主自己会加载，导入后会重复注入。仓库里的文件不可信，变成 instruction 就等于埋下一条对所有宿主生效的持久提示注入 |
 | 宿主提炼的笔记 | Claude `memory/*.md`、Codex `rollout_summaries/*.md`、WorkBuddy `MEMORY.md`、`USER.md`、`memory/*_memory.md` 和 `user-*-personal/MEMORY.md` | 导入 | 新的 `imported` 来源（6.8）。按 6.5 的规则原样采用或抽取（6.6），都要经过 propose 和审核（6.7） |
 | 原始会话 | Claude `*.jsonl`、Codex rollout | `--include sessions` 时才导入 | 走正常的 Mem0 形成，使用原始时间戳和捕获时的 turnId（6.10） |
 
@@ -152,11 +152,18 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 - Codex 取 `rollout_summaries`，跳过 `raw_memories.md` 和 `memory_summary.md`。`MEMORY.md` 里跨线程的总结没有对应的
   单篇来源，是否导入列为待定问题。`skills/` 是程序性知识，当前 main 不形成 skill，不导入。
 - Claude 跳过 `MEMORY.md` 索引。每篇笔记是一个单元，正文是 `description` 加上笔记正文，不按标题再切。`type: user` 和
-  `feedback` 的笔记记为 `preference`，`reference` 记为 `reference`，其余记为 `fact`。`type: feedback` 的笔记照常导入，同时
-  把它的第一段（有 `description` 时就是它）列为指令候选，确认后另写一条 instruction；抽取已经给出合格的指令候选时不再加这一条。
-  所有指令候选都按 instruction 的上限检查：1024 个字符、4096 字节。
+  `feedback` 的笔记记为 `preference`，`reference` 记为 `reference`，其余记为 `fact`。
 - WorkBuddy 跳过 `SOUL.md`、`IDENTITY.md`、`BOOTSTRAP.md`。文件按 `#` 和 `##` 标题切节，第一个标题之前的文字单独成节；
   `USER.md` 的单元记为 `preference`。
+
+导入不写 instruction，做法和 Claude 的 Import Memory 一致：它的导出提示词也要对方列出"我要求你怎么做"的规则，但导入时
+不把这些规则存进记忆，只告诉用户可以自己去设置。这里 Claude 的 `feedback` 笔记、导出里 `kind: instruction` 的行、抽取出的
+"总是……""不要……"这类规则，都作为 `preference` 事实导入：检索和召回时作为参考出现，不进 `get_context.instructions`，不会被每个
+宿主当作行为要求。用户要所有宿主都遵守的规则，自己用 `add_memories` 的 `memoryType:"instruction"` 保存，或写进 `AGENTS.md`、
+`CLAUDE.md`。这样导入内容里夹带的注入最多变成一条可以回滚的参考事实，评审时也不用再选指令的作用域。
+
+2026-10-26 之前的版本会把这些内容列为默认拒绝的指令候选，人确认后写成 explicit instruction。那时写入的指令保持原样，回滚
+不区分记录类型，仍可随所属的 run 撤销；在那之前 propose、之后才 apply 的 run，其中的指令候选会按 `imported` 事实写入。
 
 ### 6.3 按来源筛选
 
@@ -232,7 +239,8 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 
 - `text`：脱离原文也能看懂（把"这个项目""用户"换成明确的名称），只写一件事，长度接近 6.5 的目标，不超过硬上限。
   语言规则和形成的 `zh` 变体一致：与原文的语言和文字相同。
-- `kind`：`fact`、`preference`、`instruction`、`reference` 之一。任务进度和临时状态由提示词要求直接略去，不作为一种 `kind` 输出。
+- `kind`：`fact`、`preference`、`reference` 之一；告诉 Agent 怎么做的规则（总是、不要、优先、必须先……）记为 `preference`。
+  任务进度和临时状态由提示词要求直接略去，不作为一种 `kind` 输出。
 - `scope`：`project` 或 `global`，只作为建议记下来（6.15）。
 - `evidence`：原文里支持这一条的片段。
 
@@ -245,14 +253,14 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
   `text` 没有内容词时不检查）；
 - `text` 里的专有名词和数字必须出现在单元正文或来源信息（项目、宿主、标题路径、`statedAt`）里，规则和 consolidation
   校验合并文本时相同（[rules](../../crates/memory-rules/src/consolidation.rs)）；
-- `text` 不能为空，也不能超过硬上限；`kind` 和 `scope` 必须是上面的取值；`instruction` 还要在 1024 个字符和 4096 字节以内。
+- `text` 不能为空，也不能超过硬上限；`kind` 和 `scope` 必须是上面的取值。
 
 不通过的条目记为 `rejected` 并写明原因，同一响应里的其他条目照常保留。JSON 结构本身不合法时，和形成一样做有界修复；
 原始响应在解析前先保存。
 
-**去向**：`fact`、`preference` 和 `reference` 成为提议；`instruction` 成为指令候选，只能在审核时逐条确认。每个抽取单元
-记录 `coverage`，即通过校验的依据片段覆盖了单元正文的比例，供审核时判断模型漏掉了多少。每条通过的提议另附最相近的 3 条
-已有事实（`similar`），供审核时对照。这两次召回有一次失败，整个单元就算失败。
+**去向**：每个通过校验的条目成为一条提议，写入时都是 `imported` 事实（6.8）。每个抽取单元记录 `coverage`，即通过校验的
+依据片段覆盖了单元正文的比例，供审核时判断模型漏掉了多少。每条通过的提议另附最相近的 3 条已有事实（`similar`），供审核时
+对照。这两次召回有一次失败，整个单元就算失败。
 
 **缓存**：键包括项目、单元哈希、标题路径、`statedAt`、来源的分类、召回预算和 topK、提示词变体、提示词和模型，不包括每次
 都会变的已有记忆。同一内容再次 propose 不会重新调用模型，内容变了才重新抽取；回复里有条目、但全都没通过校验时不缓存，下次
@@ -273,20 +281,18 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 
 ### 6.7 propose、审核与 apply
 
-和 consolidation 一样分成提议和应用两步，提议阶段不写任何记忆。命令、评审文件的字段和默认决定见
+和 consolidation 一样分成提议和应用两步，提议阶段不写任何记忆。命令和评审文件的字段见
 [导入已有记忆](../mcp-harness.md#import-existing-memories)，这里只记取舍：
 
 - propose 按单元数（默认 8，每次请求最多 64）和单元 JSON 的大小（1 MiB，单个更大的单元单独一批）分批，组成一个 run。中断后
   不续传，中断的 run 停在 `proposing`（第 0 节），重新运行就是新的 run。单元失败（例如模型调用出错）不会让整个 run 失败：
   run 照常进入 `proposed`，失败的单元没有提议，也不写台账，下次在新的 run 里重新提出。
 - 评审文件（`import show` 写出）第一行是表头，之后每条提议一行，变了的单元在提议后面跟着只读的 `previous` 行（6.9），会话
-  轮次不列出。事实、preference 和 reference 提议默认 `accept`；指令候选默认 `reject`，要逐条改成 `accept`，因为 instruction
-  会被每个宿主当作行为要求加载；propose 时已经 `rejected` 的提议也默认 `reject`。从评审文件里删掉的提议按 `reject` 处理。
+  轮次不列出。提议默认 `accept`，propose 时已经 `rejected` 的默认 `reject`；从评审文件里删掉的提议按 `reject` 处理。
   评审时不能改写文本，需要改的话，apply 之后用 `correct_memory`。
-- apply 必须带 `--review` 或 `--yes`，不会因为漏了评审文件就按默认决定写入。apply 前 CLI 重新读取来源文件，propose 之后
+- apply 必须带 `--review` 或 `--yes`，不会因为漏了评审文件就全部写入。apply 前 CLI 重新读取来源文件，propose 之后
   改过或消失的文件的提议一律按拒绝处理（`dropped`）。daemon 再逐条复查：propose 之后另一个 run 导入或回滚过同一个单元时标为
-  `skipped` 并写明原因；同一项目里已有内容和类型都相同的 current 导入记录时（指令还要作用域相同），链接到它而不是再写一条
-  （6.9）。实时形成的同文本事实不算。
+  `skipped` 并写明原因；同一项目里已有内容相同的 current 导入事实时，链接到它而不是再写一条（6.9）。实时形成的同文本事实不算。
 - 命令本身不做交互确认，propose 之后只有显式执行 apply 才会写入；交互式的确认留给安装器（6.18）。
 
 run 的状态是 `proposing → proposed → applying → applied → rolling_back → rolled_back`（或 `partially_rolled_back`，见
@@ -298,23 +304,20 @@ run 的状态是 `proposing → proposed → applying → applied → rolling_ba
 新增 origin `imported`：
 
 - 不加入 `context_origins`。`get_context` 的事实部分只列 `context_origins` 里的来源，所以导入的事实和 assistant 事实一样
-  不出现在 `get_context` 里，只能通过 `search_memories`（包括自动召回）找到。人确认后写入的指令是 explicit instruction，
-  照常出现在 `get_context` 的指令部分。
+  不出现在 `get_context` 里，只能通过 `search_memories`（包括自动召回）找到。
 - 是 consolidation 的候选，可以和实时形成的事实、其他宿主导入的记录合并。合并规则把它算作"弱"来源（第 5 节）：合并结果
   只要有一个输入是 `imported`，就不会是 `user`。不这样的话，导入的记录和用户事实合并后会变成 `user`。
 - `source.platform` 是来源宿主的平台标签（`claude-code`、`codex`、`workbuddy`），和捕获时一致；宿主 Agent 导出用
   `--label`，默认 `agent-export`。
 - `statedAt` 取来源时间：Claude frontmatter 的 `modified`，缺失时用 mtime；Codex 的 `updated_at`，缺失时留空；WorkBuddy 的
   mtime；宿主 Agent 导出的 `date`。导出条目没有日期时留空，免得它在 consolidation 里被当成最新的说法。`effectiveAt`
-  留空，和 Mem0 事实一样；
-  `recordedAt` 是写入时刻。人确认的指令写成 explicit instruction，和其他 instruction 一样从写入时刻生效，来源时间留在
-  `detail.import.statedAt`。
+  留空，和 Mem0 事实一样；`recordedAt` 是写入时刻。
 - `ingestionMode` 记为 `imported`，另有 `importKey`（项目加空白归一后的文本的哈希，6.9 的同文本查找靠它）和 `contentHash`。
   实体投影只接受能证明是 `inferred` 的记录（[entities.rs](../../crates/memory-algo-mem0/src/entities.rs)），
   所以导入的记录不进实体投影：检索靠语义和 BM25，consolidation 只能用向量把它们聚类。是否放开列为待定问题。
 - `detail.import` 记录出处：`runId`、`proposalId`、`unit`、`host`、`mode`（`verbatim`、`split` 或 `extract`）、`itemKind`、
   `scopeHint`、`evidence`、`headingPath`、`unitHash`、`fileHash`、抽取的原始响应 `responseLogId`，以及适配器给的 `source`
-  （路径、原生 ID、`via`，导出文件还有行号，见 6.11）；指令另记来源时间 `statedAt`。新写的记录另有一条 `role: import` 的
+  （路径、原生 ID、`via`，导出文件还有行号，见 6.11）。新写的记录另有一条 `role: import` 的
   证据行，记下依据片段；链接到已有记录时不写。字段以
   [`provenance`](../../crates/memory-domain/src/import/apply.rs) 为准。
 
@@ -330,13 +333,12 @@ run 的状态是 `proposing → proposed → applying → applied → rolling_ba
   的新提议取代或不再是 current。apply 之后，这次是 `new`、`changed` 或 `reconsidered` 的单元各有一条台账行（失败的单元、
   `unchanged` 的单元和 propose 之后被别的 run 导入过的单元没有）。什么都没写入时（提议全被拒绝、校验全没通过，或者什么都没
   抽出来）状态记为 `declined`，保留原来的链接，同样的文本不会再被提出来，`propose --reconsider` 可以重新提出。
-- 和同一项目里已有的 current 导入记录内容相同（文本空白归一后比较，靠 `importKey`）、类型相同的提议默认接受，接受即把单元
+- 和同一项目里已有的 current 导入事实内容相同（文本空白归一后比较，靠 `importKey`）的提议默认接受，接受即把单元
   链接到那条记录，不再写新的，和 Mem0 的精确去重一样。这样即使另一个单元以后改了自己的文本，这个单元的内容也还在。
-- 单元变了，取代按角色进行，而且只在一对一时发生：原样采用的单元以前只留下一条导入事实、这次也只提出一条事实时，新事实取代
-  旧事实；单元（不论哪种方式）以前只有一条人确认过的导入指令、这次也只提出一条指令时，新指令取代旧指令。另一个单元也持有的
-  记录不作为取代对象。旧记录变为 `superseded`，`validUntil` 取新记录的 `statedAt`（没有时取写入时刻；指令的 `statedAt`
-  就是写入时刻），新记录的 `supersedes` 指向旧记录。新提议链接到已有的同文本记录时，旧记录的 `supersededBy` 指向那条记录，
-  那条记录本身不加 `supersedes`。旧记录到 apply 时已经不能取代（不是导入写的、类型不同、已经不是 current）时，新记录照常
+- 单元变了，只在一对一时取代：原样采用的单元以前只留下一条导入事实、这次也只提出一条通过校验的提议时，新事实取代旧事实。
+  另一个单元也持有的记录不作为取代对象。旧记录变为 `superseded`，`validUntil` 取新记录的 `statedAt`（没有时取写入时刻），
+  新记录的 `supersedes` 指向旧记录。新提议链接到已有的同文本记录时，旧记录的 `supersededBy` 指向那条记录，
+  那条记录本身不加 `supersedes`。旧记录到 apply 时已经不能取代（不是导入写的、已经不是 current）时，新记录照常
   写入、不带 `supersedes`，原因记在提议行的 `applied.supersedeSkipped`。不调 `correct_memory`。
 - 其他情况（抽取和切分的单元会产生多条记录）旧文本产生的事实不自动撤回：run 的单元结果记下 `previousMemoryIds`，评审文件
   在这个单元的提议后面用只读的 `previous` 行列出它们，由人决定保留还是用 `correct_memory` 撤回；新旧说法冲突的情况交给
@@ -390,8 +392,7 @@ run 的状态是 `proposing → proposed → applying → applied → rolling_ba
   按 `fact`；`date` 不是 `YYYY-MM-DD` 时忽略并记进出处。平台标签取 `--label`，默认 `agent-export`。
 - 每行是一个单元，同样受 6.5 的硬上限约束：不超过就原样采用，超过就抽取。单元键取文本哈希的前 16 位，重新导出时顺序变了
   也不变。
-- 放得下的 `kind: instruction` 行只成为一条指令候选；超过硬上限的照样抽取，抽取没给出合格的指令候选时，再把第一段列为
-  指令候选。`scope` 只作为提示记进出处（6.15）。
+- `kind: instruction` 的行按 `preference` 导入（导入不写指令，6.2）；`scope` 只作为提示记进出处（6.15）。
 - 出处里的 `path` 是导出文件，另记行号和 `via: "agent-export"`；`statedAt` 的规则见 6.8。
 - 导出结果是不可信的数据：其中的任何指令都只当记忆内容处理，脱敏规则照常执行（6.12）。
 - 宿主 Agent 能写文件时，可以让它把结果直接写到指定路径，省去手动复制。
@@ -426,8 +427,6 @@ run 的状态是 `proposing → proposed → applying → applied → rolling_ba
   每条提议一个事务：记录、证据行、台账行和 `upsert` 索引任务，提议行本身记下写入、取代了什么；嵌入交给索引器，和
   consolidation 合并结果的写法一样（[app/consolidation.rs](../../crates/memory-engine/src/app/consolidation.rs)）。会话轮次只
   标为已排队，由 CLI 写进 outbox（6.10）。
-- 接受的指令候选由 apply 直接写成 explicit instruction，不经过 `add_memories`。同一项目里已有相同文本、相同作用域的导入
-  指令时只链接到它，所以重跑不会重复写。
 
 ### 6.14 吞吐和实时捕获
 
@@ -448,10 +447,9 @@ outbox 按 `seq` 先进先出，daemon 只有一个有序的形成 worker。几�
 ### 6.15 作用域限制
 
 Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` 里有专门写给跨项目复用的内容，Claude 的
-`type: user` 笔记也和具体项目无关，抽取和导出结果里还会有 `scope: global` 的建议，但现在都只能表达成 global instruction。
-因此事实一律按项目导入，`scope` 建议只记进出处（`scopeHint`）。指令默认也只对项目生效，模型给的 `scope: global` 只作提示，
-人在评审文件里把它的 `scope` 改成 `global` 才会全局生效。是否允许 global 作用域的导入事实列为待定问题，放开之前要先确认
-检索对 global fact 的可见性，以及 consolidation 只按项目选候选的规则。
+`type: user` 笔记也和具体项目无关，抽取和导出结果里还会有 `scope: global` 的建议，但现在只有 instruction 能写成 global，
+而导入不写指令。因此事实一律按项目导入，`scope` 建议只记进出处（`scopeHint`）。是否允许 global 作用域的导入事实列为待定
+问题，放开之前要先确认检索对 global fact 的可见性，以及 consolidation 只按项目选候选的规则。
 
 ### 6.16 回滚
 
@@ -459,8 +457,8 @@ Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` �
   `importRollback`，被它取代的旧版本恢复为 `current`；链接到同文本记录的只解除链接，那条记录不动，链接取代的旧版本同样恢复。一个单元的提议全部撤销后，它的台账行恢复成
   这次导入之前的那一行（原来没有就删掉）。另一个单元还持有的记录不撤回。
 - 之后被人更正、删除、被 consolidation 合并过的记录不动，记下 `rollbackSkipReason`，规则和 consolidation 的回滚一样
-  （[应用与回滚](../architecture.md#apply-and-rollback)）；之后又被别的 run 导入过的单元要先回滚那个 run。这次导入写入的
-  instruction 按同样的规则撤回。
+  （[应用与回滚](../architecture.md#apply-and-rollback)）；之后又被别的 run 导入过的单元要先回滚那个 run。旧版本写入的
+  instruction 也按同样的规则撤回（6.2）。
 - 会话轮次：CLI 先把 outbox 里这个 run 还没上传的作业标为 `cancelled`，daemon 再关闭这个 run，之后带它的 `importRunId` 的
   提交一律拒绝。每一轮的行记下 `requestId` 和 `duplicate`：daemon 找到的请求不是这个 run 建的（实时捕获或别的 run 先提交
   过）时为 true，响应丢失后重发自己的轮次不算；没记下 `requestId` 的轮次，回滚时按 turnId 去找。回滚只撤回来源请求全部
@@ -472,7 +470,7 @@ Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` �
 ### 6.17 导入之后
 
 导入完成后，建议对这个项目跑一次 consolidation dry-run（需要 `consolidationEnabled:true`），合并 Claude 和 Codex
-记了同一件事的情况。`imported` 记录是候选，人确认后写入的 instruction 不是。
+记了同一件事的情况。`imported` 记录都是候选。
 
 ### 6.18 安装器
 
@@ -500,7 +498,7 @@ Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` �
 - 存储测试用临时存储、mock 检索模型和本地确定性的生成桩跑完整流程（[import.rs](../../crates/memory-service/src/diagnostics/import.rs)、
   [import_sessions.rs](../../crates/memory-service/src/diagnostics/import_sessions.rs)，即 `imports_reviews_and_rolls_back`、
   `repeated_imports_keep_sources_and_memories_in_step` 和 `session_turns_import_dedupe_and_roll_back`）：propose 不写记忆，
-  评审决定，apply 的复查和跳过，重跑不写入，`--reconsider` 和 `declined`，按角色取代，指令的作用域和长度，回滚和回滚跳过，
+  评审决定，apply 的复查和跳过，重跑不写入，`--reconsider` 和 `declined`，变了的单元取代旧记录，导入不产生指令，回滚和回滚跳过，
   抽取缓存；导入的记录能被 `search_memories` 找到，`get_context` 不列出它们；同一轮先捕获再导入时 daemon 返回
   `duplicate:true`。
 - 不调用付费模型，不跑完整数据集。

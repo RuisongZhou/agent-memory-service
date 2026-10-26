@@ -15,7 +15,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::plan::Plan;
-use super::review::{self, Review, INSTRUCTION};
+use super::review::{self, Review};
 use super::source::{expand_in, read_text};
 use crate::harness::{invalid, AdminError, CallError, Daemon, Error};
 
@@ -263,13 +263,11 @@ impl Client {
         let request = ImportRunReq {
             run_id: run_id.into(),
             decisions: BTreeMap::new(),
-            scopes: BTreeMap::new(),
         };
         run_view(self.call("import_run", &request, PLATFORM).await?)
     }
 
-    /// Apply a run with the decisions and instruction scopes of a review file, or without one with each
-    /// proposal's default decision. First the source file of every proposal still proposed is read again
+    /// Apply a run with the decisions of a review file, or without one with every proposal accepted. First the source file of every proposal still proposed is read again
     /// under `home`: the proposals of a file that changed or vanished since propose are declined, whatever
     /// the review says. Calls as the run's host.
     pub async fn apply(
@@ -279,22 +277,17 @@ impl Client {
         home: &Path,
     ) -> Result<Applied, Error> {
         let current = self.run(run_id).await?;
-        let Review {
-            mut decisions,
-            mut scopes,
-        } = match review {
+        let Review { mut decisions } = match review {
             None => Review::default(),
             Some(path) => complete(review::read(path, run_id)?, &current.proposals)?,
         };
         let changed = changed_sources(&current.proposals, home);
         for id in changed.iter().flat_map(|source| &source.proposals) {
             decisions.insert(id.clone(), REJECT.into());
-            scopes.remove(id);
         }
         let request = ImportRunReq {
             run_id: run_id.into(),
             decisions,
-            scopes,
         };
         let answer = self
             .call("import_apply", &request, &current.run.host)
@@ -311,7 +304,6 @@ impl Client {
         let request = ImportRunReq {
             run_id: run_id.into(),
             decisions: BTreeMap::new(),
-            scopes: BTreeMap::new(),
         };
         let answer = self
             .call("import_rollback", &request, &current.run.host)
@@ -386,11 +378,10 @@ pub fn run_view(answer: Value) -> Result<RunView, Error> {
     Ok(RunView { run, proposals })
 }
 
-/// The decisions and scopes apply sends for a review: every proposal still proposed gets the review's
-/// decision, or `reject` when the review no longer lists it (deleting a line declines a proposal, as it
-/// skips a unit in a plan). A scope goes only with a proposal the run has as an instruction and that is
-/// accepted. A review naming a proposal the run does not have belongs to something else. Session turns are
-/// not reviewed (the plan chose them): they keep their default.
+/// The decisions apply sends for a review: every proposal still proposed gets the review's decision, or
+/// `reject` when the review no longer lists it (deleting a line declines a proposal, as it skips a unit in a
+/// plan). A review naming a proposal the run does not have belongs to something else. Session turns are not
+/// reviewed (the plan chose them): they are accepted.
 pub fn complete(listed: Review, proposals: &[ImportProposal]) -> Result<Review, Error> {
     let known: HashSet<&str> = proposals.iter().map(|p| p.proposal_id.as_str()).collect();
     if let Some(unknown) = listed
@@ -410,11 +401,6 @@ pub fn complete(listed: Review, proposals: &[ImportProposal]) -> Result<Review, 
         let id = &proposal.proposal_id;
         let decision = listed.decisions.get(id).map_or(REJECT, String::as_str);
         review.decisions.insert(id.clone(), decision.to_string());
-        if let Some(scope) = listed.scopes.get(id) {
-            if proposal.item_kind == INSTRUCTION {
-                review.scopes.insert(id.clone(), scope.clone());
-            }
-        }
     }
     Ok(review)
 }
@@ -455,7 +441,7 @@ pub(crate) mod tests {
     pub(crate) fn stub_proposals() -> Vec<ImportProposal> {
         vec![
             proposal("ip1", "fact", PROPOSED),
-            proposal("ip2", "instruction", PROPOSED),
+            proposal("ip2", "preference", PROPOSED),
             proposal("ip3", "fact", REJECTED),
             proposal("ip4", "preference", PROPOSED),
         ]
@@ -529,7 +515,7 @@ pub(crate) mod tests {
     }
 
     /// Proposals of the run over files `a.md`, `b.md` and `c.md` in `home`, each with the file's hash as
-    /// written here: ip1 of a.md, ip2 (an instruction) and ip3 of b.md, ip4 of c.md, ip5 without a source
+    /// written here: ip1 of a.md, ip2 (a preference) and ip3 of b.md, ip4 of c.md, ip5 without a source
     /// path, and ip6 of b.md, rejected when proposed.
     pub(crate) fn sourced_proposals(home: &Path) -> Vec<ImportProposal> {
         let sourced = |id: &str, kind: &str, status: &str, name: Option<&str>| {
@@ -545,7 +531,7 @@ pub(crate) mod tests {
         };
         vec![
             sourced("ip1", "fact", PROPOSED, Some("a.md")),
-            sourced("ip2", "instruction", PROPOSED, Some("b.md")),
+            sourced("ip2", "preference", PROPOSED, Some("b.md")),
             sourced("ip3", "fact", PROPOSED, Some("b.md")),
             sourced("ip4", "fact", PROPOSED, Some("c.md")),
             sourced("ip5", "fact", PROPOSED, None),
@@ -581,7 +567,6 @@ pub(crate) mod tests {
                 file_hash: content_hash(&raw),
                 stated_at: "2026-01-01T00:00:00Z".into(),
                 kind_hint: None,
-                instruction_candidate: false,
                 segments,
                 extra: Value::Null,
             });
@@ -739,14 +724,9 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         let path = dir.path().join("ir1.review.jsonl");
-        // The review accepts the instruction candidate and no longer lists ip4.
+        // The review keeps its decisions and no longer lists ip4.
         let listed: Vec<ImportProposal> = stub_proposals().into_iter().take(3).collect();
-        let text = review::render(&run("ir1"), &listed).unwrap().replacen(
-            "\"decision\":\"reject\"",
-            "\"decision\":\"accept\"",
-            1,
-        );
-        std::fs::write(&path, text).unwrap();
+        std::fs::write(&path, review::render(&run("ir1"), &listed).unwrap()).unwrap();
         let applied = client.apply("ir1", Some(&path), home).await.unwrap();
         // The stub's proposals name no source file: nothing to recheck.
         assert!(applied.changed.is_empty());
@@ -782,36 +762,6 @@ pub(crate) mod tests {
         assert_eq!(applies, 1, "a refused review sends nothing to apply");
     }
 
-    /// `text` with the proposal line of `id` edited by `edit`.
-    fn edit_line(text: &str, id: &str, edit: impl Fn(&mut Value)) -> String {
-        text.lines()
-            .map(|line| {
-                let mut value: Value = serde_json::from_str(line).unwrap();
-                if value["proposalId"] == id {
-                    edit(&mut value);
-                }
-                value.to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn scopes_go_only_with_the_runs_own_instructions() {
-        let text = review::render(&run("ir1"), &stub_proposals()).unwrap();
-        // A line edited into an instruction is still a fact of the run: its scope is not sent.
-        let relabeled = edit_line(&text, "ip1", |v| {
-            v["itemKind"] = json!("instruction");
-            v["scope"] = json!("global");
-        });
-        let review = review::parse(&relabeled, "ir1").unwrap();
-        assert_eq!(review.scopes.len(), 1);
-        assert!(complete(review, &stub_proposals())
-            .unwrap()
-            .scopes
-            .is_empty());
-    }
-
     #[tokio::test]
     async fn apply_declines_the_proposals_of_sources_changed_since_propose() {
         let home = tempfile::tempdir().unwrap();
@@ -819,19 +769,15 @@ pub(crate) mod tests {
         let (url, requests) = stub_with(stub_run(), proposals.clone()).await;
         let client = Client::new(&url, Duration::from_secs(5)).unwrap();
         let path = home.path().join("ir1.review.jsonl");
-        // Everything accepted, the instruction as global.
+        // Everything accepted.
         let text = review::render(&run("ir1"), &proposals).unwrap();
-        let text = edit_line(&text, "ip2", |v| {
-            v["decision"] = json!("accept");
-            v["scope"] = json!("global");
-        });
         std::fs::write(&path, &text).unwrap();
         // Unchanged sources: the review goes as it is.
         let applied = client.apply("ir1", Some(&path), home.path()).await.unwrap();
         assert!(applied.changed.is_empty());
         assert_eq!(
-            requests.lock().unwrap().last().unwrap().2["scopes"],
-            json!({"ip2": "global"})
+            requests.lock().unwrap().last().unwrap().2["decisions"]["ip2"],
+            ACCEPT
         );
 
         // After propose, b.md changes and c.md is deleted.
@@ -859,7 +805,7 @@ pub(crate) mod tests {
             json!({"runId": "ir1",
                    "decisions": {"ip1": ACCEPT, "ip2": REJECT, "ip3": REJECT, "ip4": REJECT, "ip5": ACCEPT}})
         );
-        // With the default decisions too.
+        // Without a review file too.
         client.apply("ir1", None, home.path()).await.unwrap();
         assert_eq!(
             requests.lock().unwrap().last().unwrap().2,

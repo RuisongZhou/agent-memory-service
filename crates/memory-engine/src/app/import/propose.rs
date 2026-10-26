@@ -14,18 +14,17 @@ use super::{
 };
 use crate::runtime::engine::Engine;
 use crate::runtime::instance::Instance;
-use memory_domain::import::apply::{self as plan, INSTRUCTION};
+use memory_domain::import::apply as plan;
 use memory_domain::import::{
-    default_decision, is_session_turn, item_kind_for_hint, session_turn_problem, ExtractedUnit,
-    ImportProposal, ImportProposeReq, ImportRun, ImportUnit, RecordRef, SimilarMemory, UnitOutcome,
-    KIND, MAX_BATCH_UNITS, MAX_EXTRACT_BYTES, MODE_EXTRACT, MODE_SESSION_TURN, MODE_SPLIT,
-    MODE_VERBATIM, PROPOSED, REJECTED, RUN_PROPOSED, RUN_PROPOSING, UNIT_CHANGED, UNIT_FAILED,
-    UNIT_NEW, UNIT_RECONSIDERED, UNIT_UNCHANGED,
+    is_session_turn, item_kind_for_hint, session_turn_problem, ExtractedUnit, ImportProposal,
+    ImportProposeReq, ImportRun, ImportUnit, RecordRef, SimilarMemory, UnitOutcome, KIND,
+    MAX_BATCH_UNITS, MAX_EXTRACT_BYTES, MODE_EXTRACT, MODE_SESSION_TURN, MODE_SPLIT, MODE_VERBATIM,
+    PROPOSED, REJECTED, RUN_PROPOSED, RUN_PROPOSING, UNIT_CHANGED, UNIT_FAILED, UNIT_NEW,
+    UNIT_RECONSIDERED, UNIT_UNCHANGED,
 };
 use memory_domain::types::*;
-use memory_rules::import::markdown;
 use memory_rules::import::units::{self, UnitLimits};
-use memory_rules::import::validate::{self, ItemRef, MAX_INSTRUCTION_BYTES, MAX_INSTRUCTION_CHARS};
+use memory_rules::import::validate::{self, ItemRef};
 use memory_rules::util;
 use memory_store::schema;
 use memory_store::store::{hashed_id, Tx};
@@ -147,23 +146,6 @@ impl Candidate {
     }
 }
 
-/// Why an instruction text exceeds the explicit-instruction limits, as `validate::check_item` words it.
-fn instruction_too_long(text: &str) -> Option<String> {
-    let chars = text.chars().count();
-    if chars > MAX_INSTRUCTION_CHARS {
-        return Some(format!(
-            "instruction has {chars} characters, more than {MAX_INSTRUCTION_CHARS}"
-        ));
-    }
-    if text.len() > MAX_INSTRUCTION_BYTES {
-        return Some(format!(
-            "instruction has {} bytes, more than {MAX_INSTRUCTION_BYTES}",
-            text.len()
-        ));
-    }
-    None
-}
-
 /// The state of one `propose` request.
 struct Proposer<'a> {
     eng: &'a Arc<Engine>,
@@ -179,41 +161,31 @@ struct Proposer<'a> {
     cache_hits: usize,
 }
 
-/// What a changed unit's earlier import left current, and which of those records its new proposals may
-/// replace, by role: the one fact a one-record unit was imported as, and the one instruction a person
-/// accepted from it. A record another unit also holds is never a target.
+/// What a changed unit's earlier import left current, and the record its new proposal may replace: the one
+/// fact a one-record (verbatim) unit was imported as. A record another unit also holds is never a target.
 struct Previous {
     live: Vec<MemoryRec>,
     fact: Option<String>,
-    instruction: Option<String>,
 }
 
 impl Proposer<'_> {
     async fn previous(&self, unit: &ImportUnit, ids: &[String]) -> anyhow::Result<Previous> {
-        let project = self.run.project.as_str();
         let live = live_records(self.t, ids).await?;
-        let mut targets = [None, None];
-        for (slot, wanted) in targets.iter_mut().zip([T_FACT, T_INSTRUCTION]) {
-            let of_role: Vec<&MemoryRec> = live
-                .iter()
-                .filter(|m| m.mtype == wanted && plan::is_import_record(m))
-                .collect();
-            if let [only] = of_role.as_slice() {
-                if other_units_naming(self.t, &only.id, project, &unit.unit)
+        let mut fact = None;
+        // Only a one-record unit maps its new text onto its old record.
+        if unit.mode == MODE_VERBATIM {
+            let imported: Vec<&MemoryRec> =
+                live.iter().filter(|m| plan::is_import_record(m)).collect();
+            if let [only] = imported.as_slice() {
+                if other_units_naming(self.t, &only.id, &self.run.project, &unit.unit)
                     .await?
                     .is_empty()
                 {
-                    *slot = Some(only.id.clone());
+                    fact = Some(only.id.clone());
                 }
             }
         }
-        let [fact, instruction] = targets;
-        Ok(Previous {
-            live,
-            // Only a one-record unit maps its new text onto its old record.
-            fact: fact.filter(|_| unit.mode == MODE_VERBATIM),
-            instruction,
-        })
+        Ok(Previous { live, fact })
     }
 
     /// The unit's outcome and proposals. Errors of the model calls fail the unit only.
@@ -310,28 +282,6 @@ impl Proposer<'_> {
                 None => return Ok((outcome, vec![])),
             },
         }
-        // Every instruction obeys the explicit-instruction limits, wherever it came from.
-        for c in candidates
-            .iter_mut()
-            .filter(|c| c.item_kind == INSTRUCTION && c.reject_reason.is_none())
-        {
-            c.reject_reason = instruction_too_long(&c.text);
-        }
-        let offers_instruction = candidates
-            .iter()
-            .any(|c| c.item_kind == INSTRUCTION && c.reject_reason.is_none());
-        if unit.instruction_candidate && !offers_instruction {
-            if let Some(first) = markdown::paragraphs(&unit.text).into_iter().next() {
-                candidates.push(Candidate {
-                    reject_reason: instruction_too_long(&first),
-                    text: first.clone(),
-                    item_kind: INSTRUCTION.into(),
-                    scope_hint: "project".into(),
-                    evidence: first,
-                    response_log_id: None,
-                });
-            }
-        }
         // A fresh extraction is cached unless every item failed its checks: such a reply is retried next time.
         if let Some(extracted) = fresh_extraction {
             let usable =
@@ -340,21 +290,12 @@ impl Proposer<'_> {
                 self.cache(unit, &extracted).await?;
             }
         }
-        // Each role's earlier record is replaced by the unit's one proposal of that role, if it has one.
-        let open = |kind: &str| {
-            candidates
-                .iter()
-                .filter(|c| {
-                    c.reject_reason.is_none()
-                        && (c.item_kind == INSTRUCTION) == (kind == INSTRUCTION)
-                })
-                .count()
-        };
-        let fact_target = previous.fact.clone().filter(|_| open(T_FACT) == 1);
-        let instruction_target = previous
-            .instruction
-            .clone()
-            .filter(|_| open(INSTRUCTION) == 1);
+        // The unit's earlier record is replaced by its one proposal, if it has exactly one.
+        let open = candidates
+            .iter()
+            .filter(|c| c.reject_reason.is_none())
+            .count();
+        let target = previous.fact.clone().filter(|_| open == 1);
         let mut proposals = Vec::with_capacity(candidates.len());
         for (position, c) in candidates.into_iter().enumerate() {
             let mut p = ImportProposal {
@@ -367,7 +308,6 @@ impl Proposer<'_> {
                 position,
                 unit: unit.unit.clone(),
                 mode: unit.mode.clone(),
-                default_decision: default_decision(&c.item_kind).into(),
                 item_kind: c.item_kind,
                 scope_hint: c.scope_hint,
                 text: c.text,
@@ -393,16 +333,12 @@ impl Proposer<'_> {
                 if outcome.outcome == UNIT_FAILED {
                     return Ok((outcome, vec![]));
                 }
-                p.supersedes = if p.item_kind == INSTRUCTION {
-                    instruction_target.clone()
-                } else {
-                    fact_target.clone()
-                };
+                p.supersedes = target.clone();
             }
             proposals.push(p);
         }
         // The current records of the previous text that no proposal replaces stay current; the reviewer sees
-        // them (`source-changed`) and can retract one with `correct_memory`.
+        // them (the review file's `previous` lines) and can retract one with `correct_memory`.
         let replaced: Vec<&String> = proposals
             .iter()
             .filter_map(|p| p.supersedes.as_ref())
@@ -524,23 +460,18 @@ impl Proposer<'_> {
     }
 
     /// The duplicate and nearest memories of a proposal that passed its checks. Accepting a duplicate links
-    /// the unit to that record instead of writing another one, so the default decision stays as it is: the
-    /// unit keeps its content even if another unit later replaces its own copy.
+    /// the unit to that record instead of writing another one, so a duplicate is accepted like any proposal:
+    /// the unit keeps its content even if another unit later replaces its own copy.
     async fn review_context(
         &self,
         p: &mut ImportProposal,
         outcome: &mut UnitOutcome,
     ) -> ApiResult<()> {
-        let mtype = if p.item_kind == INSTRUCTION {
-            T_INSTRUCTION
-        } else {
-            T_FACT
-        };
         let key = units::import_key(&p.project, &p.text);
         p.duplicate_of = self
             .t
             .store
-            .current_imported(&p.project, mtype, &key)
+            .current_imported(&p.project, &key)
             .await?
             .map(|m| m.id);
         match self
@@ -697,10 +628,6 @@ pub async fn propose(
     counts.proposals += proposals.len() - turn_rows;
     counts.session_turns += turn_rows;
     counts.rejected += count(&proposals, REJECTED);
-    counts.instruction_candidates += proposals
-        .iter()
-        .filter(|p| p.item_kind == INSTRUCTION && p.status == PROPOSED)
-        .count();
     counts.duplicates += proposals
         .iter()
         .filter(|p| p.duplicate_of.is_some())
@@ -847,10 +774,6 @@ mod tests {
             long.reject_reason.as_deref(),
             Some("text costs 201, more than the unit cap 200")
         );
-        assert!(instruction_too_long(&"a".repeat(1025))
-            .unwrap()
-            .contains("1025 characters"));
-        assert_eq!(instruction_too_long("Always run make test."), None);
         assert!(check_limits(&UnitLimits {
             recall_budget: 39,
             recall_top_k: 5

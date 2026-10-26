@@ -115,7 +115,6 @@ impl Adapter for Codex {
                     .and_then(timestamp)
                     .unwrap_or_default(),
                 kind_hint: None,
-                instruction_candidate: false,
                 segments: summary.segments,
                 extra: json!({"threadId": summary.thread_id, "rolloutPath": rollout, "memoriesHead": head}),
             });

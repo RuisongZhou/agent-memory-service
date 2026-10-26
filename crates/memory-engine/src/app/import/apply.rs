@@ -85,13 +85,11 @@ async fn supersede(
     Ok(patch)
 }
 
-/// The writes of one accepted proposal, added to `tx`. `global`: a person chose global scope for it (an
-/// instruction).
+/// The writes of one accepted proposal, added to `tx`.
 async fn accept(
     t: &Arc<Instance>,
     run: &ImportRun,
     p: &ImportProposal,
-    global: bool,
     tx: &mut Tx,
 ) -> anyhow::Result<Accepted> {
     let unit = run
@@ -106,21 +104,12 @@ async fn accept(
     }
     let now = util::now_str();
     let key = units::import_key(&p.project, &p.text);
-    let instruction = plan::is_instruction(p);
-    let mtype = if instruction { T_INSTRUCTION } else { T_FACT };
     // Exact deduplication: the unit is linked to the current record of the same text instead of writing
-    // another one; an instruction only to one of the scope the person chose.
-    let existing = t
-        .store
-        .current_imported(&p.project, mtype, &key)
-        .await?
-        .filter(|m| !instruction || (m.scope.kind == "global") == global);
+    // another one.
+    let existing = t.store.current_imported(&p.project, &key).await?;
     let (mut target, written) = match existing {
         Some(m) => (m, false),
-        None => (
-            plan::imported_record(p, &util::new_id("m"), &now, global),
-            true,
-        ),
+        None => (plan::imported_record(p, &util::new_id("m"), &now), true),
     };
     let mut applied = if written {
         json!({"memoryId": target.id, "importKey": key})
@@ -181,7 +170,7 @@ async fn accept(
 }
 
 /// Apply a `proposed` run (or resume an interrupted apply). Each `proposed` proposal takes its review
-/// decision, or its default decision: `reject` drops it; `accept` rechecks the unit's ledger row (another
+/// decision, or `accept` without one: `reject` drops it; `accept` rechecks the unit's ledger row (another
 /// run imported the unit since: `skipped`) and the project's current records (same text: the unit is linked
 /// to that record), and otherwise writes the record, its evidence and index task. Either way the record the
 /// unit's earlier import was (`supersedes`) is retired while no other unit holds it, and the unit's ledger row
@@ -199,16 +188,6 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
         if decision != ACCEPT && decision != REJECT {
             return Err(invalid(format!(
                 "the decision for {pid} must be accept or reject, not {decision:?}"
-            )));
-        }
-        if !ids.contains(pid) {
-            return Err(invalid(format!("{pid} is not a proposal of run {id}")));
-        }
-    }
-    for (pid, scope) in &req.scopes {
-        if scope != "project" && scope != "global" {
-            return Err(invalid(format!(
-                "the scope for {pid} must be project or global, not {scope:?}"
             )));
         }
         if !ids.contains(pid) {
@@ -239,9 +218,7 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
             .decisions
             .get(&p.proposal_id)
             .map(String::as_str)
-            .unwrap_or(&p.default_decision);
-        let global = plan::is_instruction(&p)
-            && req.scopes.get(&p.proposal_id).map(String::as_str) == Some("global");
+            .unwrap_or(ACCEPT);
         let mut tx = Tx::new();
         let bookkeeping = if decision == REJECT {
             json!({"status": DROPPED, "decision": REJECT})
@@ -250,7 +227,7 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
             json!({"status": APPLIED, "decision": ACCEPT, "applied": {"queued": true},
                 "appliedAt": util::now_str()})
         } else {
-            match accept(t, &run, &p, global, &mut tx).await {
+            match accept(t, &run, &p, &mut tx).await {
                 Ok(Accepted::Applied { memory_id, applied }) => json!({"status": APPLIED,
                     "decision": ACCEPT, "memoryId": memory_id, "applied": applied,
                     "appliedAt": util::now_str()}),

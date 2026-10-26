@@ -507,15 +507,15 @@ the existing outbox and recall record; stop a separately running Python uploader
 `agent-memoryd import` copies what a host already remembers into the shared store, so other hosts and later
 sessions can recall it: the memory files it keeps and, for Claude Code and Codex, the turns of
 [past sessions](#import-past-sessions). The [design](design/memory-import.md) explains the choices and
-[architecture](architecture.md#import) the daemon side. Rule files such as `CLAUDE.md` and `AGENTS.md`, and an
-installer option, are not imported yet.
+[architecture](architecture.md#import) the daemon side. Rule files such as `CLAUDE.md` and `AGENTS.md` are not
+imported: each host loads its own. The installer has no import option yet.
 
 | Host | Reads | One unit | Mode |
 |---|---|---|---|
-| Claude Code: `--host claude-code --workspace DIR` | `~/.claude/projects/<dir>/memory/*.md` of the workspace's repository (worktrees share it); `--all` also finds directories by the `cwd` of their transcripts | a note, its `description` first | as is when it fits the unit cap, else extracted; `feedback` notes are also offered as instructions |
+| Claude Code: `--host claude-code --workspace DIR` | `~/.claude/projects/<dir>/memory/*.md` of the workspace's repository (worktrees share it); `--all` also finds directories by the `cwd` of their transcripts | a note, its `description` first | as is when it fits the unit cap, else extracted; `user` and `feedback` notes are preferences |
 | Codex: `--host codex --workspace DIR` | `~/.codex/memories/rollout_summaries/*.md` whose `cwd` is in a workspace | the intro and each `## Task` section | always extracted: they mix lasting knowledge with task progress |
 | WorkBuddy: `--host workbuddy` | `~/.workbuddy/MEMORY.md`, `USER.md`, `memory/*_memory.md`, `user-*-personal/MEMORY.md`; user-level, persona files skipped | a section | as is when it fits, else extracted |
-| Any agent: `--host jsonl --from FILE --label LABEL` | the JSONL that `import prompt` asks a host's agent for | a line | as is when it fits, else extracted; `instruction` lines are offered as instructions |
+| Any agent: `--host jsonl --from FILE --label LABEL` | the JSONL that `import prompt` asks a host's agent for | a line | as is when it fits, else extracted; an `instruction` line is a preference |
 
 ```sh
 agent-memoryd import plan --host codex --project my-project --workspace /path/to/repo
@@ -542,19 +542,20 @@ the daemon must be running.
    its unit (a quote of at least 8 characters sharing the item's words), name no number or entity the unit lacks,
    and fit the cap, or it is kept as `rejected` with the reason.
 3. **`show`** writes the review file and refuses to replace an existing one unless you pass `--force`. Each
-   proposal is one line with its `decision`, preset to its default, plus the evidence, any rejection reason, a
-   duplicate, the record it would replace (`supersedes`) and the nearest existing memories. Change `decision` to
-   `accept` or `reject`; a proposal the file no longer lists is declined. An instruction also has `scope`
-   (`project`, or `global` to apply it to every project) and the extraction's `scopeHint`. Lines of type
-   `previous` list the current records an earlier import of a changed unit left: they stay current unless a
-   proposal replaces them; retract one with the MCP tool `correct_memory` (no text). `apply --yes` takes the
-   defaults instead: facts and links to existing records of the same text are written, instructions are not.
+   proposal is one line with its `decision` (`accept`, or `reject` when it failed its checks), plus the
+   `itemKind`, the `scopeHint`, the evidence, any rejection reason, a duplicate, the record it would replace
+   (`supersedes`) and the nearest existing memories. Change `decision` to `accept` or `reject`; a proposal the
+   file no longer lists is declined. Lines of type `previous` list the current records an earlier import of a
+   changed unit left: they stay current unless a proposal replaces them; retract one with the MCP tool
+   `correct_memory` (no text). `apply --yes` accepts every proposal instead; a duplicate is linked to the
+   existing record of the same text, not written again.
 4. **`apply`** first rereads every source (`--home` as for `propose`) and declines the proposals of files changed
-   since propose. It writes accepted facts with origin `imported`. They are reference material: `get_context`
-   does not present them as established, while search and automatic recall find them. An instruction you accepted
-   becomes an explicit instruction. A proposal whose text is already a current record links the unit to that
-   record; a changed unit's new fact and new instruction replace the ones its earlier import wrote, unless
-   another unit still holds them.
+   since propose. It writes accepted proposals as facts with origin `imported`, whatever their item kind. They
+   are reference material: `get_context` does not list them, while search and automatic recall find them. Import
+   never writes an instruction; save a rule you want every host to follow yourself, for example with
+   `add_memories` and `memoryType:"instruction"`. A proposal whose text is already a current imported fact links
+   the unit to that record; a changed unit's new fact replaces the one its earlier import wrote, unless another
+   unit still holds it.
 5. **`rollback`** retires a run's records and restores what they replaced; records changed since, or held by
    another unit, stay.
 

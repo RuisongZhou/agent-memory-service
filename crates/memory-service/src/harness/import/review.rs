@@ -1,7 +1,6 @@
 //! Review files (docs/design/memory-import.md §6.7): a run's proposals one per line, for a person to set
-//! each `decision` to `accept` or `reject`, and the `scope` of an instruction to `project` or `global`,
-//! before apply. Only decisions and instruction scopes are read back: text cannot be rewritten here
-//! (correct a record after apply with `correct_memory`). `previous` lines list, after a changed unit's
+//! each `decision` to `accept` or `reject` before apply. Only decisions are read back: text cannot be
+//! rewritten here (correct a record after apply with `correct_memory`). `previous` lines list, after a changed unit's
 //! proposals, the records its earlier text became; they are for reading only.
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportRun, SimilarMemory, UnitOutcome, ACCEPT, PROPOSED,
@@ -17,11 +16,6 @@ use super::{shown, write_private};
 use crate::harness::{invalid, Error};
 
 pub const VERSION: u64 = 1;
-/// The item kind whose scope a person chooses.
-pub const INSTRUCTION: &str = "instruction";
-/// Scopes of an instruction: this project's (the default), or every project's.
-pub const PROJECT: &str = "project";
-pub const GLOBAL: &str = "global";
 
 /// The first line of a review file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -44,14 +38,11 @@ pub struct ProposalLine {
     #[serde(rename = "type")]
     pub line: String,
     pub proposal_id: String,
-    /// `accept` or `reject`: the proposal's default, `reject` when it failed its checks.
+    /// `accept`, or `reject` when the proposal failed its checks.
     pub decision: String,
     pub status: String,
     pub item_kind: String,
-    /// An instruction's scope, `project` until a person sets `global`, whatever the hint. Other kinds
-    /// show their hint here, and it is not read back: facts are always written to the project.
-    pub scope: String,
-    /// The scope the source or the extraction suggested; for reading only.
+    /// The scope the source or the extraction suggested; for reading only: facts are written to the project.
     pub scope_hint: String,
     pub text: String,
     pub evidence: String,
@@ -67,20 +58,15 @@ pub struct ProposalLine {
 impl ProposalLine {
     pub fn new(proposal: &ImportProposal) -> Self {
         let decision = match proposal.status == REJECTED {
-            true => REJECT.to_string(),
-            false => proposal.default_decision.clone(),
-        };
-        let scope = match proposal.item_kind == INSTRUCTION {
-            true => PROJECT.to_string(),
-            false => proposal.scope_hint.clone(),
+            true => REJECT,
+            false => ACCEPT,
         };
         ProposalLine {
             line: "proposal".into(),
             proposal_id: proposal.proposal_id.clone(),
-            decision,
+            decision: decision.into(),
             status: proposal.status.clone(),
             item_kind: proposal.item_kind.clone(),
-            scope,
             scope_hint: proposal.scope_hint.clone(),
             text: proposal.text.clone(),
             evidence: proposal.evidence.clone(),
@@ -108,12 +94,10 @@ pub struct PreviousLine {
     pub text: String,
 }
 
-/// What a review file decides for the proposals it lists as still `proposed`: each one's decision, and
-/// `global` for each accepted instruction a person made global.
+/// What a review file decides for the proposals it lists as still `proposed`: each one's decision.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Review {
     pub decisions: BTreeMap<String, String>,
-    pub scopes: BTreeMap<String, String>,
 }
 
 /// `<home>/.local/state/agent-memory-service/imports/<run>.review.jsonl`.
@@ -201,14 +185,8 @@ pub fn read(path: &Path, run_id: &str) -> Result<Review, Error> {
     parse(&text, run_id)
 }
 
-/// `value` for a message: `nothing` when absent, else as JSON (a string in quotes).
-fn given(value: Option<&Value>) -> String {
-    value.map_or("nothing".to_string(), Value::to_string)
-}
-
-/// The decisions and instruction scopes of a review file for run `run_id`, for the proposals it lists
-/// as still `proposed`. Every proposal line needs an `accept` or `reject` decision, and every instruction
-/// line a `project` or `global` scope; errors name the line. `previous` lines are skipped.
+/// The decisions of a review file for run `run_id`, for the proposals it lists as still `proposed`. Every
+/// proposal line needs an `accept` or `reject` decision; errors name the line. `previous` lines are skipped.
 pub fn parse(text: &str, run_id: &str) -> Result<Review, Error> {
     let mut lines = text
         .lines()
@@ -264,20 +242,6 @@ pub fn parse(text: &str, run_id: &str) -> Result<Review, Error> {
                 )))
             }
         };
-        // Only an instruction's scope is read: other kinds are written to the project.
-        let global = match field("itemKind") {
-            Some(INSTRUCTION) => match field("scope") {
-                Some(PROJECT) => false,
-                Some(GLOBAL) => true,
-                _ => {
-                    return Err(invalid(format!(
-                        "line {n}: scope must be \"project\" or \"global\", not {}",
-                        given(value.get("scope"))
-                    )))
-                }
-            },
-            _ => false,
-        };
         if !listed.insert(id.to_string()) {
             return Err(invalid(format!("line {n}: proposal {id} is listed twice")));
         }
@@ -285,9 +249,6 @@ pub fn parse(text: &str, run_id: &str) -> Result<Review, Error> {
             review
                 .decisions
                 .insert(id.to_string(), decision.to_string());
-            if global && decision == ACCEPT {
-                review.scopes.insert(id.to_string(), GLOBAL.to_string());
-            }
         }
     }
     Ok(review)
@@ -296,7 +257,7 @@ pub fn parse(text: &str, run_id: &str) -> Result<Review, Error> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use memory_domain::import::{default_decision, RecordRef, APPLIED, KIND, RUN_PROPOSED};
+    use memory_domain::import::{RecordRef, APPLIED, KIND, RUN_PROPOSED};
     use serde_json::json;
 
     pub(crate) fn run(id: &str) -> ImportRun {
@@ -330,7 +291,6 @@ pub(crate) mod tests {
             unit_hash: "u".into(),
             file_hash: "f".into(),
             status: status.into(),
-            default_decision: default_decision(kind).into(),
             created_at: "2026-10-22T12:00:00Z".into(),
             ..ImportProposal::default()
         }
@@ -374,7 +334,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn review_files_list_proposals_with_their_default_decisions() {
+    fn review_files_list_proposals_accepted_unless_they_failed_their_checks() {
         let mut rejected = proposal("ip3", "fact", REJECTED);
         rejected.reject_reason = Some("evidence is not a quote of the unit".into());
         let mut similar = proposal("ip1", "fact", PROPOSED);
@@ -385,7 +345,7 @@ pub(crate) mod tests {
         }];
         let proposals = vec![
             similar,
-            proposal("ip2", "instruction", PROPOSED),
+            proposal("ip2", "preference", PROPOSED),
             rejected,
             proposal("ip4", "fact", APPLIED),
         ];
@@ -406,7 +366,7 @@ pub(crate) mod tests {
         assert_eq!(
             lines[1],
             json!({"type": "proposal", "proposalId": "ip1", "decision": "accept", "status": "proposed",
-                   "itemKind": "fact", "scope": "project", "scopeHint": "project",
+                   "itemKind": "fact", "scopeHint": "project",
                    "text": "Proposal ip1 text.", "evidence": "quoted evidence",
                    "unit": "codex:t-1#task-1", "headingPath": ["Title", "Task 1"],
                    "statedAt": "2026-01-02T03:04:05Z", "rejectReason": null, "duplicateOf": null,
@@ -416,104 +376,19 @@ pub(crate) mod tests {
             .iter()
             .map(|l| l["decision"].as_str().unwrap())
             .collect();
-        assert_eq!(decisions, ["accept", "reject", "reject", "accept"]);
-        // Read back: only the proposals still proposed have a decision to send; every instruction stays
-        // the project's.
+        assert_eq!(decisions, ["accept", "accept", "reject", "accept"]);
+        // Read back: only the proposals still proposed have a decision to send.
         let read_back = read(&path, "ir1").unwrap();
         assert_eq!(
             read_back.decisions,
             BTreeMap::from([
                 ("ip1".to_string(), "accept".to_string()),
-                ("ip2".to_string(), "reject".to_string())
+                ("ip2".to_string(), "accept".to_string())
             ])
         );
-        assert!(read_back.scopes.is_empty());
-        // A person accepts the instruction candidate.
-        let edited = text.replacen("\"decision\":\"reject\"", "\"decision\":\"accept\"", 1);
-        assert_eq!(parse(&edited, "ir1").unwrap().decisions["ip2"], "accept");
-    }
-
-    /// The proposal line of `id` in a rendered review, edited by `edit`.
-    fn edit_line(text: &str, id: &str, edit: impl Fn(&mut Value)) -> String {
-        text.lines()
-            .map(|line| {
-                let mut value: Value = serde_json::from_str(line).unwrap();
-                if value["proposalId"] == id {
-                    edit(&mut value);
-                }
-                value.to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn instruction_scopes_start_as_the_project_and_global_is_opt_in() {
-        let mut instruction = proposal("ip1", "instruction", PROPOSED);
-        instruction.scope_hint = GLOBAL.into();
-        let mut fact = proposal("ip2", "fact", PROPOSED);
-        fact.scope_hint = GLOBAL.into();
-        let text = render(
-            &run("ir1"),
-            &[instruction, fact, proposal("ip4", "instruction", PROPOSED)],
-        )
-        .unwrap();
-        let lines: Vec<Value> = text
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
-        // An instruction starts as the project's even when the extraction suggests global; other kinds
-        // show their hint.
-        let scopes: Vec<(&str, &str)> = lines[1..]
-            .iter()
-            .map(|l| {
-                (
-                    l["scope"].as_str().unwrap(),
-                    l["scopeHint"].as_str().unwrap(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            scopes,
-            [
-                ("project", "global"),
-                ("global", "global"),
-                ("project", "project")
-            ]
-        );
-        assert!(parse(&text, "ir1").unwrap().scopes.is_empty());
-
-        // Global is sent for an accepted instruction, and only then.
-        let edited = edit_line(&text, "ip1", |v| {
-            v["decision"] = json!("accept");
-            v["scope"] = json!("global");
-        });
-        let edited = edit_line(&edited, "ip4", |v| v["scope"] = json!("global"));
-        // A fact's scope is not read, whatever it says.
-        let edited = edit_line(&edited, "ip2", |v| v["scope"] = json!("team"));
-        let review = parse(&edited, "ir1").unwrap();
-        assert_eq!(
-            review.scopes,
-            BTreeMap::from([("ip1".to_string(), "global".to_string())])
-        );
-        assert_eq!(review.decisions["ip1"], "accept");
-        assert_eq!(review.decisions["ip4"], "reject");
-
-        // Any other scope on an instruction line is an error naming the line.
-        let team = edit_line(&text, "ip4", |v| v["scope"] = json!("team"));
-        let error = parse(&team, "ir1").unwrap_err().to_string();
-        assert!(
-            error.contains("line 4") && error.contains("\"team\""),
-            "{error}"
-        );
-        let missing = edit_line(&text, "ip1", |v| {
-            v.as_object_mut().unwrap().remove("scope");
-        });
-        let error = parse(&missing, "ir1").unwrap_err().to_string();
-        assert!(
-            error.contains("line 2") && error.contains("not nothing"),
-            "{error}"
-        );
+        // A person declines the preference.
+        let edited = text.replacen("\"decision\":\"accept\"", "\"decision\":\"reject\"", 2);
+        assert_eq!(parse(&edited, "ir1").unwrap().decisions["ip2"], "reject");
     }
 
     pub(crate) fn changed_unit(unit: &str, index: usize, records: &[(&str, &str)]) -> UnitOutcome {

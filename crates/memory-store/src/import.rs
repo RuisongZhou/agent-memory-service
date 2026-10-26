@@ -23,25 +23,15 @@ impl Store {
         .await
     }
 
-    /// The current record of type `mtype` (`fact` or `instruction`) that an import wrote for `project` with
-    /// import key `key`: a fact of the project, or an instruction of the project or global scope (the key
-    /// already names the project). The oldest one when several exist.
-    pub async fn current_imported(
-        &self,
-        project: &str,
-        mtype: &str,
-        key: &str,
-    ) -> Result<Option<MemoryRec>> {
+    /// The current fact an import wrote for `project` with import key `key` (the key already names the
+    /// project). The oldest one when several exist.
+    pub async fn current_imported(&self, project: &str, key: &str) -> Result<Option<MemoryRec>> {
         Ok(self
             .find_memories(
-                "importKey = $key AND type = $type AND status = 'current' AND \
-                 ((scope.kind = 'project' AND scope.project = $p) OR scope.kind = 'global') \
+                "importKey = $key AND type = 'fact' AND status = 'current' AND \
+                 scope.kind = 'project' AND scope.project = $p \
                  ORDER BY recordedTs ASC, mid ASC LIMIT 1",
-                vec![
-                    ("key", json!(key)),
-                    ("type", json!(mtype)),
-                    ("p", json!(project)),
-                ],
+                vec![("key", json!(key)), ("p", json!(project))],
             )
             .await?
             .into_iter()
@@ -159,20 +149,15 @@ mod tests {
         assert_eq!(ids(store.import_runs(Some("a"), 20).await?), ["ir3", "ir1"]);
         assert_eq!(ids(store.import_runs(None, 1).await?), ["ir3"]);
 
-        let found = store.current_imported("a", T_FACT, "key1").await?.unwrap();
+        // Only a current fact of the project matches.
+        let found = store.current_imported("a", "key1").await?.unwrap();
         assert_eq!(found.id, "m");
-        let instruction = store.current_imported("a", T_INSTRUCTION, "key1").await?;
-        assert_eq!(instruction.unwrap().id, "mmm");
-        assert!(store.current_imported("a", T_FACT, "key2").await?.is_none());
+        assert!(store.current_imported("a", "key2").await?.is_none());
         assert_eq!(
-            store
-                .current_imported("b", T_FACT, "key1")
-                .await?
-                .unwrap()
-                .id,
+            store.current_imported("b", "key1").await?.unwrap().id,
             "mmmm"
         );
-        assert!(store.current_imported("c", T_FACT, "key1").await?.is_none());
+        assert!(store.current_imported("c", "key1").await?.is_none());
 
         let mut tx = Tx::new();
         for (id, run, seq, keys) in [

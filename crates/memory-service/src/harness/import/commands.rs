@@ -320,7 +320,7 @@ pub async fn propose(
     let _ = writeln!(out, "Next: agent-memoryd import show {id}{flags}");
     let _ = writeln!(
         out,
-        "  then agent-memoryd import apply {id} --review <review file>{flags}{home_flag}, or --yes for the default decisions"
+        "  then agent-memoryd import apply {id} --review <review file>{flags}{home_flag}, or --yes to accept every proposal"
     );
     Ok(out)
 }
@@ -336,8 +336,8 @@ fn run_report(run: &ImportRun) -> String {
     );
     let _ = writeln!(
         out,
-        "  units {}: {} unchanged; proposals {}: {} rejected, {} instruction candidates, {} duplicates",
-        c.units, c.unchanged, c.proposals, c.rejected, c.instruction_candidates, c.duplicates
+        "  units {}: {} unchanged; proposals {}: {} rejected, {} duplicates",
+        c.units, c.unchanged, c.proposals, c.rejected, c.duplicates
     );
     let _ = writeln!(
         out,
@@ -500,14 +500,9 @@ pub async fn show(
         .collect();
     for proposal in reviewed.iter().take(SHOW_PROPOSALS) {
         let line = review::ProposalLine::new(proposal);
-        let hint = match line.item_kind == review::INSTRUCTION {
-            true if line.scope_hint.is_empty() => " (no scope hint)".to_string(),
-            true => format!(" (scope hint: {})", line.scope_hint),
-            false => String::new(),
-        };
         let _ = writeln!(
             text,
-            "  [{}] {} {}{hint}: {}",
+            "  [{}] {} {}: {}",
             line.decision,
             line.item_kind,
             line.proposal_id,
@@ -529,7 +524,7 @@ pub async fn show(
     let _ = writeln!(text, "Review file: {file}");
     let _ = writeln!(
         text,
-        "Next: set each \"decision\" to \"accept\" or \"reject\" (a deleted line is declined), and the \"scope\" of an instruction to \"global\" to follow it in every project, then run: agent-memoryd import apply {} --review {file}{}",
+        "Next: set each \"decision\" to \"accept\" or \"reject\" (a deleted line is declined), then run: agent-memoryd import apply {} --review {file}{}",
         view.run.run_id,
         daemon_flags(daemon)
     );
@@ -689,7 +684,7 @@ pub async fn apply(
     if review.is_none() && applied.view.run.counts.proposals > 0 {
         let _ = writeln!(
             out,
-            "  default decisions: facts and preferences accepted, instruction candidates and duplicates not written"
+            "  no review file: every proposal accepted; a duplicate is linked to its record, not written again"
         );
     }
     out.push_str(&turns_report(&applied.view));
@@ -946,11 +941,10 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("[reject] instruction ip2 (scope hint: project): Proposal ip2 text."),
+            text.contains("[accept] preference ip2: Proposal ip2 text."),
             "{text}"
         );
         assert!(text.contains("[accept] fact ip1: Proposal ip1 text."));
-        assert!(text.contains("\"scope\" of an instruction to \"global\""));
         assert!(!text.contains("earlier records"), "{text}");
         let outbox = home.path().join("outbox.sqlite3");
         let applied = apply(
@@ -967,7 +961,7 @@ mod tests {
         assert!(applied.contains("applied 2"), "{applied}");
         assert!(!applied.contains("since propose"), "{applied}");
         let last = requests.lock().unwrap().last().unwrap().2.clone();
-        assert_eq!(last["decisions"]["ip2"], "reject");
+        assert_eq!(last["decisions"]["ip2"], "accept");
         assert!(status(None, Some("my-project"), &daemon)
             .await
             .unwrap()
@@ -1112,7 +1106,7 @@ mod tests {
             "~/b.md changed since propose: its 2 proposals were declined",
             "~/c.md vanished since propose: its 1 proposals were declined",
             "propose again to import the current text",
-            "default decisions",
+            "no review file: every proposal accepted",
         ] {
             assert!(report.contains(part), "{part}\n{report}");
         }
