@@ -208,19 +208,8 @@ impl Shim {
         }
     }
 
-    /// `propose_import` or `apply_import`, the shim's own tools: check the arguments, then call the daemon's
-    /// admin import endpoints as this connection's platform. Returns (ok, text for the agent).
-    pub async fn import(&self, name: &str, args: &JsonObject) -> (bool, String) {
-        let done = match name {
-            "propose_import" => self.propose_import(args).await,
-            _ => self.apply_import(args).await,
-        };
-        match done {
-            Ok(report) => (true, report),
-            Err(message) => (false, message),
-        }
-    }
-
+    /// `propose_import`, one of the shim's own tools: check the arguments, then call the daemon's admin
+    /// import endpoints as this connection's platform. Returns the report for the agent, or why not.
     async fn propose_import(&self, args: &JsonObject) -> Result<String, String> {
         let project = args
             .get("scope")
@@ -272,6 +261,7 @@ impl Shim {
             .map_err(|e| crate::harness::import::message(&e))
     }
 
+    /// `apply_import`, the shim's other own tool, checked and called as `propose_import` is.
     async fn apply_import(&self, args: &JsonObject) -> Result<String, String> {
         let run_id = args
             .get("runId")
@@ -424,7 +414,8 @@ impl ServerHandler for Shim {
         }
         let args = request.arguments.unwrap_or_default();
         let (ok, text) = match name.as_str() {
-            "propose_import" | "apply_import" => self.import(&name, &args).await,
+            "propose_import" => answered(self.propose_import(&args).await),
+            "apply_import" => answered(self.apply_import(&args).await),
             _ => self.forward(&name, args).await,
         };
         let content = vec![ContentBlock::text(text)];
@@ -434,6 +425,14 @@ impl ServerHandler for Shim {
             CallToolResult::error(content)
         }
         .into())
+    }
+}
+
+/// A tool result of the shim's own: (ok, text for the agent).
+fn answered(done: Result<String, String>) -> (bool, String) {
+    match done {
+        Ok(report) => (true, report),
+        Err(message) => (false, message),
     }
 }
 

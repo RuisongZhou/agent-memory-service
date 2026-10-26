@@ -6,7 +6,7 @@
 //! proposals, not the agent's summary of them.
 use memory_domain::import::{
     is_session_turn, ImportLimits, ImportProposal, ImportProposeReq, ImportUnit, CONFIRMED_CHAT,
-    MAX_BATCH_UNITS, MODE_EXTRACT, PROPOSED, REJECTED, RUN_PROPOSED, RUN_PROPOSING,
+    MAX_BATCH_UNITS, MODE_EXTRACT, PROPOSED, REJECTED, RUN_PROPOSED, RUN_PROPOSING, UNIT_FAILED,
 };
 use memory_rules::import::units::content_hash;
 use serde_json::{json, Value};
@@ -234,7 +234,7 @@ fn page_report(
     view: Option<&RunView>,
 ) -> String {
     let mut out = String::new();
-    let lines = plan.units.len();
+    let units = plan.units.len();
     let mut skipped: BTreeMap<&str, usize> = BTreeMap::new();
     for unit in plan.units.iter().filter(|u| u.decision != IMPORT) {
         *skipped.entry(unit.reason.as_str()).or_insert(0) += 1;
@@ -242,7 +242,7 @@ fn page_report(
     let invalid_lines = plan.summary.issues.len();
     let _ = writeln!(
         out,
-        "本页：{lines} 行记忆，{invalid_lines} 行不是合法的导出行；跳过 {}；和这个 run 已有的行重复 {repeated} 行。",
+        "本页：{units} 个导入单元（超长的行会切成几个），{invalid_lines} 行不是合法的导出行；跳过 {}；和这个 run 已有的行重复 {repeated} 行。",
         tally(&skipped)
     );
     for issue in plan.summary.issues.iter().take(5) {
@@ -290,6 +290,26 @@ fn page_report(
         rejected.len(),
         run.counts.unchanged
     );
+    let failed: Vec<_> = run
+        .units
+        .iter()
+        .filter(|u| u.outcome == UNIT_FAILED)
+        .collect();
+    if !failed.is_empty() {
+        let _ = writeln!(
+            out,
+            "有 {} 个单元抽取失败，没有提议，写入时不会包含它们（另起一次导入时会重新抽取）：",
+            failed.len()
+        );
+        for unit in failed.iter().take(5) {
+            let _ = writeln!(
+                out,
+                "  {}：{}",
+                unit.unit,
+                unit.error.as_deref().unwrap_or("")
+            );
+        }
+    }
     for p in rejected.iter().take(10) {
         let _ = writeln!(
             out,
@@ -428,9 +448,17 @@ fn tally(counts: &BTreeMap<&str, usize>) -> String {
     }
 }
 
-/// A JSON number argument that is a count.
+/// A JSON number argument that is a count; a whole number sent as a float (`3.0`) counts too.
 pub fn count_arg(value: Option<&Value>) -> Option<usize> {
-    value?.as_u64().and_then(|n| usize::try_from(n).ok())
+    let value = value?;
+    let n = match value.as_u64() {
+        Some(n) => n,
+        None => {
+            let f = value.as_f64().filter(|f| *f >= 0.0 && f.fract() == 0.0)?;
+            f as u64
+        }
+    };
+    usize::try_from(n).ok()
 }
 
 #[cfg(test)]
@@ -618,6 +646,7 @@ mod tests {
             .unwrap();
         assert!(report.contains("重复 1 行"), "{report}");
         assert!(report.contains("run ir1：proposed"), "{report}");
+        assert!(!report.contains("抽取失败"), "{report}");
         assert!(report.contains("expectedProposals 填 3"), "{report}");
         let d = daemon.lock().unwrap();
         assert_eq!(d.run.as_ref().unwrap().units.len(), 3);
@@ -711,6 +740,42 @@ mod tests {
         assert!(modes.contains(&MODE_SPLIT), "{modes:?}");
         assert!(!modes.contains(&MODE_EXTRACT), "{modes:?}");
         assert_eq!(d.run.as_ref().unwrap().status, RUN_PROPOSED);
+    }
+
+    #[test]
+    fn counts_may_arrive_as_whole_floats() {
+        assert_eq!(count_arg(Some(&json!(3))), Some(3));
+        assert_eq!(count_arg(Some(&json!(3.0))), Some(3));
+        for bad in [json!(3.5), json!(-1), json!("3"), json!(null)] {
+            assert_eq!(count_arg(Some(&bad)), None, "{bad}");
+        }
+        assert_eq!(count_arg(None), None);
+    }
+
+    #[test]
+    fn the_page_report_names_units_whose_extraction_failed() {
+        let plan = plan_page(&page("", None, true), false, Path::new(HOME), "now").unwrap();
+        let run = ImportRun {
+            run_id: "ir1".into(),
+            status: RUN_PROPOSED.into(),
+            units: vec![memory_domain::import::UnitOutcome {
+                unit: "claude-code:export#abc".into(),
+                outcome: UNIT_FAILED.into(),
+                error: Some("generation timed out".into()),
+                ..Default::default()
+            }],
+            ..ImportRun::default()
+        };
+        let view = RunView {
+            run,
+            proposals: vec![],
+        };
+        let report = page_report(&page("", None, true), &plan, 0, false, Some(&view));
+        assert!(report.contains("1 个单元抽取失败"), "{report}");
+        assert!(
+            report.contains("claude-code:export#abc：generation timed out"),
+            "{report}"
+        );
     }
 
     /// A stub daemon holding the proposed run `ir1` of `claude-code` with `n` open proposals from `via`.
