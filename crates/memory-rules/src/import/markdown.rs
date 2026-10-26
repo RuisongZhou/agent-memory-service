@@ -45,7 +45,7 @@ pub fn split_frontmatter(raw: &str) -> (Frontmatter, &str) {
         }
     }
     if !closed {
-        return (Frontmatter::default(), raw);
+        return (Frontmatter::default(), text);
     }
     let rest = &text[offset..];
     let blank: usize = rest
@@ -698,6 +698,18 @@ mod tests {
         assert_eq!(fm.name.as_deref(), Some("Windows note"));
         assert_eq!(fm.kind.as_deref(), Some("reference"));
         assert_eq!(body, "Line one.\r\nLine two.\r\n");
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_dropped_without_frontmatter_too() {
+        let raw = "\u{feff}# Title\nBody line.\n";
+        let (fm, body) = split_frontmatter(raw);
+        assert_eq!(fm, Frontmatter::default());
+        assert_eq!(body, "# Title\nBody line.\n");
+        // The heading is a heading, as in the same file without the mark.
+        let bare = split_frontmatter("# Title\nBody line.\n").1;
+        assert_eq!(sections(body, 2), sections(bare, 2));
+        assert_eq!(sections(body, 2)[0].heading, "Title");
     }
 
     #[test]

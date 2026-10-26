@@ -1454,4 +1454,115 @@ mod tests {
             ]
         );
     }
+
+    /// Live capture queues a turn in one outbox, an import queues the same turn and a new one in another, and the
+    /// in-process uploader drains both against a daemon engine with the local generation stub: the captured turn
+    /// comes back `duplicate:true`, and capture's own outbox does not queue it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turn_captured_live_and_then_imported_comes_back_duplicate() {
+        use crate::diagnostics::import_sessions::{
+            propose, row, run_req, turn_unit, CI, HOST, PROJECT, STAGING,
+        };
+        use crate::harness::import::client::run_view;
+        use crate::harness::outbox::{drain_once, Outbox};
+        use crate::harness::uploader::InProcess;
+        use crate::test_support::{generation_stub, stub_engine};
+        use memory_config::ServiceConfig;
+        use memory_engine::app::{import, ingest};
+        use std::sync::{Arc, Mutex};
+
+        let url = generation_stub().await;
+        let dir = std::env::temp_dir().join(memory_rules::util::new_id("memory-import-outboxes-"));
+        let cfg = ServiceConfig {
+            data_dir: dir.join("data"),
+            ..Default::default()
+        };
+        let eng = stub_engine(cfg, &url);
+        let t = eng.store().await.unwrap();
+        let sender = InProcess(eng.clone());
+
+        let captured = Arc::new(Mutex::new(
+            Outbox::open(&dir.join("capture.sqlite3")).unwrap(),
+        ));
+        let hook = |event: &str, extra: Value| {
+            let mut e = json!({"hook_event_name": event, "session_id": "s1", "prompt_id": "p1"});
+            e.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            e
+        };
+        for event in [
+            hook("UserPromptSubmit", json!({"prompt": STAGING})),
+            hook("Stop", json!({"last_assistant_message": "Noted."})),
+        ] {
+            captured
+                .lock()
+                .unwrap()
+                .capture_hook(&event, PROJECT, HOST, None)
+                .unwrap();
+        }
+        assert_eq!(drain_once(&captured, &sender).await.unwrap(), 0);
+        let live_request = captured.lock().unwrap().status().unwrap()[0]["request_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let p1 = turn_unit("s1", "p1", STAGING, "2026-03-01T10:00:00Z");
+        let p2 = turn_unit("s1", "p2", CI, "2026-03-01T10:05:00Z");
+        let run_id = propose(&eng, &t, vec![p1.clone(), p2.clone()]).await["run"]["runId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        import::apply(&t, run_req(&run_id)).await.unwrap();
+        let view = run_view(import::get_run(&t, run_req(&run_id)).await.unwrap()).unwrap();
+        let path = dir.join("import.sqlite3");
+        let queue = queue_turns(&view, &path, &Pace::new(0.0, 4), &mut |_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            queue,
+            Queue {
+                added: 2,
+                ..Queue::default()
+            }
+        );
+        // The turn capture queued is not queued again in capture's outbox.
+        let held = queue_turns(
+            &view,
+            &dir.join("capture.sqlite3"),
+            &Pace::new(0.0, 4),
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(held.captured, 1);
+        let imported = Arc::new(Mutex::new(Outbox::open(&path).unwrap()));
+        assert_eq!(drain_once(&imported, &sender).await.unwrap(), 0);
+        let first = row(&t, &run_id, &p1).await["applied"].clone();
+        assert_eq!(
+            (&first["requestId"], &first["duplicate"]),
+            (&json!(live_request), &json!(true)),
+            "{first}"
+        );
+        assert_eq!(row(&t, &run_id, &p2).await["applied"]["duplicate"], false);
+        ingest::wait_idle(&eng, &t).await.unwrap();
+        drain_once(&imported, &sender).await.unwrap();
+        let statuses: Vec<String> = imported
+            .lock()
+            .unwrap()
+            .status()
+            .unwrap()
+            .iter()
+            .map(|j| j["status"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(statuses, ["completed", "completed"]);
+        // Every turn has its request now: a resumed apply queues nothing.
+        let view = run_view(import::get_run(&t, run_req(&run_id)).await.unwrap()).unwrap();
+        let rest = queue_turns(&view, &path, &Pace::new(0.0, 4), &mut |_| {})
+            .await
+            .unwrap();
+        assert_eq!(rest, Queue::default());
+        drop(t);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

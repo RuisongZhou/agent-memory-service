@@ -10,6 +10,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// The input every embedding model takes: the connection probe, and the check after a refusal.
+const PROBE: &str = "ok";
+
+/// A model server refused a request with a 4xx status other than 408 and 429: sent again, it is refused again.
+/// Either the input or the configuration (key, model, endpoint) is at fault; [`ModelHub::accepts_probe`]
+/// tells which.
+#[derive(Debug)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
 
 pub struct ModelHub {
     client: Option<Client>,
@@ -95,7 +111,7 @@ impl ModelHub {
             }
         };
         let probe = hub
-            .embed_uncached(&["ok".to_string()])
+            .embed_uncached(&[PROBE.to_string()])
             .await
             .context("embedding model probe failed")?;
         hub.dim = probe[0].len();
@@ -159,6 +175,12 @@ impl ModelHub {
 
     pub async fn embed_one(&self, text: &str) -> Result<Arc<Vec<f32>>> {
         Ok(self.embed(&[text.to_string()]).await?.remove(0))
+    }
+
+    /// Whether the embedding model embeds the probe input now. After a [`Refused`] input, it tells an input the
+    /// model refuses from a configuration it refuses, which refuses every input.
+    pub async fn accepts_probe(&self) -> bool {
+        self.client.is_none() || self.embed_uncached(&[PROBE.to_string()]).await.is_ok()
     }
 
     /// Relevance scores in 0..1 for (query, doc) pairs. None when no reranker is configured.

@@ -1,8 +1,6 @@
 //! Consolidation proposals end to end: Mem0 formation and consolidation both answered by a local
-//! generation stub, with mock embeddings. No external model call. `consolidation_apply` reuses the stub.
-use super::fresh_store;
-use axum::routing::post;
-use axum::{Json, Router};
+//! generation stub, with mock embeddings. No external model call.
+use crate::test_support::{fresh_store, generation_stub, stub_engine};
 use memory_config::ServiceConfig;
 use memory_domain::types::*;
 use memory_engine::app::{consolidation, ingest, management};
@@ -12,98 +10,12 @@ use memory_store::store::Tx;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// The section of a prompt that follows `header`, up to the next section.
-fn section<'a>(prompt: &'a str, header: &str) -> &'a str {
-    let start = prompt
-        .find(header)
-        .map_or(prompt.len(), |i| i + header.len());
-    let rest = &prompt[start..];
-    &rest[..rest
-        .find("\n\n## ")
-        .or(rest.find("\n\n# "))
-        .unwrap_or(rest.len())]
-}
-
-/// Formation: every user message line becomes one fact. Consolidation: a fixed decision per topic.
-/// Import: every `- ` line of the note becomes one quoted memory; a `TRAP` line gains a number the note
-/// does not contain, and an `Always` line is a preference.
-fn reply(system: &str, prompt: &str) -> Value {
-    if system.contains("Memory Importer") {
-        let start = prompt
-            .find("<note>\n")
-            .map_or(prompt.len(), |i| i + "<note>\n".len());
-        let end = prompt[start..]
-            .find("\n</note>")
-            .map_or(prompt.len(), |i| start + i);
-        let memories: Vec<Value> = prompt[start..end]
-            .lines()
-            .filter_map(|line| line.strip_prefix("- "))
-            .map(|line| {
-                let text = if line.contains("TRAP") {
-                    format!("{line} in 2031")
-                } else {
-                    line.to_string()
-                };
-                let kind = if line.starts_with("Always") {
-                    "preference"
-                } else {
-                    "fact"
-                };
-                json!({"text": text, "kind": kind, "scope": "project", "evidence": line})
-            })
-            .collect();
-        json!({ "memories": memories })
-    } else if system.contains("Memory Consolidator") {
-        let facts: Vec<Value> = serde_json::from_str(section(prompt, "## Facts\n")).unwrap();
-        let ids: Vec<&Value> = facts.iter().map(|f| &f["id"]).collect();
-        let texts: String = facts.iter().filter_map(|f| f["text"].as_str()).collect();
-        if texts.contains("Arch Linux") {
-            json!({"operations":[{"op":"merge","ids":ids,"text":"User uses Arch Linux on the work laptop"}]})
-        } else if texts.contains("Jenkins") {
-            // Members arrive in statement order: the January fact is "0".
-            json!({"operations":[{"op":"supersede","old":"0","new":"1"}]})
-        } else if texts.contains("Acme Corp") {
-            json!({"operations":[{"op":"conflict","ids":ids,"reason":"manager differs"}]})
-        } else if texts.contains("Postgres") {
-            // Version 16 appears in no input: provenance validation rejects this merge.
-            json!({"operations":[{"op":"merge","ids":ids,"text":"User runs Postgres 16 in production on AWS"}]})
-        } else {
-            json!({"operations":[{"op":"keep","ids":ids}]})
-        }
-    } else {
-        let memory: Vec<Value> = section(prompt, "## New Messages\n")
-            .lines()
-            .filter_map(|line| line.strip_prefix("user: "))
-            .enumerate()
-            .map(|(i, text)| json!({"id":i.to_string(),"text":text,"attributed_to":"user"}))
-            .collect();
-        json!({ "memory": memory })
-    }
-}
-
-/// An OpenAI-compatible chat-completions stub on a loopback port.
-pub(crate) async fn generation_stub() -> String {
-    let app = Router::new().route(
-        "/chat/completions",
-        post(|Json(body): Json<Value>| async move {
-            let system = body["messages"][0]["content"].as_str().unwrap_or_default();
-            let prompt = body["messages"][1]["content"].as_str().unwrap_or_default();
-            Json(json!({"id":"stub","choices":[{"message":{"content":reply(system, prompt).to_string()},
-                "finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    url
-}
-
 pub(crate) fn engine(url: &str, enabled: bool) -> Arc<Engine> {
     let cfg = ServiceConfig {
         consolidation_enabled: enabled,
         ..Default::default()
     };
-    super::stub_engine(cfg, url)
+    stub_engine(cfg, url)
 }
 
 pub(crate) async fn add(

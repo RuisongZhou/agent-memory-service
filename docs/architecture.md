@@ -124,6 +124,8 @@ selects (in a new datastore, creates) the `memory` namespace and `main` database
 `query` calls over HTTP with CBOR bodies, the encoding SurrealDB's SDKs use; its JSON format would turn
 strings that look like datetimes or record IDs into those types. Each statement batch, including a
 `BEGIN … COMMIT` transaction, is one call, so a failed statement still rolls the whole transaction back.
+A transaction that loses a write conflict changed nothing, and SurrealDB says it can be retried; the store
+sends it again, after a short pause and at most five times in all, still holding its write lock.
 The watchdog stops the server when the store shuts down or the daemon exits however it exits, and a lock
 next to the datastore keeps a second daemon out.
 

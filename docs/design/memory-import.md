@@ -407,7 +407,7 @@ run 的状态是 `proposing → proposed → applying → applied → rolling_ba
   原样采用的单元也会发到托管的嵌入 API；抽取和会话导入还会把全文发给生成模型。
 - 规则分六类：`private-key`（私钥块）、`api-key`（`sk-`、`gh*_` 等 [check_public.py](../../scripts/check_public.py) 的模式，
   以及 AWS、Slack、Google、Stripe、GitLab、Hugging Face、npm、PyPI 的前缀）、`bearer`（`Authorization`/`Bearer` 头）、
-  `url-credentials`（URL 里的 `user:password@`）、`cli-secret`（`mysql -p…`、`curl -u user:pass`、`--password`、`--token`
+  `url-credentials`（URL 里的 `user:password@`，用户名可以为空）、`cli-secret`（`mysql -p…`、`curl -u user:pass`、`--password`、`--token`
   这类参数）和 `env-secret`（名字里带 KEY、TOKEN、SECRET、PASSWORD 等的 `KEY=value` 行，以及 `Password: …`、`密码：…` 这类
   标签）。命中的片段替换成 `[redacted:<kind>]`，计划里只记命中次数，不记原文。
 - 命中私钥块的单元或会话轮次整条跳过。
@@ -498,12 +498,13 @@ Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` �
 
 - 纯规则（单元划分、`--no-extract` 切分、脱敏、抽取校验）和各宿主适配器用合成的宿主目录做单元测试，覆盖 6.3 的筛选规则、
   worktree 归并和导出 JSONL 的解析。fixture 只放编造的内容，不复制真实会话，也不提交生成的 trace。
-- 存储测试用临时存储、mock 检索模型和本地确定性的生成桩跑完整流程（[import.rs](../../crates/memory-service/src/diagnostics/import.rs)、
-  [import_sessions.rs](../../crates/memory-service/src/diagnostics/import_sessions.rs)，即 `imports_reviews_and_rolls_back`、
-  `repeated_imports_keep_sources_and_memories_in_step` 和 `session_turns_import_dedupe_and_roll_back`）：propose 不写记忆，
+- 存储测试用临时存储、mock 检索模型和本地确定性的生成桩跑完整流程，每个测试以它验证的行为命名
+  （[import.rs](../../crates/memory-service/src/diagnostics/import.rs)、
+  [import_sessions.rs](../../crates/memory-service/src/diagnostics/import_sessions.rs)）：propose 不写记忆，
   评审决定，apply 的复查和跳过，重跑不写入，`--reconsider` 和 `declined`，变了的单元取代旧记录，导入不产生指令，回滚和回滚跳过，
-  抽取缓存；导入的记录能被 `search_memories` 找到，`get_context` 不列出它们；同一轮先捕获再导入时 daemon 返回
-  `duplicate:true`。
+  抽取缓存；导入的记录能被 `search_memories` 找到，`get_context` 不列出它们。同一轮先捕获再导入时 daemon 返回
+  `duplicate:true`，在 [commands.rs](../../crates/memory-service/src/harness/import/commands.rs) 的测试里经两个 outbox 验证；
+  对话里粘贴的导出走真实 daemon 的测试在 [chat.rs](../../crates/memory-service/src/harness/import/chat.rs)。
 - 不调用付费模型，不跑完整数据集。
 
 ## 9. 待定问题

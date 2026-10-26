@@ -1,5 +1,5 @@
 //! Offline integrity checks for the additive strategy, using mock embeddings and no provider.
-use super::{engine, fresh_store};
+use crate::test_support::{engine, fresh_store};
 use memory_algo_mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
 use memory_config::ServiceConfig;
 use memory_domain::types::*;

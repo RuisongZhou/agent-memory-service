@@ -1,6 +1,6 @@
 //! Hosted backend: an OpenAI-compatible embeddings API and a `/reranks` API (DashScope compatible
 //! format), authenticated with a bearer API key. Relevance scores are already in 0..1.
-use super::models::{parse_embeddings, parse_rerank, REQUEST_TIMEOUT};
+use super::models::{parse_embeddings, parse_rerank, Refused, REQUEST_TIMEOUT};
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -110,10 +110,14 @@ impl Api {
                 continue;
             }
             if !status.is_success() {
-                bail!(
+                let message = format!(
                     "model API {url} returned {status}: {}",
                     memory_rules::util::truncate_bytes(&text, 500)
                 );
+                if status.is_client_error() && status != reqwest::StatusCode::REQUEST_TIMEOUT {
+                    return Err(Refused(message).into());
+                }
+                bail!("{message}");
             }
             return Ok(serde_json::from_str(&text)?);
         }

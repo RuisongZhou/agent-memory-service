@@ -103,3 +103,62 @@ pub async fn store(
     out["duplicate"] = json!(false);
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::ingest;
+    use crate::retrieval;
+    use crate::test_support::{engine, fresh_store, llm_calls};
+    use memory_domain::types::*;
+
+    fn context(project: &str) -> GetContextReq {
+        GetContextReq {
+            scope: ReqScope {
+                project: Some(project.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_instructions_are_idempotent_and_scoped_to_their_project() {
+        let eng = engine();
+        let (t, caller, dir) = fresh_store(&eng, "instructions", "agent").await;
+        let request = AddMemoriesReq {
+            text: Some("Prefer brief answers.".into()),
+            memory_type: Some(T_INSTRUCTION.into()),
+            turn_id: Some("instruction-1".into()),
+            scope: ReqScope {
+                project: Some("project".into()),
+                session: Some("session".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let receipt = ingest::add_memories(&eng, &t, &caller, request.clone())
+            .await
+            .unwrap();
+        assert_eq!(receipt["status"], "completed");
+        assert_eq!(
+            ingest::add_memories(&eng, &t, &caller, request)
+                .await
+                .unwrap()["duplicate"],
+            true
+        );
+        let own = retrieval::get_context(&eng, &t, &caller, context("project"))
+            .await
+            .unwrap();
+        assert!(own["text"]
+            .as_str()
+            .unwrap()
+            .contains("Prefer brief answers."));
+        let other = retrieval::get_context(&eng, &t, &caller, context("other"))
+            .await
+            .unwrap();
+        assert!(other["instructions"].as_array().unwrap().is_empty());
+        assert_eq!(llm_calls(&eng), 0);
+        drop(t);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

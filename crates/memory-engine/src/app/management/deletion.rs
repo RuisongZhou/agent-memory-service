@@ -199,3 +199,33 @@ async fn delete_one(
         "turnsUpdated": turns.len(),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{engine, fresh_store, legacy_turn};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deleting_a_fact_removes_it_from_the_legacy_turn_it_was_derived_from() {
+        let eng = engine();
+        let (t, _, dir) = fresh_store(&eng, "delete-legacy-turn", "test").await;
+        let (fact, turn) = legacy_turn(&t, eng.models.dim).await;
+        indexer::drain(&eng, &t).await.unwrap();
+        assert!(t.vecs.read().await.memories.contains_key(&fact.id));
+        let deleted = delete_memory(&eng, &t, IdReq { id: fact.id })
+            .await
+            .unwrap();
+        assert_eq!(deleted["turnsUpdated"], 1);
+        let stored = t
+            .store
+            .get_doc(schema::TURNS, &turn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["derivedMemoryIds"], json!([]));
+        assert_eq!(stored["assistantMessage"], "It listens on 8200.");
+        assert!(t.vecs.read().await.memories.is_empty());
+        drop(t);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

@@ -386,7 +386,7 @@ impl Store {
         }
         sql.push_str("COMMIT TRANSACTION;");
         self.db
-            .query(&sql, tx.binds)
+            .transaction(&sql, tx.binds)
             .await?
             .check()
             .context("transaction")?;
@@ -697,12 +697,79 @@ pub fn from_doc<T: DeserializeOwned>(v: Value) -> Result<T> {
 }
 
 #[cfg(test)]
-mod revision_tests {
+mod tests {
     use super::*;
 
     /// The SurrealDB the tests run on: `surreal` on PATH.
     fn surreal() -> &'static Path {
         Path::new("surreal")
+    }
+
+    async fn has_turn_index(store: &Store, name: &str) -> Result<bool> {
+        let info = store.select("INFO FOR TABLE turns", vec![]).await?;
+        Ok(info[0]["indexes"]
+            .as_object()
+            .context("table info has no indexes")?
+            .contains_key(name))
+    }
+
+    #[tokio::test]
+    async fn memory_records_round_trip_through_put_merge_and_embedding() -> Result<()> {
+        let dir = std::env::temp_dir().join(util::new_id("store_roundtrip_test"));
+        let store = Store::open(&dir, surreal(), 4, "").await?;
+        let m = MemoryRec {
+            id: "mabc123".into(),
+            mtype: T_FACT.into(),
+            text: "共享记忆库测试环境端口是 8100".into(),
+            scope: MemScope::project("p1"),
+            status: S_CURRENT.into(),
+            effective_at: "2026-10-07".into(),
+            recorded_at: "2026-10-08T10:00:00Z".into(),
+            source: Source {
+                platform: "codex".into(),
+                turn_ids: vec!["T1".into()],
+                origin: "user".into(),
+            },
+            evidence_count: 1,
+            ..Default::default()
+        };
+        let mut tx = Tx::new();
+        tx.put(schema::MEMORIES, &m.id, to_doc(&m)?)?;
+        tx.merge(schema::MEMORIES, &m.id, json!({"evidenceCount": 2}))?;
+        store.commit(tx).await?;
+        let got = store.get_memory(&m.id).await?.unwrap();
+        assert_eq!(got.text, m.text);
+        assert_eq!(got.evidence_count, 2);
+        store
+            .set_embedding(schema::MEMORIES, &m.id, Some(&[0.1, 0.2, 0.3, 0.4]), "x")
+            .await?;
+        assert_eq!(store.load_embeddings(schema::MEMORIES).await?[0].0, m.id);
+        store.shutdown().await;
+        drop(store);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopening_a_store_removes_the_retired_turn_vector_index() -> Result<()> {
+        let dir = std::env::temp_dir().join(util::new_id("store_turn_index_test"));
+        let store = Store::open(&dir, surreal(), 2, "").await?;
+        store
+            .query(
+                "DEFINE INDEX turns_vec ON turns FIELDS embedding HNSW DIMENSION 2 DIST COSINE",
+                vec![],
+            )
+            .await?;
+        assert!(has_turn_index(&store, "turns_vec").await?);
+        store.shutdown().await;
+        drop(store);
+        let store = Store::open(&dir, surreal(), 2, "").await?;
+        assert!(!has_turn_index(&store, "turns_vec").await?);
+        assert!(has_turn_index(&store, "turns_key").await?);
+        store.shutdown().await;
+        drop(store);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
     }
 
     #[tokio::test]

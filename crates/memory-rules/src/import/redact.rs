@@ -76,10 +76,10 @@ const NOT_CREDENTIALS: [&str; 12] = [
     "credentials",
 ];
 
-/// `user:password@` after a URL scheme. The password runs to the last `@` before the path, query or
-/// fragment, as URL parsers read an unescaped `@` in a password.
+/// `user:password@` after a URL scheme; the user may be empty (`redis://:password@host`). The password runs to
+/// the last `@` before the path, query or fragment, as URL parsers read an unescaped `@` in a password.
 static URL_CREDENTIALS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?-u:\b)([A-Za-z][A-Za-z0-9+.-]*://)([^\s/?#@:]+:[^\s/?#]+)@")
+    Regex::new(r"(?-u:\b)([A-Za-z][A-Za-z0-9+.-]*://)([^\s/?#@:]*:[^\s/?#]+)@")
         .expect("fixed url-credentials regex")
 });
 
@@ -140,8 +140,17 @@ static ENV_INLINE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("fixed env-inline regex")
 });
 
-/// Name parts (case-insensitive substrings) that mark a variable as holding a credential.
-const SECRET_NAMES: [&str; 6] = ["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"];
+/// Name parts (case-insensitive substrings) that mark a variable as holding a credential: those of `SECRET_WORDS`.
+const SECRET_NAMES: [&str; 8] = [
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "PASSPHRASE",
+    "PWD",
+    "CREDENTIAL",
+];
 
 /// A prose or Markdown label that ends with a secret word, a separator (`:`, `=`, `:=`, `：`) and the value:
 /// `DB password: …`, `- **Password**: …`, `**API key:** …`, `密码：…`. Emphasis may close before or after the
@@ -192,9 +201,9 @@ const TRAILING: [char; 12] = ['.', ',', ';', ':', ')', ']', '}', '>', '*', '"', 
 /// - "private-key": a whole `-----BEGIN … PRIVATE KEY-----` … `-----END … PRIVATE KEY-----` block (also an unterminated BEGIN line to the end of text); sets `private_key`.
 /// - "api-key": `sk-` and `sk-ant-`/`sk-proj-` style keys (20+ key chars, dots allowed, as `scripts/check_public.py`), GitHub tokens `gh[pousr]_` + 20+, `github_pat_…`, AWS `AKIA`+16 uppercase/digits, Slack `xox[abprs]-…`, Google `AIza` + 35, Stripe `sk_live_`/`sk_test_`/`rk_live_`/`rk_test_` + 16+ alphanumerics, GitLab `glpat-` + 20+, Hugging Face `hf_` + 30+, npm `npm_` + 36+, PyPI `pypi-` + 40+.
 /// - "bearer": the token after `Bearer ` (case-insensitive) and after `Authorization:` headers.
-/// - "url-credentials": the `user:password@` part of `scheme://user:password@host` (keep scheme and host).
+/// - "url-credentials": the `user:password@` part of `scheme://user:password@host`, also with an empty user (keep scheme and host).
 /// - "cli-secret": the password attached to `-p` on a `mysql`/`mysqldump`/`mariadb` command line, the password of `curl -u user:password`, and the value of a flag whose name ends with a secret word (`--password=…`, `--password …`, `--token …`, `--api-key …`, also with one dash). Keep the flag.
-/// - "env-secret": the value of `NAME=value` / `NAME: value` / `export NAME=value` where NAME (case-insensitive) contains KEY, TOKEN, SECRET, PASSWORD, PASSWD or CREDENTIAL, and of a prose or Markdown label that ends with a secret word (password, passwd, passphrase, pwd, secret, token, api key, access key, secret key, private key, credential(s), 密码, 口令, 密钥, 秘钥, 私钥, 令牌) followed by `:`, `=` or `：`. Keep the name.
+/// - "env-secret": the value of `NAME=value` / `NAME: value` / `export NAME=value` where NAME (case-insensitive) contains KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASSPHRASE, PWD or CREDENTIAL, and of a prose or Markdown label that ends with a secret word (password, passwd, passphrase, pwd, secret, token, api key, access key, secret key, private key, credential(s), 密码, 口令, 密钥, 秘钥, 私钥, 令牌) followed by `:`, `=` or `：`. Keep the name.
 ///
 /// Apply private-key first, then the others; never double-redact; text without secrets is returned unchanged with empty counts.
 ///
@@ -530,6 +539,33 @@ mod tests {
         ] {
             assert_eq!(redact(text).text, text);
         }
+    }
+
+    #[test]
+    fn url_credentials_with_an_empty_user_are_redacted() {
+        let r = redact("sessions in redis://:hunter2@cache.internal:6379/0 since May");
+        assert_eq!(
+            r.text,
+            "sessions in redis://[redacted:url-credentials]@cache.internal:6379/0 since May"
+        );
+        assert_eq!(r.counts, counts(&[("url-credentials", 1)]));
+        for text in ["http://[::1]:8080/health", "https://example.test:443/a"] {
+            assert_eq!(redact(text).text, text);
+        }
+    }
+
+    #[test]
+    fn quoted_pwd_and_passphrase_keys_are_redacted() {
+        let r =
+            redact("{\"pwd\": \"hunter2x\", \"passphrase\": \"open sesame\", \"user\": \"me\"}");
+        assert_eq!(
+            r.text,
+            "{\"pwd\": \"[redacted:env-secret]\", \"passphrase\": \"[redacted:env-secret]\", \"user\": \"me\"}"
+        );
+        assert_eq!(r.counts, counts(&[("env-secret", 2)]));
+        // A quoted YAML key at the start of a line; a password's short number is a PIN.
+        let r = redact("'PWD': 1234\n");
+        assert_eq!(r.text, "'PWD': [redacted:env-secret]\n");
     }
 
     #[test]

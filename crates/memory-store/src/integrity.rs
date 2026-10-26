@@ -168,3 +168,136 @@ pub(crate) async fn repair(store: &Store) -> Result<()> {
     }
     store.commit(tx).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Context;
+    use std::path::{Path, PathBuf};
+
+    async fn open(name: &str) -> Result<(Store, PathBuf)> {
+        let dir = std::env::temp_dir().join(util::new_id(name));
+        let store = Store::open(&dir, Path::new("surreal"), 2, "").await?;
+        Ok((store, dir))
+    }
+
+    async fn close(store: Store, dir: PathBuf) -> Result<()> {
+        store.shutdown().await;
+        drop(store);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    async fn put(store: &Store, records: &[&MemoryRec]) -> Result<()> {
+        let mut tx = Tx::new();
+        for rec in records {
+            tx.put(schema::MEMORIES, &rec.id, to_doc(rec)?)?;
+        }
+        store.commit(tx).await
+    }
+
+    async fn status(store: &Store, id: &str) -> Result<String> {
+        Ok(store.get_memory(id).await?.context(id.to_string())?.status)
+    }
+
+    fn fact() -> MemoryRec {
+        MemoryRec {
+            id: "fact".into(),
+            mtype: T_FACT.into(),
+            text: "Old fact".into(),
+            status: S_CURRENT.into(),
+            scope: MemScope::project("project"),
+            ..Default::default()
+        }
+    }
+
+    /// A current profile built on `source`.
+    fn profile(id: &str, source: &str) -> MemoryRec {
+        MemoryRec {
+            id: id.into(),
+            mtype: T_PROFILE.into(),
+            used_memory_ids: vec![source.into()],
+            ..fact()
+        }
+    }
+
+    #[tokio::test]
+    async fn superseding_a_source_stales_its_views_transitively_and_keeps_history() -> Result<()> {
+        let (store, dir) = open("store_integrity_views_test").await?;
+        let fact = fact();
+        let profile = profile("profile", &fact.id);
+        let skill = MemoryRec {
+            id: "skill".into(),
+            mtype: T_SKILL.into(),
+            used_memory_ids: vec![profile.id.clone()],
+            ..profile.clone()
+        };
+        let historical = MemoryRec {
+            id: "history".into(),
+            mtype: T_EXPERIENCE.into(),
+            derivation: Some(Derivation {
+                stage: "experience".into(),
+                input_memory_ids: vec![fact.id.clone()],
+                input_turn_ids: vec![],
+                current_view: false,
+            }),
+            ..fact.clone()
+        };
+        put(&store, &[&fact, &profile, &skill, &historical]).await?;
+        let mut tx = Tx::new();
+        tx.merge(schema::MEMORIES, &fact.id, json!({"status":S_SUPERSEDED}))?;
+        store.commit(tx).await?;
+        assert_eq!(status(&store, "profile").await?, S_STALE);
+        assert_eq!(status(&store, "skill").await?, S_STALE);
+        assert_eq!(status(&store, "history").await?, S_CURRENT);
+        assert_eq!(store.active_memory_meta().await?.len(), 1);
+        close(store, dir).await
+    }
+
+    #[tokio::test]
+    async fn startup_repair_stales_a_view_whose_source_is_missing() -> Result<()> {
+        let (store, dir) = open("store_integrity_missing_test").await?;
+        let missing = profile("missingview", "removed");
+        store
+            .put_doc(schema::MEMORIES, &missing.id, &missing)
+            .await?;
+        store.repair_integrity().await?;
+        assert_eq!(status(&store, "missingview").await?, S_STALE);
+        close(store, dir).await
+    }
+
+    #[tokio::test]
+    async fn startup_repair_opens_one_question_for_a_legacy_conflict_pair() -> Result<()> {
+        let (store, dir) = open("store_integrity_conflict_test").await?;
+        let edge = |id: &str| RelEdge {
+            id: id.into(),
+            relation: "conflicts".into(),
+        };
+        let port = MemoryRec {
+            id: "port".into(),
+            text: "Port is 8200".into(),
+            status: S_CONFLICT.into(),
+            related: vec![edge("newport")],
+            ..fact()
+        };
+        let new_port = MemoryRec {
+            id: "newport".into(),
+            text: "Port is 8100".into(),
+            related: vec![edge("port")],
+            ..port.clone()
+        };
+        put(&store, &[&port, &new_port]).await?;
+        store.repair_integrity().await?;
+        // Repairing again finds the question it opened.
+        store.repair_integrity().await?;
+        let open: Vec<UncertaintyRec> = store
+            .select_as(
+                "SELECT * OMIT id FROM uncertainties WHERE status = 'open'",
+                vec![],
+            )
+            .await?;
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].memory_ids, ["newport", "port"]);
+        close(store, dir).await
+    }
+}

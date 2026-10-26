@@ -1,11 +1,11 @@
-//! Memory import end to end, with the local generation stub and mock embeddings: propose in batches
-//! (verbatim, split, extract with a provenance rejection, a feedback note, an over-cap unit), apply
-//! with review decisions, unchanged reruns, a changed verbatim unit superseding its record, a duplicate of
-//! another unit, a unit imported by another run after propose, rollback with a corrected record kept, and
-//! the extraction cache. No external model call.
-use super::consolidation::{engine, generation_stub};
-use super::{fresh_store, llm_calls, memory};
+//! Memory import end to end (`memory_engine::app::import`) through the composed engine, with the local generation
+//! stub and mock embeddings: requests checked first, batched propose with provenance and size rejections, review
+//! decisions, unchanged reruns, a changed unit superseding its record, duplicates of another unit, a unit imported
+//! by another run after propose, rollback with a corrected record kept, declined changes, `reconsider` and the
+//! extraction cache. No external model call.
+use crate::test_support::{engine, fresh_store, generation_stub, llm_calls, memory, stub_engine};
 use memory_algo_mem0::{HASHES, SOURCES};
+use memory_config::ServiceConfig;
 use memory_domain::import::*;
 use memory_domain::types::*;
 use memory_engine::app::{import, management};
@@ -17,16 +17,20 @@ use memory_rules::import::units::{content_hash, unit_key};
 use memory_store::schema;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 const PROJECT: &str = "atlas";
 const HOST: &str = "claude-code";
 const STATED: &str = "2026-03-01T09:00:00Z";
 const VERBATIM: &str = "The atlas service deploys with Nomad on Fridays.";
+const MONDAY: &str = "The atlas service deploys with Nomad on Mondays.";
+const TUESDAY: &str = "The atlas service deploys with Nomad on Tuesdays.";
 const PIECE_KEPT: &str = "Atlas CI runs on Buildkite.";
 const PIECE_DROPPED: &str = "Atlas releases are tagged by the release manager.";
 const EXTRACT: &str = "- The atlas staging cluster lives in eu-west.\n- The TRAP job retries flaky tests.\n- Always run make check before pushing atlas.";
 const FACT: &str = "The atlas staging cluster lives in eu-west.";
+const TRAP: &str = "The TRAP job retries flaky tests. in 2031";
 const ALWAYS: &str = "Always run make check before pushing atlas.";
 const FEEDBACK: &str =
     "Prefer small pull requests for atlas.\n\nThe team reviews them within a day.";
@@ -47,6 +51,8 @@ fn unit(native: &str, mode: &str, text: &str) -> ImportUnit {
     }
 }
 
+/// Five units: verbatim, split into two pieces, extracted (one item invents a number), a feedback note and one
+/// over the unit cap.
 fn plan() -> Vec<ImportUnit> {
     let mut split = unit(
         "memory/ci.md",
@@ -129,12 +135,91 @@ async fn rows(eng: &Arc<Engine>, t: &Arc<Instance>, table: &str) -> Vec<Value> {
         .clone()
 }
 
-pub async fn selftest() {
+/// A fresh store whose engine extracts with the generation stub.
+async fn store(name: &str) -> (Arc<Engine>, Arc<Instance>, Caller, PathBuf) {
     let url = generation_stub().await;
-    let eng = engine(&url, true);
-    let (t, caller, dir) = fresh_store(&eng, "import-selftest", "test").await;
+    let eng = stub_engine(ServiceConfig::default(), &url);
+    let (t, caller, dir) = fresh_store(&eng, name, "test").await;
+    (eng, t, caller, dir)
+}
 
-    // ---- requests are checked before anything is written
+/// The records of the first run of [`plan`], applied with the split's second piece declined.
+struct First {
+    r1: String,
+    verbatim: String,
+    kept: String,
+    fact: String,
+    always: String,
+    feedback: String,
+}
+
+async fn first_run(eng: &Arc<Engine>, t: &Arc<Instance>) -> First {
+    let out = propose(eng, t, None, true, plan()).await;
+    let r1 = str_of(&out["run"]["runId"]);
+    let dropped = str_of(&find(&out["proposals"], PIECE_DROPPED)["proposalId"]);
+    let applied = import::apply(t, run_req(&r1, &[(dropped.as_str(), REJECT)]))
+        .await
+        .unwrap();
+    assert_eq!(applied["run"]["status"], RUN_APPLIED, "{applied}");
+    let id_of = |text: &str| str_of(&find(&applied["proposals"], text)["memoryId"]);
+    let first = First {
+        verbatim: id_of(VERBATIM),
+        kept: id_of(PIECE_KEPT),
+        fact: id_of(FACT),
+        always: id_of(ALWAYS),
+        feedback: id_of(FEEDBACK),
+        r1,
+    };
+    indexer::drain(eng, t).await.unwrap();
+    first
+}
+
+/// The second run after [`first_run`]: the verbatim unit changed, a copy of the kept piece in another unit, and
+/// the split unit with a new second piece; then a third version of the verbatim unit proposed before the second
+/// run is applied. Both runs are applied in that order.
+struct Second {
+    proposed: Value,
+    applied: Value,
+    late_applied: Value,
+    r2: String,
+    monday: String,
+    nightly: String,
+}
+
+async fn second_run(eng: &Arc<Engine>, t: &Arc<Instance>) -> Second {
+    let mut changed = unit("memory/deploy.md", MODE_VERBATIM, MONDAY);
+    changed.stated_at = "2026-04-01T09:00:00Z".into();
+    let duplicate = unit("memory/ci-copy.md", MODE_VERBATIM, PIECE_KEPT);
+    let mut split = unit(
+        "memory/ci.md",
+        MODE_SPLIT,
+        &format!("{PIECE_KEPT} {NIGHTLY}"),
+    );
+    split.pieces = vec![PIECE_KEPT.into(), NIGHTLY.into()];
+    let proposed = propose(eng, t, None, true, vec![changed.clone(), duplicate, split]).await;
+    let r2 = str_of(&proposed["run"]["runId"]);
+    let mut tuesday = changed;
+    tuesday.text = TUESDAY.into();
+    tuesday.unit_hash = content_hash(&tuesday.text);
+    let late = propose(eng, t, None, true, vec![tuesday]).await;
+    let applied = import::apply(t, run_req(&r2, &[])).await.unwrap();
+    let late_applied = import::apply(t, run_req(&str_of(&late["run"]["runId"]), &[]))
+        .await
+        .unwrap();
+    indexer::drain(eng, t).await.unwrap();
+    Second {
+        monday: str_of(&find(&applied["proposals"], MONDAY)["memoryId"]),
+        nightly: str_of(&find(&applied["proposals"], NIGHTLY)["memoryId"]),
+        proposed,
+        applied,
+        late_applied,
+        r2,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn propose_requests_are_checked_before_anything_is_written() {
+    let (eng, t, _, dir) = store("import-checked").await;
     let bad = |project: &str, units: Vec<ImportUnit>| ImportProposeReq {
         project: project.into(),
         host: HOST.into(),
@@ -157,14 +242,20 @@ pub async fn selftest() {
             Err(ApiError::InvalidArgument(_))
         ));
     }
-    let offline = super::engine(memory_config::ServiceConfig::default());
+    // Extraction needs a generation model.
+    let offline = engine(ServiceConfig::default());
     assert!(matches!(
         import::propose(&offline, &t, bad(PROJECT, plan())).await,
         Err(ApiError::ModelUnavailable(_))
     ));
+    assert_eq!(t.store.count(schema::IMPORT_RUNS, None).await.unwrap(), 0);
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    // ---- 1. one run proposed in two batches
-    let before = llm_calls(&eng);
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_proposed_in_batches_stores_proposals_and_rejections_but_no_memory() {
+    let (eng, t, _, dir) = store("import-propose").await;
     let mut units = plan();
     let second = units.split_off(3);
     let first = propose(&eng, &t, None, false, units).await;
@@ -189,7 +280,7 @@ pub async fn selftest() {
         (&json!(8), &json!(2), &json!(1), &json!(0)),
         "{run}"
     );
-    assert_eq!(llm_calls(&eng) - before, 1, "one generation call");
+    assert_eq!(llm_calls(&eng), 1, "one generation call");
     assert_eq!(out["units"][1]["index"], 4);
     let mut proposals = first["proposals"].as_array().unwrap().clone();
     proposals.extend(out["proposals"].as_array().unwrap().iter().cloned());
@@ -198,7 +289,8 @@ pub async fn selftest() {
     assert_eq!(extract["outcome"], UNIT_NEW);
     assert!(extract["coverage"].as_f64().unwrap() > 0.5, "{extract}");
     assert!(extract["responseLogId"].is_string());
-    let trap = find(&proposals, "The TRAP job retries flaky tests. in 2031");
+    // An item with a number its unit lacks, and a unit over the cap, are rejected.
+    let trap = find(&proposals, TRAP);
     assert_eq!(trap["status"], REJECTED);
     assert!(
         trap["rejectReason"].as_str().unwrap().contains("2031"),
@@ -228,14 +320,20 @@ pub async fn selftest() {
         (dropped["cluster"].clone(), dropped["position"].clone()),
         (json!(1), json!(1))
     );
-    // Proposing writes no memory record.
     assert_eq!(t.store.count(schema::MEMORIES, None).await.unwrap(), 0);
     let stored = import::get_run(&t, run_req(&r1, &[])).await.unwrap();
     assert_eq!(stored["proposals"].as_array().unwrap().len(), 8);
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    // ---- 2. apply: one fact rejected by decision, the rest accepted without one
-    let always_id = str_of(&always["proposalId"]);
-    let dropped_id = str_of(&dropped["proposalId"]);
+#[tokio::test(flavor = "multi_thread")]
+async fn apply_follows_review_decisions_and_imported_facts_are_searchable_but_not_established() {
+    let (eng, t, caller, dir) = store("import-apply").await;
+    let proposed = propose(&eng, &t, None, true, plan()).await;
+    let r1 = str_of(&proposed["run"]["runId"]);
+    let always_id = str_of(&find(&proposed["proposals"], ALWAYS)["proposalId"]);
+    let dropped_id = str_of(&find(&proposed["proposals"], PIECE_DROPPED)["proposalId"]);
     for decisions in [
         vec![(always_id.as_str(), "maybe")],
         vec![("ipmissing", ACCEPT)],
@@ -257,7 +355,7 @@ pub async fn selftest() {
         import::apply(&t, by_mail).await,
         Err(ApiError::InvalidArgument(_))
     ));
-    // Confirmed in a conversation: the run keeps how.
+    // Confirmed in a conversation: the run keeps how. One piece is declined, the rest accepted without a decision.
     let out = import::apply(
         &t,
         ImportRunReq {
@@ -280,19 +378,12 @@ pub async fn selftest() {
     );
     let applied = &out["proposals"];
     assert_eq!(find(applied, PIECE_DROPPED)["status"], DROPPED);
-    assert_eq!(
-        find(applied, "The TRAP job retries flaky tests. in 2031")["status"],
-        REJECTED
-    );
-    let id_of = |text: &str| str_of(&find(applied, text)["memoryId"]);
-    let (verbatim, kept, fact, always, feedback) = (
-        id_of(VERBATIM),
-        id_of(PIECE_KEPT),
-        id_of(FACT),
-        id_of(ALWAYS),
-        id_of(FEEDBACK),
-    );
-    for id in [&verbatim, &kept, &fact, &always, &feedback] {
+    assert_eq!(find(applied, TRAP)["status"], REJECTED);
+    let imported: Vec<String> = [VERBATIM, PIECE_KEPT, FACT, ALWAYS, FEEDBACK]
+        .iter()
+        .map(|text| str_of(&find(applied, text)["memoryId"]))
+        .collect();
+    for id in &imported {
         let m = memory(&t, id).await;
         assert_eq!(m.mtype, T_FACT);
         assert_eq!(m.source.origin, ORIGIN_IMPORTED);
@@ -306,16 +397,13 @@ pub async fn selftest() {
         let evidence = t.store.evidence_referencing(id).await.unwrap();
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].role, "import");
-        assert_eq!(
-            evidence[0].turn_id,
-            m.detail.as_ref().unwrap()["import"]["unit"]
-        );
+        assert_eq!(evidence[0].turn_id, detail["unit"]);
         // Not formation output: no content key and no source batch.
         assert!(t.store.get_doc(SOURCES, id).await.unwrap().is_none());
     }
     let doc = t
         .store
-        .get_doc(schema::MEMORIES, &verbatim)
+        .get_doc(schema::MEMORIES, &imported[0])
         .await
         .unwrap()
         .unwrap();
@@ -323,6 +411,8 @@ pub async fn selftest() {
     assert_eq!(doc["contentHash"], content_hash(VERBATIM).as_str());
     assert_eq!(t.store.count(HASHES, None).await.unwrap(), 0);
     assert_eq!(rows(&eng, &t, schema::IMPORT_LEDGER).await.len(), 5);
+
+    // Search finds imported facts; the bootstrap context never presents them as established.
     indexer::drain(&eng, &t).await.unwrap();
     let scope = ReqScope {
         project: Some(PROJECT.into()),
@@ -347,12 +437,9 @@ pub async fn selftest() {
             .collect()
     };
     assert_eq!(context["instructions"], json!([]), "{context}");
-    for imported in [&verbatim, &kept, &fact, &always, &feedback] {
-        assert!(
-            !ids(&context["projectFacts"]).contains(imported),
-            "{context}"
-        );
-        assert!(!ids(&context["facts"]).contains(imported), "{context}");
+    for id in &imported {
+        assert!(!ids(&context["projectFacts"]).contains(id), "{context}");
+        assert!(!ids(&context["facts"]).contains(id), "{context}");
     }
     let found = eng
         .search_memories(
@@ -360,7 +447,7 @@ pub async fn selftest() {
             &caller,
             SearchReq {
                 query: VERBATIM.into(),
-                scope: Some(scope.clone()),
+                scope: Some(scope),
                 top_k: Some(5),
                 token_budget: Some(400),
                 ..Default::default()
@@ -368,15 +455,24 @@ pub async fn selftest() {
         )
         .await
         .unwrap();
-    let hits: Vec<&Value> = found["results"].as_array().unwrap().iter().collect();
     assert!(
-        hits.iter().any(|r| r["memory"]["id"] == verbatim.as_str()
-            && r["memory"]["source"]["origin"] == "imported"),
+        found["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["memory"]["id"] == imported[0].as_str()
+                && r["memory"]["source"]["origin"] == "imported"),
         "{found}"
     );
     assert!(found["tokensUsed"].as_u64().unwrap() <= 400);
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    // ---- 3. the same units again: all unchanged, nothing to propose, no model call
+#[tokio::test(flavor = "multi_thread")]
+async fn unchanged_units_are_not_proposed_again() {
+    let (eng, t, _, dir) = store("import-unchanged").await;
+    first_run(&eng, &t).await;
     let before = llm_calls(&eng);
     let same = propose(&eng, &t, None, true, plan()).await;
     assert!(
@@ -391,95 +487,85 @@ pub async fn selftest() {
     assert_eq!(same["run"]["counts"]["unchanged"], 5);
     assert_eq!(same["run"]["counts"]["generationCalls"], 0);
     assert_eq!(llm_calls(&eng), before);
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    // ---- 4. a changed verbatim unit replaces its record; 5. another unit duplicates an imported text.
-    // A changed split unit keeps one piece: a duplicate of its own record, linked by default.
-    let monday = "The atlas service deploys with Nomad on Mondays.";
-    let mut changed = unit("memory/deploy.md", MODE_VERBATIM, monday);
-    changed.stated_at = "2026-04-01T09:00:00Z".into();
-    let duplicate = unit("memory/ci-copy.md", MODE_VERBATIM, PIECE_KEPT);
-    let mut split = unit(
-        "memory/ci.md",
-        MODE_SPLIT,
-        &format!("{PIECE_KEPT} {NIGHTLY}"),
-    );
-    split.pieces = vec![PIECE_KEPT.into(), NIGHTLY.into()];
-    let out = propose(
-        &eng,
-        &t,
-        None,
-        true,
-        vec![changed.clone(), duplicate, split],
-    )
-    .await;
-    let r2 = str_of(&out["run"]["runId"]);
+#[tokio::test(flavor = "multi_thread")]
+async fn changed_units_supersede_their_records_and_duplicates_are_linked() {
+    let (eng, t, _, dir) = store("import-changed").await;
+    let first = first_run(&eng, &t).await;
+    let second = second_run(&eng, &t).await;
+    let out = &second.proposed;
+    // A changed verbatim unit replaces its record.
     assert_eq!(out["units"][0]["outcome"], UNIT_CHANGED, "{out}");
     assert_eq!(out["units"][0]["previousMemoryIds"], json!([]));
-    let replacing = find(&out["proposals"], monday);
-    assert_eq!(replacing["supersedes"], verbatim.as_str());
+    let replacing = find(&out["proposals"], MONDAY);
+    assert_eq!(replacing["supersedes"], first.verbatim.as_str());
     assert!(!replacing["similar"].as_array().unwrap().is_empty());
-    // A duplicate of another unit's record is linked by default: the unit keeps its content even if the
-    // other unit later replaces its own copy.
+    // A duplicate of another unit's record is linked by default: the unit keeps its content even if the other
+    // unit later replaces its own copy.
     let copy = pick(&out["proposals"], 1, PIECE_KEPT);
-    assert_eq!(copy["duplicateOf"], kept.as_str());
+    assert_eq!(copy["duplicateOf"], first.kept.as_str());
+    // A changed split unit keeps one piece: a duplicate of its own record, linked by default.
     let own = pick(&out["proposals"], 2, PIECE_KEPT);
-    assert_eq!(own["duplicateOf"], kept.as_str());
+    assert_eq!(own["duplicateOf"], first.kept.as_str());
     assert_eq!(out["units"][2]["outcome"], UNIT_CHANGED);
-    assert_eq!(out["units"][2]["previousMemoryIds"], json!([kept]));
+    assert_eq!(out["units"][2]["previousMemoryIds"], json!([first.kept]));
     assert_eq!(out["units"][2]["previousRecords"][0]["text"], PIECE_KEPT);
     assert_eq!(out["run"]["counts"]["duplicates"], 2);
-    // A third version proposed before the second is applied: the unit moves under it.
-    let mut tuesday = changed;
-    tuesday.text = "The atlas service deploys with Nomad on Tuesdays.".into();
-    tuesday.unit_hash = content_hash(&tuesday.text);
-    let late = propose(&eng, &t, None, true, vec![tuesday]).await;
-    let r2b = str_of(&late["run"]["runId"]);
 
-    let out = import::apply(&t, run_req(&r2, &[])).await.unwrap();
-    assert_eq!(out["run"]["counts"]["applied"], 4, "{out}");
-    let monday_id = str_of(&find(&out["proposals"], monday)["memoryId"]);
-    let nightly = str_of(&find(&out["proposals"], NIGHTLY)["memoryId"]);
-    let linked = pick(&out["proposals"], 2, PIECE_KEPT);
+    let applied = &second.applied;
+    assert_eq!(applied["run"]["counts"]["applied"], 4, "{applied}");
+    let linked = pick(&applied["proposals"], 2, PIECE_KEPT);
     assert_eq!(linked["status"], APPLIED);
-    assert_eq!(linked["memoryId"], kept.as_str());
-    assert_eq!(linked["applied"]["dedupedInto"], kept.as_str());
-    let old = memory(&t, &verbatim).await;
+    assert_eq!(linked["memoryId"], first.kept.as_str());
+    assert_eq!(linked["applied"]["dedupedInto"], first.kept.as_str());
+    let old = memory(&t, &first.verbatim).await;
     assert_eq!(old.status, S_SUPERSEDED);
-    assert_eq!(old.superseded_by.as_deref(), Some(monday_id.as_str()));
+    assert_eq!(old.superseded_by.as_deref(), Some(second.monday.as_str()));
     assert_eq!(old.valid_until.as_deref(), Some("2026-04-01T09:00:00Z"));
     assert_eq!(
-        memory(&t, &monday_id).await.supersedes.as_deref(),
-        Some(verbatim.as_str())
+        memory(&t, &second.monday).await.supersedes.as_deref(),
+        Some(first.verbatim.as_str())
     );
-    let copied = pick(&out["proposals"], 1, PIECE_KEPT);
+    let copied = pick(&applied["proposals"], 1, PIECE_KEPT);
     assert_eq!(copied["status"], APPLIED, "{copied}");
-    assert_eq!(copied["applied"]["dedupedInto"], kept.as_str());
-    let out = import::apply(&t, run_req(&r2b, &[])).await.unwrap();
-    let skipped = &out["proposals"][0];
-    assert_eq!(skipped["status"], SKIPPED, "{out}");
+    assert_eq!(copied["applied"]["dedupedInto"], first.kept.as_str());
+    // A third version proposed before the second was applied: the unit moved under the second run.
+    let skipped = &second.late_applied["proposals"][0];
+    assert_eq!(skipped["status"], SKIPPED, "{}", second.late_applied);
     assert!(
-        skipped["skipReason"].as_str().unwrap().contains(&r2),
+        skipped["skipReason"].as_str().unwrap().contains(&second.r2),
         "{skipped}"
     );
-    assert_eq!(memory(&t, &monday_id).await.status, S_CURRENT);
-    indexer::drain(&eng, &t).await.unwrap();
+    assert_eq!(memory(&t, &second.monday).await.status, S_CURRENT);
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    // ---- 6. rollback, newest run first; a record a person corrected stays
+#[tokio::test(flavor = "multi_thread")]
+async fn rollback_runs_newest_first_and_keeps_a_record_a_person_corrected() {
+    let (eng, t, caller, dir) = store("import-rollback").await;
+    let first = first_run(&eng, &t).await;
+    let second = second_run(&eng, &t).await;
     let corrected = management::correct_memory(
         &eng,
         &t,
         &caller,
         CorrectMemoryReq {
-            id: feedback.clone(),
+            id: first.feedback.clone(),
             text: Some("Prefer small, focused pull requests for atlas.".into()),
             ..Default::default()
         },
     )
     .await
     .unwrap();
-    let out = import::rollback(&eng, &t, run_req(&r2, &[])).await.unwrap();
+    let out = import::rollback(&eng, &t, run_req(&second.r2, &[]))
+        .await
+        .unwrap();
     assert_eq!(out["run"]["status"], RUN_ROLLED_BACK, "{out}");
-    let restored = memory(&t, &verbatim).await;
+    let restored = memory(&t, &first.verbatim).await;
     assert_eq!(
         (
             restored.status.as_str(),
@@ -490,24 +576,27 @@ pub async fn selftest() {
     );
     let undone = t
         .store
-        .get_doc(schema::MEMORIES, &monday_id)
+        .get_doc(schema::MEMORIES, &second.monday)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(undone["status"], S_SUPERSEDED);
-    assert_eq!(undone["importRollback"]["runId"], r2.as_str());
-    assert_eq!(memory(&t, &nightly).await.status, S_SUPERSEDED);
+    assert_eq!(undone["importRollback"]["runId"], second.r2.as_str());
+    assert_eq!(memory(&t, &second.nightly).await.status, S_SUPERSEDED);
     let unlinked = pick(&out["proposals"], 2, PIECE_KEPT);
     assert_eq!(unlinked["status"], ROLLED_BACK, "{unlinked}");
-    assert_eq!(unlinked["rollback"]["unlinked"], kept.as_str());
-    assert_eq!(memory(&t, &kept).await.status, S_CURRENT);
+    assert_eq!(unlinked["rollback"]["unlinked"], first.kept.as_str());
+    assert_eq!(memory(&t, &first.kept).await.status, S_CURRENT);
     assert!(matches!(
-        import::rollback(&eng, &t, run_req(&r2, &[])).await,
+        import::rollback(&eng, &t, run_req(&second.r2, &[])).await,
         Err(ApiError::InvalidArgument(_))
     ));
-    let out = import::rollback(&eng, &t, run_req(&r1, &[])).await.unwrap();
+
+    let out = import::rollback(&eng, &t, run_req(&first.r1, &[]))
+        .await
+        .unwrap();
     assert_eq!(out["run"]["status"], RUN_PARTIALLY_ROLLED_BACK, "{out}");
-    for id in [&verbatim, &kept, &fact, &always] {
+    for id in [&first.verbatim, &first.kept, &first.fact, &first.always] {
         assert_eq!(memory(&t, id).await.status, S_SUPERSEDED, "{id}");
     }
     let kept_back = find(&out["proposals"], FEEDBACK);
@@ -525,18 +614,20 @@ pub async fn selftest() {
     // Only the unit whose record a person corrected keeps a ledger row.
     let ledger = rows(&eng, &t, schema::IMPORT_LEDGER).await;
     assert_eq!(ledger.len(), 1, "{ledger:?}");
-    assert_eq!(ledger[0]["memoryIds"], json!([feedback]));
+    assert_eq!(ledger[0]["memoryIds"], json!([first.feedback]));
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    // ---- 7. proposing the extract unit again reuses the cached extraction
+#[tokio::test(flavor = "multi_thread")]
+async fn a_later_run_reuses_a_cached_extraction() {
+    let (eng, t, _, dir) = store("import-cache").await;
+    let extract = || vec![unit("memory/staging.md", MODE_EXTRACT, EXTRACT)];
+    let first = propose(&eng, &t, None, true, extract()).await;
+    assert_eq!(first["run"]["counts"]["generationCalls"], 1, "{first}");
     let before = llm_calls(&eng);
-    let again = propose(
-        &eng,
-        &t,
-        None,
-        true,
-        vec![unit("memory/staging.md", MODE_EXTRACT, EXTRACT)],
-    )
-    .await;
+    // The first run was never applied, so the unit is new again.
+    let again = propose(&eng, &t, None, true, extract()).await;
     assert_eq!(again["units"][0]["outcome"], UNIT_NEW, "{again}");
     assert_eq!(again["units"][0]["cached"], true);
     assert_eq!(again["run"]["counts"]["cacheHits"], 1);
@@ -544,7 +635,8 @@ pub async fn selftest() {
     assert_eq!(llm_calls(&eng), before);
     assert_eq!(again["proposals"].as_array().unwrap().len(), 3);
     assert_eq!(find(&again["proposals"], FACT)["duplicateOf"], Value::Null);
-
+    assert_eq!(rows(&eng, &t, schema::IMPORT_EXTRACTIONS).await.len(), 1);
+    // Runs are listed newest first.
     let runs = import::list_runs(&t, ImportRunsReq::default())
         .await
         .unwrap();
@@ -554,14 +646,15 @@ pub async fn selftest() {
         .iter()
         .map(|r| str_of(&r["runId"]))
         .collect();
-    let newest = str_of(&again["run"]["runId"]);
-    let same_id = str_of(&same["run"]["runId"]);
-    assert_eq!(order, [newest, r2b, r2, same_id, r1.clone()]);
-    assert_eq!(rows(&eng, &t, schema::IMPORT_RUNS).await.len(), 5);
-    assert_eq!(rows(&eng, &t, schema::IMPORT_EXTRACTIONS).await.len(), 1);
+    assert_eq!(
+        order,
+        [
+            str_of(&again["run"]["runId"]),
+            str_of(&first["run"]["runId"])
+        ]
+    );
     drop(t);
     let _ = std::fs::remove_dir_all(dir);
-    println!("import_selftest OK: batched propose, provenance and size rejections, no instructions, review decisions, unchanged rerun, verbatim supersede, duplicates, moved units, rollback with a kept correction, extraction cache; local generation stub");
 }
 
 /// One run of `units`: proposed in one batch with `reconsider` and `limits`, then applied with the decisions
@@ -626,16 +719,10 @@ async fn current_with(t: &Instance, text: &str) -> Vec<MemoryRec> {
         .collect()
 }
 
-/// Repeated imports of the same sources (the review findings): a duplicate linked to another unit keeps its
-/// content when that unit changes; a changed note replaces its record; a declined change keeps the old record
-/// for the next version to replace; `reconsider`; extraction cache keys and retries.
-pub async fn repeated_runs() {
-    let url = generation_stub().await;
-    let eng = engine(&url, true);
-    let (t, _caller, dir) = fresh_store(&eng, "import-repeated", "test").await;
+#[tokio::test(flavor = "multi_thread")]
+async fn a_duplicate_linked_to_another_unit_survives_that_units_change() {
+    let (eng, t, _, dir) = store("import-linked").await;
     let limits = ImportLimits::default();
-
-    // ---- a duplicate of another unit is linked, and survives that unit's change
     const SHARED: &str = "The orbit gateway terminates TLS at the edge.";
     const SHARED_NEXT: &str = "The orbit gateway terminates TLS at the load balancer.";
     let (_, a1) = round(
@@ -697,8 +784,14 @@ pub async fn repeated_runs() {
     .await;
     assert_eq!(rerun["units"][0]["outcome"], UNIT_UNCHANGED);
     assert_eq!(current_with(&t, SHARED).await.len(), 1);
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    // ---- a changed feedback note is one preference, and its new text replaces the old record
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_feedback_note_is_one_preference_whose_new_text_replaces_the_old() {
+    let (eng, t, _, dir) = store("import-feedback").await;
+    let limits = ImportLimits::default();
     const RULE: &str = "Prefer small pull requests for orbit.";
     const RULE_NEXT: &str = "Prefer tiny pull requests for orbit.";
     let text = |rule: &str| format!("{rule}\n\nReviews stay quick.");
@@ -727,61 +820,29 @@ pub async fn repeated_runs() {
             .count(),
         1
     );
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    // ---- a declined change keeps the old record, and the next version replaces it
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declined_change_keeps_the_old_record_for_the_next_version_to_replace() {
+    let (eng, t, _, dir) = store("import-declined").await;
+    let limits = ImportLimits::default();
     const V1: &str = "Orbit logs are kept for 30 days.";
     const V2: &str = "Orbit logs are kept for 60 days.";
     const V3: &str = "Orbit logs are kept for 90 days.";
-    let (_, c1) = round(
-        &eng,
-        &t,
-        vec![unit("memory/logs.md", MODE_VERBATIM, V1)],
-        false,
-        limits,
-        none,
-    )
-    .await;
+    let logs = |text: &str| vec![unit("memory/logs.md", MODE_VERBATIM, text)];
+    let (_, c1) = round(&eng, &t, logs(V1), false, limits, none).await;
     let v1 = str_of(&find(&c1["proposals"], V1)["memoryId"]);
-    let (_, c2) = round(
-        &eng,
-        &t,
-        vec![unit("memory/logs.md", MODE_VERBATIM, V2)],
-        false,
-        limits,
-        all(REJECT),
-    )
-    .await;
+    let (_, c2) = round(&eng, &t, logs(V2), false, limits, all(REJECT)).await;
     assert_eq!(find(&c2["proposals"], V2)["status"], DROPPED);
-    let (again, _) = round(
-        &eng,
-        &t,
-        vec![unit("memory/logs.md", MODE_VERBATIM, V2)],
-        false,
-        limits,
-        all(REJECT),
-    )
-    .await;
+    // The declined text is not offered again unless reconsidered.
+    let (again, _) = round(&eng, &t, logs(V2), false, limits, all(REJECT)).await;
     assert_eq!(again["units"][0]["outcome"], UNIT_UNCHANGED, "{again}");
-    let (back, _) = round(
-        &eng,
-        &t,
-        vec![unit("memory/logs.md", MODE_VERBATIM, V2)],
-        true,
-        limits,
-        all(REJECT),
-    )
-    .await;
+    let (back, _) = round(&eng, &t, logs(V2), true, limits, all(REJECT)).await;
     assert_eq!(back["units"][0]["outcome"], UNIT_RECONSIDERED, "{back}");
     assert_eq!(find(&back["proposals"], V2)["supersedes"], v1.as_str());
-    let (p3, c3) = round(
-        &eng,
-        &t,
-        vec![unit("memory/logs.md", MODE_VERBATIM, V3)],
-        false,
-        limits,
-        none,
-    )
-    .await;
+    let (p3, c3) = round(&eng, &t, logs(V3), false, limits, none).await;
     assert_eq!(
         find(&p3["proposals"], V3)["supersedes"],
         v1.as_str(),
@@ -792,80 +853,50 @@ pub async fn repeated_runs() {
         memory(&t, &v1).await.superseded_by.as_deref(),
         Some(v3.as_str())
     );
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    // ---- the extraction cache key covers the limits; a reply with no usable item is not cached
-    const QUEUE: &str = "- The orbit queue drains every hour.";
-    let before = llm_calls(&eng);
-    round(
-        &eng,
-        &t,
-        vec![unit("memory/queue.md", MODE_EXTRACT, QUEUE)],
-        false,
-        limits,
-        all(REJECT),
-    )
-    .await;
-    assert_eq!(llm_calls(&eng) - before, 1);
-    round(
-        &eng,
-        &t,
-        vec![unit("memory/queue.md", MODE_EXTRACT, QUEUE)],
-        true,
-        limits,
-        all(REJECT),
-    )
-    .await;
-    assert_eq!(llm_calls(&eng) - before, 1, "same input: cached");
+#[tokio::test(flavor = "multi_thread")]
+async fn the_extraction_cache_key_covers_the_recall_limits() {
+    let (eng, t, _, dir) = store("import-cache-key").await;
+    let limits = ImportLimits::default();
+    let queue = || {
+        vec![unit(
+            "memory/queue.md",
+            MODE_EXTRACT,
+            "- The orbit queue drains every hour.",
+        )]
+    };
+    round(&eng, &t, queue(), false, limits, all(REJECT)).await;
+    assert_eq!(llm_calls(&eng), 1);
+    round(&eng, &t, queue(), true, limits, all(REJECT)).await;
+    assert_eq!(llm_calls(&eng), 1, "same input: cached");
     let wide = ImportLimits {
         recall_budget: 2000,
         recall_top_k: 2,
     };
-    round(
-        &eng,
-        &t,
-        vec![unit("memory/queue.md", MODE_EXTRACT, QUEUE)],
-        true,
-        wide,
-        all(REJECT),
-    )
-    .await;
-    assert_eq!(llm_calls(&eng) - before, 2, "other limits: extracted again");
-    const SENSOR: &str = "- The TRAP sensor reports orbit drift.";
-    let before = llm_calls(&eng);
-    round(
-        &eng,
-        &t,
-        vec![unit("memory/sensor.md", MODE_EXTRACT, SENSOR)],
-        false,
-        limits,
-        none,
-    )
-    .await;
-    round(
-        &eng,
-        &t,
-        vec![unit("memory/sensor.md", MODE_EXTRACT, SENSOR)],
-        true,
-        limits,
-        none,
-    )
-    .await;
-    assert_eq!(llm_calls(&eng) - before, 2, "every item failed: not cached");
-
+    round(&eng, &t, queue(), true, wide, all(REJECT)).await;
+    assert_eq!(llm_calls(&eng), 2, "other limits: extracted again");
     drop(t);
     let _ = std::fs::remove_dir_all(dir);
-    println!("import_repeated_selftest OK: linked duplicates survive their source's change, a changed note's supersede, declined changes, reconsider, extraction cache key and retries; local generation stub");
 }
 
-#[cfg(test)]
-mod tests {
-    #[tokio::test(flavor = "multi_thread")]
-    async fn imports_reviews_and_rolls_back() {
-        super::selftest().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn repeated_imports_keep_sources_and_memories_in_step() {
-        super::repeated_runs().await;
-    }
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_with_no_usable_item_is_not_cached() {
+    let (eng, t, _, dir) = store("import-cache-failed").await;
+    let limits = ImportLimits::default();
+    // The stub adds a number the note lacks to a TRAP line, so its only item is rejected.
+    let sensor = || {
+        vec![unit(
+            "memory/sensor.md",
+            MODE_EXTRACT,
+            "- The TRAP sensor reports orbit drift.",
+        )]
+    };
+    round(&eng, &t, sensor(), false, limits, none).await;
+    round(&eng, &t, sensor(), true, limits, none).await;
+    assert_eq!(llm_calls(&eng), 2, "every item failed: not cached");
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
 }

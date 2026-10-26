@@ -603,6 +603,20 @@ pub async fn drain_once<S: Sender>(
         let request = json!({"requestId": job.request_id});
         let task = match sender.send("get_task", request, &job.platform).await {
             Ok(task) => task,
+            // The daemon no longer knows the request (its data directory was replaced): no receipt will
+            // ever come, so the job ends instead of waiting, and of holding back `backlog`, forever.
+            Err(CallError::Status(404)) => {
+                with(outbox, move |o| {
+                    o.set_status(
+                        seq,
+                        "failed",
+                        Some("HTTP 404: the daemon has no such request"),
+                    )
+                })
+                .await?;
+                errors += 1;
+                continue;
+            }
             Err(e) => {
                 with(outbox, move |o| o.set_error(seq, e.kind())).await?;
                 errors += 1;
@@ -1129,6 +1143,7 @@ mod tests {
         requests: Mutex<Vec<(String, Value)>>,
         lose_first: AtomicBool,
         task_status: Mutex<&'static str>,
+        task_error: Mutex<Option<u16>>,
         add_error: Option<u16>,
     }
 
@@ -1138,6 +1153,7 @@ mod tests {
                 requests: Mutex::default(),
                 lose_first: AtomicBool::new(true),
                 task_status: Mutex::new("indexing"),
+                task_error: Mutex::default(),
                 add_error,
             }
         }
@@ -1159,6 +1175,9 @@ mod tests {
                     return Err(CallError::Connection); // persisted, but the response was lost
                 }
                 return Ok(json!({"requestId": "rq-test"}));
+            }
+            if let Some(code) = *self.task_error.lock().unwrap() {
+                return Err(CallError::Status(code));
             }
             let status = *self.task_status.lock().unwrap();
             Ok(json!({"status": status, "formed": true, "searchable": status == "completed"}))
@@ -1190,6 +1209,34 @@ mod tests {
         let adds: Vec<_> = requests.iter().filter(|r| r.0 == "add_memories").collect();
         assert_eq!(adds.len(), 2);
         assert_eq!(adds[0], adds[1]);
+    }
+
+    #[tokio::test]
+    async fn a_receipt_the_daemon_no_longer_knows_ends_the_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut o = outbox(&dir);
+        o.capture_notify(&notify("t1", "reply"), "p", "codex")
+            .unwrap();
+        let o = Arc::new(Mutex::new(o));
+        let fake = Fake::new(None);
+        drain_once(&o, &fake).await.unwrap();
+        drain_once(&o, &fake).await.unwrap();
+        assert_eq!(status_of(&o), "accepted");
+        // An outage keeps waiting for the receipt.
+        *fake.task_error.lock().unwrap() = Some(503);
+        assert_eq!(drain_once(&o, &fake).await.unwrap(), 1);
+        assert_eq!(status_of(&o), "accepted");
+        assert_eq!(o.lock().unwrap().backlog().unwrap(), 1);
+        // A daemon on a new data directory answers 404 for the old request: the job ends.
+        *fake.task_error.lock().unwrap() = Some(404);
+        assert_eq!(drain_once(&o, &fake).await.unwrap(), 1);
+        let row = o.lock().unwrap().status().unwrap()[0].clone();
+        assert_eq!(row["status"], "failed");
+        assert!(row["error"].as_str().unwrap().contains("404"), "{row}");
+        assert_eq!(o.lock().unwrap().backlog().unwrap(), 0);
+        let polls = fake.requests.lock().unwrap().len();
+        assert_eq!(drain_once(&o, &fake).await.unwrap(), 0);
+        assert_eq!(fake.requests.lock().unwrap().len(), polls, "no more polls");
     }
 
     #[tokio::test]

@@ -6,6 +6,8 @@ mod diagnostics;
 pub mod envfile;
 pub mod harness;
 pub mod service;
+#[cfg(test)]
+mod test_support;
 
 // Flat facade for the binary; internal code uses the canonical paths.
 pub use api::{http, mcp};

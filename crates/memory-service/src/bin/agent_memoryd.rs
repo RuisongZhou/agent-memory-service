@@ -340,13 +340,9 @@ fn main() -> anyhow::Result<()> {
             Cmd::Service(cmd) => std::process::exit(service::run(cmd).await),
             Cmd::Reindex { url, vector, all } => {
                 anyhow::ensure!(vector || all, "select --vector or --all");
-                let resp = reqwest::Client::new()
-                    .post(format!("{}/admin/reindex", url.trim_end_matches('/')))
-                    .json(&serde_json::json!({}))
-                    .send()
-                    .await?
-                    .error_for_status()?;
-                println!("{}", resp.text().await?);
+                let scheduled =
+                    harness::admin_command(&url, "reindex", &serde_json::json!({})).await?;
+                println!("{scheduled}");
             }
             Cmd::Consolidate {
                 url,
@@ -365,16 +361,8 @@ fn main() -> anyhow::Result<()> {
                         serde_json::json!({"project": project, "dryRun": true}),
                     ),
                 };
-                let resp = reqwest::Client::new()
-                    .post(format!("{}/admin/{action}", url.trim_end_matches('/')))
-                    .json(&body)
-                    .send()
-                    .await?;
-                let status = resp.status();
-                let text = resp.text().await?;
-                anyhow::ensure!(status.is_success(), "HTTP {status}: {text}");
-                let body: serde_json::Value = serde_json::from_str(&text)?;
-                println!("{}", serde_json::to_string_pretty(&body)?);
+                let run = harness::admin_command(&url, action, &body).await?;
+                println!("{}", serde_json::to_string_pretty(&run)?);
             }
         }
         Ok(())
