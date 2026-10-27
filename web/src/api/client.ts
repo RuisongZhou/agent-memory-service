@@ -1,6 +1,9 @@
 import type {
   AddMemoriesReq,
   ApiErrorBody,
+  ConsolidationRunDetail,
+  ConsolidationRunRes,
+  ConsolidationRunSummary,
   ContextRes,
   CorrectMemoryReq,
   CorrectMemoryRes,
@@ -9,9 +12,24 @@ import type {
   GetContextReq,
   GetMemoryRes,
   Health,
+  ImportApplyReq,
+  ImportRun,
+  ImportRunRes,
+  ImportRunsReq,
   ListMemoriesReq,
   ListMemoriesRes,
+  ListModelResponsesReq,
+  ListModelResponsesRes,
+  ListRequestsReq,
+  ListRequestsRes,
+  ListRetrievalsReq,
+  ListRetrievalsRes,
   ListTurnsRes,
+  ListUncertaintiesReq,
+  ListUncertaintiesRes,
+  RequestDetail,
+  ResolveUncertaintyReq,
+  ResolveUncertaintyRes,
   SearchReq,
   SearchRes,
   Stats,
@@ -80,4 +98,26 @@ export const api = {
   getContext: (req: GetContextReq) => post<ContextRes>('/v1/get_context', req),
   correctMemory: (req: CorrectMemoryReq) => post<CorrectMemoryRes>('/v1/correct_memory', req),
   deleteMemory: (id: string) => post<DeleteMemoryRes>('/v1/delete_memory', { id }),
+
+  importRuns: (req: ImportRunsReq) => post<{ runs: ImportRun[] }>('/admin/import_runs', req),
+  importRun: (runId: string) => post<ImportRunRes>('/admin/import_run', { runId }),
+  importApply: (req: ImportApplyReq) => post<ImportRunRes>('/admin/import_apply', req),
+  importRollback: (runId: string) => post<ImportRunRes>('/admin/import_rollback', { runId }),
+
+  consolidationRuns: (req: { project?: string; limit?: number }) =>
+    post<{ runs: ConsolidationRunSummary[] }>('/admin/consolidation_runs', req),
+  consolidationRun: (runId: string) => post<ConsolidationRunDetail>('/admin/consolidation_run', { runId }),
+  /** Proposes only: one generation call per cluster, no record changes. */
+  consolidate: (project: string) => post<ConsolidationRunRes>('/admin/consolidate', { project, dryRun: true }),
+  consolidationApply: (runId: string) => post<ConsolidationRunRes>('/admin/consolidation_apply', { runId }),
+  consolidationRollback: (runId: string) => post<ConsolidationRunRes>('/admin/consolidation_rollback', { runId }),
+
+  listUncertainties: (req: ListUncertaintiesReq) => post<ListUncertaintiesRes>('/admin/list_uncertainties', req),
+  resolveUncertainty: (req: ResolveUncertaintyReq) => post<ResolveUncertaintyRes>('/v1/resolve_uncertainty', req),
+
+  listRetrievals: (req: ListRetrievalsReq) => post<ListRetrievalsRes>('/admin/list_retrievals', req),
+  listRequests: (req: ListRequestsReq) => post<ListRequestsRes>('/admin/list_requests', req),
+  getRequest: (requestId: string) => post<RequestDetail>('/admin/request', { requestId }),
+  listModelResponses: (req: ListModelResponsesReq) =>
+    post<ListModelResponsesRes>('/admin/list_model_responses', req),
 }

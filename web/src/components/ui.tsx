@@ -127,3 +127,29 @@ export const Pre = ({ children }: { children: ReactNode }) => (
     {children}
   </pre>
 )
+
+/** Lists refresh only when asked (design §4.4: nothing auto-refreshes). */
+export const RefreshButton = ({ onClick, busy }: { onClick: () => void; busy: boolean }) => (
+  <Button variant="secondary" disabled={busy} onClick={onClick}>{busy ? '刷新中…' : '刷新'}</Button>
+)
+
+/** A notice that explains why an action is unavailable or what it will do. */
+export const Note = ({ tone = 'amber', children }: { tone?: 'amber' | 'gray'; children: ReactNode }) => (
+  <div
+    className={cx(
+      'rounded-md border px-3 py-2 text-sm',
+      tone === 'amber' ? 'border-amber-200 bg-amber-50 text-amber-950' : 'border-zinc-200 bg-zinc-50 text-zinc-700',
+    )}
+  >
+    {children}
+  </div>
+)
+
+/** A table's header row and cell padding, shared by the list pages. */
+export const TH = ({ children, className }: { children?: ReactNode; className?: string }) => (
+  <th className={cx('px-2 py-1.5 text-left font-normal whitespace-nowrap text-zinc-500', className)}>{children}</th>
+)
+
+export const TD = ({ children, className }: { children?: ReactNode; className?: string }) => (
+  <td className={cx('px-2 py-1.5 align-top', className)}>{children}</td>
+)

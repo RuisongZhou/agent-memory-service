@@ -3,7 +3,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
-use super::store::Store;
+use super::store::{conditions, Store};
 
 impl Store {
     /// `{memoryIds}` rows of the open uncertainties other than `exclude_id` that involve `memory_id`.
@@ -15,6 +15,32 @@ impl Store {
         self.select(
             "SELECT memoryIds FROM uncertainties WHERE status = 'open' AND mid != $id AND memoryIds CONTAINS $keep",
             vec![("id", json!(exclude_id)), ("keep", json!(memory_id))],
+        )
+        .await
+    }
+
+    /// At most `limit` uncertainties with `status`, of `project` when one is given, newest first
+    /// (`createdAt DESC, mid DESC`).
+    pub async fn uncertainties(
+        &self,
+        status: &str,
+        project: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Value>> {
+        let (conds, binds) = conditions([
+            ("status = $status", "status", Some(json!(status))),
+            (
+                "scope.project = $project",
+                "project",
+                project.map(|v| json!(v)),
+            ),
+        ]);
+        self.select(
+            &format!(
+                "SELECT * OMIT id FROM uncertainties WHERE {} ORDER BY createdAt DESC, mid DESC LIMIT {limit}",
+                conds.join(" AND ")
+            ),
+            binds,
         )
         .await
     }

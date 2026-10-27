@@ -100,6 +100,8 @@ export interface Stats {
   index: { memoryVectors: number; pendingTasks: number }
   retrieval: { gapSearches: number }
   jobs: { pendingJobs: number }
+  /** Whether consolidation may run (`consolidationEnabled`) and a generation model is configured. */
+  features: { consolidation: boolean; generation: boolean }
 }
 
 export interface Facet {
@@ -290,4 +292,425 @@ export interface DeleteMemoryRes {
   evidenceDeleted: number
   evidenceUpdated: number
   turnsUpdated: number
+}
+
+// ---------------------------------------------------------------- phase 2: review and tracing
+// Import runs after `memory-domain/src/import.rs`; consolidation after `memory-domain/src/consolidation.rs` and
+// `memory-engine/src/app/consolidation.rs`; the admin lists after docs/api.md.
+
+/** A record as a page's `memories` map summarises it; an id missing from the map no longer exists. */
+export interface MemorySummary {
+  id: string
+  type: MemoryType
+  status: MemoryStatus
+  text: string
+  scope: MemScope
+}
+
+export type MemorySummaries = Record<string, MemorySummary>
+
+// -------------------------------- import runs
+
+export type ImportRunStatus =
+  | 'proposing'
+  | 'proposed'
+  | 'applying'
+  | 'applied'
+  | 'rolling_back'
+  | 'rolled_back'
+  | 'partially_rolled_back'
+
+export type ImportProposalStatus = 'proposed' | 'rejected' | 'dropped' | 'applied' | 'skipped' | 'rolled_back'
+
+export type Decision = 'accept' | 'reject'
+
+export interface SessionTurn {
+  turnId: string
+  session: string
+  nativeId: string
+  messages: InMessage[]
+}
+
+export interface SimilarMemory {
+  memoryId: string
+  text: string
+  score: number
+}
+
+export interface ImportProposal {
+  proposalId: string
+  runId: string
+  project: string
+  host: string
+  /** The unit's index in the run; proposals arrive ordered by it and `position`. */
+  cluster: number
+  position: number
+  unit: string
+  /** "verbatim" | "split" | "extract" | "session-turn" */
+  mode: string
+  /** "fact" | "preference" | "reference" | "session-turn" */
+  itemKind: string
+  /** "project" | "global"; a hint only. */
+  scopeHint: string
+  text: string
+  evidence: string
+  statedAt: string
+  headingPath: string[]
+  source: unknown
+  status: ImportProposalStatus
+  rejectReason: string | null
+  duplicateOf: string | null
+  supersedes: string | null
+  similar: SimilarMemory[]
+  createdAt: string
+  decision: Decision | null
+  memoryId: string | null
+  skipReason: string | null
+  rollbackSkipReason: string | null
+  /** A session turn's: `{queued, requestId?, duplicate?}`. */
+  applied: unknown
+  appliedAt: string | null
+  rolledBackAt: string | null
+  turn?: SessionTurn
+}
+
+export interface ImportUnitOutcome {
+  unit: string
+  index: number
+  mode: string
+  /** "new" | "changed" | "unchanged" | "reconsidered" | "failed" */
+  outcome: string
+  proposals: number
+  rejected: number
+  coverage: number | null
+  cached: boolean
+  previousMemoryIds: string[]
+  previousRecords?: { memoryId: string; type: string; text: string }[]
+  error: string | null
+}
+
+export interface ImportCounts {
+  units: number
+  unchanged: number
+  proposals: number
+  rejected: number
+  duplicates: number
+  generationCalls: number
+  cacheHits: number
+  applied: number
+  dropped: number
+  skipped: number
+  rolledBack: number
+  failed: number
+  sessionTurns: number
+  turnsQueued: number
+  turnsRolledBack: number
+}
+
+export interface ImportRun {
+  runId: string
+  project: string
+  host: string
+  status: ImportRunStatus
+  createdAt: string
+  updatedAt: string
+  finishedAt: string | null
+  limits: { recallBudget: number; recallTopK: number }
+  llmModel: string
+  embeddingModel: string
+  units: ImportUnitOutcome[]
+  counts: ImportCounts
+  confirmedVia?: string
+  error: string | null
+}
+
+export interface ImportRunsReq {
+  project?: string
+  limit?: number
+}
+
+export interface ImportRunRes {
+  run: ImportRun
+  proposals: ImportProposal[]
+}
+
+/** `import_apply`: a proposal `decisions` does not name is accepted. The web UI never sends `confirmedVia`. */
+export interface ImportApplyReq {
+  runId: string
+  decisions: Record<string, Decision>
+}
+
+// -------------------------------- consolidation
+
+export type ConsolidationRunStatus =
+  | 'proposed'
+  | 'aborted'
+  | 'failed'
+  | 'applying'
+  | 'applied'
+  | 'rolling_back'
+  | 'rolled_back'
+  | 'partially_rolled_back'
+
+export type ConsolidationProposalStatus =
+  | 'proposed'
+  | 'rejected'
+  | 'aborted'
+  | 'failed'
+  | 'applied'
+  | 'skipped'
+  | 'rolled_back'
+
+export interface ConsolidationLimits {
+  vectorLink: number
+  minCluster: number
+  maxCluster: number
+  maxClustersPerRun: number
+  maxMergedTextBytes: number
+  maxRetireFraction: number
+}
+
+/** A `consolidation_runs` row: the run without `clusters`, `proposalIds` and `responseLogIds`. */
+export interface ConsolidationRunSummary {
+  runId: string
+  project: string
+  status: ConsolidationRunStatus
+  createdAt: string
+  finishedAt?: string
+  error: string | null
+  projectFacts: number
+  eligibleFacts: number
+  clusterCount: number
+  processedClusters: number
+  acceptedOps: number
+  rejectedOps: number
+  retireCount: number
+  retireFraction: number
+  limits: ConsolidationLimits
+  llmModel: string
+  /** Set by apply and rollback. */
+  appliedOps?: number
+  skippedOps?: number
+  rolledBackOps?: number
+  remainingAppliedOps?: number
+}
+
+export interface ConsolidationCluster {
+  index: number
+  memberIds: string[]
+  score: number
+  error?: string
+}
+
+export type ConsolidationRun = ConsolidationRunSummary & {
+  clusters: ConsolidationCluster[]
+  responseLogIds: string[]
+}
+
+/**
+ * The op is flattened into the proposal row (`#[serde(tag = "op")]`): `op` names it and its fields are siblings,
+ * `{"op": "merge", "ids": [...], "text": "...", "proposalId": ...}`.
+ */
+export type ConsolidationOp =
+  | { op: 'merge'; ids: string[]; text: string }
+  | { op: 'supersede'; old: string; new: string }
+  | { op: 'conflict'; ids: string[]; reason: string }
+  | { op: 'keep'; ids: string[] }
+
+export interface FieldPatch {
+  id: string
+  before: Record<string, unknown>
+  after: Record<string, unknown>
+}
+
+export type ConsolidationProposal = ConsolidationOp & {
+  proposalId: string
+  runId: string
+  cluster: number
+  position: number
+  memoryIds: string[]
+  status: ConsolidationProposalStatus
+  rejectReason: string | null
+  skipReason?: string | null
+  rollbackSkipReason?: string | null
+  /** What apply changed: the merged record, the opened question and every field it wrote. */
+  applied?: { mergedId?: string; uncertaintyId?: string; patches: FieldPatch[] }
+}
+
+/** `consolidate`, `consolidation_apply` and `consolidation_rollback`. */
+export interface ConsolidationRunRes {
+  run: ConsolidationRun
+  proposals: ConsolidationProposal[]
+}
+
+export type ConsolidationRunDetail = ConsolidationRunRes & { memories: MemorySummaries }
+
+// -------------------------------- uncertainties
+
+export type UncertaintyStatus = 'open' | 'resolved' | 'withdrawn'
+
+export interface ListUncertaintiesReq {
+  status?: UncertaintyStatus
+  project?: string
+  limit?: number
+}
+
+export interface Uncertainty {
+  id: string
+  memoryIds: string[]
+  scope: MemScope
+  reason: string
+  status: UncertaintyStatus
+  createdAt: string
+  resolvedAt?: string
+  resolution?: { keepMemoryId: string; platform: string; reason: string }
+  withdrawnAt?: string
+  withdrawnBy?: string
+  /** The members that still exist, in `memoryIds` order, as `get_memory` returns them. */
+  memories: StatedMemory[]
+}
+
+export interface ListUncertaintiesRes {
+  uncertainties: Uncertainty[]
+}
+
+export interface ResolveUncertaintyReq {
+  id: string
+  keepMemoryId: string
+  reason: string
+}
+
+export interface ResolveUncertaintyRes {
+  id: string
+  status: 'resolved'
+  keepMemoryId: string
+}
+
+// -------------------------------- retrieval log
+
+export type RetrievalKind = 'search' | 'context'
+
+export interface ListRetrievalsReq {
+  kind?: RetrievalKind
+  platform?: string
+  excludePlatforms?: string[]
+  project?: string
+  session?: string
+  /** Only rows of the last 30 days. */
+  memoryId?: string
+  cursor?: string
+  limit?: number
+}
+
+export interface Retrieval {
+  id: string
+  kind: RetrievalKind
+  /** Absent on legacy searches. */
+  platform?: string
+  project?: string
+  session?: string
+  /** Null for context rows. */
+  query: string | null
+  createdAt: string
+  createdTs: number
+  returned: { memories: { id: string; rank: number }[]; tokens: number; gap?: boolean }
+  latency?: Record<string, number>
+  feedback?: { used: string[]; applied: string[]; outcome: string; at: string }
+}
+
+export interface ListRetrievalsRes {
+  retrievals: Retrieval[]
+  memories: MemorySummaries
+  nextCursor: string | null
+  /** `"30d"`, only when `memoryId` was sent. */
+  window?: string
+}
+
+// -------------------------------- requests and model responses
+
+export type RequestKind = 'mem0' | 'instruction'
+
+export interface ListRequestsReq {
+  statuses?: TaskStatus[]
+  kind?: RequestKind
+  platform?: string
+  project?: string
+  cursor?: string
+  limit?: number
+}
+
+/** A `requests` row. Instruction receipts carry only the first block of fields. */
+export interface RequestRow {
+  id: string
+  requestId: string
+  kind: RequestKind
+  status: TaskStatus
+  memoryIds: string[]
+  platform: string
+  project: string
+  session: string
+  createdAt: string
+  updatedAt: string
+  turnId?: string | null
+  importRunId?: string | null
+  infer?: boolean
+  formed?: boolean
+  searchable?: boolean
+  failures?: number
+  error?: string | null
+  retryAtTs?: number
+  latencyMs?: Record<string, number>
+}
+
+export type ListedRequest = RequestRow & { messageCount: number }
+
+export interface ListRequestsRes {
+  requests: ListedRequest[]
+  nextCursor: string | null
+}
+
+export interface Extraction {
+  id: string
+  stage: string
+  requestId: string
+  status: string
+  output?: unknown
+  responseLogId?: string | null
+  createdAt?: string
+}
+
+export interface ModelResponse {
+  id: string
+  stage: string
+  model: string
+  createdAt: string
+  attempt: number
+  httpStatus?: number
+  transportError?: string
+  request: unknown
+  rawBody?: string
+  rawContent?: string
+  validationError?: string | null
+  validOutputShape?: boolean
+  latencyMs?: number
+  finishReason?: string
+}
+
+export interface RequestDetail {
+  request: RequestRow & { inputMessages?: InMessage[] }
+  /** Oldest first. */
+  extractions: Extraction[]
+  responses: ModelResponse[]
+}
+
+export interface ListModelResponsesReq {
+  stage?: string
+  failedOnly?: boolean
+  cursor?: string
+  limit?: number
+}
+
+export interface ListModelResponsesRes {
+  responses: ModelResponse[]
+  nextCursor: string | null
 }

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { importDecisions } from '../lib/review'
 import { api, ApiError } from './client'
+import type { ImportProposal } from './types'
 
 function respond(...answers: Response[]) {
   const fetch = vi.fn<typeof globalThis.fetch>()
@@ -14,8 +16,13 @@ const json = (body: unknown, status = 200) =>
 afterEach(() => vi.unstubAllGlobals())
 
 describe('api client', () => {
-  it('posts JSON as the web platform, never touches on search, and reads health with a plain GET', async () => {
-    const fetch = respond(json({ results: [] }), json({ ok: true, version: '0.1.0' }))
+  it('posts JSON as the web platform, never touches on search, only proposes consolidation, decides every proposed import proposal, and reads health with a plain GET', async () => {
+    const fetch = respond(
+      json({ results: [] }),
+      json({ ok: true, version: '0.1.0' }),
+      json({ run: {}, proposals: [] }),
+      json({ run: {}, proposals: [] }),
+    )
 
     await api.search({ query: '端口', scope: { project: 'p', platform: '*' }, topK: 5 })
     const [path, init] = fetch.mock.calls[0]
@@ -31,6 +38,20 @@ describe('api client', () => {
 
     expect(await api.health()).toEqual({ ok: true, version: '0.1.0' })
     expect(fetch.mock.calls[1]).toEqual(['/health'])
+
+    await api.consolidate('p')
+    expect(fetch.mock.calls[2][0]).toBe('/admin/consolidate')
+    expect(JSON.parse(fetch.mock.calls[2][1]?.body as string)).toEqual({ project: 'p', dryRun: true })
+
+    // Accept is the default for a proposal the reviewer left alone; settled proposals get no decision.
+    const proposal = (proposalId: string, status: ImportProposal['status']) => ({ proposalId, status }) as ImportProposal
+    const proposals = [proposal('a', 'proposed'), proposal('b', 'proposed'), proposal('c', 'rejected')]
+    await api.importApply({ runId: 'ir1', decisions: importDecisions(proposals, new Set(['b', 'c'])) })
+    expect(fetch.mock.calls[3][0]).toBe('/admin/import_apply')
+    expect(JSON.parse(fetch.mock.calls[3][1]?.body as string)).toEqual({
+      runId: 'ir1',
+      decisions: { a: 'accept', b: 'reject' },
+    })
   })
 
   it('turns error answers into ApiError, with the current id of a 409 and the bare status without a body', async () => {

@@ -1,7 +1,7 @@
 # 记忆管理 Web 界面
 
-> 状态：第一期（4.1）已实现：`list_memories`、`memory_facets`、`--ui-dir` 和 `web/` 前端；发布流程和安装器安装前端（7.3）
-> 也已实现。第二、三期尚未实现。第 3 节的调研截至 2026-10-27。标"未核实"的条目只见于搜索摘要或第三方文章；闭源的
+> 状态：第一期（4.1）和第二期（4.2）已实现：第 5 节的接口、`--ui-dir` 和 `web/` 前端；发布流程和安装器安装前端（7.3）
+> 也已实现。第三期尚未实现。第 3 节的调研截至 2026-10-27。标"未核实"的条目只见于搜索摘要或第三方文章；闭源的
 > 托管控制台只能按文档描述，看不到技术栈。第 4、5 节的接口和字段以 [API 与配置](../api.md) 和代码为准。
 
 日期：2026-10-27。范围：一个由 daemon 自己提供的本机网页，用来浏览、检索、新增、更正、撤回和删除记忆，并审核
@@ -153,10 +153,10 @@ Graphiti、memU、本地版 Basic Memory 没有界面；Memobase 的 playground 
    返回全部。
 2. `memory_facets`：各项目、各平台、各 origin、各类型和状态的记录数，供下拉框和概览使用。
 
-第二期。导入已经有 `import_runs`、`import_run`、`import_apply`、`import_rollback`，不用补；其余几张表现在只能通过 export
-整表读取：
+第二期（已实现）。导入已经有 `import_runs`、`import_run`、`import_apply`、`import_rollback`，不用补；其余几张表之前只能
+通过 export 整表读取：
 
-3. 检索日志补字段（已实现）：`search_memories` 写 `retrieval_log` 时，和 `get_context` 一样记 `kind`、平台、项目、会话和
+3. 检索日志补字段：`search_memories` 写 `retrieval_log` 时，和 `get_context` 一样记 `kind`、平台、项目、会话和
    `createdTs`，并在 `returned` 里记 `gap`（[retrieval.rs](../../crates/memory-algo-mem0/src/retrieval.rs)）。之前 search
    的日志没有 `kind` 和 `gap`，所以 `/admin/stats` 的 `retrieval.gapSearches`（概览的"无结果的检索"）一直是 0。启动修复
    给旧的 search 日志补上 `kind`、`createdTs`（由 `createdAt` 换算）和 `gap`；当时没记平台、项目和会话，召回记录里显示为
@@ -164,18 +164,20 @@ Graphiti、memU、本地版 Basic Memory 没有界面；Memobase 的 playground 
 4. `list_uncertainties`：`{status?, project?, limit?}`，`status` 默认 `open`，按 `createdAt` 倒序，每个问题带上成员记录
    （字段和 `get_memory` 相同），界面不用逐条再取。问题只来自 consolidation 的 conflict 操作和启动修复，数量少，和
    `import_runs` 一样只按条数截断，不翻页。
-5. consolidation 运行：`consolidation_runs` `{project?, limit?}` 倒序列出运行，不带 proposals；`consolidation_run`
-   `{runId}` 返回 `{run, proposals}`，和 `import_run` 对应。现在只有 consolidate、apply、rollback 这几个写操作会返回运行。
-6. `/admin/stats` 报告 `consolidationEnabled`（默认关闭）和有没有生成模型。界面据此禁用"发起提议"和"apply"，不必等接口
-   返回 400 或 `MODEL_UNAVAILABLE`。
+5. consolidation 运行：`consolidation_runs` `{project?, limit?}` 倒序列出运行，不带 `clusters` 等大字段；
+   `consolidation_run` `{runId}` 返回 `{run, proposals, memories}`，和 `import_run` 对应，`memories` 是提议涉及的记录摘要。
+   之前只有 consolidate、apply、rollback 这几个写操作会返回运行。
+6. `/admin/stats` 的 `features` 报告 `consolidation`（`consolidationEnabled`，默认关闭）和 `generation`（有没有生成模型）。
+   界面据此禁用"发起提议"和"apply"，不必等接口返回 400 或 `MODEL_UNAVAILABLE`。
 7. `list_retrievals`：`{kind?, platform?, excludePlatforms?, project?, session?, memoryId?, cursor?, limit?}`，按
    `createdTs`、`mid` 倒序翻页，每行带返回记录的 id、类型、状态、文本，以及 `feedback`。界面默认排除 `web`，也就是网页
-   自己的检索和上下文预览。`retrieval_log` 没有清理，`memoryId`（详情里的"最近被召回"）要扫描数组字段，第一版只看
-   最近一段日志；需要更长的历史时再加保留期或索引。
+   自己的检索和上下文预览。`retrieval_log` 没有清理，`memoryId`（详情里的"最近被召回"）要扫描数组字段，只看最近 30
+   天（`createdTs` 有索引）；需要更长的历史时再加保留期或索引。
 8. 任务：`list_requests` `{statuses?, kind?, platform?, project?, cursor?, limit?}` 倒序列出写入请求，不带
    `inputMessages`；`request` `{requestId}` 返回整条请求、它的 `extract_log` 和这些日志指向的 `llm_responses`。模型调用
    全部失败时没有 `extract_log`，`llm_responses` 也不记 `requestId`，请求上只有最后一次的 `error`；
-   `list_model_responses` `{stage?, failedOnly?, cursor?, limit?}` 按时间列出原始响应，用来查这类失败。
+   `list_model_responses` `{stage?, failedOnly?, cursor?, limit?}` 按时间列出原始响应，用来查这类失败；`failedOnly`
+   只留没有得到合格输出的调用（无响应、非 2xx、响应不是 JSON 或输出格式不对）。
 
 ## 6. 安全前提
 
@@ -265,5 +267,5 @@ Tailwind 4、hash 路由、`diff`（更正前后的词级 diff）。谱系图到
 2. 后端接口（第 5 节）和单元测试。
 3. daemon 的 `--ui-dir` 和 `/ui/` 路由，`/health` 报告版本；前端骨架和第一期的页面；`make ui`、`make test-web`。
 4. 发布流程打前端包，安装器安装前端（7.3）（已完成）。
-5. 第二期：冲突、consolidation、导入、召回记录、任务。
+5. 第二期：冲突、consolidation、导入、召回记录、任务（已完成）。
 6. 第三期：谱系图、实体、过期提示；按平台暂停另行设计。

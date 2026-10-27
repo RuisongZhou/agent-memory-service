@@ -424,7 +424,7 @@ pub struct ConsolidateReq {
     pub dry_run: Option<bool>,
 }
 
-/// `POST /admin/consolidation_apply` and `/admin/consolidation_rollback`.
+/// `POST /admin/consolidation_apply`, `/admin/consolidation_rollback` and `/admin/consolidation_run`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsolidationRunReq {
@@ -462,6 +462,94 @@ pub struct ListMemoriesReq {
     pub limit: Option<usize>,
 }
 
+/// `POST /admin/consolidation_runs`: the newest runs first, optionally of one project.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsolidationRunsReq {
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// `POST /admin/list_uncertainties`: the newest questions of one status first. No cursor: the list is
+/// truncated at `limit`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListUncertaintiesReq {
+    /// "open" (the default) | "resolved" | "withdrawn"
+    #[serde(default)]
+    pub status: Option<String>,
+    /// `scope.project` equals
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// `POST /admin/list_retrievals`: one page of `retrieval_log`, newest first. Every filter is optional.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRetrievalsReq {
+    /// "search" | "context"
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// Leaves out rows of these platforms; rows without a platform are kept.
+    #[serde(default)]
+    pub exclude_platforms: Option<Vec<String>>,
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub session: Option<String>,
+    /// Rows that returned this memory, logged in the last 30 days.
+    #[serde(default)]
+    pub memory_id: Option<String>,
+    /// `nextCursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// `POST /admin/list_requests`: one page of write requests, newest first. Every filter is optional.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRequestsReq {
+    #[serde(default)]
+    pub statuses: Option<Vec<String>>,
+    /// "mem0" | "instruction"
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+    /// `nextCursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// `POST /admin/list_model_responses`: one page of raw generation responses, newest first.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListModelResponsesReq {
+    #[serde(default)]
+    pub stage: Option<String>,
+    /// Only calls that failed: a transport error, an HTTP status outside 2xx or an output of the wrong shape.
+    #[serde(default)]
+    pub failed_only: bool,
+    /// `nextCursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// `get_task`, and `POST /admin/request`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GetTaskReq {

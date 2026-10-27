@@ -236,6 +236,117 @@ pub async fn selftest() {
         assert_eq!(row["stage"], "Mem0-consolidate");
         assert!(row["rawBody"].as_str().unwrap().contains("operations"));
     }
+    // What the web UI may offer follows the flag and the key.
+    for (eng, consolidation) in [(&eng, true), (&disabled, false)] {
+        assert_eq!(
+            management::stats(eng, &t).await.unwrap()["features"],
+            json!({"consolidation": consolidation, "generation": true})
+        );
+    }
+    // A formed request shows its extraction and the generation response it parsed.
+    let shown = management::request(
+        &t,
+        GetTaskReq {
+            request_id: first.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(shown["request"]["id"], first);
+    assert_eq!(
+        shown["request"]["inputMessages"].as_array().unwrap().len(),
+        8
+    );
+    let extractions = shown["extractions"].as_array().unwrap();
+    assert_eq!(extractions.len(), 1, "{shown}");
+    assert_eq!(
+        (&extractions[0]["requestId"], &extractions[0]["stage"]),
+        (&json!(first), &json!("Mem0-add"))
+    );
+    assert!(extractions[0]["id"].is_string() && extractions[0].get("mid").is_none());
+    let responses = shown["responses"].as_array().unwrap();
+    assert_eq!(responses.len(), 1, "{shown}");
+    assert_eq!(responses[0]["id"], extractions[0]["responseLogId"]);
+    assert!(responses[0]["rawContent"]
+        .as_str()
+        .unwrap()
+        .contains("Arch Linux"));
+    // Raw responses by stage, and the failed calls among them: a transport error, a server error and an output
+    // of the wrong shape.
+    let calls =
+        |req: Value| management::list_model_responses(&t, serde_json::from_value(req).unwrap());
+    let call_ids = |page: &Value| -> Vec<String> {
+        let mut ids: Vec<String> = page["responses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+    let mut consolidating: Vec<String> = run["responseLogIds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect();
+    consolidating.sort();
+    let found = calls(json!({"stage": "Mem0-consolidate"})).await.unwrap();
+    assert_eq!(call_ids(&found), consolidating);
+    assert_eq!(
+        calls(json!({"failedOnly": true})).await.unwrap()["responses"],
+        json!([])
+    );
+    let now = memory_rules::util::now_str();
+    let mut failed = vec![];
+    for row in [
+        json!({"stage": "Mem0-add", "attempt": 1, "transportError": "request error: timed out"}),
+        json!({"stage": "Mem0-add", "attempt": 2, "httpStatus": 503, "rawBody": "busy"}),
+        json!({"stage": "Mem0-add", "attempt": 3, "httpStatus": 200, "rawBody": "<html>"}),
+        json!({"stage": "Mem0-consolidate", "attempt": 1, "httpStatus": 200, "rawBody": "{}",
+            "rawContent": "{}", "validationError": "missing operations", "validOutputShape": false}),
+    ] {
+        let mut row = row;
+        row["model"] = json!("stub-model");
+        row["createdAt"] = json!(now);
+        row["request"] = json!({});
+        failed.push(t.store.log(schema::LLM_RESPONSES, row).await.unwrap());
+    }
+    failed.sort();
+    let mut paged = vec![];
+    let mut cursor = Value::Null;
+    loop {
+        let page = calls(json!({"failedOnly": true, "limit": 2, "cursor": cursor}))
+            .await
+            .unwrap();
+        assert!(page["responses"].as_array().unwrap().len() <= 2);
+        paged.extend(call_ids(&page));
+        cursor = page["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    paged.sort();
+    assert_eq!(paged, failed);
+    let shape = calls(json!({"failedOnly": true, "stage": "Mem0-consolidate"}))
+        .await
+        .unwrap();
+    assert_eq!(shape["responses"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        shape["responses"][0]["validationError"],
+        "missing operations"
+    );
+    for bad in [
+        json!({"limit": 0}),
+        json!({"limit": 101}),
+        json!({"cursor": "yesterday:l1"}),
+    ] {
+        assert!(
+            matches!(calls(bad.clone()).await, Err(ApiError::InvalidArgument(_))),
+            "{bad}"
+        );
+    }
 
     // A run that would retire more than the per-run share of a project's facts is aborted.
     add(

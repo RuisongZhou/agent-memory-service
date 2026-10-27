@@ -39,6 +39,7 @@ DEFINE TABLE IF NOT EXISTS index_meta SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS store_revisions SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS requests SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS retrieval_log SCHEMALESS;
+DEFINE INDEX IF NOT EXISTS retrieval_log_created ON retrieval_log FIELDS createdTs;
 DEFINE TABLE IF NOT EXISTS extract_log SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS llm_usage SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS llm_responses SCHEMALESS;
@@ -75,6 +76,21 @@ pub fn safe_id(id: &str) -> Result<&str> {
     } else {
         Err(anyhow!("unsafe record id: {id:?}"))
     }
+}
+
+/// `true` and the conditions whose value is given, each `(condition, bound name, value)`, with their bound values.
+pub(crate) fn conditions(
+    filters: impl IntoIterator<Item = (&'static str, &'static str, Option<Value>)>,
+) -> (Vec<&'static str>, Vec<(&'static str, Value)>) {
+    let mut conds = vec!["true"];
+    let mut binds = Vec::new();
+    for (cond, name, value) in filters {
+        if let Some(value) = value {
+            conds.push(cond);
+            binds.push((name, value));
+        }
+    }
+    (conds, binds)
 }
 
 /// A stored float array (empty when missing or not an array).
@@ -508,6 +524,17 @@ impl Store {
             .next())
     }
 
+    /// The documents of `table` among `ids` that exist, as [`Self::get_doc`] reads them. Ids that are not
+    /// record ids name no document.
+    pub async fn get_docs(&self, table: &str, ids: &[String]) -> Result<Vec<Value>> {
+        let list: Vec<String> = ids.iter().filter_map(|i| rid(table, i).ok()).collect();
+        if list.is_empty() {
+            return Ok(vec![]);
+        }
+        let sql = format!("SELECT * OMIT id, embedding FROM {}", list.join(", "));
+        self.select(&sql, vec![]).await
+    }
+
     /// Explicit vector access; ordinary document reads deliberately omit large embeddings.
     pub async fn memory_embedding(&self, id: &str) -> Result<Option<Vec<f32>>> {
         let record = rid(schema::MEMORIES, id)?;
@@ -542,15 +569,11 @@ impl Store {
     }
 
     pub async fn get_memories(&self, ids: &[String]) -> Result<Vec<MemoryRec>> {
-        if ids.is_empty() {
-            return Ok(vec![]);
-        }
-        let list: Vec<String> = ids
-            .iter()
-            .filter_map(|i| rid(schema::MEMORIES, i).ok())
-            .collect();
-        let sql = format!("SELECT * OMIT id, embedding FROM {}", list.join(", "));
-        self.select_as(&sql, vec![]).await
+        self.get_docs(schema::MEMORIES, ids)
+            .await?
+            .into_iter()
+            .map(from_doc)
+            .collect()
     }
 
     /// Memories matching a WHERE clause (no embedding column).

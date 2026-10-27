@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { api } from '../api/client'
-import type { Facet, LlmUsage, MemoryType } from '../api/types'
+import type { Facet, LlmUsage, MemoryType, Stats } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
-import { Card, Fields, Muted } from '../components/ui'
-import { ALL_STATUSES, filtersToParams, NO_FILTERS, type MemoryFilters } from '../lib/filters'
+import { Badge, Card, Fields, Muted } from '../components/ui'
+import { ALL_STATUSES, filtersToParams, NO_FILTERS, NO_TASK_FILTERS, taskFiltersToParams, type MemoryFilters } from '../lib/filters'
 import { formatNumber, ORIGIN_LABEL, STATUS_LABEL, TYPE_LABEL } from '../lib/format'
 
 /** The memory list behind a count. Counts cover every status, so the list does too unless one is named. */
@@ -19,6 +20,70 @@ const usageRows = (u: LlmUsage): [string, string][] => [
   ['输出 token', formatNumber(u.completionTokens)],
   ['缓存命中 token', formatNumber(u.cacheHitTokens)],
 ]
+
+/** `list_uncertainties` stops at its limit, so a full page means at least that many. */
+const OPEN_LIMIT = 200
+
+const failedTasksLink = `/tasks?${taskFiltersToParams({ ...NO_TASK_FILTERS, statuses: ['failed'] })}`
+
+const PageLink = ({ to, children }: { to: string; children: ReactNode }) => (
+  <Link to={to} className="text-sky-700 hover:underline">{children}</Link>
+)
+
+/** What needs a person: switches that gate the review pages, open questions and failed writes. */
+function Review({ features }: { features?: Stats['features'] }) {
+  const open = useQuery({
+    queryKey: ['uncertainties', { status: 'open', limit: OPEN_LIMIT }],
+    queryFn: () => api.listUncertainties({ status: 'open', limit: OPEN_LIMIT }),
+  })
+  const failed = useQuery({
+    queryKey: ['requests', 'any-failed'],
+    queryFn: () => api.listRequests({ statuses: ['failed'], limit: 1 }),
+  })
+  const openCount = open.data?.uncertainties.length
+  const on = (value: boolean | undefined, yes: string, no: string) =>
+    value === undefined ? '—' : <Badge tone={value ? 'green' : 'gray'}>{value ? yes : no}</Badge>
+
+  return (
+    <Card title="审核与追溯">
+      {(open.error ?? failed.error) && <ErrorNotice error={(open.error ?? failed.error)!} />}
+      <div className="grid gap-4 md:grid-cols-2">
+        <Fields
+          rows={[
+            ['consolidation', on(features?.consolidation, '已开启', '未开启')],
+            ['生成模型', on(features?.generation, '已配置', '未配置')],
+            [
+              '未解决的冲突',
+              openCount === undefined ? (
+                '—'
+              ) : (
+                <PageLink to="/conflicts">
+                  {openCount >= OPEN_LIMIT ? `${OPEN_LIMIT}+` : formatNumber(openCount)}
+                </PageLink>
+              ),
+            ],
+            [
+              '失败的写入请求',
+              failed.data === undefined ? (
+                '—'
+              ) : failed.data.requests.length ? (
+                <PageLink to={failedTasksLink}>有</PageLink>
+              ) : (
+                '无'
+              ),
+            ],
+          ]}
+        />
+        <ul className="space-y-1 text-sm">
+          <li><PageLink to="/imports">导入审核</PageLink>：审核、应用和回滚导入运行</li>
+          <li><PageLink to="/consolidation">consolidation</PageLink>：发起提议、应用和回滚</li>
+          <li><PageLink to="/recalls">召回记录</PageLink>：哪个平台、哪个会话取回了哪些记忆</li>
+          <li><PageLink to="/tasks?tab=responses">模型调用</PageLink>：失败的生成调用和原始响应</li>
+        </ul>
+      </div>
+    </Card>
+  )
+}
 
 function FacetList({ title, facets, link, labels }: {
   title: string
@@ -99,6 +164,8 @@ export function OverviewPage() {
           )}
         </Card>
       </div>
+
+      <Review features={stats.data?.features} />
 
       <Card title={`记忆记录${facets.data ? `（共 ${formatNumber(facets.data.total)} 条）` : ''}`}>
         {types.length === 0 ? (
