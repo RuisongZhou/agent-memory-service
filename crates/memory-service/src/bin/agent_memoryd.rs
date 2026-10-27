@@ -1,6 +1,6 @@
 //! `agent-memoryd` — 共享记忆库 daemon.
 //!
-//!   agent-memoryd serve  --data-dir D [--surreal-bin PATH] [--env-file .env] [--outbox [PATH]] [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
+//!   agent-memoryd serve  --data-dir D [--surreal-bin PATH] [--env-file .env] [--outbox [PATH]] [--ui-dir PATH] [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
 //!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 6 tools)
 //!   agent-memoryd hook   capture | codex-notify | recall ...   (commands agent hosts run as hooks)
 //!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
@@ -88,6 +88,9 @@ enum Cmd {
         /// Upload captured dialogue from this outbox (default path when given without one)
         #[arg(long, value_name = "PATH", num_args = 0..=1)]
         outbox: Option<Option<PathBuf>>,
+        /// Serve the web UI's build output (a directory with index.html) under /ui
+        #[arg(long, env = "MEMORY_UI_DIR", value_name = "PATH")]
+        ui_dir: Option<PathBuf>,
     },
     /// MCP stdio shim exposing six memory tools; forwards to a running daemon
     Mcp {
@@ -244,6 +247,7 @@ fn main() -> anyhow::Result<()> {
                 log_level,
                 env_file: _,
                 outbox,
+                ui_dir,
             } => {
                 let bind_address: std::net::IpAddr = host.parse()?;
                 anyhow::ensure!(bind_address.is_loopback(), "only loopback binding is supported; remote access requires an authenticated gateway");
@@ -260,6 +264,11 @@ fn main() -> anyhow::Result<()> {
                     .map(|path| Outbox::open(&path).map(|o| (path, o)))
                     .transpose()
                     .map_err(|e| anyhow::anyhow!("--outbox: {e}"))?;
+                // An empty value (an unset template line) serves no UI.
+                let ui_dir = ui_dir.filter(|p| !p.as_os_str().is_empty());
+                if let Some(dir) = &ui_dir {
+                    memory_service::api::ui::check_dir(dir)?;
+                }
                 let mut cfg = ServiceConfig::default();
                 if let Some(p) = config {
                     let over: serde_json::Map<String, serde_json::Value> =
@@ -326,7 +335,7 @@ fn main() -> anyhow::Result<()> {
                 if let Some((path, outbox)) = outbox {
                     tokio::spawn(harness::uploader::run(eng.clone(), path, outbox));
                 }
-                let app = http::router(eng.clone());
+                let app = http::router(eng.clone(), ui_dir.as_deref());
                 let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
                 tracing::info!("agent-memoryd listening on http://{host}:{port}");
                 axum::serve(listener, app).await?;

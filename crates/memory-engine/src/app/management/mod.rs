@@ -1,4 +1,4 @@
-//! 纠正、删除、反馈 (2.5, 5.5) and admin inspection (stats, export).
+//! 纠正、删除、反馈 (2.5, 5.5) and admin inspection (stats, export, list_memories, memory_facets).
 //! One file per operation; `must_get` and the correction text limit are shared.
 use crate::runtime::instance::Instance;
 use memory_domain::types::*;
@@ -10,7 +10,7 @@ mod deletion;
 mod feedback;
 mod uncertainty;
 
-pub use admin::{export, stats};
+pub use admin::{export, list_memories, memory_facets, stats};
 pub use correction::correct_memory;
 pub use deletion::delete_memory;
 pub use feedback::feedback;

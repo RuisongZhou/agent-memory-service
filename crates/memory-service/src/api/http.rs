@@ -16,12 +16,13 @@ use memory_engine::retrieval;
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
 
-pub fn router(eng: Arc<Engine>) -> Router {
+pub fn router(eng: Arc<Engine>, ui_dir: Option<&std::path::Path>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/embeddings", post(embeddings))
         .route("/v1/{name}", post(api))
         .route("/admin/{name}", post(admin))
+        .merge(super::ui::router(ui_dir))
         .with_state(eng)
 }
 
@@ -34,7 +35,7 @@ fn caller(h: &HeaderMap) -> Caller {
     Caller { platform }
 }
 
-fn err_response(e: ApiError) -> Response {
+pub(super) fn err_response(e: ApiError) -> Response {
     let status = StatusCode::from_u16(e.status_code()).expect("ApiError status codes are valid");
     let mut body = json!({"code": e.code(), "message": e.to_string()});
     if let ApiError::NotCurrent(id) = &e {
@@ -50,6 +51,7 @@ fn parse<T: DeserializeOwned>(v: Value) -> ApiResult<T> {
 async fn health(State(eng): State<Arc<Engine>>) -> Json<Value> {
     Json(json!({
         "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
         "promptVariant": eng.cfg.prompt_variant,
         "embedModel": eng.models.embed_model_id,
         "rerankModel": eng.models.rerank_model_id,
@@ -115,6 +117,8 @@ async fn admin(
                 indexer::schedule_rebuild(&t).await?;
                 Ok(json!({"scheduled": true}))
             }
+            "list_memories" => management::list_memories(&t, parse(body)?).await,
+            "memory_facets" => management::memory_facets(&t).await,
             other => Err(ApiError::NotFound(format!("unknown admin action {other}"))),
         }
     }
