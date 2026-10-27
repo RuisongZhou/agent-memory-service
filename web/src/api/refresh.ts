@@ -1,9 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query'
 
+/** Every query a write can make stale. */
+const KEYS = ['memories', 'memory', 'facets', 'stats', 'imports', 'consolidation', 'uncertainties', 'retrievals', 'requests']
+
 /** After a write every list, count and record may have changed. */
 export function useRefresh() {
   const client = useQueryClient()
   return () => {
-    for (const key of ['memories', 'memory', 'facets', 'stats']) client.invalidateQueries({ queryKey: [key] })
+    for (const key of KEYS) client.invalidateQueries({ queryKey: [key] })
   }
 }

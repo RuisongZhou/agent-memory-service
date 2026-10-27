@@ -3,12 +3,22 @@ import type { ReactNode } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import { api } from '../api/client'
 
+// Two groups: browsing and editing records, then reviewing and tracing what agents and the daemon did.
 const NAV = [
-  ['/', '概览'],
-  ['/memories', '记忆列表'],
-  ['/new', '新增'],
-  ['/search', '检索调试'],
-  ['/context', '上下文预览'],
+  [
+    ['/', '概览'],
+    ['/memories', '记忆列表'],
+    ['/new', '新增'],
+    ['/search', '检索调试'],
+    ['/context', '上下文预览'],
+  ],
+  [
+    ['/imports', '导入审核'],
+    ['/consolidation', 'consolidation'],
+    ['/conflicts', '冲突'],
+    ['/recalls', '召回记录'],
+    ['/tasks', '任务'],
+  ],
 ] as const
 
 /** The daemon and this UI are released with one version; a mismatch means the UI was built for another daemon. */
@@ -36,19 +46,24 @@ export function Layout() {
     <div className="min-h-screen">
       <VersionBanner />
       <header className="border-b border-zinc-200 bg-white">
-        <nav className="mx-auto flex max-w-6xl items-center gap-1 px-4">
-          <span className="mr-4 py-3 font-semibold">记忆管理</span>
-          {NAV.map(([to, label]) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/'}
-              className={({ isActive }) =>
-                `border-b-2 px-3 py-3 text-sm ${isActive ? 'border-zinc-900 font-medium' : 'border-transparent text-zinc-600 hover:text-zinc-900'}`
-              }
-            >
-              {label}
-            </NavLink>
+        {/* Wraps instead of scrolling: at phone width each group takes its own lines. */}
+        <nav className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 px-4">
+          <span className="py-2.5 font-semibold sm:py-3">记忆管理</span>
+          {NAV.map((group, i) => (
+            <div key={i} className="flex flex-wrap items-center">
+              {group.map(([to, label]) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={to === '/'}
+                  className={({ isActive }) =>
+                    `border-b-2 px-2 py-2.5 text-sm whitespace-nowrap sm:px-3 sm:py-3 ${isActive ? 'border-zinc-900 font-medium' : 'border-transparent text-zinc-600 hover:text-zinc-900'}`
+                  }
+                >
+                  {label}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
       </header>

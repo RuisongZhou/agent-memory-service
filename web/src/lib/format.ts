@@ -63,3 +63,47 @@ export const byteLength = (text: string) => new TextEncoder().encode(text).lengt
 
 /** Unicode scalar count: the 1024-character instruction limit counts these, not UTF-16 units. */
 export const charLength = (text: string) => [...text].length
+
+/** Statuses of import and consolidation runs and their proposals (docs/api.md). */
+export const REVIEW_STATUS_LABEL: Record<string, string> = {
+  proposing: '提议中',
+  proposed: '待审核',
+  rejected: '被拒',
+  dropped: '未采纳',
+  aborted: '已中止',
+  failed: '失败',
+  applying: '应用中',
+  applied: '已应用',
+  skipped: '已跳过',
+  rolling_back: '回滚中',
+  rolled_back: '已回滚',
+  partially_rolled_back: '部分回滚',
+}
+
+export const ITEM_KIND_LABEL: Record<string, string> = {
+  fact: '事实',
+  preference: '偏好',
+  reference: '参考',
+  'session-turn': '会话轮次',
+}
+
+export const UNIT_OUTCOME_LABEL: Record<string, string> = {
+  new: '新',
+  changed: '有变化',
+  unchanged: '未变化',
+  reconsidered: '重新提议',
+  failed: '失败',
+}
+
+export const TASK_STATUS_LABEL: Record<string, string> = {
+  queued: '排队中',
+  running: '处理中',
+  indexing: '建索引',
+  completed: '完成',
+  failed: '失败',
+}
+
+export const RETRIEVAL_KIND_LABEL: Record<string, string> = { search: '检索', context: '上下文' }
+
+/** A share such as `retireFraction`, as a percentage. */
+export const formatPercent = (n: number) => `${(n * 100).toFixed(1)}%`
