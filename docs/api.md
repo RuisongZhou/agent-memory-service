@@ -49,6 +49,11 @@ Raw input reads default to the caller's platform; explicit `scope.platform:"*"` 
 Use the same daemon and project to share memory. These labels route requests and do not authenticate users. A daemon
 serves one store, under its data directory.
 
+The daemon answers only requests addressed to `127.0.0.1`, `localhost` or `[::1]` on its own port, and refuses with
+`403 FORBIDDEN` what a browser page on another origin could send: another `Host` (DNS rebinding), an `Origin` that is
+not the daemon's own, or `Sec-Fetch-Site: cross-site`. curl, the MCP bridge, the hooks and the installer send no
+`Origin` or `Sec-Fetch-Site` and are not affected.
+
 ## Writes
 
 `messages` and `text` are mutually exclusive. A message batch requires `turnId` and 1–128 ordered

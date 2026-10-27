@@ -326,8 +326,8 @@ fn main() -> anyhow::Result<()> {
                 if let Some((path, outbox)) = outbox {
                     tokio::spawn(harness::uploader::run(eng.clone(), path, outbox));
                 }
-                let app = http::router(eng.clone());
                 let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
+                let app = http::router(eng.clone(), listener.local_addr()?.port());
                 tracing::info!("agent-memoryd listening on http://{host}:{port}");
                 axum::serve(listener, app).await?;
             }
