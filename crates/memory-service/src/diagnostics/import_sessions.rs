@@ -159,10 +159,14 @@ async fn store(name: &str) -> (Arc<Engine>, Arc<Instance>, Caller, PathBuf) {
     (eng, t, caller, dir)
 }
 
+/// Session turns of an import run, end to end on one store: malformed turns refused, the turns registered
+/// without a model call, admitted only as the run applied them and deduplicated against live capture, then
+/// rolled back fact by fact, keeping every fact another request also formed.
 #[tokio::test(flavor = "multi_thread")]
-async fn malformed_turns_are_refused_before_anything_is_stored() {
-    let (eng, t, _, dir) = store("import-turns-refused").await;
+async fn session_turns_are_registered_admitted_once_and_rolled_back_fact_by_fact() {
+    let (eng, t, caller, dir) = store("import-turns").await;
     let turns = Turns::new();
+    // Malformed turns are refused before anything is stored.
     let mut other_project = turns.s1_1.clone();
     other_project.turn.as_mut().unwrap().turn_id = turn_key("other", "s1", "p1");
     let mut reversed = turns.s1_1.clone();
@@ -187,14 +191,7 @@ async fn malformed_turns_are_refused_before_anything_is_stored() {
         ));
     }
     assert_eq!(t.store.count(schema::IMPORT_RUNS, None).await.unwrap(), 0);
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn proposing_registers_turns_without_a_model_call_and_admits_none_until_applied() {
-    let (eng, t, caller, dir) = store("import-turns-propose").await;
-    let turns = Turns::new();
+    // Proposing registers the turns without a model call; the run admits none until applied.
     let out = propose(&eng, &t, turns.all()).await;
     let run = &out["run"];
     let r1 = run["runId"].as_str().unwrap().to_string();
@@ -226,18 +223,7 @@ async fn proposing_registers_turns_without_a_model_call_and_admits_none_until_ap
         matches!(refused, Err(ApiError::InvalidArgument(_))),
         "{refused:?}"
     );
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn applied_turns_are_admitted_once_and_deduplicated_against_live_capture() {
-    let (eng, t, caller, dir) = store("import-turns-admit").await;
-    let turns = Turns::new();
-    let r1 = propose(&eng, &t, turns.all()).await["run"]["runId"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    // Applied turns are admitted once and deduplicated against live capture.
     // The turn s1/p1 was captured live before the import.
     let live = ingest::add_memories(
         &eng,
@@ -356,40 +342,9 @@ async fn applied_turns_are_admitted_once_and_deduplicated_against_live_capture()
         (&relearned["requestId"], &relearned["duplicate"]),
         (&json!(new_request), &json!(false))
     );
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn rollback_retires_only_facts_no_other_request_formed_and_retries_once_formed() {
-    let (eng, t, caller, dir) = store("import-turns-rollback").await;
-    let turns = Turns::new();
-    let r1 = propose(&eng, &t, turns.all()).await["run"]["runId"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let live = ingest::add_memories(
-        &eng,
-        &t,
-        &caller,
-        AddMemoriesReq {
-            sync: Some(true),
-            ..submission(&turns.s1_1, None)
-        },
-    )
-    .await
-    .unwrap();
-    let live_request = live["requestId"].as_str().unwrap().to_string();
-    import::apply(&t, run_req(&r1)).await.unwrap();
-    for unit in [&turns.s1_1, &turns.s1_2] {
-        ingest::add_memories(&eng, &t, &caller, submission(unit, Some(&r1)))
-            .await
-            .unwrap();
-    }
-    ingest::wait_idle(&eng, &t).await.unwrap();
+    // Rollback retires only facts no other request formed, and retries once formed.
     let staging = fact(&t, STAGING).await;
     let ci = fact(&t, CI).await;
-
     // s1/p3 is submitted and still forming when the run is rolled back.
     ingest::add_memories(&eng, &t, &caller, submission(&turns.s1_3, Some(&r1)))
         .await

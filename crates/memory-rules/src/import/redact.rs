@@ -564,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn url_credentials_keep_scheme_and_host() {
+    fn url_credentials_keep_scheme_and_host_also_without_a_user() {
         let r = redact(
             "db at postgres://admin:hunter2@db.internal:5432/app and https://u:p@ss@host.test/x",
         );
@@ -580,10 +580,7 @@ mod tests {
         ] {
             assert_eq!(redact(text).text, text);
         }
-    }
-
-    #[test]
-    fn url_credentials_with_an_empty_user_are_redacted() {
+        // A URL credential with an empty user.
         let r = redact("sessions in redis://:hunter2@cache.internal:6379/0 since May");
         assert_eq!(
             r.text,
@@ -596,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn quoted_pwd_and_passphrase_keys_are_redacted() {
+    fn quoted_keys_and_passwords_stated_in_a_sentence_are_redacted() {
         let r =
             redact("{\"pwd\": \"hunter2x\", \"passphrase\": \"open sesame\", \"user\": \"me\"}");
         assert_eq!(
@@ -607,10 +604,7 @@ mod tests {
         // A quoted YAML key at the start of a line; a password's short number is a PIN.
         let r = redact("'PWD': 1234\n");
         assert_eq!(r.text, "'PWD': [redacted:env-secret]\n");
-    }
-
-    #[test]
-    fn a_secret_stated_in_a_sentence_is_redacted() {
+        // A password stated in a sentence; prose about one keeps its words.
         for (text, expected) in [
             (
                 "测试库的数据库密码是 Pg-Test-2026-xyz，别告诉别人。",

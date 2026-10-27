@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn legacy_turn_tasks_are_consumed_without_embedding_and_rebuilds_queue_memories_only() {
+    async fn legacy_turns_are_consumed_without_embedding_and_deleting_a_fact_repairs_its_turn() {
         let eng = engine();
         let (t, _, dir) = fresh_store(&eng, "legacy-turns", "test").await;
         let (fact, turn) = legacy_turn(&t, eng.models.dim).await;
@@ -350,6 +350,21 @@ mod tests {
         assert_eq!(pending(&t).await.unwrap(), 1);
         drain(&eng, &t).await.unwrap();
         assert_eq!(pending(&t).await.unwrap(), 0);
+        // Deleting the fact removes it from the turn it was derived from.
+        assert!(t.vecs.read().await.memories.contains_key(&fact.id));
+        let deleted = crate::app::management::delete_memory(&eng, &t, IdReq { id: fact.id })
+            .await
+            .unwrap();
+        assert_eq!(deleted["turnsUpdated"], 1);
+        let stored = t
+            .store
+            .get_doc(schema::TURNS, &turn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["derivedMemoryIds"], json!([]));
+        assert_eq!(stored["assistantMessage"], "It listens on 8200.");
+        assert!(t.vecs.read().await.memories.is_empty());
         drop(t);
         let _ = std::fs::remove_dir_all(dir);
     }

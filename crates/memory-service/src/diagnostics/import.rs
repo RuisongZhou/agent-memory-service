@@ -217,9 +217,73 @@ async fn second_run(eng: &Arc<Engine>, t: &Arc<Instance>) -> Second {
     }
 }
 
+/// One run of `units`: proposed in one batch with `reconsider` and `limits`, then applied with the decisions
+/// `decide` gives. Returns the proposed and the applied answers.
+async fn round(
+    eng: &Arc<Engine>,
+    t: &Arc<Instance>,
+    units: Vec<ImportUnit>,
+    reconsider: bool,
+    limits: ImportLimits,
+    decide: impl Fn(&Value) -> Vec<(String, String)>,
+) -> (Value, Value) {
+    let proposed = import::propose(
+        eng,
+        t,
+        ImportProposeReq {
+            project: PROJECT.into(),
+            host: HOST.into(),
+            finish: true,
+            limits,
+            reconsider,
+            units,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let run_id = str_of(&proposed["run"]["runId"]);
+    let req = ImportRunReq {
+        run_id,
+        decisions: decide(&proposed["proposals"]).into_iter().collect(),
+        confirmed_via: None,
+    };
+    let applied = import::apply(t, req).await.unwrap();
+    (proposed, applied)
+}
+
+fn none(_: &Value) -> Vec<(String, String)> {
+    vec![]
+}
+
+/// Every proposal gets `decision`.
+fn all(decision: &'static str) -> impl Fn(&Value) -> Vec<(String, String)> {
+    move |proposals: &Value| {
+        proposals
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| (str_of(&p["proposalId"]), decision.to_string()))
+            .collect()
+    }
+}
+
+/// The project's current facts with `text`.
+async fn current_with(t: &Instance, text: &str) -> Vec<MemoryRec> {
+    t.store
+        .current_project_facts(PROJECT)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.text == text)
+        .collect()
+}
+
+/// Requests are checked first; a run proposed in batches stores proposals and rejections but no memory; apply follows review decisions, and imported facts are searchable but never presented as established.
 #[tokio::test(flavor = "multi_thread")]
-async fn propose_requests_are_checked_before_anything_is_written() {
-    let (eng, t, _, dir) = store("import-checked").await;
+async fn propose_checks_requests_and_apply_follows_review_decisions() {
+    let (eng, t, caller, dir) = store("import-propose-apply").await;
+    // Requests are checked before anything is written.
     let bad = |project: &str, units: Vec<ImportUnit>| ImportProposeReq {
         project: project.into(),
         host: HOST.into(),
@@ -249,13 +313,7 @@ async fn propose_requests_are_checked_before_anything_is_written() {
         Err(ApiError::ModelUnavailable(_))
     ));
     assert_eq!(t.store.count(schema::IMPORT_RUNS, None).await.unwrap(), 0);
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_run_proposed_in_batches_stores_proposals_and_rejections_but_no_memory() {
-    let (eng, t, _, dir) = store("import-propose").await;
+    // A run proposed in two batches stores proposals and rejections but writes no memory.
     let mut units = plan();
     let second = units.split_off(3);
     let first = propose(&eng, &t, None, false, units).await;
@@ -323,13 +381,7 @@ async fn a_run_proposed_in_batches_stores_proposals_and_rejections_but_no_memory
     assert_eq!(t.store.count(schema::MEMORIES, None).await.unwrap(), 0);
     let stored = import::get_run(&t, run_req(&r1, &[])).await.unwrap();
     assert_eq!(stored["proposals"].as_array().unwrap().len(), 8);
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn apply_follows_review_decisions_and_imported_facts_are_searchable_but_not_established() {
-    let (eng, t, caller, dir) = store("import-apply").await;
+    // Apply follows review decisions; imported facts are searchable but not established.
     let proposed = propose(&eng, &t, None, true, plan()).await;
     let r1 = str_of(&proposed["run"]["runId"]);
     let always_id = str_of(&find(&proposed["proposals"], ALWAYS)["proposalId"]);
@@ -469,10 +521,13 @@ async fn apply_follows_review_decisions_and_imported_facts_are_searchable_but_no
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// After a first run: unchanged units are not proposed again; changed units supersede their records and duplicates are linked; rollback runs newest first and keeps a record a person corrected.
 #[tokio::test(flavor = "multi_thread")]
-async fn unchanged_units_are_not_proposed_again() {
-    let (eng, t, _, dir) = store("import-unchanged").await;
-    first_run(&eng, &t).await;
+async fn reruns_changes_and_rollbacks_keep_the_ledger_in_step() {
+    let (eng, t, caller, dir) = store("import-ledger").await;
+    // A first run of the plan.
+    let first = first_run(&eng, &t).await;
+    // Unchanged units are not proposed again.
     let before = llm_calls(&eng);
     let same = propose(&eng, &t, None, true, plan()).await;
     assert!(
@@ -487,14 +542,7 @@ async fn unchanged_units_are_not_proposed_again() {
     assert_eq!(same["run"]["counts"]["unchanged"], 5);
     assert_eq!(same["run"]["counts"]["generationCalls"], 0);
     assert_eq!(llm_calls(&eng), before);
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn changed_units_supersede_their_records_and_duplicates_are_linked() {
-    let (eng, t, _, dir) = store("import-changed").await;
-    let first = first_run(&eng, &t).await;
+    // A second run: changed units supersede their records and duplicates are linked.
     let second = second_run(&eng, &t).await;
     let out = &second.proposed;
     // A changed verbatim unit replaces its record.
@@ -540,15 +588,7 @@ async fn changed_units_supersede_their_records_and_duplicates_are_linked() {
         "{skipped}"
     );
     assert_eq!(memory(&t, &second.monday).await.status, S_CURRENT);
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn rollback_runs_newest_first_and_keeps_a_record_a_person_corrected() {
-    let (eng, t, caller, dir) = store("import-rollback").await;
-    let first = first_run(&eng, &t).await;
-    let second = second_run(&eng, &t).await;
+    // Rollback runs newest first and keeps a record a person corrected.
     let corrected = management::correct_memory(
         &eng,
         &t,
@@ -619,9 +659,11 @@ async fn rollback_runs_newest_first_and_keeps_a_record_a_person_corrected() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Repeated imports of the same sources: cached extractions, linked duplicates, a changed feedback note, a declined change, and the extraction cache's key and failures.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_later_run_reuses_a_cached_extraction() {
-    let (eng, t, _, dir) = store("import-cache").await;
+async fn repeated_imports_link_replace_decline_and_cache_by_the_ledger() {
+    let (eng, t, _, dir) = store("import-repeated").await;
+    // A later run reuses a cached extraction; runs are listed newest first.
     let extract = || vec![unit("memory/staging.md", MODE_EXTRACT, EXTRACT)];
     let first = propose(&eng, &t, None, true, extract()).await;
     assert_eq!(first["run"]["counts"]["generationCalls"], 1, "{first}");
@@ -653,75 +695,7 @@ async fn a_later_run_reuses_a_cached_extraction() {
             str_of(&first["run"]["runId"])
         ]
     );
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-/// One run of `units`: proposed in one batch with `reconsider` and `limits`, then applied with the decisions
-/// `decide` gives. Returns the proposed and the applied answers.
-async fn round(
-    eng: &Arc<Engine>,
-    t: &Arc<Instance>,
-    units: Vec<ImportUnit>,
-    reconsider: bool,
-    limits: ImportLimits,
-    decide: impl Fn(&Value) -> Vec<(String, String)>,
-) -> (Value, Value) {
-    let proposed = import::propose(
-        eng,
-        t,
-        ImportProposeReq {
-            project: PROJECT.into(),
-            host: HOST.into(),
-            finish: true,
-            limits,
-            reconsider,
-            units,
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    let run_id = str_of(&proposed["run"]["runId"]);
-    let req = ImportRunReq {
-        run_id,
-        decisions: decide(&proposed["proposals"]).into_iter().collect(),
-        confirmed_via: None,
-    };
-    let applied = import::apply(t, req).await.unwrap();
-    (proposed, applied)
-}
-
-fn none(_: &Value) -> Vec<(String, String)> {
-    vec![]
-}
-
-/// Every proposal gets `decision`.
-fn all(decision: &'static str) -> impl Fn(&Value) -> Vec<(String, String)> {
-    move |proposals: &Value| {
-        proposals
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|p| (str_of(&p["proposalId"]), decision.to_string()))
-            .collect()
-    }
-}
-
-/// The project's current facts with `text`.
-async fn current_with(t: &Instance, text: &str) -> Vec<MemoryRec> {
-    t.store
-        .current_project_facts(PROJECT)
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|m| m.text == text)
-        .collect()
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_duplicate_linked_to_another_unit_survives_that_units_change() {
-    let (eng, t, _, dir) = store("import-linked").await;
+    // A duplicate linked to another unit survives that unit's change.
     let limits = ImportLimits::default();
     const SHARED: &str = "The orbit gateway terminates TLS at the edge.";
     const SHARED_NEXT: &str = "The orbit gateway terminates TLS at the load balancer.";
@@ -784,13 +758,7 @@ async fn a_duplicate_linked_to_another_unit_survives_that_units_change() {
     .await;
     assert_eq!(rerun["units"][0]["outcome"], UNIT_UNCHANGED);
     assert_eq!(current_with(&t, SHARED).await.len(), 1);
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_changed_feedback_note_is_one_preference_whose_new_text_replaces_the_old() {
-    let (eng, t, _, dir) = store("import-feedback").await;
+    // A changed feedback note is one preference whose new text replaces the old.
     let limits = ImportLimits::default();
     const RULE: &str = "Prefer small pull requests for orbit.";
     const RULE_NEXT: &str = "Prefer tiny pull requests for orbit.";
@@ -820,13 +788,7 @@ async fn a_changed_feedback_note_is_one_preference_whose_new_text_replaces_the_o
             .count(),
         1
     );
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_declined_change_keeps_the_old_record_for_the_next_version_to_replace() {
-    let (eng, t, _, dir) = store("import-declined").await;
+    // A declined change keeps the old record for the next version to replace.
     let limits = ImportLimits::default();
     const V1: &str = "Orbit logs are kept for 30 days.";
     const V2: &str = "Orbit logs are kept for 60 days.";
@@ -853,13 +815,8 @@ async fn a_declined_change_keeps_the_old_record_for_the_next_version_to_replace(
         memory(&t, &v1).await.superseded_by.as_deref(),
         Some(v3.as_str())
     );
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_extraction_cache_key_covers_the_recall_limits() {
-    let (eng, t, _, dir) = store("import-cache-key").await;
+    // The extraction cache key covers the recall limits.
+    let before = llm_calls(&eng);
     let limits = ImportLimits::default();
     let queue = || {
         vec![unit(
@@ -869,22 +826,17 @@ async fn the_extraction_cache_key_covers_the_recall_limits() {
         )]
     };
     round(&eng, &t, queue(), false, limits, all(REJECT)).await;
-    assert_eq!(llm_calls(&eng), 1);
+    assert_eq!(llm_calls(&eng) - before, 1);
     round(&eng, &t, queue(), true, limits, all(REJECT)).await;
-    assert_eq!(llm_calls(&eng), 1, "same input: cached");
+    assert_eq!(llm_calls(&eng) - before, 1, "same input: cached");
     let wide = ImportLimits {
         recall_budget: 2000,
         recall_top_k: 2,
     };
     round(&eng, &t, queue(), true, wide, all(REJECT)).await;
-    assert_eq!(llm_calls(&eng), 2, "other limits: extracted again");
-    drop(t);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_reply_with_no_usable_item_is_not_cached() {
-    let (eng, t, _, dir) = store("import-cache-failed").await;
+    assert_eq!(llm_calls(&eng) - before, 2, "other limits: extracted again");
+    // A reply with no usable item is not cached.
+    let before = llm_calls(&eng);
     let limits = ImportLimits::default();
     // The stub adds a number the note lacks to a TRAP line, so its only item is rejected.
     let sensor = || {
@@ -896,7 +848,7 @@ async fn a_reply_with_no_usable_item_is_not_cached() {
     };
     round(&eng, &t, sensor(), false, limits, none).await;
     round(&eng, &t, sensor(), true, limits, none).await;
-    assert_eq!(llm_calls(&eng), 2, "every item failed: not cached");
+    assert_eq!(llm_calls(&eng) - before, 2, "every item failed: not cached");
     drop(t);
     let _ = std::fs::remove_dir_all(dir);
 }
