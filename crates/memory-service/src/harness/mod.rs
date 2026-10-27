@@ -559,30 +559,12 @@ mod tests {
         url
     }
 
-    #[tokio::test]
-    async fn admin_commands_return_the_answer_or_the_daemons_refusal() {
-        let url = admin_stub().await;
-        let scheduled = admin_command(&url, "reindex", &json!({})).await.unwrap();
-        assert_eq!(scheduled, json!({"scheduled": true}));
-        let refused = admin_command(
-            &url,
-            "consolidate",
-            &json!({"project": "p", "dryRun": true}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(refused.to_string(), "HTTP 400: consolidationEnabled is off");
-        let closed = admin_command("http://127.0.0.1:1", "reindex", &json!({}))
-            .await
-            .unwrap_err();
-        assert_eq!(closed.to_string(), "ConnectionError");
-    }
-
-    /// Operator commands reach a loopback daemon although the environment names a proxy. Checked in a child
-    /// process whose environment names a proxy that refuses every connection, so no other test sees it.
+    /// Operator commands reach a loopback daemon although the environment names a proxy, and report a refusal
+    /// with the daemon's message. Checked in a child process whose environment names a proxy that refuses every
+    /// connection, so no other test sees it.
     #[test]
-    fn admin_commands_reach_a_loopback_daemon_past_a_configured_proxy() {
-        let name = "harness::tests::admin_commands_reach_a_loopback_daemon_past_a_configured_proxy";
+    fn admin_commands_reach_a_loopback_daemon_past_a_proxy_and_report_refusals() {
+        let name = "harness::tests::admin_commands_reach_a_loopback_daemon_past_a_proxy_and_report_refusals";
         if std::env::var_os(PROXY_CHILD).is_none() {
             let dead = "http://127.0.0.1:1";
             let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -616,6 +598,19 @@ mod tests {
             assert!(proxied.is_err(), "{proxied:?}");
             let scheduled = admin_command(&url, "reindex", &json!({})).await.unwrap();
             assert_eq!(scheduled, json!({"scheduled": true}));
+            // A refusal keeps the daemon's message; a closed port says so.
+            let refused = admin_command(
+                &url,
+                "consolidate",
+                &json!({"project": "p", "dryRun": true}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refused.to_string(), "HTTP 400: consolidationEnabled is off");
+            let closed = admin_command("http://127.0.0.1:1", "reindex", &json!({}))
+                .await
+                .unwrap_err();
+            assert_eq!(closed.to_string(), "ConnectionError");
         });
     }
 

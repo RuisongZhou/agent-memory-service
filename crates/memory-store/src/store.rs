@@ -714,9 +714,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_records_round_trip_through_put_merge_and_embedding() -> Result<()> {
+    async fn records_round_trip_and_reopening_removes_the_retired_turn_index() -> Result<()> {
         let dir = std::env::temp_dir().join(util::new_id("store_roundtrip_test"));
         let store = Store::open(&dir, surreal(), 4, "").await?;
+        store
+            .query(
+                "DEFINE INDEX turns_vec ON turns FIELDS embedding HNSW DIMENSION 4 DIST COSINE",
+                vec![],
+            )
+            .await?;
+        assert!(has_turn_index(&store, "turns_vec").await?);
+        // Memory records round trip through put, merge and embedding.
         let m = MemoryRec {
             id: "mabc123".into(),
             mtype: T_FACT.into(),
@@ -746,24 +754,7 @@ mod tests {
         assert_eq!(store.load_embeddings(schema::MEMORIES).await?[0].0, m.id);
         store.shutdown().await;
         drop(store);
-        std::fs::remove_dir_all(dir)?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn reopening_a_store_removes_the_retired_turn_vector_index() -> Result<()> {
-        let dir = std::env::temp_dir().join(util::new_id("store_turn_index_test"));
-        let store = Store::open(&dir, surreal(), 2, "").await?;
-        store
-            .query(
-                "DEFINE INDEX turns_vec ON turns FIELDS embedding HNSW DIMENSION 2 DIST COSINE",
-                vec![],
-            )
-            .await?;
-        assert!(has_turn_index(&store, "turns_vec").await?);
-        store.shutdown().await;
-        drop(store);
-        let store = Store::open(&dir, surreal(), 2, "").await?;
+        let store = Store::open(&dir, surreal(), 4, "").await?;
         assert!(!has_turn_index(&store, "turns_vec").await?);
         assert!(has_turn_index(&store, "turns_key").await?);
         store.shutdown().await;

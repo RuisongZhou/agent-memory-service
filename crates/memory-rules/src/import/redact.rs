@@ -1,4 +1,5 @@
-//! Credential redaction before import text leaves the machine (design §6.12): matches become
+//! Credential redaction before import text leaves the machine (design §6.12) and before `add_memories` stores
+//! dialogue (`memory_engine::app::ingest`): matches become
 //! `[redacted:<kind>]` and only per-kind counts are reported, never the matched text. Key formats follow
 //! `scripts/check_public.py` and the providers' documented prefixes. Where a rule cannot tell, it redacts a
 //! harmless value rather than send a secret: `env-secret` matches names by substring, so `primary_key: id` loses
@@ -168,6 +169,21 @@ static LABEL: LazyLock<Regex> = LazyLock::new(|| {
     .expect("fixed label regex")
 });
 
+/// A secret word, then `is`/`was` or `是`/`为` (and perhaps a colon), then one run of printable ASCII: `the
+/// password is hunter2.`, `数据库密码是 Pg-Test-2026-xyz`. Prose uses the same words before an ordinary word (`the
+/// token is valid`, `密码是必须的`), so only a run `stated_value` takes for a credential is replaced.
+static STATED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        concat!(
+            r"((?:^|[^A-Za-z0-9])(?i:{SECRET_WORDS})[ \t]+(?i:is|was)[ \t]+",
+            r"|(?:密码|口令|密钥|秘钥|私钥|令牌)[ \t]*(?:是|为)[ \t]*[:：]?[ \t]*)",
+            r"([!-~]+)",
+        ),
+        SECRET_WORDS = SECRET_WORDS,
+    ))
+    .expect("fixed stated regex")
+});
+
 /// Words prose puts after a secret word ("pass the --token flag", "Password: see the vault"): no credential.
 const PROSE_WORDS: [&str; 22] = [
     "a",
@@ -203,7 +219,7 @@ const TRAILING: [char; 12] = ['.', ',', ';', ':', ')', ']', '}', '>', '*', '"', 
 /// - "bearer": the token after `Bearer ` (case-insensitive) and after `Authorization:` headers.
 /// - "url-credentials": the `user:password@` part of `scheme://user:password@host`, also with an empty user (keep scheme and host).
 /// - "cli-secret": the password attached to `-p` on a `mysql`/`mysqldump`/`mariadb` command line, the password of `curl -u user:password`, and the value of a flag whose name ends with a secret word (`--password=…`, `--password …`, `--token …`, `--api-key …`, also with one dash). Keep the flag.
-/// - "env-secret": the value of `NAME=value` / `NAME: value` / `export NAME=value` where NAME (case-insensitive) contains KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASSPHRASE, PWD or CREDENTIAL, and of a prose or Markdown label that ends with a secret word (password, passwd, passphrase, pwd, secret, token, api key, access key, secret key, private key, credential(s), 密码, 口令, 密钥, 秘钥, 私钥, 令牌) followed by `:`, `=` or `：`. Keep the name.
+/// - "env-secret": the value of `NAME=value` / `NAME: value` / `export NAME=value` where NAME (case-insensitive) contains KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASSPHRASE, PWD or CREDENTIAL, and of a prose or Markdown label that ends with a secret word (password, passwd, passphrase, pwd, secret, token, api key, access key, secret key, private key, credential(s), 密码, 口令, 密钥, 秘钥, 私钥, 令牌) followed by `:`, `=` or `：`, or by `is`, `was`, `是` or `为` and a value that looks like a credential (see `stated_value`). Keep the name.
 ///
 /// Apply private-key first, then the others; never double-redact; text without secrets is returned unchanged with empty counts.
 ///
@@ -303,6 +319,10 @@ pub fn redact(text: &str) -> Redaction {
         let value = word_value(&caps[3], names_password(&caps[1]), marker)?;
         Some(format!("{}{}{value}", &caps[1], &caps[2]))
     });
+    let text = replace(&text, &STATED, "env-secret", &mut counts, |caps, marker| {
+        let value = stated_value(&caps[2], names_password(&caps[1]), marker)?;
+        Some(format!("{}{value}", &caps[1]))
+    });
     let private_key = counts.contains_key("private-key");
     Redaction {
         text,
@@ -357,6 +377,27 @@ fn word_value(value: &str, password: bool, marker: &str) -> Option<String> {
     let replaced = secret_value(word, password, marker)?;
     let lead = &value[..value.len() - core.len()];
     Some(format!("{lead}{replaced}{}", &core[word.len()..]))
+}
+
+/// The replacement for a `STATED` value: quotes around it and `TRAILING` characters after it stay outside the
+/// marker. `None` keeps a run that does not look like a credential: shorter than six characters (four for a
+/// password, a PIN), or without a digit or a symbol other than `-` and `_` (`required`, `well-known`), or a
+/// placeholder or already redacted.
+fn stated_value(value: &str, password: bool, marker: &str) -> Option<String> {
+    let open = value.len() - value.trim_start_matches(['"', '\'', '`']).len();
+    let core = value[open..].trim_end_matches(TRAILING);
+    let long = core.len() >= if password { 4 } else { 6 };
+    let mixed = core
+        .chars()
+        .any(|c| c.is_ascii_digit() || (c.is_ascii_punctuation() && c != '-' && c != '_'));
+    if !long || !mixed || core.contains(MARKER) || placeholder(core) {
+        return None;
+    }
+    Some(format!(
+        "{}{marker}{}",
+        &value[..open],
+        &value[open + core.len()..]
+    ))
 }
 
 /// The replacement for a credential `value`: the inside of a leading quoted string (quotes and what follows them
@@ -523,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn url_credentials_keep_scheme_and_host() {
+    fn url_credentials_keep_scheme_and_host_also_without_a_user() {
         let r = redact(
             "db at postgres://admin:hunter2@db.internal:5432/app and https://u:p@ss@host.test/x",
         );
@@ -539,10 +580,7 @@ mod tests {
         ] {
             assert_eq!(redact(text).text, text);
         }
-    }
-
-    #[test]
-    fn url_credentials_with_an_empty_user_are_redacted() {
+        // A URL credential with an empty user.
         let r = redact("sessions in redis://:hunter2@cache.internal:6379/0 since May");
         assert_eq!(
             r.text,
@@ -555,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn quoted_pwd_and_passphrase_keys_are_redacted() {
+    fn quoted_keys_and_passwords_stated_in_a_sentence_are_redacted() {
         let r =
             redact("{\"pwd\": \"hunter2x\", \"passphrase\": \"open sesame\", \"user\": \"me\"}");
         assert_eq!(
@@ -566,6 +604,39 @@ mod tests {
         // A quoted YAML key at the start of a line; a password's short number is a PIN.
         let r = redact("'PWD': 1234\n");
         assert_eq!(r.text, "'PWD': [redacted:env-secret]\n");
+        // A password stated in a sentence; prose about one keeps its words.
+        for (text, expected) in [
+            (
+                "测试库的数据库密码是 Pg-Test-2026-xyz，别告诉别人。",
+                "测试库的数据库密码是 [redacted:env-secret]，别告诉别人。",
+            ),
+            ("密码为123456", "密码为[redacted:env-secret]"),
+            ("令牌是：tok-2026-abc", "令牌是：[redacted:env-secret]"),
+            (
+                "The password is hunter2.",
+                "The password is [redacted:env-secret].",
+            ),
+            (
+                "our API key was 'k3y-for-tests'",
+                "our API key was '[redacted:env-secret]'",
+            ),
+        ] {
+            let r = redact(text);
+            assert_eq!(r.text, expected, "{text}");
+            assert_eq!(r.counts, counts(&[("env-secret", 1)]), "{text}");
+        }
+        // Prose about a credential names none, and a placeholder or a redacted value stays.
+        for text in [
+            "密码是必须的。",
+            "密码是什么？",
+            "The password is required.",
+            "The token is valid for 30 days.",
+            "The secret is well-known.",
+            "密码是 [redacted]",
+            "the password is $DB_PASSWORD",
+        ] {
+            assert_eq!(redact(text).text, text);
+        }
     }
 
     #[test]

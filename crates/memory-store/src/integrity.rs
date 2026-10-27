@@ -222,53 +222,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn superseding_a_source_stales_its_views_transitively_and_keeps_history() -> Result<()> {
-        let (store, dir) = open("store_integrity_views_test").await?;
-        let fact = fact();
-        let profile = profile("profile", &fact.id);
+    async fn views_go_stale_and_startup_repair_fixes_legacy_records() -> Result<()> {
+        let (store, dir) = open("store_integrity_test").await?;
+        // Superseding a source stales its current views transitively; history keeps its lineage.
+        let source = fact();
+        let view = profile("profile", &source.id);
         let skill = MemoryRec {
             id: "skill".into(),
             mtype: T_SKILL.into(),
-            used_memory_ids: vec![profile.id.clone()],
-            ..profile.clone()
+            used_memory_ids: vec![view.id.clone()],
+            ..view.clone()
         };
         let historical = MemoryRec {
             id: "history".into(),
             mtype: T_EXPERIENCE.into(),
             derivation: Some(Derivation {
                 stage: "experience".into(),
-                input_memory_ids: vec![fact.id.clone()],
+                input_memory_ids: vec![source.id.clone()],
                 input_turn_ids: vec![],
                 current_view: false,
             }),
-            ..fact.clone()
+            ..source.clone()
         };
-        put(&store, &[&fact, &profile, &skill, &historical]).await?;
+        put(&store, &[&source, &view, &skill, &historical]).await?;
         let mut tx = Tx::new();
-        tx.merge(schema::MEMORIES, &fact.id, json!({"status":S_SUPERSEDED}))?;
+        tx.merge(schema::MEMORIES, &source.id, json!({"status":S_SUPERSEDED}))?;
         store.commit(tx).await?;
         assert_eq!(status(&store, "profile").await?, S_STALE);
         assert_eq!(status(&store, "skill").await?, S_STALE);
         assert_eq!(status(&store, "history").await?, S_CURRENT);
         assert_eq!(store.active_memory_meta().await?.len(), 1);
-        close(store, dir).await
-    }
-
-    #[tokio::test]
-    async fn startup_repair_stales_a_view_whose_source_is_missing() -> Result<()> {
-        let (store, dir) = open("store_integrity_missing_test").await?;
+        // Startup repair stales a view whose source is missing.
         let missing = profile("missingview", "removed");
         store
             .put_doc(schema::MEMORIES, &missing.id, &missing)
             .await?;
         store.repair_integrity().await?;
         assert_eq!(status(&store, "missingview").await?, S_STALE);
-        close(store, dir).await
-    }
-
-    #[tokio::test]
-    async fn startup_repair_opens_one_question_for_a_legacy_conflict_pair() -> Result<()> {
-        let (store, dir) = open("store_integrity_conflict_test").await?;
+        // Startup repair opens one question for a legacy conflict pair.
         let edge = |id: &str| RelEdge {
             id: id.into(),
             relation: "conflicts".into(),

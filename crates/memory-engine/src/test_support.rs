@@ -13,8 +13,12 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// No formation, recall or consolidation: the engine's own tests never reach the algorithm for them.
-pub(crate) struct NoAlgorithm;
+/// No formation, recall or consolidation: the engine's own tests never reach the algorithm for them. It records
+/// the `add_memories` requests admission hands it.
+#[derive(Default)]
+pub(crate) struct NoAlgorithm {
+    pub(crate) added: std::sync::Mutex<Vec<AddMemoriesReq>>,
+}
 
 const UNUSED: &str = "the engine's own tests do not use the algorithm for this";
 
@@ -42,9 +46,10 @@ impl MemoryAlgorithm for NoAlgorithm {
         _: &'a Arc<Engine>,
         _: &'a Arc<Instance>,
         _: &'a Caller,
-        _: AddMemoriesReq,
+        req: AddMemoriesReq,
     ) -> BoxFuture<'a, ApiResult<Value>> {
-        unreachable!("{UNUSED}")
+        self.added.lock().unwrap().push(req);
+        Box::pin(async { Ok(json!({"status": "recorded"})) })
     }
 
     fn search_memories<'a>(
@@ -160,11 +165,21 @@ pub(crate) fn engine() -> Arc<Engine> {
 
 /// An engine on `models` whose generation endpoint is unreachable.
 pub(crate) fn engine_with_models(models: ModelHub) -> Arc<Engine> {
+    engine_on(models, Arc::default())
+}
+
+/// [`engine`], and its algorithm, to read the writes admission passed on.
+pub(crate) fn recording_engine() -> (Arc<Engine>, Arc<NoAlgorithm>) {
+    let algorithm = Arc::<NoAlgorithm>::default();
+    (engine_on(ModelHub::mock(), algorithm.clone()), algorithm)
+}
+
+fn engine_on(models: ModelHub, algorithm: Arc<NoAlgorithm>) -> Arc<Engine> {
     Engine::new(
         ServiceConfig::default(),
         Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
         models,
-        Arc::new(NoAlgorithm),
+        algorithm,
     )
 }
 

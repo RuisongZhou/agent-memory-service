@@ -685,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn frontmatter_needs_both_delimiters_and_accepts_crlf() {
+    fn frontmatter_needs_both_delimiters_and_ignores_a_byte_order_mark() {
         let unclosed = "---\nname: x\nno closing line\n";
         assert_eq!(
             split_frontmatter(unclosed),
@@ -698,10 +698,7 @@ mod tests {
         assert_eq!(fm.name.as_deref(), Some("Windows note"));
         assert_eq!(fm.kind.as_deref(), Some("reference"));
         assert_eq!(body, "Line one.\r\nLine two.\r\n");
-    }
-
-    #[test]
-    fn a_byte_order_mark_is_dropped_without_frontmatter_too() {
+        // A byte-order mark is dropped without frontmatter too, so a first heading stays a heading.
         let raw = "\u{feff}# Title\nBody line.\n";
         let (fm, body) = split_frontmatter(raw);
         assert_eq!(fm, Frontmatter::default());

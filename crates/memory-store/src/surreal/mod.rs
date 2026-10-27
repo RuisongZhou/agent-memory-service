@@ -395,16 +395,12 @@ mod tests {
     }
 
     #[test]
-    fn check_reports_the_statement_that_failed_not_the_ones_it_skipped() {
+    fn check_reports_the_failed_statement_and_only_a_lost_conflict_is_sent_again() {
         let failed = response(&[Err(NOT_EXECUTED), Err(NOT_EXECUTED), Err(CONFLICT)]);
         assert_eq!(failed.check().err().unwrap().to_string(), CONFLICT);
         let failed = response(&[Err(NOT_EXECUTED)]);
         assert_eq!(failed.check().err().unwrap().to_string(), NOT_EXECUTED);
         assert!(response(&[Ok("done")]).check().is_ok());
-    }
-
-    #[test]
-    fn only_a_lost_write_conflict_is_sent_again() {
         assert!(response(&[Err(NOT_EXECUTED), Err(CONFLICT)]).lost_write_conflict());
         let refused = "Database record `t:1` already exists";
         assert!(!response(&[Err(NOT_EXECUTED), Err(refused)]).lost_write_conflict());
