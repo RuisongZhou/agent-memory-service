@@ -118,7 +118,8 @@ Each published release on the
 [releases page](https://github.com/RuisongZhou/agent-memory-service/releases) carries one archive per
 platform, each with a `.sha256` checksum, plus a combined `SHA256SUMS`: `aarch64-apple-darwin` (Apple silicon), `x86_64-apple-darwin`,
 `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (glibc 2.35 or later). An archive holds
-`agent-memoryd`, `.env.example`, `LICENSE` and `THIRD_PARTY.md`. Download, verify and install one:
+`agent-memoryd`, the [web UI](design/web-ui.md) in `ui/`, `.env.example`, `LICENSE` and `THIRD_PARTY.md`.
+Download, verify and install one:
 
 ```sh
 version=v0.1.0               # a published release tag
@@ -133,6 +134,11 @@ mkdir -p "$HOME/.local/bin"
 install -m 755 "$name/agent-memoryd" "$HOME/.local/bin/agent-memoryd"
 "$HOME/.local/bin/agent-memoryd" serve --help
 ```
+
+To serve the web UI, copy the archive's `ui/` to a lasting place, such as
+`~/.local/share/agent-memory-service/ui` where the installer puts it, and pass that directory with
+`--ui-dir` to [`serve`](#5-start-the-shared-daemon) or [`service install`](#install-the-service). The
+release also carries the same files on their own as `agent-memory-ui-<version>.tar.gz`, with a `.sha256`.
 
 The macOS binaries are not notarized. Downloads made with `curl` are not quarantined; for an archive saved
 by a browser, run `xattr -d com.apple.quarantine "$name/agent-memoryd"` before installing the binary.
@@ -157,6 +163,9 @@ target/fast/agent-memoryd serve --help
 ```
 
 `make build` uses the locked Rust dependencies and the `fast` profile, producing `target/fast/agent-memoryd`. Limit compilation parallelism with `make build JOBS=2` on a machine with limited memory. The daemon's Rust build does not embed model weights or require a GPU backend; inference runs at the configured model provider. `cargo build --locked --release -p memory-service --bin agent-memoryd` produces the optimized `target/release/agent-memoryd` that releases ship.
+
+`make ui` builds the web UI into `web/dist`; it needs Node.js 20.19+ or 22.12+ with npm, which nothing else
+in the build uses.
 
 Building needs no Python. Dialogue capture, automatic recall and the uploader are `agent-memoryd` subcommands. To run the evaluations, `make setup` creates `.venv`, installs [eval/requirements.txt](../eval/requirements.txt), and downloads the public research dataset and tokenizer caches. It makes no paid model requests.
 
@@ -238,6 +247,10 @@ If agents capture dialogue, add `--outbox`: the daemon then also uploads the col
 and no separate uploader process is needed. The option is never on by default, so another daemon, such as
 the installer's check daemon, never takes conversations from your outbox. The daemon log reports only lock and outbox
 failures; a turn whose formation failed or was rejected shows in `agent-memoryd outbox status`.
+
+To serve the web UI at `http://127.0.0.1:8765/ui/`, add `--ui-dir` with its files: `web/dist` after
+`make ui`, or a release archive's `ui/`. The daemon checks at startup that the directory holds an
+`index.html`.
 
 For daemon-only settings such as `--prompt-variant en`, `--no-reranker` or `--config`, see
 `agent-memoryd serve --help` and [API configuration](api.md#configuration) for defaults and precedence.
@@ -327,6 +340,7 @@ a unit under another `--home`. The [one-command installer](mcp-harness.md#one-co
 | `--llm-concurrency N` | `serve --llm-concurrency` (1) |
 | `--binary PATH` | The executable the unit runs (default: the `agent-memoryd` you invoked) |
 | `--surreal-bin PATH` | The SurrealDB `surreal` the daemon starts (`serve --surreal-bin`); the unit records its absolute path (default: the first `surreal` on PATH, refused when there is none) |
+| `--ui-dir DIR` | The web UI's files (`serve --ui-dir`): refused unless the directory holds an `index.html`, as the daemon would at startup; the unit records its absolute path. Omit it for no web UI |
 | `--manager launchd\|systemd`, `--home DIR` | Service manager (launchd on macOS, systemd elsewhere) and the home directory for the unit and default paths (tests) |
 | `--apply` | Write the unit (default: preview) |
 | `--start`, `--restart` | With `--apply`: load (or reload) the service and wait until the daemon answers; also restart an unchanged, loaded service |
@@ -346,10 +360,11 @@ systemctl --user enable --now agent-memory.service
 ```
 
 `agent-memoryd service status` shows the installed file, the command it runs, whether its env file
-exists and is private, whether its SurrealDB executable is still installed, on Linux whether the unit is
-enabled, and whether a daemon answers on its port. `service status --json` prints the unit's settings
-(binary, env file, data directory, SurrealDB executable, outbox, port, concurrency) as one JSON object for
-scripts, without the health check.
+exists and is private, whether its SurrealDB executable is still installed, whether its web UI directory
+still holds an `index.html`, on Linux whether the unit is enabled, and whether a daemon answers on its
+port. `service status --json` prints the unit's settings (binary, env file, data directory, SurrealDB
+executable, outbox, web UI directory, port, concurrency) as one JSON object for scripts, without the health
+check.
 To remove the service, stop it first, with `launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"`
 or `systemctl --user disable --now agent-memory.service`, then run
 `agent-memoryd service uninstall --apply`. It backs up and deletes the unit file and leaves the data,
