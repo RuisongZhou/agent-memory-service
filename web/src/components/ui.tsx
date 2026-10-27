@@ -1,6 +1,8 @@
 // Small styled primitives in the shadcn manner: plain elements with Tailwind classes, owned as source.
 import type { ComponentProps, ReactNode } from 'react'
 import { Link } from 'react-router'
+import type { Facet } from '../api/types'
+import { formatNumber, labelled } from '../lib/format'
 
 const cx = (...classes: (string | false | undefined)[]) => classes.filter(Boolean).join(' ')
 
@@ -41,6 +43,27 @@ export const Textarea = ({ className, ...props }: ComponentProps<'textarea'>) =>
 export const Select = ({ className, ...props }: ComponentProps<'select'>) => (
   <select className={cx(FIELD, 'pr-7', className)} {...props} />
 )
+
+/** Facet values for a dropdown, keeping a value the URL names even when nothing has it any more. */
+export function FacetOptions({ facets, selected, labels, counts = true }: {
+  facets: Facet[]
+  selected: string
+  labels?: Record<string, string>
+  /** Off when the facet's counts are of something other than what the list shows. */
+  counts?: boolean
+}) {
+  const listed = facets.some((f) => f.name === selected)
+  const text = (name: string, count: number) =>
+    `${labels ? labelled(labels, name) : name}${counts ? ` · ${formatNumber(count)}` : ''}`
+  return (
+    <>
+      {facets.map((f) => (
+        <option key={f.name} value={f.name}>{text(f.name, f.count)}</option>
+      ))}
+      {selected && !listed && <option value={selected}>{text(selected, 0)}</option>}
+    </>
+  )
+}
 
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (

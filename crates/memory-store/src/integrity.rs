@@ -137,8 +137,8 @@ fn overlay(tx: &Tx, id: &str, memory: &mut MemoryRec) -> Result<()> {
     Ok(())
 }
 
-/// Upgrade legacy current views conservatively, and legacy search log rows. This runs before caches and
-/// workers start.
+/// Upgrade legacy current views conservatively and legacy search log rows, then sum an unsummed recall log into
+/// `memory_recalls`. This runs before caches and workers start.
 pub(crate) async fn repair(store: &Store) -> Result<()> {
     let records = store
         .select_as::<MemoryRec>("SELECT * OMIT id, embedding FROM memories", vec![])
@@ -173,13 +173,17 @@ pub(crate) async fn repair(store: &Store) -> Result<()> {
         "UPDATE retrieval_log SET kind = 'search', createdTs = time::unix(<datetime> createdAt), returned.gap = (array::len(returned.memories) = 0) WHERE kind = NONE RETURN NONE",
         vec![],
     );
-    store.commit(tx).await
+    store.commit(tx).await?;
+    // After the legacy searches have their `createdTs`.
+    store.backfill_recalls().await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recalls::Recall;
     use anyhow::Context;
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
     async fn open(name: &str) -> Result<(Store, PathBuf)> {
@@ -297,8 +301,12 @@ mod tests {
         let context = json!({"kind": "context", "createdAt": "2026-10-01T08:00:00Z",
             "createdTs": 1, "returned": {"memories": []}});
         let context = store.log(schema::RETRIEVAL_LOG, context).await?;
+        // A search of the web UI, which the recall summary leaves out.
+        let mut web = legacy(json!([{"id": "newport", "rank": 1}]));
+        web["platform"] = json!("web");
+        store.log(schema::RETRIEVAL_LOG, web).await?;
         store.repair_integrity().await?;
-        // Repairing again finds the question it opened.
+        // Repairing again finds the question it opened, and leaves the recall summary alone.
         store.repair_integrity().await?;
         for (id, gap) in [(&found, false), (&empty, true)] {
             let row = store.get_doc(schema::RETRIEVAL_LOG, id).await?.unwrap();
@@ -315,6 +323,34 @@ mod tests {
             (&json!(1), None)
         );
         assert_eq!(store.gap_search_count().await?, 1);
+        // The log was summed once, from the legacy search that returned `port`: one call at its `createdTs`.
+        let ids = ["port".to_string(), "newport".to_string()];
+        let summed = BTreeMap::from([(
+            "port".to_string(),
+            Recall {
+                last_recalled_at: "2026-10-01T08:00:00Z".into(),
+                count: 1,
+            },
+        )]);
+        assert_eq!(store.recalls(&ids).await?, summed);
+        let row = store
+            .get_doc(schema::MEMORY_RECALLS, "port")
+            .await?
+            .unwrap();
+        assert_eq!(
+            (&row["mid"], &row["memoryId"], &row["lastRecalledTs"]),
+            (&json!("port"), &json!("port"), &json!(1_790_841_600))
+        );
+        // The log is not summed again once the table has rows.
+        store
+            .log(
+                schema::RETRIEVAL_LOG,
+                json!({"kind": "context", "platform": "codex", "createdAt": "2026-10-02T08:00:00Z",
+                    "createdTs": 1_790_928_000, "returned": {"memories": [{"id": "newport", "rank": 1}]}}),
+            )
+            .await?;
+        store.repair_integrity().await?;
+        assert_eq!(store.recalls(&ids).await?, summed);
         let open: Vec<UncertaintyRec> = store
             .select_as(
                 "SELECT * OMIT id FROM uncertainties WHERE status = 'open'",

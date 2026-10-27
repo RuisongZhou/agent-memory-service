@@ -18,6 +18,8 @@ import {
   RELATION_LABEL,
   scopeText,
 } from '../lib/format'
+import { MemoryEntities } from './Entities'
+import { Lineage } from './Lineage'
 import { RecentRecalls } from './Recalls'
 
 const MAX_TEXT_BYTES = 4096
@@ -65,7 +67,9 @@ function MemoryDetail({ id }: { id: string }) {
           <Fields rows={recordFields(m)} />
         </div>
       </Card>
+      <MemoryEntities id={m.id} />
       {history.length > 1 && <History history={history} viewing={m.id} />}
+      <Lineage id={m.id} />
       <Provenance evidence={evidence} sourceBatch={sourceBatch} />
       {m.source.turnIds.length > 0 && <Turns turnIds={m.source.turnIds} />}
       <RecentRecalls id={m.id} />

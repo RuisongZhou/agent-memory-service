@@ -1,5 +1,6 @@
 import { PLATFORM } from '../api/client'
 import type {
+  ListEntitiesReq,
   ListMemoriesReq,
   ListModelResponsesReq,
   ListRequestsReq,
@@ -18,6 +19,10 @@ export const SCOPE_KINDS: ScopeKind[] = ['global', 'project', 'platform']
 export const ACTIVE_STATUSES: MemoryStatus[] = ['current', 'conflict', 'candidate']
 export const ALL_STATUSES: MemoryStatus[] = [...ACTIVE_STATUSES, 'superseded', 'stale']
 
+/** The memory list's recall filter: never recalled, or not recalled for N days. A single choice, so the daemon never sees both. */
+export const RECALL_FILTERS = ['never', '30', '90'] as const
+export type RecallFilter = (typeof RECALL_FILTERS)[number]
+
 /** The memory list's filters; `""` is no filter. They live in the hash query so a view survives a reload. */
 export interface MemoryFilters {
   project: string
@@ -28,6 +33,7 @@ export interface MemoryFilters {
   /** Never empty, in `ALL_STATUSES` order. */
   statuses: MemoryStatus[]
   text: string
+  recall: RecallFilter | ''
 }
 
 export const NO_FILTERS: MemoryFilters = {
@@ -38,6 +44,7 @@ export const NO_FILTERS: MemoryFilters = {
   origin: '',
   statuses: ACTIVE_STATUSES,
   text: '',
+  recall: '',
 }
 
 const oneOf = <T extends string>(values: readonly T[], value: string | null): T | '' =>
@@ -58,6 +65,7 @@ export function filtersFromParams(params: URLSearchParams): MemoryFilters {
     origin: params.get('origin') ?? '',
     statuses: statuses.length ? statuses : ACTIVE_STATUSES,
     text: params.get('q') ?? '',
+    recall: oneOf(RECALL_FILTERS, params.get('recall')),
   }
 }
 
@@ -71,6 +79,7 @@ export function filtersToParams(f: MemoryFilters): URLSearchParams {
   set('origin', f.origin)
   if (!isDefault(f.statuses)) set('status', f.statuses.join(','))
   set('q', f.text.trim())
+  set('recall', f.recall)
   return params
 }
 
@@ -84,6 +93,47 @@ export function listRequest(f: MemoryFilters, cursor?: string): ListMemoriesReq 
     ...(f.type && { types: [f.type] }),
     ...(f.origin && { origins: [f.origin] }),
     ...(!isDefault(f.statuses) && { statuses: f.statuses }),
+    ...(text && { text }),
+    ...(f.recall === 'never' && { neverRecalled: true as const }),
+    ...(f.recall && f.recall !== 'never' && { notRecalledDays: Number(f.recall) }),
+    ...(cursor && { cursor }),
+  }
+}
+
+// ---------------------------------------------------------------- entities
+
+/** The entity list's filters; `""` is no filter. */
+export interface EntityFilters {
+  project: string
+  entityType: string
+  text: string
+}
+
+export const NO_ENTITY_FILTERS: EntityFilters = { project: '', entityType: '', text: '' }
+
+export function entityFiltersFromParams(params: URLSearchParams): EntityFilters {
+  return {
+    project: params.get('project') ?? '',
+    entityType: params.get('type') ?? '',
+    text: params.get('q') ?? '',
+  }
+}
+
+export function entityFiltersToParams(f: EntityFilters): URLSearchParams {
+  const params = new URLSearchParams()
+  const set = (key: string, value: string) => value && params.set(key, value)
+  set('project', f.project)
+  set('type', f.entityType)
+  set('q', f.text.trim())
+  return params
+}
+
+/** The `list_entities` body for one page. */
+export function entityRequest(f: EntityFilters, cursor?: string): ListEntitiesReq {
+  const text = f.text.trim()
+  return {
+    ...(f.project && { project: f.project }),
+    ...(f.entityType && { entityType: f.entityType }),
     ...(text && { text }),
     ...(cursor && { cursor }),
   }

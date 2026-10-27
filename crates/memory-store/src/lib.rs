@@ -6,6 +6,7 @@ pub mod index_tasks;
 pub mod integrity;
 pub mod logs;
 pub mod memories;
+pub mod recalls;
 pub mod schema;
 pub mod store;
 pub mod surreal;

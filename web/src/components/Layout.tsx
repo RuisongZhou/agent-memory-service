@@ -1,13 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
+import { Suspense, type ReactNode } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import { api } from '../api/client'
 
-// Two groups: browsing and editing records, then reviewing and tracing what agents and the daemon did.
+// Two groups: browsing (records, entities) and editing records, then reviewing and tracing what agents and the daemon did.
 const NAV = [
   [
     ['/', '概览'],
     ['/memories', '记忆列表'],
+    ['/entities', '实体'],
     ['/new', '新增'],
     ['/search', '检索调试'],
     ['/context', '上下文预览'],
@@ -68,7 +69,10 @@ export function Layout() {
         </nav>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6">
-        <Outlet />
+        {/* Pages load when first opened (main.tsx); the nav stays while one does. */}
+        <Suspense fallback={<p className="text-sm text-zinc-500">加载中…</p>}>
+          <Outlet />
+        </Suspense>
       </main>
     </div>
   )

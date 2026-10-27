@@ -170,6 +170,10 @@ async fn admin(
             }
             "list_memories" => management::list_memories(&t, parse(body)?).await,
             "memory_facets" => management::memory_facets(&t).await,
+            "memory_lineage" => management::memory_lineage(&t, parse(body)?).await,
+            "list_entities" => management::list_entities(&eng, &t, parse(body)?).await,
+            "entity" => management::entity(&eng, &t, parse(body)?).await,
+            "memory_entities" => management::memory_entities(&eng, &t, parse(body)?).await,
             "list_uncertainties" => management::list_uncertainties(&t, parse(body)?).await,
             "list_retrievals" => management::list_retrievals(&t, parse(body)?).await,
             "list_requests" => management::list_requests(&t, parse(body)?).await,

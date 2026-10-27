@@ -10,6 +10,7 @@ use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
 use memory_engine::runtime::instance::Instance;
 use memory_store::schema;
+use memory_store::store::{to_doc, Tx};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -271,6 +272,159 @@ pub async fn selftest() {
         assert_eq!(m.status, S_CONFLICT);
         assert!(m.related.is_empty());
     }
+    // ---- the lineage of the applied run: the merge derives from its inputs, which it replaced; the supersede
+    // is held by both records and is one edge; a conflict pair that names each other is one `related` edge.
+    let lineage = |id: &str, depth: Option<usize>| {
+        management::memory_lineage(
+            &t,
+            MemoryLineageReq {
+                id: id.into(),
+                depth,
+            },
+        )
+    };
+    let edge = |from: &str, to: &str, kind: &str, more: Value| {
+        let mut edge = json!({"from": from, "to": to, "kind": kind});
+        edge.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().cloned().unwrap_or_default());
+        edge
+    };
+    let edges = |out: &Value| {
+        let mut edges = out["edges"].as_array().unwrap().clone();
+        edges.sort_by_key(|e| format!("{}>{}>{}", e["kind"], e["from"], e["to"]));
+        edges
+    };
+    let nodes = |out: &Value| -> Vec<(String, u64)> {
+        out["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| {
+                (
+                    n["id"].as_str().unwrap().to_string(),
+                    n["depth"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let mut inputs = [laptop.clone(), work.clone()];
+    inputs.sort();
+    let out = lineage(&merged_id, None).await.unwrap();
+    assert_eq!(
+        (&out["root"], &out["truncated"]),
+        (&json!(merged_id), &json!(false))
+    );
+    assert_eq!(
+        nodes(&out),
+        [
+            (merged_id.clone(), 0),
+            (inputs[0].clone(), 1),
+            (inputs[1].clone(), 1)
+        ]
+    );
+    assert_eq!(
+        out["nodes"][0],
+        json!({"id": merged_id, "type": "fact", "status": "current", "text": WORK,
+            "scope": {"kind": "project", "project": "ops"}, "recordedAt": merged.recorded_at,
+            "effectiveAt": merged.effective_at, "statedAt": merged.stated_at,
+            "origin": merged.source.origin, "platform": "test", "depth": 0})
+    );
+    let mut want = vec![];
+    for input in &inputs {
+        want.push(edge(
+            &merged_id,
+            input,
+            "derived",
+            json!({"stage": "consolidation"}),
+        ));
+        want.push(edge(&merged_id, input, "supersedes", json!({})));
+    }
+    want.sort_by_key(|e| format!("{}>{}>{}", e["kind"], e["from"], e["to"]));
+    assert_eq!(edges(&out), want);
+    // From an input the merge is one link away and the other input two: the depth cuts the lineage, and an edge
+    // to a record outside it is left out.
+    let out = lineage(&laptop, Some(1)).await.unwrap();
+    assert_eq!(nodes(&out), [(laptop.clone(), 0), (merged_id.clone(), 1)]);
+    assert_eq!(
+        edges(&out),
+        [
+            edge(
+                &merged_id,
+                &laptop,
+                "derived",
+                json!({"stage": "consolidation"})
+            ),
+            edge(&merged_id, &laptop, "supersedes", json!({})),
+        ]
+    );
+    let out = lineage(&laptop, Some(2)).await.unwrap();
+    assert_eq!(
+        nodes(&out),
+        [
+            (laptop.clone(), 0),
+            (merged_id.clone(), 1),
+            (work.clone(), 2)
+        ]
+    );
+    assert_eq!(edges(&out).len(), 4);
+    // The supersede is held by the new record (`supersedes`) and by the old (`supersededBy`): one edge from either end.
+    for root in [&actions, &jenkins] {
+        let out = lineage(root, None).await.unwrap();
+        assert_eq!(
+            edges(&out),
+            [edge(&actions, &jenkins, "supersedes", json!({}))],
+            "{out}"
+        );
+        assert_eq!(out["nodes"].as_array().unwrap().len(), 2);
+    }
+    // The conflict op writes no `related` edge; give the pair the legacy edges, one on each record.
+    let related = |to: &str| json!({"related": [{"id": to, "relation": "conflicts"}]});
+    t.store
+        .merge_doc(schema::MEMORIES, &dana, related(&lee))
+        .await
+        .unwrap();
+    t.store
+        .merge_doc(schema::MEMORIES, &lee, related(&dana))
+        .await
+        .unwrap();
+    let out = lineage(&lee, None).await.unwrap();
+    let (first, second) = if dana < lee {
+        (&dana, &lee)
+    } else {
+        (&lee, &dana)
+    };
+    assert_eq!(
+        edges(&out),
+        [edge(
+            first,
+            second,
+            "related",
+            json!({"relation": "conflicts"})
+        )]
+    );
+    assert_eq!(nodes(&out), [(lee.clone(), 0), (dana.clone(), 1)]);
+    for member in [&dana, &lee] {
+        t.store
+            .merge_doc(schema::MEMORIES, member, json!({"related": []}))
+            .await
+            .unwrap();
+    }
+    for depth in [0, 7] {
+        assert!(matches!(
+            lineage(&laptop, Some(depth)).await,
+            Err(ApiError::InvalidArgument(_))
+        ));
+    }
+    assert!(matches!(
+        lineage("no such", None).await,
+        Err(ApiError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        lineage("mmissing", None).await,
+        Err(ApiError::NotFound(_))
+    ));
+
     // Re-extracting an input's text deduplicates into the merged record and extends its sources.
     let again = AddMemoriesReq {
         scope: ReqScope {
@@ -442,6 +596,48 @@ pub async fn selftest() {
     let m = memory(&t, &work).await;
     assert_eq!((m.status.as_str(), m.superseded_by), (S_CURRENT, None));
     assert_eq!(hash_target(&t, "delinput", WORK).await, work);
+
+    // ---- a lineage stops at 200 records and says so; a link to a deleted record is not an edge
+    let linked = |id: String| MemoryRec {
+        id,
+        mtype: T_PROFILE.into(),
+        status: S_CURRENT.into(),
+        scope: MemScope::global(),
+        used_memory_ids: vec!["lhub".into()],
+        ..Default::default()
+    };
+    let hub = MemoryRec {
+        id: "lhub".into(),
+        mtype: T_FACT.into(),
+        status: S_CURRENT.into(),
+        scope: MemScope::global(),
+        related: vec![RelEdge {
+            id: "lghost".into(),
+            relation: "related".into(),
+        }],
+        ..Default::default()
+    };
+    let mut tx = Tx::new();
+    tx.put(schema::MEMORIES, "lhub", to_doc(&hub).unwrap())
+        .unwrap();
+    for n in 0..205 {
+        let user = linked(format!("lu{n:03}"));
+        tx.put(schema::MEMORIES, &user.id, to_doc(&user).unwrap())
+            .unwrap();
+    }
+    t.store.commit(tx).await.unwrap();
+    let out = lineage("lhub", Some(1)).await.unwrap();
+    let listed = nodes(&out);
+    assert_eq!(out["truncated"], true);
+    assert_eq!(listed.len(), 200);
+    assert_eq!(
+        (listed[0].clone(), listed[199].clone()),
+        (("lhub".into(), 0), ("lu198".into(), 1))
+    );
+    assert_eq!(edges(&out).len(), 199);
+    assert!(edges(&out)
+        .iter()
+        .all(|e| e["kind"] == "uses" && e["to"] == "lhub"));
 
     drop(t);
     let _ = std::fs::remove_dir_all(dir);

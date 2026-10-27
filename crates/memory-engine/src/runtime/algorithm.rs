@@ -10,6 +10,7 @@ use crate::runtime::instance::Instance;
 use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::consolidation::apply::OpOutcome;
 use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
+use memory_domain::entities::{EntityDetail, EntityFilter, EntityPage, MemoryEntities};
 use memory_domain::types::*;
 use memory_store::store::Tx;
 
@@ -99,6 +100,31 @@ pub trait MemoryAlgorithm: Send + Sync + 'static {
         t: &'a Instance,
         memory_id: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Vec<String>>>>;
+
+    /// One page of the entities the algorithm derived from its memories, as stored: reading never brings the
+    /// derivation up to date, which could call a model. `after` is the `(memoryCount, id)` of the previous
+    /// page's last entity.
+    fn list_entities<'a>(
+        &'a self,
+        t: &'a Instance,
+        filter: &'a EntityFilter,
+        after: Option<(i64, String)>,
+        limit: usize,
+    ) -> BoxFuture<'a, anyhow::Result<EntityPage>>;
+
+    /// The entity `id` as stored, `None` when there is no such entity.
+    fn entity<'a>(
+        &'a self,
+        t: &'a Instance,
+        id: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<Option<EntityDetail>>>;
+
+    /// The entities that link the memory `memory_id`, as stored.
+    fn memory_entities<'a>(
+        &'a self,
+        t: &'a Instance,
+        memory_id: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<MemoryEntities>>;
 
     /// Propose-only consolidation, first step: cluster `project`'s eligible facts without a model
     /// call (see `app::consolidation`).

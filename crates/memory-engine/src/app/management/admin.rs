@@ -8,11 +8,27 @@ use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::instance::Instance;
 use memory_domain::types::*;
+use memory_rules::util;
 use memory_store::memories::MemoryFilter;
 use memory_store::schema;
 
 const DEFAULT_PAGE: usize = 50;
 const MAX_PAGE: usize = 200;
+const MAX_NOT_RECALLED_DAYS: u32 = 3650;
+/// The age and the silence `stats` counts records by.
+const STATS_NOT_RECALLED_DAYS: u32 = 30;
+
+fn active_statuses() -> Vec<String> {
+    [S_CURRENT, S_CONFLICT, S_CANDIDATE]
+        .map(String::from)
+        .to_vec()
+}
+
+/// The second `days` days ago: the records recorded before it, and not recalled since, are "not recalled for
+/// `days` days".
+fn recall_cutoff(days: u32) -> i64 {
+    util::now().timestamp() - i64::from(days) * 24 * 3600
+}
 
 pub async fn stats(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
     let mut counts = Map::new();
@@ -37,12 +53,29 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
     }
     let vm = t.vecs.read().await.memories.len();
     let gap_searches = t.store.gap_search_count().await?;
+    let active = |filter: MemoryFilter| MemoryFilter {
+        statuses: Some(active_statuses()),
+        ..filter
+    };
+    // Each count looks up every active record's recall row; the two run side by side.
+    let never = active(MemoryFilter {
+        never_recalled: true,
+        ..Default::default()
+    });
+    let silent = active(MemoryFilter {
+        not_recalled_since: Some(recall_cutoff(STATS_NOT_RECALLED_DAYS)),
+        ..Default::default()
+    });
+    let (never_recalled, not_recalled) = tokio::try_join!(
+        t.store.count_memories(&never),
+        t.store.count_memories(&silent)
+    )?;
     Ok(json!({
         "counts": counts,
         "memories": by,
         "llm": {"process": eng.llm.usage_snapshot(), "persisted": usage_sum, "rows": usage_rows.len()},
         "index": {"memoryVectors": vm, "pendingTasks": indexer::pending(t).await?},
-        "retrieval": {"gapSearches": gap_searches},
+        "retrieval": {"gapSearches": gap_searches, "neverRecalled": never_recalled, "notRecalled30d": not_recalled},
         "jobs": {"pendingJobs": t.store.count(schema::REQUESTS, Some("status IN ['queued','running','indexing']")).await?},
         // What the web UI may offer: proposing and applying consolidation, and anything that generates.
         "features": {"consolidation": eng.cfg.consolidation_enabled, "generation": eng.llm.is_configured()},
@@ -69,10 +102,25 @@ async fn type_status_counts(t: &Instance) -> ApiResult<BTreeMap<String, BTreeMap
     Ok(by)
 }
 
-/// One page of stored records, newest recorded first, with the count of every record the filters match.
+/// One page of stored records, newest recorded first, with the count of every record the filters match. Each
+/// record carries when a search or context read last returned it and how many did.
 /// The cursor is the `(recordedTs, mid)` keyset of the previous page's last record.
 pub async fn list_memories(t: &Arc<Instance>, req: ListMemoriesReq) -> ApiResult<Value> {
     let limit = page_limit(req.limit, DEFAULT_PAGE, MAX_PAGE)?;
+    if req.never_recalled && req.not_recalled_days.is_some() {
+        return Err(ApiError::InvalidArgument(
+            "neverRecalled and notRecalledDays cannot be combined".into(),
+        ));
+    }
+    let not_recalled_since = req
+        .not_recalled_days
+        .map(|days| match days {
+            1..=MAX_NOT_RECALLED_DAYS => Ok(recall_cutoff(days)),
+            _ => Err(ApiError::InvalidArgument(format!(
+                "notRecalledDays must be between 1 and {MAX_NOT_RECALLED_DAYS}"
+            ))),
+        })
+        .transpose()?;
     if let Some(kind) = &req.scope_kind {
         if !matches!(kind.as_str(), "global" | "project" | "platform") {
             return Err(ApiError::InvalidArgument(
@@ -90,17 +138,28 @@ pub async fn list_memories(t: &Arc<Instance>, req: ListMemoriesReq) -> ApiResult
         scope_kind: req.scope_kind,
         source_platform: req.source_platform,
         types: req.types,
-        statuses: Some(req.statuses.unwrap_or_else(|| {
-            [S_CURRENT, S_CONFLICT, S_CANDIDATE]
-                .map(String::from)
-                .to_vec()
-        })),
+        statuses: Some(req.statuses.unwrap_or_else(active_statuses)),
         origins: req.origins,
         text: req.text.map(|text| text.to_lowercase()),
+        never_recalled: req.never_recalled,
+        not_recalled_since,
     };
     let page = t.store.memory_page(&filter, after, limit).await?;
+    let ids: Vec<String> = page.memories.iter().map(|m| m.id.clone()).collect();
+    let recalls = t.store.recalls(&ids).await?;
+    let memories: Vec<Value> = page
+        .memories
+        .iter()
+        .map(|m| {
+            let mut record = m.public_with_stated_at();
+            let recall = recalls.get(&m.id);
+            record["lastRecalledAt"] = json!(recall.map(|r| &r.last_recalled_at));
+            record["recallCount"] = json!(recall.map_or(0, |r| r.count));
+            record
+        })
+        .collect();
     Ok(json!({
-        "memories": page.memories.iter().map(MemoryRec::public_with_stated_at).collect::<Vec<_>>(),
+        "memories": memories,
         "nextCursor": next_cursor(page.next),
         "total": page.total,
     }))
@@ -134,6 +193,7 @@ pub async fn export(eng: &Arc<Engine>, t: &Arc<Instance>, body: Value) -> ApiRes
                 | schema::LLM_RESPONSES
                 | schema::EXTRACT_LOG
                 | schema::RETRIEVAL_LOG
+                | schema::MEMORY_RECALLS
                 | schema::PROPOSALS
                 | schema::CONSOLIDATION_RUNS
                 | schema::IMPORT_RUNS

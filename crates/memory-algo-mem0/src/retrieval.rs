@@ -290,8 +290,7 @@ pub async fn search(
     let ts = util::now_str();
     let retrieval_id = t
         .store
-        .log(
-            schema::RETRIEVAL_LOG,
+        .log_retrieval(
             json!({"kind":"search","platform":c.platform,"project":project,"session":scope.session,
         "query":query,"strategy":MemoryStrategy::Mem0,
         "returned":{"memories":returned,"tokens":used,"gap":results.is_empty()},"latency":lat,

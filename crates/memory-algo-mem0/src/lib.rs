@@ -5,6 +5,7 @@ use std::sync::Arc;
 use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::consolidation::apply::OpOutcome;
 use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
+use memory_domain::entities::{EntityDetail, EntityFilter, EntityPage, MemoryEntities};
 use memory_domain::types::*;
 use memory_engine::runtime::algorithm::{BoxFuture, MemoryAlgorithm};
 use memory_engine::runtime::engine::Engine;
@@ -138,6 +139,32 @@ impl MemoryAlgorithm for Mem0 {
         memory_id: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Vec<String>>>> {
         Box::pin(repo::source_requests(t, memory_id))
+    }
+
+    fn list_entities<'a>(
+        &'a self,
+        t: &'a Instance,
+        filter: &'a EntityFilter,
+        after: Option<(i64, String)>,
+        limit: usize,
+    ) -> BoxFuture<'a, anyhow::Result<EntityPage>> {
+        Box::pin(repo::entity_page(t, filter, after, limit))
+    }
+
+    fn entity<'a>(
+        &'a self,
+        t: &'a Instance,
+        id: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<Option<EntityDetail>>> {
+        Box::pin(repo::entity(t, id))
+    }
+
+    fn memory_entities<'a>(
+        &'a self,
+        t: &'a Instance,
+        memory_id: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<MemoryEntities>> {
+        Box::pin(repo::memory_entities(t, memory_id))
     }
 
     fn consolidation_snapshot<'a>(

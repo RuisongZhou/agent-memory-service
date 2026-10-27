@@ -9,6 +9,9 @@ pub const STORE_REVISIONS: &str = "store_revisions";
 pub const REQUESTS: &str = "requests";
 pub const UNCERTAINTIES: &str = "uncertainties";
 pub const RETRIEVAL_LOG: &str = "retrieval_log";
+/// One row per recalled memory (keyed by its id): when it was last returned by a search or context read, and how
+/// many times. Kept with `retrieval_log`; calls of the web UI are not counted (`store::recalls`).
+pub const MEMORY_RECALLS: &str = "memory_recalls";
 pub const EXTRACT_LOG: &str = "extract_log";
 pub const LLM_USAGE: &str = "llm_usage";
 pub const LLM_RESPONSES: &str = "llm_responses";
@@ -35,6 +38,7 @@ pub const SHARED_TABLES: &[&str] = &[
     STORE_REVISIONS,
     REQUESTS,
     RETRIEVAL_LOG,
+    MEMORY_RECALLS,
     EXTRACT_LOG,
     LLM_USAGE,
     LLM_RESPONSES,

@@ -455,6 +455,42 @@ pub struct ListMemoriesReq {
     /// Case-insensitive substring of `text`.
     #[serde(default)]
     pub text: Option<String>,
+    /// 1-3650: records recorded more than this many days ago that no search or context read returned in the
+    /// last that many days. Not together with `neverRecalled`.
+    #[serde(default)]
+    pub not_recalled_days: Option<u32>,
+    /// Records no search or context read ever returned.
+    #[serde(default)]
+    pub never_recalled: bool,
+    /// `nextCursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// `POST /admin/memory_lineage`: the records linked to one record, up to `depth` links away.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryLineageReq {
+    pub id: String,
+    /// 1-6; default 3.
+    #[serde(default)]
+    pub depth: Option<usize>,
+}
+
+/// `POST /admin/list_entities`: one page of the algorithm's entities, most linked first. Every filter is optional.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListEntitiesReq {
+    /// `scope.project` equals
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub entity_type: Option<String>,
+    /// Case-insensitive substring of the entity's text.
+    #[serde(default)]
+    pub text: Option<String>,
     /// `nextCursor` of the previous page.
     #[serde(default)]
     pub cursor: Option<String>,

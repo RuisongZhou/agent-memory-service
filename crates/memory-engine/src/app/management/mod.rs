@@ -1,5 +1,5 @@
 //! 纠正、删除、反馈 (2.5, 5.5), uncertainty resolution, and admin inspection (stats, export and the web UI's
-//! reads: memories, uncertainties, the recall log, requests and model responses).
+//! reads: memories, lineage, entities, uncertainties, the recall log, requests and model responses).
 //! One file per operation; `must_get`, the correction text limit and the page helpers are shared.
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -11,7 +11,9 @@ use memory_store::store::{from_doc, safe_id};
 mod admin;
 mod correction;
 mod deletion;
+mod entities;
 mod feedback;
+mod lineage;
 mod requests;
 mod retrievals;
 mod uncertainty;
@@ -19,7 +21,9 @@ mod uncertainty;
 pub use admin::{export, list_memories, memory_facets, stats};
 pub use correction::correct_memory;
 pub use deletion::delete_memory;
+pub use entities::{entity, list_entities, memory_entities};
 pub use feedback::feedback;
+pub use lineage::memory_lineage;
 pub use requests::{list_model_responses, list_requests, request};
 pub use retrievals::list_retrievals;
 pub use uncertainty::{list_uncertainties, resolve_uncertainty};

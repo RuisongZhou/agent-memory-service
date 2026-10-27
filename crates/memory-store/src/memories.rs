@@ -18,12 +18,16 @@ pub struct MemoryFilter {
     pub origins: Option<Vec<String>>,
     /// Lowercase substring of the lowercased text.
     pub text: Option<String>,
+    /// Records no search or context read ever returned: no `memory_recalls` row.
+    pub never_recalled: bool,
+    /// Records recorded before this second (`recordedTs`) that no call returned since.
+    pub not_recalled_since: Option<i64>,
 }
 
 impl MemoryFilter {
     /// WHERE conditions with their bound values.
     fn conditions(&self) -> (Vec<&'static str>, Vec<(&'static str, Value)>) {
-        conditions([
+        let (mut conds, binds) = conditions([
             (
                 "scope.project = $project",
                 "project",
@@ -59,7 +63,18 @@ impl MemoryFilter {
                 "text",
                 self.text.as_ref().map(|v| json!(v)),
             ),
-        ])
+            // The recall filters look the record's `memory_recalls` row up by key: a subquery over that table would
+            // run once for every record.
+            (
+                "recordedTs < $since AND (type::record('memory_recalls', mid).lastRecalledTs ?? 0) < $since",
+                "since",
+                self.not_recalled_since.map(|v| json!(v)),
+            ),
+        ]);
+        if self.never_recalled {
+            conds.push("type::record('memory_recalls', mid).lastRecalledTs = NONE");
+        }
+        (conds, binds)
     }
 }
 
@@ -88,6 +103,17 @@ impl Store {
     pub async fn memories_referencing(&self, id: &str) -> Result<Vec<MemoryRec>> {
         self.find_memories("related.id CONTAINS $id", vec![("id", json!(id))])
             .await
+    }
+
+    /// Memories that link to one of `ids`, by any link a record holds: replacing it or being replaced by it,
+    /// being derived from it, using it, or `related` to it. `ids` are bound values.
+    pub async fn memories_linking_to(&self, ids: &[String]) -> Result<Vec<MemoryRec>> {
+        self.find_memories(
+            "(supersedes IN $ids OR supersededBy IN $ids OR derivation.inputMemoryIds CONTAINSANY $ids \
+              OR usedMemoryIds CONTAINSANY $ids OR related.id CONTAINSANY $ids) ORDER BY mid ASC",
+            vec![("ids", json!(ids))],
+        )
+        .await
     }
 
     /// Current facts scoped to `project`.
@@ -159,6 +185,16 @@ impl Store {
             next,
             total,
         })
+    }
+
+    /// The number of records matching `filter`.
+    pub async fn count_memories(&self, filter: &MemoryFilter) -> Result<i64> {
+        let (conds, binds) = filter.conditions();
+        let sql = format!(
+            "SELECT count() AS n FROM memories WHERE {} GROUP ALL",
+            conds.join(" AND ")
+        );
+        Ok(count(Some(self.select(&sql, binds).await?)))
     }
 
     /// Record counts over every memory record, whatever its status.

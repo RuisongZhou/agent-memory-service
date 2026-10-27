@@ -98,7 +98,8 @@ export interface Stats {
   memories: Record<string, Record<string, number>>
   llm: { process: LlmUsage; persisted: Record<string, number>; rows: number }
   index: { memoryVectors: number; pendingTasks: number }
-  retrieval: { gapSearches: number }
+  /** The two counts cover active records and never count the UI's own calls (`memory_recalls`). */
+  retrieval: { gapSearches: number; neverRecalled: number; notRecalled30d: number }
   jobs: { pendingJobs: number }
   /** Whether consolidation may run (`consolidationEnabled`) and a generation model is configured. */
   features: { consolidation: boolean; generation: boolean }
@@ -126,12 +127,19 @@ export interface ListMemoriesReq {
   statuses?: MemoryStatus[]
   origins?: string[]
   text?: string
+  /** Recorded more than N days ago with no recall in the last N days (1–3650). Not with `neverRecalled`. */
+  notRecalledDays?: number
+  /** Records with no `memory_recalls` row. */
+  neverRecalled?: true
   cursor?: string
   limit?: number
 }
 
+/** A `list_memories` row: also when agents last recalled it and how often (the UI's own calls do not count). */
+export type ListedMemory = StatedMemory & { lastRecalledAt: string | null; recallCount: number }
+
 export interface ListMemoriesRes {
-  memories: StatedMemory[]
+  memories: ListedMemory[]
   nextCursor: string | null
   total: number
 }
@@ -713,4 +721,79 @@ export interface ListModelResponsesReq {
 export interface ListModelResponsesRes {
   responses: ModelResponse[]
   nextCursor: string | null
+}
+
+// ---------------------------------------------------------------- phase 3: lineage, entities
+// `memory_lineage` after `memory-engine/app/management`; the entity reads after the `MemoryAlgorithm` methods that
+// Mem0 implements (the projection is its private `mem0_entities` table).
+
+/** A record in the lineage: its summary, its times and where it came from; `depth` is its distance from the root. */
+export interface LineageNode extends MemorySummary {
+  recordedAt: string
+  effectiveAt: string
+  statedAt: string
+  origin: string
+  platform: string
+  depth: number
+}
+
+/**
+ * An edge points from the record that names the link to the record it names. `derived` carries the derivation stage
+ * of `from`; `related` one edge per unordered pair and relation ("conflicts" | "related" | "same").
+ */
+export type LineageEdge = { from: string; to: string } & (
+  | { kind: 'supersedes' | 'uses' }
+  | { kind: 'derived'; stage: string }
+  | { kind: 'related'; relation: string }
+)
+export type LineageEdgeKind = LineageEdge['kind']
+
+export interface LineageRes {
+  root: string
+  nodes: LineageNode[]
+  edges: LineageEdge[]
+  /** The walk stopped at 200 nodes. */
+  truncated: boolean
+}
+
+export interface Entity {
+  id: string
+  text: string
+  entityType: string
+  scope: MemScope
+  /** How many memories the projection links to it. */
+  memoryCount: number
+}
+
+/** The entity projection is read as stored; this is when it was last written, or null before it exists. */
+export interface Projected {
+  projectionUpdatedAt: string | null
+}
+
+export interface ListEntitiesReq {
+  project?: string
+  entityType?: string
+  /** Case-insensitive substring of the text. */
+  text?: string
+  cursor?: string
+  /** 1–200, default 50. */
+  limit?: number
+}
+
+export interface ListEntitiesRes extends Projected {
+  entities: Entity[]
+  /** Entity types under the request's `project` filter only, by name. */
+  types: Facet[]
+  nextCursor: string | null
+}
+
+export interface EntityRes extends Projected {
+  entity: Entity & { normalizedText: string }
+  /** The linked records that still exist, newest recorded first. */
+  memories: StatedMemory[]
+}
+
+export interface MemoryEntitiesRes extends Projected {
+  /** By text. */
+  entities: Entity[]
 }

@@ -27,6 +27,9 @@ export const ORIGIN_LABEL: Record<string, string> = {
   imported: '导入',
 }
 
+/** The memory list's recall filter (`RECALL_FILTERS`). */
+export const RECALL_FILTER_LABEL = { never: '从未被召回', '30': '30 天没被召回', '90': '90 天没被召回' } as const
+
 export const RELATION_LABEL: Record<string, string> = { conflicts: '冲突', related: '相关', same: '相同' }
 
 export const EVIDENCE_ROLE_LABEL: Record<string, string> = {
