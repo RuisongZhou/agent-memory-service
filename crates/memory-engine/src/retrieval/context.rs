@@ -41,19 +41,27 @@ const CTX_EN: CtxText = CtxText {
     instructions: "[Explicit instructions]",
 };
 
-fn fact_line(m: &MemoryRec, en: bool) -> String {
-    let eff = {
-        let d = util::date_of(&m.effective_at);
-        if d.is_empty() {
-            m.effective_at.clone()
-        } else {
-            d
-        }
-    };
-    if en {
-        format!("- {} (since {} · {})", m.text, eff, m.source.platform)
+/// The day `ts` names, or `ts` itself when it is no timestamp.
+fn day(ts: &str) -> String {
+    let d = util::date_of(ts);
+    if d.is_empty() {
+        ts.to_string()
     } else {
-        format!("- {}（{} 起 · {}）", m.text, eff, m.source.platform)
+        d
+    }
+}
+
+/// Since when the fact holds; an inferred fact has no effective date, so the day it was said instead.
+fn fact_line(m: &MemoryRec, en: bool) -> String {
+    let (eff, stated) = (day(&m.effective_at), day(&m.stated_at));
+    let (text, platform) = (&m.text, &m.source.platform);
+    match (en, eff.is_empty(), stated.is_empty()) {
+        (true, false, _) => format!("- {text} (since {eff} · {platform})"),
+        (false, false, _) => format!("- {text}（{eff} 起 · {platform}）"),
+        (true, true, false) => format!("- {text} (stated {stated} · {platform})"),
+        (false, true, false) => format!("- {text}（{stated} 提到 · {platform}）"),
+        (true, true, true) => format!("- {text} ({platform})"),
+        (false, true, true) => format!("- {text}（{platform}）"),
     }
 }
 
@@ -378,4 +386,54 @@ fn pack_prefix(costs: &[usize], cap: usize) -> (usize, usize) {
         used += c;
     }
     (costs.len(), used)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fact(effective_at: &str, stated_at: &str) -> MemoryRec {
+        MemoryRec {
+            text: "数据库用 PostgreSQL 16".into(),
+            effective_at: effective_at.into(),
+            stated_at: stated_at.into(),
+            source: Source {
+                platform: "codex".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_fact_line_shows_since_when_it_holds_or_when_it_was_said() {
+        let since = fact("2026-11-06", "2026-10-25T10:00:00+08:00");
+        assert_eq!(
+            fact_line(&since, false),
+            "- 数据库用 PostgreSQL 16（2026-11-06 起 · codex）"
+        );
+        assert_eq!(
+            fact_line(&since, true),
+            "- 数据库用 PostgreSQL 16 (since 2026-11-06 · codex)"
+        );
+        // An inferred fact has no effective date: it shows the day it was said.
+        let said = fact("", "2026-10-25T10:00:00+08:00");
+        assert_eq!(
+            fact_line(&said, false),
+            "- 数据库用 PostgreSQL 16（2026-10-25 提到 · codex）"
+        );
+        assert_eq!(
+            fact_line(&said, true),
+            "- 数据库用 PostgreSQL 16 (stated 2026-10-25 · codex)"
+        );
+        let undated = fact("", "");
+        assert_eq!(
+            fact_line(&undated, false),
+            "- 数据库用 PostgreSQL 16（codex）"
+        );
+        assert_eq!(
+            fact_line(&undated, true),
+            "- 数据库用 PostgreSQL 16 (codex)"
+        );
+    }
 }
