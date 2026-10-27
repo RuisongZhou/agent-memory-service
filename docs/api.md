@@ -108,7 +108,8 @@ Fact tasks additionally return `inputSaved`, `formed`, `searchable` and `latency
 
 A request ID alone is not completion. Explicit instruction receipts complete synchronously and omit
 the extra fact-formation visibility fields. After acceptance, poll the task rather than resubmitting.
-Raw model responses, including failures and repair attempts, are available through admin export.
+Raw model responses, including failures and repair attempts, are available through admin export and
+`list_model_responses`.
 
 ## Reads and provenance
 
@@ -148,7 +149,7 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 |---|---|
 | `POST /v1/embeddings` | OpenAI-compatible embeddings from the daemon's configured model; `input` is a string or a nonempty array of at most 128 strings |
 | `POST /admin/wait_idle` | Drain formation/index work and report remaining or failed requests |
-| `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs |
+| `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs; `features` tells whether `consolidation` is enabled (`consolidationEnabled`) and a `generation` key is configured |
 | `POST /admin/export` | Read memories or selected audit tables of the store; not a full backup |
 | `POST /admin/reindex` | Queue a vector rebuild (re-embed every memory); CLI requires `--all` or `--vector` |
 | `POST /admin/consolidate` | Propose consolidation ops for one project and store the run; requires `consolidationEnabled` and `dryRun:true` |
@@ -157,6 +158,13 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /admin/import_propose`, `import_run`, `import_runs`, `import_apply`, `import_rollback` | [Import runs](#import-runs): a host's existing memories as reviewable proposals, applied and rolled back on request |
 | `POST /admin/list_memories` | One page of records as `get_memory` returns them, newest recorded first, and the `total` matching; filters `project`, `scopeKind`, `sourcePlatform`, `types`, `statuses` (default `current`, `conflict`, `candidate`), `origins`, `text` (case-insensitive substring); `limit` 1–200 (default 50); send `nextCursor` back as `cursor` until it is null |
 | `POST /admin/memory_facets` | Record counts over every status: `projects`, `sourcePlatforms` and `origins` as `{name, count}` sorted by name, `byTypeStatus` and `total` |
+| `POST /admin/list_uncertainties` | Questions of one `status`, `open` (default), `resolved` or `withdrawn`, newest first, as stored with `id`; each carries its member records in `memoryIds` order as `memories` (as `get_memory` returns them; deleted ones left out); filter `project`; `limit` 1–200 (default 50), no cursor. Resolve with `resolve_uncertainty` |
+| `POST /admin/consolidation_runs` | Consolidation runs, newest first, without `clusters`, `proposalIds` and `responseLogIds`; filter `project`; `limit` 1–200 (default 20); not gated by `consolidationEnabled` |
+| `POST /admin/consolidation_run` | `{runId}`: `run` and `proposals` as `consolidation_apply` returns them, and `memories`, a summary `{id, type, status, text, scope}` of every memory a proposal names (deleted ones left out) |
+| `POST /admin/list_retrievals` | One page of `retrieval_log` rows with `id`, newest first, and `memories` summarizing each memory they returned; filters `kind` (`search` or `context`), `platform`, `excludePlatforms` (rows without a platform are kept), `project`, `session`, `memoryId` (rows of the last 30 days only; the response then has `window: "30d"`); `limit` 1–200 (default 50); cursor as for `list_memories` |
+| `POST /admin/list_requests` | One page of write requests with `id`, newest first, without `inputMessages` but with `messageCount`; filters `statuses`, `kind` (`mem0` or `instruction`), `platform`, `project`; `limit` 1–200 (default 50); cursor as for `list_memories` |
+| `POST /admin/request` | `{requestId}`: the whole `request`, its `extract_log` rows (`extractions`, oldest first) and the `llm_responses` rows they name (`responses`), each with `id`. A request whose every generation call failed has neither; see `list_model_responses` |
+| `POST /admin/list_model_responses` | One page of `llm_responses` rows as stored with `id`, newest first; filters `stage`, `failedOnly` (no `validOutputShape:true`: a transport error, an HTTP status outside 2xx, a body that is not JSON or output of the wrong shape); `limit` 1–100 (default 20); cursor as for `list_memories` |
 
 Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `requests`,
 `store_revisions`, `uncertainties`, `proposals`, `consolidation_runs`, `import_runs`, `import_ledger`,

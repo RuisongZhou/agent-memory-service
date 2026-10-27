@@ -3,7 +3,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-use super::store::{from_doc, Store};
+use super::store::{conditions, from_doc, Store};
 use memory_domain::types::MemoryRec;
 use memory_rules::util;
 
@@ -23,9 +23,7 @@ pub struct MemoryFilter {
 impl MemoryFilter {
     /// WHERE conditions with their bound values.
     fn conditions(&self) -> (Vec<&'static str>, Vec<(&'static str, Value)>) {
-        let mut conds = vec!["true"];
-        let mut binds = Vec::new();
-        for (cond, name, value) in [
+        conditions([
             (
                 "scope.project = $project",
                 "project",
@@ -61,13 +59,7 @@ impl MemoryFilter {
                 "text",
                 self.text.as_ref().map(|v| json!(v)),
             ),
-        ] {
-            if let Some(value) = value {
-                conds.push(cond);
-                binds.push((name, value));
-            }
-        }
-        (conds, binds)
+        ])
     }
 }
 

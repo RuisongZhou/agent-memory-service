@@ -4,6 +4,7 @@ pub mod evidence;
 pub mod import;
 pub mod index_tasks;
 pub mod integrity;
+pub mod logs;
 pub mod memories;
 pub mod schema;
 pub mod store;

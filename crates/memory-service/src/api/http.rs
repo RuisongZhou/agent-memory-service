@@ -157,6 +157,8 @@ async fn admin(
             "consolidate" => consolidation::consolidate(&eng, &t, parse(body)?).await,
             "consolidation_apply" => consolidation::apply(&eng, &t, parse(body)?).await,
             "consolidation_rollback" => consolidation::rollback(&eng, &t, parse(body)?).await,
+            "consolidation_runs" => consolidation::list_runs(&t, parse(body)?).await,
+            "consolidation_run" => consolidation::get_run(&t, parse(body)?).await,
             "import_propose" => import::propose(&eng, &t, parse(body)?).await,
             "import_apply" => import::apply(&t, parse(body)?).await,
             "import_rollback" => import::rollback(&eng, &t, parse(body)?).await,
@@ -168,6 +170,11 @@ async fn admin(
             }
             "list_memories" => management::list_memories(&t, parse(body)?).await,
             "memory_facets" => management::memory_facets(&t).await,
+            "list_uncertainties" => management::list_uncertainties(&t, parse(body)?).await,
+            "list_retrievals" => management::list_retrievals(&t, parse(body)?).await,
+            "list_requests" => management::list_requests(&t, parse(body)?).await,
+            "request" => management::request(&t, parse(body)?).await,
+            "list_model_responses" => management::list_model_responses(&t, parse(body)?).await,
             other => Err(ApiError::NotFound(format!("unknown admin action {other}"))),
         }
     }

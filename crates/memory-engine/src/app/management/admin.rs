@@ -3,13 +3,13 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use super::{next_cursor, page_limit, parse_cursor};
 use crate::runtime::engine::Engine;
 use crate::runtime::indexer;
 use crate::runtime::instance::Instance;
 use memory_domain::types::*;
 use memory_store::memories::MemoryFilter;
 use memory_store::schema;
-use memory_store::store::safe_id;
 
 const DEFAULT_PAGE: usize = 50;
 const MAX_PAGE: usize = 200;
@@ -44,6 +44,8 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
         "index": {"memoryVectors": vm, "pendingTasks": indexer::pending(t).await?},
         "retrieval": {"gapSearches": gap_searches},
         "jobs": {"pendingJobs": t.store.count(schema::REQUESTS, Some("status IN ['queued','running','indexing']")).await?},
+        // What the web UI may offer: proposing and applying consolidation, and anything that generates.
+        "features": {"consolidation": eng.cfg.consolidation_enabled, "generation": eng.llm.is_configured()},
     }))
 }
 
@@ -70,12 +72,7 @@ async fn type_status_counts(t: &Instance) -> ApiResult<BTreeMap<String, BTreeMap
 /// One page of stored records, newest recorded first, with the count of every record the filters match.
 /// The cursor is the `(recordedTs, mid)` keyset of the previous page's last record.
 pub async fn list_memories(t: &Arc<Instance>, req: ListMemoriesReq) -> ApiResult<Value> {
-    let limit = req.limit.unwrap_or(DEFAULT_PAGE);
-    if limit == 0 || limit > MAX_PAGE {
-        return Err(ApiError::InvalidArgument(format!(
-            "limit must be between 1 and {MAX_PAGE}"
-        )));
-    }
+    let limit = page_limit(req.limit, DEFAULT_PAGE, MAX_PAGE)?;
     if let Some(kind) = &req.scope_kind {
         if !matches!(kind.as_str(), "global" | "project" | "platform") {
             return Err(ApiError::InvalidArgument(
@@ -83,7 +80,11 @@ pub async fn list_memories(t: &Arc<Instance>, req: ListMemoriesReq) -> ApiResult
             ));
         }
     }
-    let after = req.cursor.as_deref().map(parse_cursor).transpose()?;
+    let after = req
+        .cursor
+        .as_deref()
+        .map(|cursor| parse_cursor(cursor, |ts| ts.parse().ok()))
+        .transpose()?;
     let filter = MemoryFilter {
         project: req.project,
         scope_kind: req.scope_kind,
@@ -100,16 +101,9 @@ pub async fn list_memories(t: &Arc<Instance>, req: ListMemoriesReq) -> ApiResult
     let page = t.store.memory_page(&filter, after, limit).await?;
     Ok(json!({
         "memories": page.memories.iter().map(MemoryRec::public_with_stated_at).collect::<Vec<_>>(),
-        "nextCursor": page.next.map(|(ts, mid)| format!("{ts}:{mid}")),
+        "nextCursor": next_cursor(page.next),
         "total": page.total,
     }))
-}
-
-fn parse_cursor(cursor: &str) -> ApiResult<(i64, String)> {
-    cursor
-        .split_once(':')
-        .and_then(|(ts, mid)| Some((ts.parse().ok()?, safe_id(mid).ok()?.to_string())))
-        .ok_or_else(|| ApiError::InvalidArgument("invalid cursor".into()))
 }
 
 /// Record counts over every memory record, whatever its status, for the web UI's filters and overview.

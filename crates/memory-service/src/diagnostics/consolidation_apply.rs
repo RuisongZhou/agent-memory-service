@@ -159,8 +159,56 @@ pub async fn selftest() {
         Err(ApiError::NotFound(_))
     ));
     let (run_id, proposals) = propose_and_apply(&eng, &t, "ops").await;
+    // A reader lists the run without its clusters and id lists, and sees it as apply returned it, with a
+    // summary of every memory its proposals name.
+    let runs = |req: Value| consolidation::list_runs(&t, serde_json::from_value(req).unwrap());
+    let listed = runs(json!({"project": "ops"})).await.unwrap()["runs"].clone();
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(
+        (&listed[0]["runId"], &listed[0]["status"]),
+        (&json!(run_id), &json!("applied"))
+    );
+    assert_eq!(listed[0]["appliedOps"], 3);
+    for heavy in ["clusters", "proposalIds", "responseLogIds"] {
+        assert!(listed[0].get(heavy).is_none(), "{heavy}");
+    }
+    assert_eq!(
+        runs(json!({"project": "other"})).await.unwrap()["runs"],
+        json!([])
+    );
+    for bad in [json!({"limit": 0}), json!({"limit": 201})] {
+        assert!(matches!(runs(bad).await, Err(ApiError::InvalidArgument(_))));
+    }
+    let shown = consolidation::get_run(&t, run(&run_id)).await.unwrap();
+    assert_eq!(shown["proposals"], json!(proposals));
+    assert_eq!(shown["run"]["clusters"].as_array().unwrap().len(), 3);
+    let merged_id = applied(&proposals, "merge")["mergedId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let named = shown["memories"].as_object().unwrap();
+    let mut want = vec![&laptop, &work, &merged_id, &jenkins, &actions, &dana, &lee];
+    want.sort();
+    assert_eq!(named.keys().collect::<Vec<_>>(), want);
+    assert_eq!(
+        named[&merged_id],
+        json!({"id": merged_id, "type": "fact", "status": "current", "text": WORK,
+            "scope": {"kind": "project", "project": "ops"}})
+    );
+    assert_eq!(named[&laptop]["status"], "superseded");
+    for bad in ["no such", ""] {
+        assert!(matches!(
+            consolidation::get_run(&t, run(bad)).await,
+            Err(ApiError::InvalidArgument(_))
+        ));
+    }
+    assert!(matches!(
+        consolidation::get_run(&t, run("crmissing")).await,
+        Err(ApiError::NotFound(_))
+    ));
+    let questions =
+        |req: Value| management::list_uncertainties(&t, serde_json::from_value(req).unwrap());
     let merge = applied(&proposals, "merge");
-    let merged_id = merge["mergedId"].as_str().unwrap().to_string();
     let merged = memory(&t, &merged_id).await;
     assert_eq!(merged.status, S_CURRENT);
     assert_eq!(merged.text, WORK);
@@ -198,6 +246,26 @@ pub async fn selftest() {
     let mut pair = vec![dana.clone(), lee.clone()];
     pair.sort();
     assert_eq!(question["memoryIds"], json!(pair));
+    // The conflict is listed as an open question of the project, with its members.
+    let open = questions(json!({"project": "ops"})).await.unwrap()["uncertainties"].clone();
+    assert_eq!(open.as_array().unwrap().len(), 1, "{open}");
+    assert_eq!(
+        (&open[0]["id"], &open[0]["reason"]),
+        (&json!(question_id), &json!("manager differs"))
+    );
+    let members: Vec<(&Value, &Value)> = open[0]["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (&m["id"], &m["status"]))
+        .collect();
+    assert_eq!(
+        members,
+        [
+            (&json!(pair[0]), &json!(S_CONFLICT)),
+            (&json!(pair[1]), &json!(S_CONFLICT))
+        ]
+    );
     for member in [&dana, &lee] {
         let m = memory(&t, member).await;
         assert_eq!(m.status, S_CONFLICT);
@@ -262,6 +330,18 @@ pub async fn selftest() {
     for member in [&dana, &lee] {
         assert_eq!(memory(&t, member).await.status, S_CURRENT);
     }
+    assert_eq!(
+        questions(json!({})).await.unwrap()["uncertainties"],
+        json!([])
+    );
+    let withdrawn =
+        questions(json!({"status": "withdrawn"})).await.unwrap()["uncertainties"].clone();
+    assert_eq!(withdrawn.as_array().unwrap().len(), 1, "{withdrawn}");
+    assert_eq!(
+        (&withdrawn[0]["id"], &withdrawn[0]["withdrawnBy"]),
+        (&json!(question_id), &json!(run_id))
+    );
+    assert!(withdrawn[0]["withdrawnAt"].is_string());
     // After rollback the input owns its text again; the rolled-back run is final.
     let again = AddMemoriesReq {
         turn_id: Some("o4".into()),

@@ -8,10 +8,11 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::app::management::{memory_summaries, page_limit};
 use crate::app::runs;
 use crate::runtime::engine::Engine;
 use crate::runtime::instance::Instance;
-use memory_domain::consolidation::apply::{FieldPatch, OpOutcome};
+use memory_domain::consolidation::apply::{AppliedOp, FieldPatch, OpOutcome};
 use memory_domain::consolidation::{self as plan, ConsolidationOp};
 use memory_domain::types::*;
 use memory_rules::consolidation as limits;
@@ -38,6 +39,10 @@ pub const ROLLED_BACK: &str = "rolled_back";
 /// Run: some ops stay applied because a person or a later run changed their results
 /// (`rollbackSkipReason`); rollback can be retried.
 pub const PARTIALLY_ROLLED_BACK: &str = "partially_rolled_back";
+
+/// `consolidation_runs` page size: default and largest.
+const DEFAULT_RUNS: usize = 20;
+const MAX_RUNS: usize = 200;
 
 /// Write a logical patch to a memory record and queue its reindex. Status changes go through
 /// `merge`, so the store's integrity rules see them; only absent-valued fields are cleared.
@@ -216,6 +221,43 @@ pub async fn consolidate(
     }
     t.store.commit(tx).await?;
     Ok(json!({"run": run, "proposals": proposals}))
+}
+
+/// Runs, newest first, optionally of one project, without their clusters and id lists. Reading is not gated by
+/// `consolidationEnabled`.
+pub async fn list_runs(t: &Arc<Instance>, req: ConsolidationRunsReq) -> ApiResult<Value> {
+    let limit = page_limit(req.limit, DEFAULT_RUNS, MAX_RUNS)?;
+    let runs = t
+        .store
+        .consolidation_runs(req.project.as_deref(), limit)
+        .await?;
+    Ok(json!({ "runs": runs }))
+}
+
+/// A run and its proposals as `apply` returns them, with a summary of every memory a proposal names: the op's
+/// own ids, and the merged record and patched records of an applied op.
+pub async fn get_run(t: &Arc<Instance>, req: ConsolidationRunReq) -> ApiResult<Value> {
+    let run = load_run(t, &req.run_id).await?;
+    let proposals = t.store.proposals_for_run(&req.run_id).await?;
+    let mut ids: Vec<String> = Vec::new();
+    for proposal in &proposals {
+        ids.extend(
+            proposal["memoryIds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|id| id.as_str().map(str::to_string)),
+        );
+        // Present once the op was applied, and kept through its rollback.
+        if let Some(applied) = proposal.get("applied") {
+            let applied: AppliedOp =
+                serde_json::from_value(applied.clone()).map_err(anyhow::Error::from)?;
+            ids.extend(applied.merged_id);
+            ids.extend(applied.patches.into_iter().map(|patch| patch.id));
+        }
+    }
+    let memories = memory_summaries(t, ids).await?;
+    Ok(json!({"run": run, "proposals": proposals, "memories": memories}))
 }
 
 async fn load_run(t: &Instance, run_id: &str) -> ApiResult<Value> {
