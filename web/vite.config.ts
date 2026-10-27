@@ -32,7 +32,5 @@ const daemon: ProxyOptions = {
 export default defineConfig({
   base: '/ui/',
   plugins: [react(), tailwindcss(), versionFile()],
-  // A local tool served from the daemon: one chunk of about 150 kB gzipped is fine, so the 500 kB advice is noise.
-  build: { chunkSizeWarningLimit: 650 },
   server: { proxy: { '/v1': daemon, '/admin': daemon, '/health': daemon } },
 })

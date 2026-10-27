@@ -57,20 +57,19 @@ pub async fn stats(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
         statuses: Some(active_statuses()),
         ..filter
     };
-    let never_recalled = t
-        .store
-        .count_memories(&active(MemoryFilter {
-            never_recalled: true,
-            ..Default::default()
-        }))
-        .await?;
-    let not_recalled = t
-        .store
-        .count_memories(&active(MemoryFilter {
-            not_recalled_since: Some(recall_cutoff(STATS_NOT_RECALLED_DAYS)),
-            ..Default::default()
-        }))
-        .await?;
+    // Each count looks up every active record's recall row; the two run side by side.
+    let never = active(MemoryFilter {
+        never_recalled: true,
+        ..Default::default()
+    });
+    let silent = active(MemoryFilter {
+        not_recalled_since: Some(recall_cutoff(STATS_NOT_RECALLED_DAYS)),
+        ..Default::default()
+    });
+    let (never_recalled, not_recalled) = tokio::try_join!(
+        t.store.count_memories(&never),
+        t.store.count_memories(&silent)
+    )?;
     Ok(json!({
         "counts": counts,
         "memories": by,

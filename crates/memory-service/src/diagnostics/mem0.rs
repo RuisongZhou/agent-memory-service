@@ -224,9 +224,24 @@ async fn selftest() {
     .await
     .unwrap();
     assert_eq!(feedback["accepted"], true);
+    // The search above recalled it; deleting it removes its recall summary too.
+    assert_eq!(
+        t.store
+            .recalls(std::slice::from_ref(&new_id))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     management::delete_memory(&eng, &t, IdReq { id: new_id.clone() })
         .await
         .unwrap();
+    assert!(t
+        .store
+        .recalls(std::slice::from_ref(&new_id))
+        .await
+        .unwrap()
+        .is_empty());
     assert!(ids(&search(&eng, "a", "database port").await.unwrap()).is_empty());
     // This search and the one in project "b" found nothing. Without a key nothing generates.
     let stats = management::stats(&eng, &t).await.unwrap();
@@ -369,19 +384,13 @@ async fn selftest() {
     }
 
     // ---- the recall summary: `id` was returned by two searches and the context read (which lists it more than
-    // once; the web UI's search above does not count), the corrected record by one search.
+    // once; the web UI's search above does not count). The corrected record's summary went with its deletion.
     assert_eq!(
         t.store
             .recalls(&[id.clone(), new_id.clone()])
             .await
             .unwrap(),
-        BTreeMap::from([
-            (id.clone(), recall(&context[0]["createdAt"], 3)),
-            (
-                new_id.clone(),
-                recall(&used["retrievals"][0]["createdAt"], 1)
-            ),
-        ])
+        BTreeMap::from([(id.clone(), recall(&context[0]["createdAt"], 3))])
     );
     // Three records recorded 40 to 42 days ago: never recalled, recalled 5 days ago and recalled 35 days ago.
     let old_fact = |n: u32, days: i64| MemoryRec {

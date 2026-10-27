@@ -187,7 +187,7 @@ Embedding token usage is approximate, not provider billing. Reindex HTTP errors 
 counts the call, once per returned memory, in the same transaction. Calls whose platform is `web` (the web UI's own
 searches and context previews) are logged but not counted. `lastAccessedAt` is no substitute: it only changes
 when a search sends `touch: true`. Startup sums an existing `retrieval_log` into an empty `memory_recalls`, once,
-using each row's `createdTs`. A memory deleted afterwards keeps its row.
+using each row's `createdTs`. Deleting a memory removes its row in the same transaction.
 `list_memories` reads the summary for `lastRecalledAt`, `recallCount` and its two filters, and `stats` counts the
 active records with no row (`retrieval.neverRecalled`) and those recorded more than 30 days ago and not returned in
 the last 30 (`retrieval.notRecalled30d`).

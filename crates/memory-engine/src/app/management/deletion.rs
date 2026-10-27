@@ -76,6 +76,7 @@ async fn delete_one(
     let id = m.id.clone();
     let mut tx = Tx::new();
     tx.delete(schema::MEMORIES, &id)?;
+    tx.delete(schema::MEMORY_RECALLS, &id)?;
 
     // a merge's inputs: unlinked, or back to current when the merge goes because an input went
     let mut restored = Vec::new();

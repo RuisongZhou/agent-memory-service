@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
+import { Suspense, type ReactNode } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import { api } from '../api/client'
 
@@ -69,7 +69,10 @@ export function Layout() {
         </nav>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6">
-        <Outlet />
+        {/* Pages load when first opened (main.tsx); the nav stays while one does. */}
+        <Suspense fallback={<p className="text-sm text-zinc-500">加载中…</p>}>
+          <Outlet />
+        </Suspense>
       </main>
     </div>
   )
