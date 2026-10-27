@@ -5,12 +5,23 @@ import { api } from '../api/client'
 import type { Facet, LlmUsage, MemoryType, Stats } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { Badge, Card, Fields, Muted } from '../components/ui'
-import { ALL_STATUSES, filtersToParams, NO_FILTERS, NO_TASK_FILTERS, taskFiltersToParams, type MemoryFilters } from '../lib/filters'
+import {
+  ALL_STATUSES,
+  filtersToParams,
+  NO_FILTERS,
+  NO_TASK_FILTERS,
+  taskFiltersToParams,
+  type MemoryFilters,
+  type RecallFilter,
+} from '../lib/filters'
 import { formatNumber, ORIGIN_LABEL, STATUS_LABEL, TYPE_LABEL } from '../lib/format'
 
 /** The memory list behind a count. Counts cover every status, so the list does too unless one is named. */
 const listLink = (set: Partial<MemoryFilters>) =>
   `/memories?${filtersToParams({ ...NO_FILTERS, statuses: ALL_STATUSES, ...set })}`
+
+/** The memory list behind a recall count. These count active records, so the list keeps its default statuses. */
+const recallLink = (recall: RecallFilter) => `/memories?${filtersToParams({ ...NO_FILTERS, recall })}`
 
 const usageRows = (u: LlmUsage): [string, string][] => [
   ['模型', u.model],
@@ -81,6 +92,25 @@ function Review({ features }: { features?: Stats['features'] }) {
           <li><PageLink to="/tasks?tab=responses">模型调用</PageLink>：失败的生成调用和原始响应</li>
         </ul>
       </div>
+    </Card>
+  )
+}
+
+/** Active records agents have not recalled: candidates for review. The UI's own calls are not counted. */
+function Staleness({ retrieval }: { retrieval?: Stats['retrieval'] }) {
+  const count = (n: number | undefined, recall: RecallFilter) =>
+    n === undefined ? '—' : <PageLink to={recallLink(recall)}>{formatNumber(n)}</PageLink>
+  return (
+    <Card title="召回情况">
+      <Fields
+        rows={[
+          ['从未被召回', count(retrieval?.neverRecalled, 'never')],
+          ['30 天没被召回', count(retrieval?.notRecalled30d, '30')],
+        ]}
+      />
+      <p className="mt-3 text-sm text-zinc-500">
+        只统计活跃记忆（当前、冲突、候选）。“30 天没被召回”是入库超过 30 天、且最近 30 天没被召回的记忆。召回只算 agent 的调用，不含网页自己的检索和上下文预览。
+      </p>
     </Card>
   )
 }
@@ -166,6 +196,8 @@ export function OverviewPage() {
       </div>
 
       <Review features={stats.data?.features} />
+
+      <Staleness retrieval={stats.data?.retrieval} />
 
       <Card title={`记忆记录${facets.data ? `（共 ${formatNumber(facets.data.total)} 条）` : ''}`}>
         {types.length === 0 ? (

@@ -8,6 +8,7 @@ import type {
   CorrectMemoryReq,
   CorrectMemoryRes,
   DeleteMemoryRes,
+  EntityRes,
   Facets,
   GetContextReq,
   GetMemoryRes,
@@ -16,6 +17,9 @@ import type {
   ImportRun,
   ImportRunRes,
   ImportRunsReq,
+  LineageRes,
+  ListEntitiesReq,
+  ListEntitiesRes,
   ListMemoriesReq,
   ListMemoriesRes,
   ListModelResponsesReq,
@@ -27,6 +31,7 @@ import type {
   ListTurnsRes,
   ListUncertaintiesReq,
   ListUncertaintiesRes,
+  MemoryEntitiesRes,
   RequestDetail,
   ResolveUncertaintyReq,
   ResolveUncertaintyRes,
@@ -120,4 +125,11 @@ export const api = {
   getRequest: (requestId: string) => post<RequestDetail>('/admin/request', { requestId }),
   listModelResponses: (req: ListModelResponsesReq) =>
     post<ListModelResponsesRes>('/admin/list_model_responses', req),
+
+  /** The record's links in both directions, `depth` steps out (1–6). */
+  memoryLineage: (id: string, depth: number) => post<LineageRes>('/admin/memory_lineage', { id, depth }),
+  /** The entity reads show the projection as stored: they never call a model. */
+  listEntities: (req: ListEntitiesReq) => post<ListEntitiesRes>('/admin/list_entities', req),
+  entity: (id: string) => post<EntityRes>('/admin/entity', { id }),
+  memoryEntities: (id: string) => post<MemoryEntitiesRes>('/admin/memory_entities', { id }),
 }

@@ -3,10 +3,10 @@ import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from '
 import { useMemo, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { api } from '../api/client'
-import type { Facet, StatedMemory } from '../api/types'
+import type { ListedMemory } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { StatusBadge, TypeBadge } from '../components/memory'
-import { Button, Card, Check, Field, Input, Muted, Select } from '../components/ui'
+import { Button, Card, Check, FacetOptions, Field, Input, Muted, RefreshButton, Select } from '../components/ui'
 import {
   ACTIVE_STATUSES,
   ALL_STATUSES,
@@ -14,17 +14,28 @@ import {
   filtersToParams,
   listRequest,
   MEMORY_TYPES,
+  RECALL_FILTERS,
   SCOPE_KINDS,
   type MemoryFilters,
 } from '../lib/filters'
-import { formatNumber, formatTime, labelled, ORIGIN_LABEL, SCOPE_LABEL, scopeText, STATUS_LABEL, TYPE_LABEL } from '../lib/format'
+import {
+  formatNumber,
+  formatTime,
+  labelled,
+  ORIGIN_LABEL,
+  RECALL_FILTER_LABEL,
+  SCOPE_LABEL,
+  scopeText,
+  STATUS_LABEL,
+  TYPE_LABEL,
+} from '../lib/format'
 
-const column = createColumnHelper<StatedMemory>()
+const column = createColumnHelper<ListedMemory>()
 const columns = [
   column.accessor('text', {
     header: '内容',
     cell: (c) => (
-      <Link to={`/memories/${c.row.original.id}`} title={c.getValue()} className="block max-w-md truncate hover:underline">
+      <Link to={`/memories/${c.row.original.id}`} title={c.getValue()} className="block max-w-sm truncate hover:underline">
         {c.getValue()}
       </Link>
     ),
@@ -35,23 +46,17 @@ const columns = [
   column.accessor('source.platform', { header: '写入平台' }),
   column.accessor('source.origin', { header: '来源', cell: (c) => ORIGIN_LABEL[c.getValue()] ?? c.getValue() }),
   column.accessor('recordedAt', { header: '记录时间', cell: (c) => formatTime(c.getValue()) }),
+  column.accessor('lastRecalledAt', {
+    header: '最近召回',
+    cell: (c) =>
+      c.getValue() ? (
+        <>{formatTime(c.getValue())} · {formatNumber(c.row.original.recallCount)} 次</>
+      ) : (
+        <span className="text-zinc-400">从未</span>
+      ),
+  }),
   column.accessor('effectiveAt', { header: '生效时间', cell: (c) => formatTime(c.getValue()) }),
 ]
-
-/** Facet values for a dropdown, keeping a value the URL names even when no record has it any more. */
-function FacetOptions({ facets, selected, labels }: { facets: Facet[]; selected: string; labels?: Record<string, string> }) {
-  const listed = facets.some((f) => f.name === selected)
-  return (
-    <>
-      {facets.map((f) => (
-        <option key={f.name} value={f.name}>
-          {labels ? labelled(labels, f.name) : f.name} · {formatNumber(f.count)}
-        </option>
-      ))}
-      {selected && !listed && <option value={selected}>{selected} · 0</option>}
-    </>
-  )
-}
 
 function Filters({ filters, update }: { filters: MemoryFilters; update: (set: Partial<MemoryFilters>) => void }) {
   const facets = useQuery({ queryKey: ['facets'], queryFn: api.facets })
@@ -64,7 +69,7 @@ function Filters({ filters, update }: { filters: MemoryFilters; update: (set: Pa
 
   return (
     <Card>
-      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-4">
         <Field label="项目">
           <Select value={filters.project} onChange={(e) => update({ project: e.target.value })}>
             <option value="">全部</option>
@@ -97,6 +102,14 @@ function Filters({ filters, update }: { filters: MemoryFilters; update: (set: Pa
           <Select value={filters.origin} onChange={(e) => update({ origin: e.target.value })}>
             <option value="">全部</option>
             <FacetOptions facets={facets.data?.origins ?? []} selected={filters.origin} labels={ORIGIN_LABEL} />
+          </Select>
+        </Field>
+        <Field label="召回">
+          <Select value={filters.recall} onChange={(e) => update({ recall: e.target.value as MemoryFilters['recall'] })}>
+            <option value="">全部</option>
+            {RECALL_FILTERS.map((r) => (
+              <option key={r} value={r}>{RECALL_FILTER_LABEL[r]}</option>
+            ))}
           </Select>
         </Field>
         <form key={filters.text} onSubmit={searchText}>
@@ -149,8 +162,11 @@ export function MemoriesPage() {
       {list.error && <ErrorNotice error={list.error} />}
       <Card
         title={total === undefined ? '记忆' : `共 ${formatNumber(total)} 条，已显示 ${formatNumber(rows.length)} 条`}
-        actions={<Muted>按记录时间从新到旧</Muted>}
+        actions={<RefreshButton busy={list.isFetching} onClick={() => list.refetch()} />}
       >
+        <p className="mb-3 text-sm text-zinc-500">
+          按记录时间从新到旧。最近召回是 agent 调用 <code>search_memories</code> 或 <code>get_context</code> 取回这条记忆的时间和次数，不含网页自己的调用。
+        </p>
         {list.isPending ? (
           <Muted>加载中…</Muted>
         ) : rows.length === 0 ? (

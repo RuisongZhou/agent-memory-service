@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  entityFiltersFromParams,
+  entityFiltersToParams,
+  entityRequest,
   filtersFromParams,
   filtersToParams,
   listRequest,
+  NO_ENTITY_FILTERS,
   NO_FILTERS,
   NO_RECALL_FILTERS,
   NO_TASK_FILTERS,
@@ -17,12 +21,20 @@ import {
 
 describe('list filters', () => {
   it('default to the active statuses (NO_FILTERS), drop values the daemon would reject, and leave both out of URL and body', () => {
-    for (const query of ['', 'type=note&scope=team&status=archived']) {
+    for (const query of ['', 'type=note&scope=team&status=archived&recall=yearly']) {
       const f = filtersFromParams(new URLSearchParams(query))
       expect(f).toEqual(NO_FILTERS)
       expect(filtersToParams(f).toString()).toBe('')
       expect(listRequest(f)).toEqual({})
     }
+
+    // Entity filters are free text, so only blanks fall away.
+    for (const query of ['', 'q=%20%20']) {
+      const f = entityFiltersFromParams(new URLSearchParams(query))
+      expect(entityFiltersToParams(f).toString()).toBe('')
+      expect(entityRequest(f)).toEqual({})
+    }
+    expect(entityFiltersFromParams(new URLSearchParams(''))).toEqual(NO_ENTITY_FILTERS)
 
     // The recall log hides the UI's own calls by default; the task list shows every status and the model-call tab
     // only failures, which the daemon would not do unasked.
@@ -43,7 +55,7 @@ describe('list filters', () => {
 
   it('round-trip through the hash query and map to a request body', () => {
     const query =
-      'project=demo&scope=project&platform=codex&type=instruction&origin=user&status=current%2Cstale&q=%E7%AB%AF%E5%8F%A3'
+      'project=demo&scope=project&platform=codex&type=instruction&origin=user&status=current%2Cstale&q=%E7%AB%AF%E5%8F%A3&recall=30'
     const f = filtersFromParams(new URLSearchParams(query))
     expect(f.statuses).toEqual(['current', 'stale'])
     expect(filtersToParams(f).toString()).toBe(query)
@@ -55,8 +67,20 @@ describe('list filters', () => {
       origins: ['user'],
       statuses: ['current', 'stale'],
       text: '端口',
+      notRecalledDays: 30,
       cursor: 'c1',
     })
+
+    // The recall filter is one choice, so the daemon never gets both `neverRecalled` and `notRecalledDays`.
+    const never = listRequest({ ...f, recall: 'never' })
+    expect(never).toMatchObject({ project: 'demo', neverRecalled: true })
+    expect(never).not.toHaveProperty('notRecalledDays')
+    expect(listRequest({ ...NO_FILTERS, recall: '90' })).toEqual({ notRecalledDays: 90 })
+
+    const entityQuery = 'project=demo&type=PERSON&q=%E7%AB%AF%E5%8F%A3'
+    const entity = entityFiltersFromParams(new URLSearchParams(entityQuery))
+    expect(entityFiltersToParams(entity).toString()).toBe(entityQuery)
+    expect(entityRequest(entity, 'c5')).toEqual({ project: 'demo', entityType: 'PERSON', text: '端口', cursor: 'c5' })
 
     // Showing the UI's own calls, or asking for the web platform by name, stops excluding them.
     const recallQuery = 'kind=search&platform=codex&project=demo&session=s1&web=1'

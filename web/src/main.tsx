@@ -7,6 +7,7 @@ import './index.css'
 import { ConflictsPage } from './pages/Conflicts'
 import { ConsolidationPage, ConsolidationRunPage } from './pages/Consolidation'
 import { ContextPage } from './pages/Context'
+import { EntitiesPage, EntityPage } from './pages/Entities'
 import { ImportRunPage, ImportsPage } from './pages/Imports'
 import { MemoriesPage } from './pages/Memories'
 import { MemoryPage } from './pages/MemoryDetail'
@@ -30,6 +31,8 @@ createRoot(document.getElementById('root')!).render(
             <Route index element={<OverviewPage />} />
             <Route path="memories" element={<MemoriesPage />} />
             <Route path="memories/:id" element={<MemoryPage />} />
+            <Route path="entities" element={<EntitiesPage />} />
+            <Route path="entities/:id" element={<EntityPage />} />
             <Route path="new" element={<NewMemoryPage />} />
             <Route path="search" element={<SearchPage />} />
             <Route path="context" element={<ContextPage />} />
