@@ -35,8 +35,8 @@ strategy.
 
 ## Write path
 
-1. The transport parses the request; application admission validates scope and routes explicit
-   instructions to their synchronous path. Mem0 validates message roles, timestamp order and input shape.
+1. The transport parses the request; application admission redacts credentials in the text and messages
+   (the import rules), validates scope and routes explicit instructions to their synchronous path. Mem0 validates message roles, timestamp order and input shape.
 2. Under the ingest lock, formation checks the platform/turn idempotency key and commits the complete
    input, sequence number and `queued` request. Asynchronous acknowledgement confirms this commit.
 3. One ordered worker takes the formation lock. It prepares prior messages and retrieves

@@ -448,3 +448,45 @@ async fn rollback_retires_only_facts_no_other_request_formed_and_retries_once_fo
     drop(t);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_planned_before_a_redaction_rule_is_admitted_and_kept_redacted() {
+    let (eng, t, caller, dir) = store("import-turns-redacted").await;
+    // A client of an earlier version planned this turn without redacting the stated password.
+    let unit = turn_unit(
+        "s9",
+        "p1",
+        "测试库的数据库密码是 Pg-Test-2026-xyz。",
+        "2026-03-03T10:00:00Z",
+    );
+    let r1 = propose(&eng, &t, vec![unit.clone()]).await["run"]["runId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    import::apply(&t, run_req(&r1)).await.unwrap();
+    let out = ingest::add_memories(&eng, &t, &caller, submission(&unit, Some(&r1)))
+        .await
+        .unwrap();
+    assert_eq!(out["duplicate"], false, "{out}");
+    ingest::wait_idle(&eng, &t).await.unwrap();
+    let request = t
+        .store
+        .get_doc(schema::REQUESTS, out["requestId"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !request.to_string().contains("Pg-Test-2026-xyz"),
+        "{request}"
+    );
+    let facts = t.store.current_project_facts(PROJECT).await.unwrap();
+    assert!(
+        facts
+            .iter()
+            .any(|m| m.text.contains("[redacted:env-secret]")),
+        "{facts:?}"
+    );
+    assert!(facts.iter().all(|m| !m.text.contains("Pg-Test-2026-xyz")));
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}

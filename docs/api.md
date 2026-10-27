@@ -71,15 +71,21 @@ message text verbatim without generation. `messages` is asynchronous by default;
 `sync:true` waits for retrieval visibility. A session-close signal uses `sessionEnded:true`; it closes an
 ordered input job and does not form experiences. It should not be sent as an end-of-every-turn flag.
 
+Credentials in `text` and in message contents are redacted before anything is stored, formed or sent to a
+model, by the rules import uses ([`memory-rules` redaction](../crates/memory-rules/src/import/redact.rs)):
+provider keys, bearer tokens, URL passwords, `--password`-style flags, `KEY=value` assignments, `Password: …`
+labels and a password stated in a sentence (`the password is hunter2`, `密码是 …`, when the value has a digit
+or a symbol) become `[redacted:<kind>]`. Stored input, formed facts and instructions keep the marker.
+
 For an explicit behavior requirement, use `memoryType:"instruction"` with `text`. This is synchronous,
-verbatim and generation-free; it rejects messages/session-end, empty text, over 4 KB or over 1024 Unicode
+verbatim apart from redaction, and generation-free; it rejects messages/session-end, empty text, over 4 KB or over 1024 Unicode
 characters. Optional `memoryScope` selects global, the current project or the caller's platform; project
 is the default. It is rejected for fact writes. An optional turn ID makes instruction writes idempotent.
 
 `importRunId` names the [import run](#import-runs) a past session turn belongs to. Only
 `agent-memoryd import apply` sets it, through the dialogue outbox; the MCP bridge drops it. The daemon accepts it
 only on an asynchronous message batch that is a turn the run applied (same platform, project, session, `turnId`
-and messages) while the run is `applying` or `applied`, and refuses it otherwise (`INVALID_ARGUMENT`, or
+and messages, compared after redaction) while the run is `applying` or `applied`, and refuses it otherwise (`INVALID_ARGUMENT`, or
 `NOT_FOUND` for an unknown run). The turn is then deduplicated like any other by `platform + turnId`; a request it
 creates records the run's ID.
 

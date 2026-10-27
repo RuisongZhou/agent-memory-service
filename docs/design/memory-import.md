@@ -408,8 +408,9 @@ run 的状态是 `proposing → proposed → applying → applied → rolling_ba
 - 规则分六类：`private-key`（私钥块）、`api-key`（`sk-`、`gh*_` 等 [check_public.py](../../scripts/check_public.py) 的模式，
   以及 AWS、Slack、Google、Stripe、GitLab、Hugging Face、npm、PyPI 的前缀）、`bearer`（`Authorization`/`Bearer` 头）、
   `url-credentials`（URL 里的 `user:password@`，用户名可以为空）、`cli-secret`（`mysql -p…`、`curl -u user:pass`、`--password`、`--token`
-  这类参数）和 `env-secret`（名字里带 KEY、TOKEN、SECRET、PASSWORD 等的 `KEY=value` 行，以及 `Password: …`、`密码：…` 这类
-  标签）。命中的片段替换成 `[redacted:<kind>]`，计划里只记命中次数，不记原文。
+  这类参数）和 `env-secret`（名字里带 KEY、TOKEN、SECRET、PASSWORD 等的 `KEY=value` 行，`Password: …`、`密码：…` 这类
+  标签，以及"密码是 …"、"the password is …"这类说法，后者的值要含数字或符号）。命中的片段替换成 `[redacted:<kind>]`，
+  计划里只记命中次数，不记原文。对话写入（`add_memories`）在保存前也按同一套规则脱敏，导入的会话轮次在脱敏之后再与计划比对。
 - 命中私钥块的单元或会话轮次整条跳过。
 - 计划的汇总分别列出会发给生成服务和嵌入服务的调用数和字符数。原样采用和切分的文本各按两次嵌入计；抽取单元按一次最多
   6000 个字符的嵌入计，抽取出的条目的嵌入不计入。

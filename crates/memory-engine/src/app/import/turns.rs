@@ -126,9 +126,11 @@ pub async fn submit(
         .turn
         .clone()
         .expect("session turn rows carry their turn");
+    // The client redacted the run's turn when it planned it, perhaps by older rules: compare it redacted as
+    // `add_memories` redacted the submission.
     if row.status != APPLIED
         || req.scope.session.as_deref() != Some(turn.session.as_str())
-        || req.messages.as_ref() != Some(&turn.messages)
+        || req.messages.as_deref() != Some(crate::app::ingest::redacted(&turn.messages).as_slice())
     {
         return Err(invalid(format!(
             "turn {turn_id} is not one import run {run_id} applied as submitted"
