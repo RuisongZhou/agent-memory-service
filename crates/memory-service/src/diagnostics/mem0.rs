@@ -164,6 +164,26 @@ async fn selftest() {
     indexer::drain(&eng, &t).await.unwrap();
     let result = search(&eng, "a", "database port").await.unwrap();
     assert_eq!(ids(&result), [new_id.clone()]);
+    // A search is logged with who searched and where, like a context read.
+    let row = t
+        .store
+        .get_doc(
+            schema::RETRIEVAL_LOG,
+            result["retrievalId"].as_str().unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    for (field, value) in [
+        ("kind", json!("search")),
+        ("platform", json!("test")),
+        ("project", json!("a")),
+        ("session", json!("s")),
+    ] {
+        assert_eq!(row[field], value, "{field}");
+    }
+    assert_eq!(row["returned"]["gap"], false);
+    assert!(row["createdTs"].as_i64().unwrap() > 0);
     let feedback = management::feedback(
         &eng,
         &t,
@@ -180,6 +200,11 @@ async fn selftest() {
         .await
         .unwrap();
     assert!(ids(&search(&eng, "a", "database port").await.unwrap()).is_empty());
+    // This search and the one in project "b" found nothing.
+    assert_eq!(
+        management::stats(&eng, &t).await.unwrap()["retrieval"]["gapSearches"],
+        2
+    );
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
     println!("mem0: contract, scope, raw/idempotent writes, immediate visibility, publication recovery, correction, deletion, zero generation passed; data {}", dir.display());
 }

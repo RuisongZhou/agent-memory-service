@@ -137,7 +137,8 @@ fn overlay(tx: &Tx, id: &str, memory: &mut MemoryRec) -> Result<()> {
     Ok(())
 }
 
-/// Upgrade legacy current views conservatively. This runs before caches and workers start.
+/// Upgrade legacy current views conservatively, and legacy search log rows. This runs before caches and
+/// workers start.
 pub(crate) async fn repair(store: &Store) -> Result<()> {
     let records = store
         .select_as::<MemoryRec>("SELECT * OMIT id, embedding FROM memories", vec![])
@@ -166,6 +167,12 @@ pub(crate) async fn repair(store: &Store) -> Result<()> {
         )?;
         tx.index_task(schema::MEMORIES, &id, "upsert")?;
     }
+    // Searches logged without `kind`, `createdTs` and `gap`. Who searched and where was not recorded.
+    tx.raw_table(
+        schema::RETRIEVAL_LOG,
+        "UPDATE retrieval_log SET kind = 'search', createdTs = time::unix(<datetime> createdAt), returned.gap = (array::len(returned.memories) = 0) WHERE kind = NONE RETURN NONE",
+        vec![],
+    );
     store.commit(tx).await
 }
 
@@ -278,9 +285,36 @@ mod tests {
             ..port.clone()
         };
         put(&store, &[&port, &new_port]).await?;
+        // Searches logged before they carried `kind`, `createdTs` and `gap`; a context read already does.
+        let legacy = |memories: Value| json!({"query": "port", "createdAt": "2026-10-01T08:00:00Z", "returned": {"memories": memories}});
+        let found = store
+            .log(
+                schema::RETRIEVAL_LOG,
+                legacy(json!([{"id": "port", "rank": 1}])),
+            )
+            .await?;
+        let empty = store.log(schema::RETRIEVAL_LOG, legacy(json!([]))).await?;
+        let context = json!({"kind": "context", "createdAt": "2026-10-01T08:00:00Z",
+            "createdTs": 1, "returned": {"memories": []}});
+        let context = store.log(schema::RETRIEVAL_LOG, context).await?;
         store.repair_integrity().await?;
         // Repairing again finds the question it opened.
         store.repair_integrity().await?;
+        for (id, gap) in [(&found, false), (&empty, true)] {
+            let row = store.get_doc(schema::RETRIEVAL_LOG, id).await?.unwrap();
+            assert_eq!(row["kind"], "search");
+            assert_eq!(row["createdTs"], 1_790_841_600);
+            assert_eq!(row["returned"]["gap"], gap);
+        }
+        let row = store
+            .get_doc(schema::RETRIEVAL_LOG, &context)
+            .await?
+            .unwrap();
+        assert_eq!(
+            (&row["createdTs"], row.pointer("/returned/gap")),
+            (&json!(1), None)
+        );
+        assert_eq!(store.gap_search_count().await?, 1);
         let open: Vec<UncertaintyRec> = store
             .select_as(
                 "SELECT * OMIT id FROM uncertainties WHERE status = 'open'",

@@ -120,11 +120,11 @@ Graphiti、memU、本地版 Basic Memory 没有界面；Memobase 的 playground 
 
 | # | 功能 | 借鉴 | 用到的接口 | 缺口 |
 |---|---|---|---|---|
-| 10 | 冲突队列：列出未解决的冲突，并排比较，选择保留哪条并填理由 | Hermes、Supermemory | `resolve_uncertainty` | 需要分页列出 uncertainties（5.3） |
-| 11 | consolidation：发起提议（标明会调用模型）；逐条查看 merge/supersede/conflict 和被拒原因；apply；回滚，并显示 `skipReason`、`rollbackSkipReason` | mem0 Dream（它没有回滚） | `/admin/consolidate`、`consolidation_apply`、`consolidation_rollback` | 没有列出运行的接口（5.3）；apply 只能整批，不能逐条拒绝 |
+| 10 | 冲突队列：列出未解决的冲突，并排比较，选择保留哪条并填理由 | Hermes、Supermemory | `resolve_uncertainty` | 需要列出 uncertainties（5.4） |
+| 11 | consolidation：发起提议（标明会调用模型）；逐条查看 merge/supersede/conflict 和被拒原因；apply；回滚，并显示 `skipReason`、`rollbackSkipReason` | mem0 Dream（它没有回滚） | `/admin/consolidate`、`consolidation_apply`、`consolidation_rollback` | 没有列出和查看运行的接口（5.5），界面不知道功能开没开（5.6）；apply 只能整批，不能逐条拒绝 |
 | 12 | 导入：列出运行，逐条接受或拒绝，apply，回滚 | Basic Memory、Claude 导入 | `import_runs`、`import_run`、`import_apply`（`decisions`）、`import_rollback` | — |
-| 13 | 召回记录：哪个平台、哪个会话、什么时候取回了哪些记忆，有没有被用上；详情里显示"最近被召回" | ChatGPT Sources、OpenMemory 访问记录、Memori | `feedback` | 需要分页接口（5.3）；`search_memories` 的日志没记平台、项目和会话，只有 `get_context` 的记了（5.4） |
-| 14 | 任务和失败：请求状态、失败原因、模型原始响应 | Zep Ingestion Traces | `get_task`、`/admin/export` 的 `requests`、`llm_responses` | 需要分页 |
+| 13 | 召回记录：哪个平台、哪个会话、什么时候取回了哪些记忆，有没有被用上；详情里显示"最近被召回" | ChatGPT Sources、OpenMemory 访问记录、Memori | `feedback` | 需要分页接口（5.7）；`search_memories` 的日志补上平台、项目和会话（5.3） |
+| 14 | 任务和失败：请求状态、失败原因、模型原始响应 | Zep Ingestion Traces | `get_task`、`/admin/export` 的 `requests`、`llm_responses` | 需要分页接口；模型调用全部失败的请求连不到原始响应（5.8） |
 
 ### 4.3 以后
 
@@ -147,13 +147,35 @@ Graphiti、memU、本地版 Basic Memory 没有界面；Memobase 的 playground 
 
 都加在现有的 `/v1/{name}` 或 `/admin/{name}` 分发里，每个接口在入口校验一次参数（AGENTS.md），单元测试放在实现旁边。
 
-1. `list_memories`：`{scope, types?, statuses?, origins?, sort, cursor?, limit}`，返回一页记录和下一页的游标。现在的
-   `/admin/export` 能按状态、类型、项目过滤，但会一次返回全部，固定按 `recordedTs` 升序，也不能按平台或 origin 过滤。
-2. facets：各项目、各平台、各类型和状态的记录数，供下拉框和概览使用。
-3. 分页列出 uncertainties、consolidation 运行和 `retrieval_log`。导入运行已经有 `import_runs`；其余几张表只能通过 export
-   整表读取。
-4. `search_memories` 写 `retrieval_log` 时补上平台、项目、会话和 `createdTs`，和 `get_context` 的日志一致
-   （[retrieval.rs](../../crates/memory-algo-mem0/src/retrieval.rs)）。
+第一期（已实现，见 [API](../api.md)）：
+
+1. `list_memories`：按项目、平台、类型、状态、origin 和文本筛选，按 `recordedTs` 倒序翻页。`/admin/export` 只能一次
+   返回全部。
+2. `memory_facets`：各项目、各平台、各 origin、各类型和状态的记录数，供下拉框和概览使用。
+
+第二期。导入已经有 `import_runs`、`import_run`、`import_apply`、`import_rollback`，不用补；其余几张表现在只能通过 export
+整表读取：
+
+3. 检索日志补字段（已实现）：`search_memories` 写 `retrieval_log` 时，和 `get_context` 一样记 `kind`、平台、项目、会话和
+   `createdTs`，并在 `returned` 里记 `gap`（[retrieval.rs](../../crates/memory-algo-mem0/src/retrieval.rs)）。之前 search
+   的日志没有 `kind` 和 `gap`，所以 `/admin/stats` 的 `retrieval.gapSearches`（概览的"无结果的检索"）一直是 0。启动修复
+   给旧的 search 日志补上 `kind`、`createdTs`（由 `createdAt` 换算）和 `gap`；当时没记平台、项目和会话，召回记录里显示为
+   未知。
+4. `list_uncertainties`：`{status?, project?, limit?}`，`status` 默认 `open`，按 `createdAt` 倒序，每个问题带上成员记录
+   （字段和 `get_memory` 相同），界面不用逐条再取。问题只来自 consolidation 的 conflict 操作和启动修复，数量少，和
+   `import_runs` 一样只按条数截断，不翻页。
+5. consolidation 运行：`consolidation_runs` `{project?, limit?}` 倒序列出运行，不带 proposals；`consolidation_run`
+   `{runId}` 返回 `{run, proposals}`，和 `import_run` 对应。现在只有 consolidate、apply、rollback 这几个写操作会返回运行。
+6. `/admin/stats` 报告 `consolidationEnabled`（默认关闭）和有没有生成模型。界面据此禁用"发起提议"和"apply"，不必等接口
+   返回 400 或 `MODEL_UNAVAILABLE`。
+7. `list_retrievals`：`{kind?, platform?, excludePlatforms?, project?, session?, memoryId?, cursor?, limit?}`，按
+   `createdTs`、`mid` 倒序翻页，每行带返回记录的 id、类型、状态、文本，以及 `feedback`。界面默认排除 `web`，也就是网页
+   自己的检索和上下文预览。`retrieval_log` 没有清理，`memoryId`（详情里的"最近被召回"）要扫描数组字段，第一版只看
+   最近一段日志；需要更长的历史时再加保留期或索引。
+8. 任务：`list_requests` `{statuses?, kind?, platform?, project?, cursor?, limit?}` 倒序列出写入请求，不带
+   `inputMessages`；`request` `{requestId}` 返回整条请求、它的 `extract_log` 和这些日志指向的 `llm_responses`。模型调用
+   全部失败时没有 `extract_log`，`llm_responses` 也不记 `requestId`，请求上只有最后一次的 `error`；
+   `list_model_responses` `{stage?, failedOnly?, cursor?, limit?}` 按时间列出原始响应，用来查这类失败。
 
 ## 6. 安全前提
 
