@@ -451,6 +451,8 @@ pub enum ApiError {
     #[error("{0}")]
     InvalidArgument(String),
     #[error("{0}")]
+    Forbidden(String),
+    #[error("{0}")]
     NotFound(String),
     #[error("memory is not current; current id = {0}")]
     NotCurrent(String),
@@ -466,6 +468,7 @@ impl ApiError {
     pub fn status_code(&self) -> u16 {
         match self {
             ApiError::InvalidArgument(_) => 400,
+            ApiError::Forbidden(_) => 403,
             ApiError::NotFound(_) => 404,
             ApiError::NotCurrent(_) => 409,
             ApiError::PayloadTooLarge(_) => 413,
@@ -476,6 +479,7 @@ impl ApiError {
     pub fn code(&self) -> &'static str {
         match self {
             ApiError::InvalidArgument(_) => "INVALID_ARGUMENT",
+            ApiError::Forbidden(_) => "FORBIDDEN",
             ApiError::NotFound(_) => "NOT_FOUND",
             ApiError::NotCurrent(_) => "NOT_CURRENT",
             ApiError::PayloadTooLarge(_) => "PAYLOAD_TOO_LARGE",
