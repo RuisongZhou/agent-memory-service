@@ -11,8 +11,9 @@ model key into a private env file (asked for hidden, never taken from an argumen
 exact commands it will register against a temporary mock daemon (checks.py), registers the stdio
 MCP bridge, the dialogue collector and, with --recall, the automatic recall hooks in the host's
 own configuration, and finally installs and starts the daemon as a LaunchAgent / systemd user
-service (runtime.py; --no-service leaves the daemon to you). Every entry runs `agent-memoryd`,
-so hosts need no Python. Self-hosted model servers are never installed or started.
+service (runtime.py; --no-service leaves the daemon to you) that also serves the web UI, built here or
+downloaded (ui.py; --no-ui skips it). Every entry runs `agent-memoryd`, so hosts need no Python.
+Self-hosted model servers are never installed or started.
 """
 
 import argparse
@@ -535,6 +536,9 @@ def arguments(argv=None):
     parser.add_argument('--no-service', action='store_true',
                         help='register the platform only: no env file, model key or daemon service '
                              '(run the daemon yourself)')
+    parser.add_argument('--no-ui', action='store_true',
+                        help='install no web UI: neither `make ui` nor the release download; a UI the '
+                             'service already serves stays')
     parser.add_argument('--env-file', type=absolute,
                         help='env file of the daemon service (default: the installed service\'s, else '
                              '~/.config/agent-memory-service/.env); created from .env.example when missing')
@@ -708,11 +712,14 @@ def install(host, args):
         return
     import checks
     import runtime
+    import ui
     runtime.check_surreal(ctx)
     runtime.prepare(args, ctx)  # the key prompt comes before the build, so the rest runs unattended
     source = build_binary(args)
     service = runtime.plan_service(args, ctx, source)
     with installation_lock(ctx.state_root):
+        if service is not None:
+            ui.install(args, ctx, service)
         # The checks run the installed binary: exactly the commands the configuration will hold.
         with runtime.staged(ctx, None if args.binary else source, service):
             checks.verify_local(host, ctx)
@@ -730,8 +737,8 @@ def install(host, args):
 
 def print_shared(ctx):
     """What --rollback and --uninstall leave for the other platforms, and how to remove it."""
-    print(f'[note] the binary {ctx.binary}, the daemon service, its env file, memory data and the outbox are')
-    print('       kept for other platforms. To remove the service: agent-memoryd service status shows how to')
+    print(f'[note] the binary {ctx.binary}, the daemon service, its env file, web UI, memory data and the outbox')
+    print('       are kept for other platforms. To remove the service: agent-memoryd service status shows how to')
     print('       stop it, then agent-memoryd service uninstall --apply (docs/deployment.md#install-the-service).')
 
 

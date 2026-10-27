@@ -3,6 +3,7 @@
 The end-to-end check at the bottom runs the real offline verification when a built
 agent-memoryd exists; it starts a temporary mock daemon and a local generation stub.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tomllib
 import types
 
@@ -20,6 +22,7 @@ sys.path.insert(0, str(ROOT / 'scripts/install'))
 import checks  # noqa: E402
 import core  # noqa: E402
 import runtime  # noqa: E402
+import ui  # noqa: E402
 from hosts import claude_code, codex, deepseek_harness, workbuddy  # noqa: E402
 
 BINARY = ROOT / 'target/fast/agent-memoryd'
@@ -877,8 +880,8 @@ def test_argument_errors(tmp_path, capsys, fake_binary):
 
 KEY = 'offline-test-key-1'  # not shaped like a provider key (check_public.py)
 NOT_INSTALLED = {'manager': 'launchd', 'unit': '/nowhere/local.agent-memory-daemon.plist', 'installed': False,
-                 'managed': False, 'binary': None, 'envFile': None, 'dataDir': None, 'outbox': None, 'port': None,
-                 'llmConcurrency': None}
+                 'managed': False, 'binary': None, 'envFile': None, 'dataDir': None, 'outbox': None, 'uiDir': None,
+                 'port': None, 'llmConcurrency': None}
 
 
 @pytest.fixture
@@ -905,9 +908,12 @@ elif args[:2] == ['service', 'install']:
 
 
 @pytest.fixture
-def session(tmp_path, monkeypatch, offline):
-    """The temporary directory as the login home, with no daemon answering and the outbox uploaded."""
+def session(tmp_path, monkeypatch, offline, fake_surreal):
+    """The temporary directory as the login home, with no daemon answering and the outbox uploaded. No npm is
+    on PATH and no release UI bundle can be downloaded, so no web UI is installed."""
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('PATH', str(fake_surreal.parent))
+    monkeypatch.setattr(ui, 'RELEASES', (tmp_path / 'releases').as_uri())
     monkeypatch.setattr(checks, 'daemon_health', lambda url: None)
     monkeypatch.setattr(checks, 'uploader_running', lambda outbox: True)
     monkeypatch.delenv('QWEN_API_KEY', raising=False)
@@ -1028,6 +1034,10 @@ def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, se
     (service_binary.parent / 'status.json').write_text(json.dumps(dict(status, outbox='/elsewhere/outbox.sqlite3')))
     code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
     assert code == 1 and '--outbox /elsewhere/outbox.sqlite3' in output
+    del status['uiDir']  # a binary older than the checkout
+    (service_binary.parent / 'status.json').write_text(json.dumps(status))
+    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
+    assert code == 1 and 'older than this checkout (service status --json has no uiDir)' in output, output
     assert len(service_calls(service_binary)) == 1
 
 
@@ -1073,6 +1083,72 @@ def test_the_installed_binary_and_env_file_come_back_when_a_check_fails(session,
     assert flag(call, '--binary') == str(installed) and call[-1] == '--restart'  # a new binary restarts
     code, output = run(capsys, *argv[:-2])
     assert code == 0 and service_calls(installed)[-1][-1] != '--restart'  # same binary: no restart
+
+
+def test_the_web_ui_is_built_downloaded_or_skipped_and_served_by_the_service(session, capsys, service_binary,
+                                                                              monkeypatch):
+    target = session / ui.UI_DIR
+    argv = service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply',
+                                '--key-file', session / 'key.txt')
+    served = lambda: flag(service_calls(service_binary)[-1], '--ui-dir')
+    code, output = run(capsys, *argv[:-3])  # the preview
+    assert code == 0 and f'[plan] web UI={target}, downloaded from {ui.bundle_url()}' in output, output
+    # Neither npm nor a release bundle: the service starts without a web UI.
+    code, output = run(capsys, *argv)
+    assert code == 0 and 'no web UI installed' in output and served() is None, output
+    assert not target.exists()
+
+    # The bundle as the release workflow packs it: web/dist's files at the top level, and their SHA-256.
+    tag = ui.version()
+    bundle = session / 'releases' / tag / f'agent-memory-ui-{tag}.tar.gz'
+    dist = session / 'release-dist'
+    (dist / 'assets').mkdir(parents=True)
+    (dist / 'index.html').write_text('release')
+    (dist / 'assets/app.js').write_text('')
+    bundle.parent.mkdir(parents=True)
+    with tarfile.open(bundle, 'w:gz') as tar:
+        tar.add(dist, arcname='.')
+    checksum = bundle.with_name(bundle.name + '.sha256')
+    checksum.write_text(f"{'0' * 64}  {bundle.name}\n")
+    code, output = run(capsys, *argv)
+    assert code == 0 and 'does not match' in output and served() is None and not target.exists(), output
+    checksum.write_text(f'{hashlib.sha256(bundle.read_bytes()).hexdigest()}  {bundle.name}\n')
+    code, output = run(capsys, *argv)
+    assert code == 0 and served() == str(target), output
+    assert (target / 'index.html').read_text() == 'release' and (target / 'assets/app.js').is_file()
+
+    # With npm on PATH, `make ui` builds it here and replaces the downloaded files; a failed build falls back to
+    # the release bundle.
+    build = session / 'web/dist'
+    monkeypatch.setattr(ui, 'BUILD', build)
+    tools = session / 'tools'
+    tools.mkdir()
+    (tools / 'npm').write_text('#!/bin/sh\n')
+    (tools / 'make').write_text(f"#!{sys.executable}\nimport pathlib, sys\nassert sys.argv[1:] == ['ui']\n"
+                                f"build = pathlib.Path({str(build)!r})\nbuild.mkdir(parents=True, exist_ok=True)\n"
+                                "(build / 'index.html').write_text('built')\n")
+    for tool in tools.iterdir():
+        tool.chmod(0o755)
+    monkeypatch.setenv('PATH', f"{tools}{os.pathsep}{os.environ['PATH']}")
+    code, output = run(capsys, *argv)
+    assert code == 0 and '[build] make ui' in output and '[download]' not in output and served() == str(target), output
+    assert (target / 'index.html').read_text() == 'built' and not (target / 'assets').exists()
+    assert sorted(p.name for p in target.parent.iterdir()) == ['ui']  # nothing staged is left beside it
+    (tools / 'make').write_text('#!/bin/sh\nexit 2\n')
+    code, output = run(capsys, *argv)
+    assert code == 0 and 'make ui failed' in output and (target / 'index.html').read_text() == 'release', output
+
+    # --no-ui builds and downloads nothing; the installed service keeps the web UI its unit names while that
+    # still has an index.html.
+    status = dict(NOT_INSTALLED, installed=True, managed=True, envFile=str(session / runtime.ENV_FILE), port=8765,
+                  uiDir=str(target))
+    (service_binary.parent / 'status.json').write_text(json.dumps(status))
+    installed_unit(session)
+    code, output = run(capsys, *argv, '--no-ui')
+    assert code == 0 and '[build]' not in output and '[download]' not in output and served() == str(target), output
+    (target / 'index.html').unlink()
+    code, output = run(capsys, *argv, '--no-ui')
+    assert code == 0 and 'no index.html any more' in output and served() is None, output
 
 
 def test_the_key_is_asked_for_before_the_build(session, capsys, service_binary, monkeypatch):

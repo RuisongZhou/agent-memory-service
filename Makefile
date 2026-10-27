@@ -25,7 +25,7 @@ fmt:
 check-public:
 	$(SCRIPTS_PYTHON) scripts/check_public.py
 # The web UI (docs/design/web-ui.md §7): only these two targets need Node; cargo never does. `ui` writes web/dist
-# for `agent-memoryd serve --ui-dir web/dist`.
+# for `agent-memoryd serve --ui-dir web/dist`; scripts/install.sh runs it when npm is on PATH.
 ui:
 	cd web && npm ci && npm run build
 test-web:

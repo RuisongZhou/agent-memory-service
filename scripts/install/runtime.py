@@ -8,12 +8,13 @@ The one-command install sets these up while it registers a platform, and reuses 
   checkout (`--binary` uses a given executable as is);
 - the env file (`~/.config/agent-memory-service/.env`, mode 0600) holds the model key, which comes from
   `--key-file`, the environment or a hidden prompt, never from an argument; a file with a key is reused;
+- the web UI goes to `~/.local/share/agent-memory-service/ui` (ui.py);
 - `agent-memoryd service install --apply --start` writes the LaunchAgent / systemd user unit and starts
-  it. The options of a unit it wrote earlier are kept; a unit written by hand and a daemon started by
-  hand are left alone.
+  it, with `--ui-dir` when a web UI is installed. The options of a unit it wrote earlier are kept; a unit
+  written by hand and a daemon started by hand are left alone.
 
 The binary and the env file are put back if the installation fails before the platform's
-configuration is written; `--rollback` and `--uninstall` leave all three to the other platforms.
+configuration is written; `--rollback` and `--uninstall` leave all of them to the other platforms.
 """
 
 import datetime
@@ -34,6 +35,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import core
+import ui
 from core import InstallError
 
 BINARY = Path('.local/bin/agent-memoryd')  # relative to home
@@ -45,6 +47,8 @@ SURREAL_VERSIONS = ((3, 2), (4, 0))
 INSTALL_SURREAL = ('install SurrealDB 3.x: `brew install surrealdb/tap/surreal` on macOS, or '
                    '`curl -sSf https://install.surrealdb.com | sh` (docs/deployment.md#install-surrealdb)')
 SERVICE_TIMEOUT = 240  # seconds; `--start` waits up to 60 s for the daemon and 10 s for launchd
+# The `service status --json` settings plan_service reads; an older binary lacks some.
+STATUS_KEYS = {'installed', 'managed', 'unit', 'envFile', 'dataDir', 'outbox', 'uiDir', 'port', 'llmConcurrency'}
 
 
 def service_port(url):
@@ -184,6 +188,7 @@ def print_plan(args, ctx):
           'installed or updated, then started')
     print(f'[plan] env file={env} ({state}); an installed service keeps its env file, data and options, '
           'and a daemon started by hand is left alone')
+    ui.print_plan(args, ctx)
 
 
 def prepare(args, ctx):
@@ -214,14 +219,18 @@ def service_status(binary, home):
         reason = (result.stderr.strip().splitlines() or ['no output'])[-1][:200]
         raise InstallError(f'{binary} service status --json failed ({reason}); build this checkout '
                            'or pass a newer --binary')
+    missing = STATUS_KEYS - status.keys()
+    if missing:
+        raise InstallError(f"{binary} is older than this checkout (service status --json has no "
+                           f"{', '.join(sorted(missing))}); build this checkout or pass a newer --binary")
     return status
 
 
 def plan_service(args, ctx, binary):
     """The daemon phase: None when the service is left alone, else its options and the env file change.
 
-    A unit `service install` wrote keeps its options; only the binary changes, and capture adds the
-    outbox. A unit written by hand and a daemon started by hand are never replaced.
+    A unit `service install` wrote keeps its options; only the binary changes, capture adds the outbox
+    and ui.install the web UI. A unit written by hand and a daemon started by hand are never replaced.
     """
     if not ctx.manage_service:
         return None
@@ -246,9 +255,15 @@ def plan_service(args, ctx, binary):
             raise InstallError(f'The installed service uploads {outbox}, but capture would write {ctx.outbox}; '
                                f'pass --outbox {shlex.quote(outbox)}')
         outbox = str(ctx.outbox)
+    ui_dir = status['uiDir']
+    if ui_dir is not None and not (Path(ui_dir) / 'index.html').is_file():
+        # The daemon would refuse to start with it.
+        print(f'[note] the installed service serves the web UI from {ui_dir}, which has no index.html any more; '
+              'the service drops it')
+        ui_dir = None
     env_file = args.env_file or (Path(status['envFile']) if installed and status['envFile'] else ctx.home / ENV_FILE)
     plan = types.SimpleNamespace(
-        env_file=env_file, env_change=None, outbox=outbox,
+        env_file=env_file, env_change=None, outbox=outbox, ui_dir=ui_dir,
         data_dir=status['dataDir'], llm_concurrency=status['llmConcurrency'])
     if needs_key(args, env_file):
         secret = ctx.secret or read_key(args)
@@ -369,7 +384,7 @@ def start_service(ctx, plan):
     argv = [str(ctx.binary), 'service', 'install', '--apply', '--start', '--home', str(ctx.home),
             '--binary', str(ctx.binary), '--surreal-bin', str(ctx.surreal), '--env-file', str(plan.env_file),
             '--port', str(ctx.port)]
-    for flag, value in (('--data-dir', plan.data_dir), ('--outbox', plan.outbox),
+    for flag, value in (('--data-dir', plan.data_dir), ('--outbox', plan.outbox), ('--ui-dir', plan.ui_dir),
                         ('--llm-concurrency', plan.llm_concurrency)):
         if value is not None:
             argv += [flag, str(value)]

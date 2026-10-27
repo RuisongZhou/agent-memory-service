@@ -97,6 +97,10 @@ pub struct InstallArgs {
     /// the unit records its absolute path [default: `surreal` on PATH]
     #[arg(long, value_name = "PATH")]
     pub surreal_bin: Option<PathBuf>,
+    /// Web UI files the daemon serves under /ui/ (`serve --ui-dir`): a directory with the front
+    /// end's index.html; the unit records its absolute path [default: no web UI]
+    #[arg(long, value_name = "DIR")]
+    pub ui_dir: Option<PathBuf>,
     /// Then load the service in your login session (reloading it when the unit changed) and wait
     /// until the daemon answers; runs launchctl or systemctl
     #[arg(long, requires = "apply")]
@@ -147,6 +151,7 @@ pub struct Serve {
     pub data_dir: PathBuf,
     pub surreal_bin: PathBuf,
     pub outbox: Option<PathBuf>,
+    pub ui_dir: Option<PathBuf>,
     pub port: u16,
     pub llm_concurrency: u32,
 }
@@ -171,6 +176,10 @@ impl Serve {
         if let Some(outbox) = &self.outbox {
             argv.push("--outbox".into());
             argv.push(unit_text(outbox)?);
+        }
+        if let Some(ui_dir) = &self.ui_dir {
+            argv.push("--ui-dir".into());
+            argv.push(unit_text(ui_dir)?);
         }
         Ok(argv)
     }
@@ -373,6 +382,15 @@ pub fn install(args: &InstallArgs) -> Result<Outcome> {
             Some(None) => Some(home.join(crate::harness::outbox::DEFAULT_OUTBOX)),
             None => None,
         },
+        // Checked as the daemon checks it at startup, so the unit never names a directory it refuses.
+        ui_dir: match &args.ui_dir {
+            Some(dir) => {
+                let dir = std::path::absolute(dir)?;
+                crate::api::ui::check_dir(&dir)?;
+                Some(dir)
+            }
+            None => None,
+        },
         port: args.port,
         llm_concurrency: args.llm_concurrency,
     };
@@ -550,6 +568,12 @@ pub fn status_report(at: &Target) -> Result<(Vec<String>, Option<u16>)> {
         };
         report.push(format!("[status] SurrealDB {surreal} {state}"));
     }
+    if let Some(ui_dir) = flag_value(&argv, "--ui-dir") {
+        report.push(match crate::api::ui::check_dir(Path::new(ui_dir)) {
+            Ok(()) => format!("[status] web UI {ui_dir} is installed"),
+            Err(e) => format!("[status] web UI: {e}; the daemon cannot start"),
+        });
+    }
     if manager == Manager::Systemd {
         report.push(format!(
             "[status] {}",
@@ -594,6 +618,7 @@ pub fn status_json(at: &Target) -> Result<serde_json::Value> {
         "dataDir": flag("--data-dir"),
         "surrealBin": flag("--surreal-bin"),
         "outbox": flag("--outbox"),
+        "uiDir": flag("--ui-dir"),
         "port": if text.is_some() { serve_port(&argv) } else { None },
         "llmConcurrency": number(flag("--llm-concurrency")),
     }))
@@ -1031,7 +1056,8 @@ mod tests {
         cmd: ServiceCmd,
     }
 
-    /// A temporary home holding executable stand-ins for agent-memoryd and surreal, and an env file.
+    /// A temporary home holding executable stand-ins for agent-memoryd and surreal, an env file and
+    /// web UI files.
     struct Home {
         dir: tempfile::TempDir,
     }
@@ -1042,6 +1068,8 @@ mod tests {
             let home = Home { dir };
             std::fs::create_dir_all(home.path().join("bin")).unwrap();
             std::fs::create_dir_all(home.path().join("checkout")).unwrap();
+            std::fs::create_dir_all(home.ui()).unwrap();
+            std::fs::write(home.ui().join("index.html"), "<!doctype html>").unwrap();
             std::fs::write(home.binary(), "#!/bin/sh\n").unwrap();
             std::fs::write(home.surreal(), "#!/bin/sh\n").unwrap();
             std::fs::write(home.env_file(), "QWEN_API_KEY=offline-test-value\n").unwrap();
@@ -1070,6 +1098,10 @@ mod tests {
 
         fn env_file(&self) -> PathBuf {
             self.path().join("checkout/.env")
+        }
+
+        fn ui(&self) -> PathBuf {
+            self.path().join("ui")
         }
 
         fn parse(&self, manager: &str, args: &[&str]) -> ServiceCmd {
@@ -1125,8 +1157,11 @@ mod tests {
         let unit = home
             .path()
             .join("Library/LaunchAgents/local.agent-memory-daemon.plist");
+        let ui = home.ui();
+        let options = ["--outbox", "--ui-dir", ui.to_str().unwrap()];
+        let apply = [&options[..], &["--apply"]].concat();
 
-        let preview = home.install("launchd", &["--outbox"]).unwrap();
+        let preview = home.install("launchd", &options).unwrap();
         assert_eq!(preview.path, unit);
         assert!(!preview.changed && !unit.exists());
         assert!(!home.path().join(DEFAULT_DATA_DIR).exists());
@@ -1134,7 +1169,7 @@ mod tests {
         assert!(report.contains("[result] preview only"), "{report}");
         assert!(report.contains("<string>serve</string>"), "{report}");
 
-        let written = home.install("launchd", &["--outbox", "--apply"]).unwrap();
+        let written = home.install("launchd", &apply).unwrap();
         assert!(written.changed && written.backup.is_none());
         let text = std::fs::read_to_string(&unit).unwrap();
         assert!(!text.contains("offline-test-value"));
@@ -1158,6 +1193,8 @@ mod tests {
                 "1".into(),
                 "--outbox".into(),
                 p(crate::harness::outbox::DEFAULT_OUTBOX),
+                "--ui-dir".into(),
+                p("ui"),
             ]
         );
         assert!(text.contains(&p("Library/Logs/agent-memory-service/daemon.stderr.log")));
@@ -1178,7 +1215,7 @@ mod tests {
         assert!(!next.contains("bootout"), "{next}");
 
         // A rerun with the same options writes nothing.
-        let again = home.install("launchd", &["--outbox", "--apply"]).unwrap();
+        let again = home.install("launchd", &apply).unwrap();
         assert!(!again.changed && again.backup.is_none());
         assert!(home.backups().is_empty());
     }
@@ -1252,6 +1289,15 @@ mod tests {
         assert!(e.to_string().contains("--env-file"), "{e}");
         assert!(!Manager::Systemd.unit_path(home.path()).exists());
 
+        let home = Home::new("svc-no-ui");
+        std::fs::remove_file(home.ui().join("index.html")).unwrap();
+        let ui = home.ui();
+        let e = home
+            .install("systemd", &["--apply", "--ui-dir", ui.to_str().unwrap()])
+            .unwrap_err();
+        assert!(e.to_string().contains("no index.html"), "{e}");
+        assert!(!Manager::Systemd.unit_path(home.path()).exists());
+
         let home = Home::new("svc-no-surreal");
         std::fs::remove_file(home.surreal()).unwrap();
         let e = home.install("systemd", &["--apply"]).unwrap_err();
@@ -1317,7 +1363,9 @@ mod tests {
         assert!(report[0].contains("no LaunchAgent unit"), "{report:?}");
         assert_eq!(port, None);
 
-        home.install("launchd", &["--port", "9002", "--apply"])
+        let ui = home.ui();
+        let ui = ui.to_str().unwrap();
+        home.install("launchd", &["--port", "9002", "--ui-dir", ui, "--apply"])
             .unwrap();
         let (report, port) = status_report(&at).unwrap();
         assert_eq!(port, Some(9002));
@@ -1331,13 +1379,21 @@ mod tests {
             report.contains("[status] SurrealDB ") && report.contains(" is installed"),
             "{report}"
         );
-        std::fs::remove_file(home.surreal()).unwrap();
-        let (report, _) = status_report(&at).unwrap();
         assert!(
-            report
-                .join("\n")
-                .contains("is missing; the daemon cannot start"),
-            "{report:?}"
+            report.contains(&format!("[status] web UI {ui} is installed")),
+            "{report}"
+        );
+        std::fs::remove_file(home.surreal()).unwrap();
+        std::fs::remove_file(home.ui().join("index.html")).unwrap();
+        let (report, _) = status_report(&at).unwrap();
+        let report = report.join("\n");
+        assert!(
+            report.contains("is missing; the daemon cannot start"),
+            "{report}"
+        );
+        assert!(
+            report.contains("no index.html in it; the daemon cannot start"),
+            "{report}"
         );
     }
 
@@ -1346,6 +1402,8 @@ mod tests {
         let home = Home::new("svc-json");
         let data = home.path().join("custom data");
         let data = data.to_str().unwrap();
+        let ui = home.ui();
+        let ui = ui.to_str().unwrap();
         for (manager, m) in [("launchd", Manager::Launchd), ("systemd", Manager::Systemd)] {
             let status = |home: &Home| match home.parse(manager, &["status", "--json"]) {
                 ServiceCmd::Status { at, json: true } => status_json(&at).unwrap(),
@@ -1364,6 +1422,8 @@ mod tests {
                 "9003",
                 "--llm-concurrency",
                 "2",
+                "--ui-dir",
+                ui,
                 "--apply",
             ];
             home.install(manager, &options).unwrap();
@@ -1379,10 +1439,12 @@ mod tests {
             assert_eq!(json["outbox"], p(crate::harness::outbox::DEFAULT_OUTBOX));
             assert_eq!(json["port"], 9003);
             assert_eq!(json["llmConcurrency"], 2);
+            assert_eq!(json["uiDir"], ui);
 
             home.install(manager, &["--apply"]).unwrap();
             let json = status(&home);
             assert_eq!(json["outbox"], serde_json::Value::Null);
+            assert_eq!(json["uiDir"], serde_json::Value::Null);
             assert_eq!(json["port"], 8765);
         }
         let unit = Manager::Systemd.unit_path(home.path());

@@ -30,18 +30,25 @@ Without `--apply` it only previews; the preview names the SurrealDB it found, or
 3. It builds `agent-memoryd` (as `make build`) and copies it to `~/.local/bin/agent-memoryd`, so the
    installed commands survive `cargo clean` or a moved checkout. `--binary PATH` uses an existing
    executable as is, such as a [release binary](deployment.md#release-archive) of the same version.
-4. It checks the exact commands it will register, run from the installed binary, against a temporary
+4. It installs the [web UI](design/web-ui.md) into `~/.local/share/agent-memory-service/ui`: built with
+   `make ui` when `npm` is on PATH, otherwise the UI bundle of the checkout's version, downloaded from its
+   GitHub release and checked against the release's SHA-256. When neither works it goes on without one.
+   A release bundle matches the code only on its release tag; elsewhere the page shows a version banner,
+   so a local build comes first. `--no-ui` skips this step.
+5. It checks the exact commands it will register, run from the installed binary, against a temporary
    mock daemon (on a temporary store with its own SurrealDB server) and the platform's own CLI
    ([checks](#installer-checks)).
-5. It backs up and writes the platform's configuration.
-6. It installs the daemon as a LaunchAgent or systemd user service with
+6. It backs up and writes the platform's configuration.
+7. It installs the daemon as a LaunchAgent or systemd user service with
    [`agent-memoryd service install --apply --start`](deployment.md#install-the-service), with `--outbox`
-   when the platform captures dialogue and `--surreal-bin` set to the SurrealDB it checked, and waits until
-   `/health` answers.
+   when the platform captures dialogue, `--surreal-bin` set to the SurrealDB it checked and `--ui-dir`
+   when a web UI is installed, and waits until `/health` answers. The web UI is then at
+   `http://127.0.0.1:8765/ui/`.
 
 If a step before the last fails, the installer puts back the configuration files, the binary and the
-env file it changed. A service that does not start leaves the written configuration in place: the
-error names the cause, typically the key, and a rerun continues from there.
+env file it changed; a new web UI stays, since the daemon reads its files on each request. A service that
+does not start leaves the written configuration in place: the error names the cause, typically the key,
+and a rerun continues from there.
 
 The env file is `~/.config/agent-memory-service/.env` (directory 0700, file 0600), created from
 [.env.example](../.env.example) with the hosted defaults; an installed service keeps the env file it
@@ -53,10 +60,13 @@ an edited file is first copied to `~/.local/state/agent-memory-service/installat
 settings, such as another generation model or [self-hosted retrieval models](self-hosted-models.md),
 are edited in that file; the service reads it at each start.
 
-The binary, env file and service are shared: a later run for another platform reuses them, so only the
-first run asks for the key. To upgrade, pull the checkout and rerun each platform's command: a rerun
-replaces the binary when the build changed and then restarts the service. An installed service keeps its data directory, env file, port and concurrency; only its binary
-changes, and capture adds `--outbox`. A unit that `service install` did not write
+The binary, env file, web UI and service are shared: a later run for another platform reuses them, so only
+the first run asks for the key. To upgrade, pull the checkout and rerun each platform's command: a rerun
+replaces the binary when the build changed and then restarts the service, and replaces the web UI. An
+installed service keeps its data directory, env file, port, concurrency and web UI; only its binary
+changes, capture adds `--outbox` and a newly installed web UI `--ui-dir`. With `--no-ui`, or when no UI
+could be built or downloaded, the service keeps the web UI it already serves, unless its directory lost
+its `index.html`. A unit that `service install` did not write
 and a daemon started by hand are left alone and used as they are. `--no-service` registers the platform
 only, as for a daemon you run yourself; the installer then needs no key. A `--url` other than a loopback
 `http://` URL with a port is never served by the installed service.
@@ -64,7 +74,8 @@ only, as for a daemon you run yourself; the installer then needs no key. A `--ur
 Requirements: macOS or Linux (on Windows, WSL), a checkout of this repository, SurrealDB 3.2 or a later 3.x
 ([installed by you](deployment.md#install-surrealdb), also with `--no-service`: the checks run a temporary
 daemon), Python 3.11+ to run the installer itself (the only component that needs Python), Rust/Cargo to build
-the binary unless `--binary` is given, and a model API key unless `--no-service` is given. The MCP bridge and the
+the binary unless `--binary` is given, and a model API key unless `--no-service` is given. Node.js 20.19+ or 22.12+
+with npm is optional: it builds the web UI, which is otherwise downloaded. The MCP bridge and the
 hooks all run `agent-memoryd`, so the agent host needs no Python. Run from the checkout:
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
@@ -103,7 +114,8 @@ MCP tools are not tied to the installed project.
 | `--url` | Daemon base URL (`http://127.0.0.1:8765`) for the bridge, the service's port and the printed uploader command |
 | `--no-capture` | No dialogue collector; removes collector entries this installer manages |
 | `--recall` | Add the [automatic recall](#automatic-recall) hooks (not for DeepSeek Harness); without it, a rerun removes recall entries this installer manages |
-| `--no-service` | Register the platform only: no env file, key or daemon service |
+| `--no-service` | Register the platform only: no env file, key, daemon service or web UI |
+| `--no-ui` | Install no web UI: no `make ui` and no download; a web UI the service already serves stays |
 | `--env-file`, `--key-file`, `--api-key-env NAME` | The daemon's env file; a file whose key replaces the env file's; the variable read when the env file has no key (`QWEN_API_KEY`) |
 | `--verify-model` | Also check the env file's real models in a temporary store (below); makes a few model calls |
 | `--binary`, `--outbox` | Use an existing `agent-memoryd` as is (it must have the `hook` commands and `service install --start`), or a non-default outbox |
