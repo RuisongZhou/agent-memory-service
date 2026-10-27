@@ -9,6 +9,8 @@
 # Builds and Python environments
 /target/
 /target-native/
+/web/node_modules/
+/web/dist/
 **/.venv/
 **/__pycache__/
 **/.pytest_cache/
