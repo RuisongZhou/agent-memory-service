@@ -70,6 +70,8 @@ The source installation requires:
 - Rust stable with Cargo and a C compiler toolchain
 - Python 3.11+ for the installer
 - SurrealDB 3.2 or a later 3.x release
+- Optional: Node.js 20.19+ or 22.12+ with npm, to build the web UI; without it the installer downloads the release's
+  UI
 - A model API key; the default configuration uses Qwen MaaS for generation, embeddings and reranking
 
 Install SurrealDB with Homebrew on macOS:
@@ -146,7 +148,9 @@ Restart DeepSeek Harness and start a new session. This integration provides MCP 
 
 On the first installation, the installer prompts for the API key with hidden input. It builds the binary, checks the
 integration, merges client configuration and starts the daemon as a user service. Subsequent client installations
-reuse the daemon and key.
+reuse the daemon and key. The service also serves the web UI at `http://127.0.0.1:8765/ui/`: the installer builds it
+with `make ui` when npm is available, else downloads it from the matching release, and goes on without it when
+neither works.
 
 The installer preserves existing unrelated MCP servers, hooks and settings. Remove `--apply` to preview the
 installation.
@@ -161,6 +165,7 @@ installation.
 - **MCP only:** for Codex, Claude Code or WorkBuddy, add `--no-capture` and omit `--recall`. The installer does not
   require `--project` in this mode. To add hooks later, rerun with the full command.
 - **Capture without automatic recall:** omit `--recall`.
+- **No web UI:** add `--no-ui`; a web UI the service already serves stays.
 - **Existing binary:** use `--binary /absolute/path/to/agent-memoryd` to skip the build, for example with a
   [release archive](docs/deployment.md#release-archive).
 - **Custom deployment:** to choose the data directory, port or self-hosted models, follow
@@ -308,7 +313,7 @@ curl -fsS http://127.0.0.1:8765/health        # memory strategy, models and LLM 
 - **Logs:** `~/Library/Logs/agent-memory-service/daemon.stderr.log` on macOS;
   `journalctl --user -u agent-memory.service` on Linux.
 - **Upgrade:** after `git pull`, rerun the original install command for each installed client; a changed binary is
-  replaced and the service restarted. Keep SurrealDB on 3.x.
+  replaced and the service restarted, and the web UI is replaced. Keep SurrealDB on 3.x.
 - **Outbox retention:** uploaded turns stay in the outbox; `~/.local/bin/agent-memoryd outbox prune --older-than 30d`
   deletes the finished ones captured more than 30 days ago (see [the uploader](docs/mcp-harness.md#run-and-inspect-the-uploader)).
 - **Change key or models:** edit `~/.config/agent-memory-service/.env` (see [configuration](docs/api.md#configuration)),

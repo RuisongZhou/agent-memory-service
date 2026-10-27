@@ -66,6 +66,7 @@ daemon 只监听回环地址（`127.0.0.1:8765`）。项目和平台标签用于
 - Rust stable（含 Cargo）和 C 编译工具链
 - Python 3.11+，供安装器使用
 - SurrealDB 3.2 或更高的 3.x 版本
+- 可选：Node.js 20.19+ 或 22.12+ 及 npm，用来构建网页；没有时安装器下载发布版的网页
 - 一个模型 API key；默认配置使用千问 MaaS，用于生成、嵌入和重排
 
 macOS 上用 Homebrew 安装 SurrealDB：
@@ -141,7 +142,8 @@ bash scripts/install.sh --host deepseek-harness --apply
 #### 安装器做了什么
 
 首次安装时，安装器以隐藏输入的方式询问 API key。它会构建二进制、检查集成、合并客户端配置，并把 daemon 作为用户服务
-启动。之后给其他客户端安装时，复用同一个 daemon 和密钥。
+启动。之后给其他客户端安装时，复用同一个 daemon 和密钥。服务同时在 `http://127.0.0.1:8765/ui/` 提供网页：有 npm 时
+安装器用 `make ui` 构建，没有时从对应版本的发布下载，两样都不行就不装网页。
 
 安装器会保留已有的、无关的 MCP server、hooks 和设置。去掉 `--apply` 可以只预览。
 
@@ -153,6 +155,7 @@ bash scripts/install.sh --host deepseek-harness --apply
 - **只装 MCP**：Codex、Claude Code 或 WorkBuddy 加 `--no-capture` 并去掉 `--recall`，此时不需要 `--project`。之后想加上
   hooks，用完整命令重新运行即可。
 - **只捕获、不自动召回**：去掉 `--recall`。
+- **不装网页**：加 `--no-ui`；服务原来提供的网页保留。
 - **使用已有二进制**：用 `--binary /absolute/path/to/agent-memoryd` 跳过构建，例如配合
   [release 包](docs/deployment.md#release-archive)。
 - **自定义部署**：要指定数据目录、端口或自托管模型，按 [部署与运维](docs/deployment.md) 操作。
@@ -281,8 +284,8 @@ curl -fsS http://127.0.0.1:8765/health        # 记忆策略、模型和 LLM 用
 
 - **日志**：macOS 在 `~/Library/Logs/agent-memory-service/daemon.stderr.log`；Linux 用
   `journalctl --user -u agent-memory.service`。
-- **升级**：`git pull` 后，对每个已安装的客户端重新运行原来的安装命令；二进制有变化时会被替换，服务随之重启。SurrealDB
-  保持在 3.x。
+- **升级**：`git pull` 后，对每个已安装的客户端重新运行原来的安装命令；二进制有变化时会被替换，服务随之重启，网页也会
+  更新。SurrealDB 保持在 3.x。
 - **更换密钥或模型**：编辑 `~/.config/agent-memory-service/.env`（见 [配置](docs/api.md#configuration)），然后重启服务。
 - **卸载**：在安装命令上加 `--uninstall` 去掉某个客户端的配置；停止并删除服务见
   [安装服务](docs/deployment.md#install-the-service)。
