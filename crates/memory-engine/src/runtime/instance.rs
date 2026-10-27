@@ -85,7 +85,8 @@ impl Instance {
 
     /// Serialises the formation pipeline and every administrative
     /// mutation of memory records (correct, delete, feedback, resolve-uncertainty),
-    /// so each batch sees earlier memories.
+    /// so each batch sees earlier memories. A formation job holds it across its model call and
+    /// retries, so query-time recall never takes it.
     ///
     /// Lock order: this lock may be held while taking `lock_ingest` (request bookkeeping) and `lock_index` (index drains); never take it while holding either of those.
     pub async fn lock_formation(&self) -> MutexGuard<'_, ()> {

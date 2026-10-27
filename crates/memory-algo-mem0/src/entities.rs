@@ -341,7 +341,10 @@ async fn project(
     Ok(records)
 }
 
-/// Called only while holding Instance::lock_formation. Snapshot publication follows a
+/// The projection cache serialises callers; the formation lock is not required. A primary
+/// commit that lands while a projection is prepared moves the dependency revision, so the
+/// projection is prepared again rather than published. Callers that read entity rows together
+/// with primary records still hold Instance::lock_formation. Snapshot publication follows a
 /// successful projection transaction. Restart, lost journal and opaque writes use full
 /// authoritative recovery; ordinary changes read only their affected primary IDs.
 pub async fn reconcile_locked(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()> {
@@ -466,8 +469,8 @@ pub async fn reconcile_locked(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()
         } else {
             project(eng, &facts, &old, model_matches).await?
         };
-        // Administrative primary changes use the formation lock too. This also covers
-        // low-level store callers that committed while a recovery was being prepared.
+        // Search reconciles without the formation lock, and low-level store callers never take
+        // it: a primary commit while this projection was prepared means preparing it again.
         if t.store.document_revision(DEPENDENCIES) != revision {
             continue;
         }
@@ -534,7 +537,8 @@ pub async fn reconcile_locked(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()
     }
 }
 
-/// SDK per-query entity top-500 / >=0.5 scoring over a committed typed snapshot.
+/// SDK per-query entity top-500 / >=0.5 scoring over a committed typed snapshot. Takes no
+/// formation lock: a formation job holds it across its model call and retries.
 pub async fn boosts(
     eng: &Arc<Engine>,
     t: &Arc<Instance>,
@@ -542,7 +546,6 @@ pub async fn boosts(
     project: &str,
     platform: &str,
 ) -> Result<HashMap<String, f32>> {
-    let _guard = t.lock_formation().await;
     reconcile_locked(eng, t).await?;
     let entities = extract_entities(query)
         .into_iter()

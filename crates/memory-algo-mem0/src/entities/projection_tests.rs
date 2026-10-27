@@ -153,9 +153,17 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
         json!({"version":VERSION,"text":"User met Dave, Berlin.","entities":"malformed"}),
     )?;
     t.store.commit(tx).await?;
-    assert!(boosts(&eng, &t, "\"Dave\"", "a", "test")
-        .await?
-        .contains_key("m3"));
+    // A formation job holds the formation lock across its model call and retries; search scoring
+    // reconciles without waiting for it.
+    let formation = t.lock_formation().await;
+    let dave = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        boosts(&eng, &t, "\"Dave\"", "a", "test"),
+    )
+    .await
+    .expect("search waited for the formation lock")?;
+    drop(formation);
+    assert!(dave.contains_key("m3"));
     assert!(t.store.get_doc(crate::ENTITY_INPUTS, "m3").await?.unwrap()["entities"].is_array());
     let rows_before = crate::repo::entity_rows(&t).await?;
     // Simulate a restart before publishing a new primary batch.
