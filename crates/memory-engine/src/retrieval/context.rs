@@ -6,7 +6,6 @@ use super::{
 use crate::runtime::{engine::Engine, instance::Instance};
 use memory_domain::types::*;
 use memory_rules::util;
-use memory_store::schema;
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc, time::Instant};
 
@@ -346,21 +345,18 @@ pub(crate) async fn assemble_context(
     let ts = util::now_str();
     let retrieval_id = t
         .store
-        .log(
-            schema::RETRIEVAL_LOG,
-            json!({
-                "kind": "context",
-                "platform": c.platform,
-                "project": scope.project,
-                "session": scope.session,
-                "query": Value::Null,
-                "returned": {"memories": returned.iter().enumerate().map(|(i, id)| json!({"id": id, "rank": i + 1})).collect::<Vec<_>>(),
-                             "tokens": used},
-                "latency": {"total": ms(t0)},
-                "createdAt": ts,
-                "createdTs": util::ts_secs(&ts),
-            }),
-        )
+        .log_retrieval(json!({
+            "kind": "context",
+            "platform": c.platform,
+            "project": scope.project,
+            "session": scope.session,
+            "query": Value::Null,
+            "returned": {"memories": returned.iter().enumerate().map(|(i, id)| json!({"id": id, "rank": i + 1})).collect::<Vec<_>>(),
+                         "tokens": used},
+            "latency": {"total": ms(t0)},
+            "createdAt": ts,
+            "createdTs": util::ts_secs(&ts),
+        }))
         .await?;
     Ok(json!({
         "profile": profile_kept.map(|p| p.public()),

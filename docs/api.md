@@ -149,15 +149,19 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 |---|---|
 | `POST /v1/embeddings` | OpenAI-compatible embeddings from the daemon's configured model; `input` is a string or a nonempty array of at most 128 strings |
 | `POST /admin/wait_idle` | Drain formation/index work and report remaining or failed requests |
-| `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs; `features` tells whether `consolidation` is enabled (`consolidationEnabled`) and a `generation` key is configured |
+| `POST /admin/stats` | Record counts, persisted/process usage, indexes and pending jobs; `retrieval` has `gapSearches` and, over the active records (`current`, `conflict`, `candidate`), `neverRecalled` and `notRecalled30d` (see [recalls](#recalls)); `features` tells whether `consolidation` is enabled (`consolidationEnabled`) and a `generation` key is configured |
 | `POST /admin/export` | Read memories or selected audit tables of the store; not a full backup |
 | `POST /admin/reindex` | Queue a vector rebuild (re-embed every memory); CLI requires `--all` or `--vector` |
 | `POST /admin/consolidate` | Propose consolidation ops for one project and store the run; requires `consolidationEnabled` and `dryRun:true` |
 | `POST /admin/consolidation_apply` | Apply a proposed run's ops, one transaction per op; requires `consolidationEnabled` |
 | `POST /admin/consolidation_rollback` | Undo an applied run's ops, newest first; ops changed since stay applied |
 | `POST /admin/import_propose`, `import_run`, `import_runs`, `import_apply`, `import_rollback` | [Import runs](#import-runs): a host's existing memories as reviewable proposals, applied and rolled back on request |
-| `POST /admin/list_memories` | One page of records as `get_memory` returns them, newest recorded first, and the `total` matching; filters `project`, `scopeKind`, `sourcePlatform`, `types`, `statuses` (default `current`, `conflict`, `candidate`), `origins`, `text` (case-insensitive substring); `limit` 1–200 (default 50); send `nextCursor` back as `cursor` until it is null |
+| `POST /admin/list_memories` | One page of records as `get_memory` returns them, newest recorded first, and the `total` matching; each record also carries `lastRecalledAt` (a time, or null) and `recallCount` (0 when never recalled), see [recalls](#recalls); filters `project`, `scopeKind`, `sourcePlatform`, `types`, `statuses` (default `current`, `conflict`, `candidate`), `origins`, `text` (case-insensitive substring), `neverRecalled` (`true`: records no search or context read ever returned) and `notRecalledDays` (1–3650: records recorded more than that many days ago and not returned in that many days; not together with `neverRecalled`, which is a 400); `limit` 1–200 (default 50); send `nextCursor` back as `cursor` until it is null |
 | `POST /admin/memory_facets` | Record counts over every status: `projects`, `sourcePlatforms` and `origins` as `{name, count}` sorted by name, `byTypeStatus` and `total` |
+| `POST /admin/memory_lineage` | `{id, depth?}` (`depth` 1–6, default 3; a malformed `id` or a bad `depth` is a 400, an unknown record a 404): the records linked to `id`, found breadth first in both directions, as `{root, nodes, edges, truncated}`. A node is `{id, type, status, text, scope, recordedAt, effectiveAt, statedAt, origin, platform, depth}` (`depth` is its distance from the root; the root comes first). An edge is `{from, to, kind}` with `kind` `supersedes` (newer to older; held by `supersedes` on the newer record, `supersededBy` on the older, or both, and listed once), `derived` (to each `derivation.inputMemoryIds`, with `stage`), `uses` (to each `usedMemoryIds` of a profile or skill) or `related` (to each `related` id, with `relation`; a pair named by both records is one edge per relation, from the smaller id). Records that do not exist are skipped and edges join only returned nodes. At most 200 nodes: past that, `truncated` is true |
+| `POST /admin/list_entities` | One page of the algorithm's entities (Mem0's entity projection), most linked memories first, ties by id descending: `{entities, types, nextCursor, projectionUpdatedAt}`. An entity is `{id, text, entityType, scope, memoryCount}`, never its embedding. Filters `project` (`scope.project`), `entityType`, `text` (case-insensitive substring of the text or normalized text); `limit` 1–200 (default 50); cursor as for `list_memories`. `types` is `{name, count}` per entity type, sorted by name, under the `project` filter only. Entities are read as stored: reading does not update them (search and formation do, which embeds new entity texts), so `projectionUpdatedAt` says when they were last written, or is null before they were ever built |
+| `POST /admin/entity` | `{id}` (an entity id from `list_entities`): `{entity, memories, projectionUpdatedAt}`. `entity` is as listed plus `normalizedText`; `memories` are the linked records that still exist, newest recorded first, as `list_memories` returns them. A malformed `id` is a 400, an unknown entity a 404 |
+| `POST /admin/memory_entities` | `{id}` (a memory id): `{entities, projectionUpdatedAt}`, the entities linking that memory, as listed, sorted by text. A malformed `id` is a 400, an unknown memory a 404 |
 | `POST /admin/list_uncertainties` | Questions of one `status`, `open` (default), `resolved` or `withdrawn`, newest first, as stored with `id`; each carries its member records in `memoryIds` order as `memories` (as `get_memory` returns them; deleted ones left out); filter `project`; `limit` 1–200 (default 50), no cursor. Resolve with `resolve_uncertainty` |
 | `POST /admin/consolidation_runs` | Consolidation runs, newest first, without `clusters`, `proposalIds` and `responseLogIds`; filter `project`; `limit` 1–200 (default 20); not gated by `consolidationEnabled` |
 | `POST /admin/consolidation_run` | `{runId}`: `run` and `proposals` as `consolidation_apply` returns them, and `memories`, a summary `{id, type, status, text, scope}` of every memory a proposal names (deleted ones left out) |
@@ -166,7 +170,7 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /admin/request` | `{requestId}`: the whole `request`, its `extract_log` rows (`extractions`, oldest first) and the `llm_responses` rows they name (`responses`), each with `id`. A request whose every generation call failed has neither; see `list_model_responses` |
 | `POST /admin/list_model_responses` | One page of `llm_responses` rows as stored with `id`, newest first; filters `stage`, `failedOnly` (no `validOutputShape:true`: a transport error, an HTTP status outside 2xx, a body that is not JSON or output of the wrong shape); `limit` 1–100 (default 20); cursor as for `list_memories` |
 
-Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `requests`,
+Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `memory_recalls`, `requests`,
 `store_revisions`, `uncertainties`, `proposals`, `consolidation_runs`, `import_runs`, `import_ledger`,
 `import_extractions` and [Mem0 private tables](architecture.md#entity-projection-and-storage).
 A `retrieval_log` row is one `search_memories` or `get_context` call: `kind` (`search` or `context`), the
@@ -175,6 +179,18 @@ caller's `platform`, `project`, `session`, `createdAt`/`createdTs`, `returned.me
 `retrieval.gapSearches`). Startup fills in `kind`, `createdTs` and `gap` on searches logged before these
 fields existed; their platform, project and session stay absent.
 Embedding token usage is approximate, not provider billing. Reindex HTTP errors produce a nonzero CLI exit.
+
+### Recalls
+
+`memory_recalls` has one row per recalled memory, keyed by its id: `memoryId`, `lastRecalledAt`,
+`lastRecalledTs` and `recallCount`. A `search_memories` or `get_context` call writes its `retrieval_log` row and
+counts the call, once per returned memory, in the same transaction. Calls whose platform is `web` (the web UI's own
+searches and context previews) are logged but not counted. `lastAccessedAt` is no substitute: it only changes
+when a search sends `touch: true`. Startup sums an existing `retrieval_log` into an empty `memory_recalls`, once,
+using each row's `createdTs`. A memory deleted afterwards keeps its row.
+`list_memories` reads the summary for `lastRecalledAt`, `recallCount` and its two filters, and `stats` counts the
+active records with no row (`retrieval.neverRecalled`) and those recorded more than 30 days ago and not returned in
+the last 30 (`retrieval.notRecalled30d`).
 
 ### Consolidation proposals
 

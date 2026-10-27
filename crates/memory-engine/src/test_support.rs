@@ -6,6 +6,7 @@ use crate::runtime::{engine::Engine, instance::Instance, llm::Llm, models::Model
 use memory_config::{MemoryStrategy, ServiceConfig};
 use memory_domain::consolidation::apply::OpOutcome;
 use memory_domain::consolidation::{Cluster, ConsolidationSnapshot, GeneratedOps};
+use memory_domain::entities::{EntityDetail, EntityFilter, EntityPage, MemoryEntities};
 use memory_domain::types::*;
 use memory_store::schema;
 use memory_store::store::{to_doc, turn_rid, Tx};
@@ -106,6 +107,32 @@ impl MemoryAlgorithm for NoAlgorithm {
         _: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Option<Vec<String>>>> {
         Box::pin(async { Ok(None) })
+    }
+
+    fn list_entities<'a>(
+        &'a self,
+        _: &'a Instance,
+        _: &'a EntityFilter,
+        _: Option<(i64, String)>,
+        _: usize,
+    ) -> BoxFuture<'a, anyhow::Result<EntityPage>> {
+        unreachable!("{UNUSED}")
+    }
+
+    fn entity<'a>(
+        &'a self,
+        _: &'a Instance,
+        _: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<Option<EntityDetail>>> {
+        unreachable!("{UNUSED}")
+    }
+
+    fn memory_entities<'a>(
+        &'a self,
+        _: &'a Instance,
+        _: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<MemoryEntities>> {
+        unreachable!("{UNUSED}")
     }
 
     fn consolidation_snapshot<'a>(

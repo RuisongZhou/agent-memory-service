@@ -40,6 +40,8 @@ DEFINE TABLE IF NOT EXISTS store_revisions SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS requests SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS retrieval_log SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS retrieval_log_created ON retrieval_log FIELDS createdTs;
+DEFINE TABLE IF NOT EXISTS memory_recalls SCHEMALESS;
+DEFINE INDEX IF NOT EXISTS memory_recalls_last ON memory_recalls FIELDS lastRecalledTs;
 DEFINE TABLE IF NOT EXISTS extract_log SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS llm_usage SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS llm_responses SCHEMALESS;
@@ -79,7 +81,7 @@ pub fn safe_id(id: &str) -> Result<&str> {
 }
 
 /// `true` and the conditions whose value is given, each `(condition, bound name, value)`, with their bound values.
-pub(crate) fn conditions(
+pub fn conditions(
     filters: impl IntoIterator<Item = (&'static str, &'static str, Option<Value>)>,
 ) -> (Vec<&'static str>, Vec<(&'static str, Value)>) {
     let mut conds = vec!["true"];
@@ -105,7 +107,7 @@ fn floats(v: Option<&Value>) -> Vec<f32> {
     }
 }
 
-fn rid(table: &str, id: &str) -> Result<String> {
+pub(crate) fn rid(table: &str, id: &str) -> Result<String> {
     Ok(format!("{table}:{}", safe_id(id)?))
 }
 

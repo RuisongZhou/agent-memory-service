@@ -1,10 +1,13 @@
 //! Mem0 persistence: the input job queue lives in `requests` with `kind = 'mem0'`. All of this
 //! algorithm's SurrealQL is kept here.
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
+use memory_domain::entities::{EntityDetail, EntityFilter, EntityPage, EntityRec, MemoryEntities};
 use memory_engine::runtime::instance::Instance;
 use memory_store::schema;
+use memory_store::store::{conditions, from_doc};
 
 /// Raw-input filters for `list_inputs`; `None` leaves the dimension unconstrained.
 pub struct InputFilter<'a> {
@@ -105,6 +108,120 @@ pub async fn entity_rows(t: &Instance) -> Result<Vec<Value>> {
             vec![],
         )
         .await
+}
+
+/// An entity row as the web UI reads it: no vector, the memory count in place of the linked ids.
+const ENTITY_LIST: &str =
+    "SELECT mid, text, entityType, scope, array::len(linkedMemoryIds) AS memoryCount FROM mem0_entities";
+
+/// When the entity projection was last written; `None` before it was ever built. Reads show the projection
+/// as stored: bringing it up to date embeds new entity texts, which is search's and formation's work.
+async fn projection_updated_at(t: &Instance) -> Result<Option<String>> {
+    Ok(t.store
+        .get_doc(super::ENTITY_STATE, "projection")
+        .await?
+        .and_then(|state| state["updatedAt"].as_str().map(str::to_string)))
+}
+
+fn entity_recs(rows: Vec<Value>) -> Result<Vec<EntityRec>> {
+    rows.into_iter().map(from_doc).collect()
+}
+
+/// One page of entities, `memoryCount DESC, mid DESC` after the `(memoryCount, mid)` keyset `after`, with the
+/// entity types of the filter's project.
+pub async fn entity_page(
+    t: &Instance,
+    filter: &EntityFilter,
+    after: Option<(i64, String)>,
+    limit: usize,
+) -> Result<EntityPage> {
+    const IN_PROJECT: &str = "scope.project = $project";
+    let project = || filter.project.as_ref().map(|v| json!(v));
+    let (mut conds, mut binds) = conditions([
+        (IN_PROJECT, "project", project()),
+        (
+            "entityType = $type",
+            "type",
+            filter.entity_type.as_ref().map(|v| json!(v)),
+        ),
+        (
+            "(string::lowercase(text) CONTAINS $text OR normalizedText CONTAINS $text)",
+            "text",
+            filter.text.as_ref().map(|v| json!(v)),
+        ),
+    ]);
+    if let Some((count, mid)) = after {
+        conds.push(
+            "(array::len(linkedMemoryIds) < $at \
+              OR (array::len(linkedMemoryIds) = $at AND mid < $mid))",
+        );
+        binds.push(("at", json!(count)));
+        binds.push(("mid", json!(mid)));
+    }
+    // One more row than the page tells whether another page follows.
+    let sql = format!(
+        "{ENTITY_LIST} WHERE {} ORDER BY memoryCount DESC, mid DESC LIMIT {}",
+        conds.join(" AND "),
+        limit + 1
+    );
+    let mut entities = entity_recs(t.store.select(&sql, binds).await?)?;
+    let more = entities.len() > limit;
+    entities.truncate(limit);
+    let next = entities
+        .last()
+        .filter(|_| more)
+        .map(|e| (e.memory_count as i64, e.id.clone()));
+    let (conds, binds) = conditions([(IN_PROJECT, "project", project())]);
+    let counted = t
+        .store
+        .select(
+            &format!(
+                "SELECT entityType AS name, count() AS n FROM mem0_entities WHERE {} GROUP BY name",
+                conds.join(" AND ")
+            ),
+            binds,
+        )
+        .await?;
+    let types: BTreeMap<String, i64> = counted
+        .iter()
+        .filter_map(|r| Some((r["name"].as_str()?.to_string(), r["n"].as_i64()?)))
+        .collect();
+    Ok(EntityPage {
+        entities,
+        types,
+        next,
+        projection_updated_at: projection_updated_at(t).await?,
+    })
+}
+
+/// The entity `id` with the ids of the memories it links, `None` when there is no such entity.
+pub async fn entity(t: &Instance, id: &str) -> Result<Option<EntityDetail>> {
+    let Some(mut row) = t.store.get_doc(super::ENTITIES, id).await? else {
+        return Ok(None);
+    };
+    let linked: Vec<String> =
+        serde_json::from_value(row["linkedMemoryIds"].take()).context("linkedMemoryIds")?;
+    let normalized_text = row["normalizedText"]
+        .as_str()
+        .context("normalizedText")?
+        .to_string();
+    row["memoryCount"] = json!(linked.len());
+    Ok(Some(EntityDetail {
+        entity: from_doc(row)?,
+        normalized_text,
+        linked_memory_ids: linked,
+        projection_updated_at: projection_updated_at(t).await?,
+    }))
+}
+
+/// The entities that link the memory `memory_id`, by text.
+pub async fn memory_entities(t: &Instance, memory_id: &str) -> Result<MemoryEntities> {
+    let sql =
+        format!("{ENTITY_LIST} WHERE linkedMemoryIds CONTAINS $id ORDER BY text ASC, mid ASC");
+    Ok(MemoryEntities {
+        entities: entity_recs(t.store.select(&sql, vec![("id", json!(memory_id))]).await?)?,
+        projection_updated_at: projection_updated_at(t).await?,
+    })
 }
 
 /// Content keys that currently deduplicate into `memory_id`.

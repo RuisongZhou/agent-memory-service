@@ -7,8 +7,10 @@ use memory_engine::app::{ingest, management};
 use memory_engine::retrieval;
 use memory_engine::runtime::indexer;
 use memory_rules::util;
+use memory_store::recalls::Recall;
 use memory_store::schema;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn selftest() {
@@ -77,9 +79,35 @@ async fn selftest() {
             .map(|x| x["memory"]["id"].as_str().unwrap().to_string())
             .collect()
     };
+    let first = search(&eng, "a", "database port 8765").await.unwrap();
+    assert_eq!(ids(&first), [id.clone()]);
+    // The first recall of a memory writes its summary with a count of 1, at the time of the log row.
+    let logged = t
+        .store
+        .get_doc(
+            schema::RETRIEVAL_LOG,
+            first["retrievalId"].as_str().unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let recall = |at: &Value, count| Recall {
+        last_recalled_at: at.as_str().unwrap().into(),
+        count,
+    };
     assert_eq!(
-        ids(&search(&eng, "a", "database port 8765").await.unwrap()),
-        [id.clone()]
+        t.store.recalls(std::slice::from_ref(&id)).await.unwrap(),
+        BTreeMap::from([(id.clone(), recall(&logged["createdAt"], 1))])
+    );
+    let row = t
+        .store
+        .get_doc(schema::MEMORY_RECALLS, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (&row["mid"], &row["memoryId"], &row["lastRecalledTs"]),
+        (&json!(id), &json!(id), &logged["createdTs"])
     );
     // The ANN path returns the same memory as brute force.
     let ann = engine(ServiceConfig {
@@ -220,11 +248,17 @@ async fn selftest() {
             row["project"] = json!("a");
             row["session"] = json!("s");
         }
-        t.store.log(schema::RETRIEVAL_LOG, row)
+        row
     };
-    let web = logged(Some("web"), now).await.unwrap();
-    let legacy = logged(None, now).await.unwrap();
-    let old = logged(None, now - chrono::Duration::days(31))
+    // The web UI's own search is logged, and a recall of `id` that is not counted.
+    let web = t
+        .store
+        .log_retrieval(logged(Some("web"), now))
+        .await
+        .unwrap();
+    let log = |row| t.store.log(schema::RETRIEVAL_LOG, row);
+    let legacy = log(logged(None, now)).await.unwrap();
+    let old = log(logged(None, now - chrono::Duration::days(31)))
         .await
         .unwrap();
     let recalls =
@@ -333,6 +367,146 @@ async fn selftest() {
             "{bad}"
         );
     }
+
+    // ---- the recall summary: `id` was returned by two searches and the context read (which lists it more than
+    // once; the web UI's search above does not count), the corrected record by one search.
+    assert_eq!(
+        t.store
+            .recalls(&[id.clone(), new_id.clone()])
+            .await
+            .unwrap(),
+        BTreeMap::from([
+            (id.clone(), recall(&context[0]["createdAt"], 3)),
+            (
+                new_id.clone(),
+                recall(&used["retrievals"][0]["createdAt"], 1)
+            ),
+        ])
+    );
+    // Three records recorded 40 to 42 days ago: never recalled, recalled 5 days ago and recalled 35 days ago.
+    let old_fact = |n: u32, days: i64| MemoryRec {
+        id: format!("mold{n}"),
+        mtype: T_FACT.into(),
+        text: format!("Old fact {n}"),
+        scope: MemScope::project("a"),
+        status: S_CURRENT.into(),
+        recorded_at: util::fmt_ts(&(now - chrono::Duration::days(days))),
+        ..Default::default()
+    };
+    for (n, days) in [(1, 40), (2, 41), (3, 42)] {
+        let record = old_fact(n, days);
+        t.store
+            .put_doc(schema::MEMORIES, &record.id, &record)
+            .await
+            .unwrap();
+    }
+    let mut recalled = BTreeMap::new();
+    for (memory, days) in [("mold3", 35), ("mold2", 5)] {
+        let at = now - chrono::Duration::days(days);
+        t.store
+            .log_retrieval(json!({"kind": "search", "platform": "test", "query": "old",
+                "returned": {"memories": [{"id": memory, "rank": 1}], "tokens": 1, "gap": false},
+                "createdAt": util::fmt_ts(&at), "createdTs": at.timestamp()}))
+            .await
+            .unwrap();
+        recalled.insert(memory, util::fmt_ts(&at));
+    }
+    let listed = |req: Value| management::list_memories(&t, serde_json::from_value(req).unwrap());
+    let listed_ids = |page: &Value| -> Vec<String> {
+        page["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let page = listed(json!({})).await.unwrap();
+    assert_eq!(
+        listed_ids(&page),
+        ["msuggestion", "mold1", "mold2", "mold3"]
+    );
+    let summaries: Vec<(&Value, &Value)> = page["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (&m["lastRecalledAt"], &m["recallCount"]))
+        .collect();
+    assert_eq!(
+        summaries,
+        [
+            (&Value::Null, &json!(0)),
+            (&Value::Null, &json!(0)),
+            (&json!(recalled["mold2"]), &json!(1)),
+            (&json!(recalled["mold3"]), &json!(1)),
+        ]
+    );
+    let superseded = listed(json!({"statuses": ["superseded"]})).await.unwrap();
+    assert_eq!(listed_ids(&superseded), std::slice::from_ref(&id));
+    assert_eq!(
+        (
+            &superseded["memories"][0]["lastRecalledAt"],
+            &superseded["memories"][0]["recallCount"]
+        ),
+        (&context[0]["createdAt"], &json!(3))
+    );
+    for (filter, want) in [
+        (json!({"neverRecalled": true}), vec!["msuggestion", "mold1"]),
+        (
+            json!({"neverRecalled": false}),
+            vec!["msuggestion", "mold1", "mold2", "mold3"],
+        ),
+        (json!({"notRecalledDays": 30}), vec!["mold1", "mold3"]),
+        (
+            json!({"notRecalledDays": 3}),
+            vec!["mold1", "mold2", "mold3"],
+        ),
+        (
+            json!({"notRecalledDays": 30, "text": "fact 3"}),
+            vec!["mold3"],
+        ),
+        (json!({"neverRecalled": true, "text": "old"}), vec!["mold1"]),
+    ] {
+        assert_eq!(
+            listed_ids(&listed(filter.clone()).await.unwrap()),
+            want,
+            "{filter}"
+        );
+    }
+    // Pages of one: the total counts every match, and the cursor carries over the subquery's filter.
+    let first = listed(json!({"notRecalledDays": 30, "limit": 1}))
+        .await
+        .unwrap();
+    assert_eq!(
+        (listed_ids(&first), &first["total"]),
+        (vec!["mold1".into()], &json!(2))
+    );
+    let cursor = first["nextCursor"].clone();
+    let second = listed(json!({"notRecalledDays": 30, "limit": 1, "cursor": cursor}))
+        .await
+        .unwrap();
+    assert_eq!(
+        (listed_ids(&second), &second["nextCursor"]),
+        (vec!["mold3".into()], &Value::Null)
+    );
+    for bad in [
+        json!({"neverRecalled": true, "notRecalledDays": 30}),
+        json!({"notRecalledDays": 0}),
+        json!({"notRecalledDays": 3651}),
+    ] {
+        assert!(
+            matches!(listed(bad.clone()).await, Err(ApiError::InvalidArgument(_))),
+            "{bad}"
+        );
+    }
+    // The overview counts the same active records: never recalled, and silent for 30 days.
+    let stats = management::stats(&eng, &t).await.unwrap();
+    assert_eq!(
+        (
+            &stats["retrieval"]["neverRecalled"],
+            &stats["retrieval"]["notRecalled30d"]
+        ),
+        (&json!(2), &json!(2))
+    );
 
     // ---- requests: the two text writes and an explicit instruction, without their input messages
     let instruction = ingest::add_memories(

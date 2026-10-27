@@ -1,7 +1,9 @@
 //! Entity projection against a store: incremental reconciliation, its cache, recovery and provenance.
 use super::*;
 use memory_config::ServiceConfig;
+use memory_domain::types::{ApiError, IdReq, ListEntitiesReq};
 use memory_domain::types::{MemScope, MemoryRec, S_CURRENT, T_FACT};
+use memory_engine::app::management;
 use memory_engine::runtime::{llm::Llm, models::ModelHub};
 
 fn engine() -> Arc<Engine> {
@@ -217,6 +219,14 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
 async fn additive_changes_use_changed_ids_and_legacy_provenance_is_reconsidered() -> Result<()> {
     let eng = engine();
     let (t, root) = instance(&eng).await;
+    // Before the projection is built there is nothing to read, and no time it was updated.
+    let empty = management::list_entities(&eng, &t, ListEntitiesReq::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        empty,
+        json!({"entities": [], "types": [], "nextCursor": null, "projectionUpdatedAt": null})
+    );
     t.store
         .put_doc(
             schema::MEMORIES,
@@ -337,6 +347,274 @@ async fn additive_changes_use_changed_ids_and_legacy_provenance_is_reconsidered(
     assert_eq!(
         t.store.document_revision(&[crate::ENTITY_STATE]),
         projection_revision
+    );
+
+    // ---- the web UI's reads, which show the projection as stored. Alice is in two project-a facts, and another
+    // project has its own Alice.
+    t.store
+        .put_doc(
+            schema::MEMORIES,
+            "sixth",
+            &fact_doc(
+                "sixth",
+                "User met Alice, \"Orion\".",
+                Some("inferred"),
+                "2026-01-06T00:00:00Z",
+            ),
+        )
+        .await?;
+    let mut elsewhere = fact_doc(
+        "seventh",
+        "User met Alice, Oslo.",
+        Some("inferred"),
+        "2026-01-07T00:00:00Z",
+    );
+    elsewhere["scope"] = json!({"kind": "project", "project": "b"});
+    t.store
+        .put_doc(schema::MEMORIES, "seventh", &elsewhere)
+        .await?;
+    reconcile_locked(&eng, &t).await?;
+    let rows = crate::repo::entity_rows(&t).await?;
+    let updated_at = t
+        .store
+        .get_doc(crate::ENTITY_STATE, "projection")
+        .await?
+        .unwrap()["updatedAt"]
+        .clone();
+    let list = |req: Value| {
+        management::list_entities(
+            &eng,
+            &t,
+            serde_json::from_value::<ListEntitiesReq>(req).unwrap(),
+        )
+    };
+    let ids = |page: &Value| -> Vec<String> {
+        page["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    // The ids of the stored rows `keep` accepts, most linked first and ties by id, descending.
+    let expected = |keep: &dyn Fn(&Value) -> bool| -> Vec<String> {
+        let mut found: Vec<(usize, String)> = rows
+            .iter()
+            .filter(|row| keep(row))
+            .map(|row| {
+                let links = row["linkedMemoryIds"].as_array().unwrap().len();
+                (links, row["mid"].as_str().unwrap().to_string())
+            })
+            .collect();
+        found.sort_by(|a, b| b.cmp(a));
+        found.into_iter().map(|(_, id)| id).collect()
+    };
+    let in_project = |project: &'static str| move |row: &Value| row["scope"]["project"] == project;
+    let all = list(json!({})).await.unwrap();
+    assert_eq!(ids(&all), expected(&|_| true));
+    assert_eq!(all["projectionUpdatedAt"], updated_at);
+    assert!(all["nextCursor"].is_null());
+    let counts: Vec<u64> = all["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["memoryCount"].as_u64().unwrap())
+        .collect();
+    assert!(
+        counts.windows(2).all(|w| w[0] >= w[1]) && counts[0] == 2,
+        "{counts:?}"
+    );
+    // No vector, normalized text or linked ids in a listed row.
+    let first = all["entities"][0].as_object().unwrap();
+    let mut fields: Vec<&str> = first.keys().map(String::as_str).collect();
+    fields.sort();
+    assert_eq!(fields, ["entityType", "id", "memoryCount", "scope", "text"]);
+    // The types count the filter's project alone, so choosing a type leaves the others in the list.
+    let types = |page: &Value| -> BTreeMap<String, i64> {
+        page["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                (
+                    t["name"].as_str().unwrap().into(),
+                    t["count"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let by_type = |keep: &dyn Fn(&Value) -> bool| -> BTreeMap<String, i64> {
+        let mut counts = BTreeMap::new();
+        for row in rows.iter().filter(|row| keep(row)) {
+            *counts
+                .entry(row["entityType"].as_str().unwrap().to_string())
+                .or_default() += 1;
+        }
+        counts
+    };
+    assert!(by_type(&|_| true).len() >= 2, "{rows:?}");
+    assert_eq!(types(&all), by_type(&|_| true));
+    let project_a = list(json!({"project": "a"})).await.unwrap();
+    assert_eq!(ids(&project_a), expected(&in_project("a")));
+    assert_eq!(types(&project_a), by_type(&in_project("a")));
+    let quoted = list(json!({"project": "a", "entityType": "QUOTED"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        ids(&quoted),
+        expected(&|row| in_project("a")(row) && row["entityType"] == "QUOTED")
+    );
+    assert!(!ids(&quoted).is_empty());
+    assert_eq!(types(&quoted), types(&project_a));
+    let alice = list(json!({"text": "ALIC"})).await.unwrap();
+    assert_eq!(
+        ids(&alice),
+        expected(&|row| row["normalizedText"].as_str().unwrap().contains("alic"))
+    );
+    assert_eq!(ids(&alice).len(), 2);
+    // Pages of two, the cursor carrying over entities that link as many memories as the last one did.
+    let mut paged = vec![];
+    let mut cursor = Value::Null;
+    loop {
+        let page = list(json!({"limit": 2, "cursor": cursor})).await.unwrap();
+        assert!(ids(&page).len() <= 2);
+        paged.extend(ids(&page));
+        cursor = page["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    assert_eq!(paged, ids(&all));
+    for bad in [
+        json!({"limit": 0}),
+        json!({"limit": 201}),
+        json!({"cursor": "2"}),
+        json!({"cursor": "x:entx"}),
+        json!({"cursor": "2:no such"}),
+    ] {
+        assert!(
+            matches!(list(bad.clone()).await, Err(ApiError::InvalidArgument(_))),
+            "{bad}"
+        );
+    }
+
+    // One entity, with the facts that link it, newest recorded first.
+    let alice_a = rows
+        .iter()
+        .find(|row| row["text"] == "Alice" && in_project("a")(row))
+        .unwrap();
+    let alice_id = alice_a["mid"].as_str().unwrap();
+    let shown = management::entity(
+        &eng,
+        &t,
+        IdReq {
+            id: alice_id.into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        shown["entity"],
+        json!({"id": alice_id, "text": "Alice", "entityType": alice_a["entityType"],
+            "normalizedText": "alice", "scope": {"kind": "project", "project": "a"}, "memoryCount": 2})
+    );
+    let linked: Vec<&str> = shown["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(linked, ["sixth", "first"]);
+    assert_eq!(shown["projectionUpdatedAt"], updated_at);
+    assert!(shown["memories"][0].get("statedAt").is_some());
+    let get = |id: &str| management::entity(&eng, &t, IdReq { id: id.into() });
+    assert!(matches!(
+        get("no such").await,
+        Err(ApiError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        get("entmissing").await,
+        Err(ApiError::NotFound(_))
+    ));
+
+    // The entities of one memory, by text.
+    let of = |id: &str| management::memory_entities(&eng, &t, IdReq { id: id.into() });
+    let first_entities = of("first").await.unwrap();
+    let mut want: Vec<&Value> = rows
+        .iter()
+        .filter(|row| {
+            row["linkedMemoryIds"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("first"))
+        })
+        .collect();
+    want.sort_by_key(|row| row["text"].as_str().unwrap().to_string());
+    let texts: Vec<&str> = first_entities["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        texts,
+        want.iter()
+            .map(|row| row["text"].as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert!(texts.contains(&"Alice") && texts.contains(&"London"));
+    assert_eq!(first_entities["projectionUpdatedAt"], updated_at);
+    assert!(!of("raw").await.unwrap()["entities"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(matches!(
+        of("no such").await,
+        Err(ApiError::InvalidArgument(_))
+    ));
+    assert!(matches!(of("mmissing").await, Err(ApiError::NotFound(_))));
+
+    // A read does not bring the projection up to date: a new fact is not there until a search or formation
+    // reconciles, and the read writes nothing.
+    let revision = t
+        .store
+        .document_revision(&[crate::ENTITY_STATE, crate::ENTITIES]);
+    t.store
+        .put_doc(
+            schema::MEMORIES,
+            "eighth",
+            &fact_doc(
+                "eighth",
+                "User met Zed, Lima.",
+                Some("inferred"),
+                "2026-01-08T00:00:00Z",
+            ),
+        )
+        .await?;
+    assert_eq!(
+        list(json!({"text": "zed"})).await.unwrap()["entities"],
+        json!([])
+    );
+    assert_eq!(of("eighth").await.unwrap()["entities"], json!([]));
+    assert_eq!(
+        t.store
+            .document_revision(&[crate::ENTITY_STATE, crate::ENTITIES]),
+        revision
+    );
+    reconcile_locked(&eng, &t).await?;
+    assert_eq!(
+        list(json!({"text": "zed"})).await.unwrap()["entities"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        of("eighth").await.unwrap()["entities"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
     drop(t);
     std::fs::remove_dir_all(root)?;
