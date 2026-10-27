@@ -210,7 +210,7 @@ function Responses({ filters, update }: TabProps) {
           <Button type="submit" variant="secondary">筛选</Button>
           <Check
             className="pb-2"
-            label="只看失败（无响应、非 2xx 或输出格式不对）"
+            label="只看失败（无响应、非 2xx、响应不是 JSON 或输出格式不对）"
             checked={filters.failedOnly}
             onChange={(e) => update({ failedOnly: e.target.checked })}
           />
@@ -291,6 +291,7 @@ function problem(r: ModelResponse): string {
   if (r.transportError) return r.transportError
   if (r.httpStatus != null && (r.httpStatus < 200 || r.httpStatus > 299)) return `HTTP ${r.httpStatus}`
   if (r.validOutputShape === false) return r.validationError ?? '输出格式不对'
+  if (r.validOutputShape !== true) return '响应不是 JSON'
   return ''
 }
 
