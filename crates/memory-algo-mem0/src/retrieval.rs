@@ -286,12 +286,16 @@ pub async fn search(
         .collect::<Vec<_>>();
     let lat = json!({"embed":embed_ms,"recall":recall_ms,"rerank":rerank_ms,
         "assemble":assembly_ms,"total":start.elapsed().as_secs_f64()*1000.0});
+    // Shaped like `get_context`'s rows, so the recall log can filter both by who searched and where.
+    let ts = util::now_str();
     let retrieval_id = t
         .store
         .log(
             schema::RETRIEVAL_LOG,
-            json!({"query":query,"strategy":MemoryStrategy::Mem0,
-        "createdAt":util::now_str(),"returned":{"memories":returned},"latency":lat}),
+            json!({"kind":"search","platform":c.platform,"project":project,"session":scope.session,
+        "query":query,"strategy":MemoryStrategy::Mem0,
+        "returned":{"memories":returned,"tokens":used,"gap":results.is_empty()},"latency":lat,
+        "createdAt":ts,"createdTs":util::ts_secs(&ts)}),
         )
         .await?;
     Ok(

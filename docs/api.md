@@ -161,6 +161,11 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `requests`,
 `store_revisions`, `uncertainties`, `proposals`, `consolidation_runs`, `import_runs`, `import_ledger`,
 `import_extractions` and [Mem0 private tables](architecture.md#entity-projection-and-storage).
+A `retrieval_log` row is one `search_memories` or `get_context` call: `kind` (`search` or `context`), the
+caller's `platform`, `project`, `session`, `createdAt`/`createdTs`, `returned.memories` (ids and ranks),
+`returned.tokens` and, for searches, `query` and `returned.gap` (nothing found; counted in `stats`
+`retrieval.gapSearches`). Startup fills in `kind`, `createdTs` and `gap` on searches logged before these
+fields existed; their platform, project and session stay absent.
 Embedding token usage is approximate, not provider billing. Reindex HTTP errors produce a nonzero CLI exit.
 
 ### Consolidation proposals
