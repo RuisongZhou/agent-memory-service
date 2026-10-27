@@ -167,17 +167,17 @@ pub async fn get_memory(
     let mut l = Loader::new(t);
     l.put(m.clone());
     let m = with_validity(&mut l, m).await?;
-    let mut out = json!({"memory": m.public()});
+    let mut out = json!({"memory": m.public_with_stated_at()});
     if req.include_history.unwrap_or(false) {
         // whole chain in both directions, oldest first; each old value carries validUntil
         let mut older = l.older(&m).await?;
         older.reverse();
-        let mut chain: Vec<Value> = older.iter().map(|x| x.public()).collect();
-        chain.push(json!(m.public()));
+        let mut chain: Vec<Value> = older.iter().map(MemoryRec::public_with_stated_at).collect();
+        chain.push(m.public_with_stated_at());
         let newer = l.newer(&m).await?;
         for n in newer {
             let n = with_validity(&mut l, n).await?;
-            chain.push(n.public());
+            chain.push(n.public_with_stated_at());
         }
         out["history"] = json!(chain);
     }

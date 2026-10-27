@@ -17,13 +17,15 @@ use memory_engine::retrieval;
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
 
-/// The daemon's routes. `port` is the one its listener is bound to, the only one clients may address it by.
-pub fn router(eng: Arc<Engine>, port: u16) -> Router {
+/// The daemon's routes. `port` is the one its listener is bound to, the only one clients may address it by;
+/// `ui_dir` is the web UI's build output served under `/ui` (`--ui-dir`). The loopback check covers every route.
+pub fn router(eng: Arc<Engine>, port: u16, ui_dir: Option<&std::path::Path>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/embeddings", post(embeddings))
         .route("/v1/{name}", post(api))
         .route("/admin/{name}", post(admin))
+        .merge(super::ui::router(ui_dir))
         .with_state(eng)
         .layer(middleware::from_fn_with_state(port, loopback_only))
 }
@@ -82,7 +84,7 @@ fn caller(h: &HeaderMap) -> Caller {
     Caller { platform }
 }
 
-fn err_response(e: ApiError) -> Response {
+pub(super) fn err_response(e: ApiError) -> Response {
     let status = StatusCode::from_u16(e.status_code()).expect("ApiError status codes are valid");
     let mut body = json!({"code": e.code(), "message": e.to_string()});
     if let ApiError::NotCurrent(id) = &e {
@@ -98,6 +100,7 @@ fn parse<T: DeserializeOwned>(v: Value) -> ApiResult<T> {
 async fn health(State(eng): State<Arc<Engine>>) -> Json<Value> {
     Json(json!({
         "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
         "promptVariant": eng.cfg.prompt_variant,
         "embedModel": eng.models.embed_model_id,
         "rerankModel": eng.models.rerank_model_id,
@@ -163,6 +166,8 @@ async fn admin(
                 indexer::schedule_rebuild(&t).await?;
                 Ok(json!({"scheduled": true}))
             }
+            "list_memories" => management::list_memories(&t, parse(body)?).await,
+            "memory_facets" => management::memory_facets(&t).await,
             other => Err(ApiError::NotFound(format!("unknown admin action {other}"))),
         }
     }
@@ -268,7 +273,7 @@ mod tests {
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let app = router(engine(cfg), port);
+        let app = router(engine(cfg), port, None);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let daemon = format!("http://127.0.0.1:{port}");
         let rebound = format!("evil.example:{port}");

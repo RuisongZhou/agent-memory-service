@@ -28,6 +28,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+# `/ui`: the web front end's files from `--ui-dir`; the version reqwest already uses.
+tower-http = { version = "0.6.11", features = ["fs", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
@@ -36,6 +38,7 @@ zstd = "0.13"
 
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
 
 [[bin]]
 name = "agent-memoryd"

@@ -123,7 +123,8 @@ keeps hybrid ordering. `touch:false` avoids access-time updates; retrieval loggi
 
 `includeEvidence:true` on search exposes `sourceBatch`, with `level:"batch"` and
 `verifiedClaimSpan:false`: complete source input is not a verified quote for every inferred claim.
-Use `get_memory` for record history and evidence. Unknown effective dates remain empty; observation,
+Use `get_memory` for record history and evidence; its `memory` and `history` records also carry `statedAt`,
+when the supporting text was said (empty when unknown). Unknown effective dates remain empty; observation,
 event and ingestion times are distinct. Existing verified historical evidence remains readable.
 
 `get_context` accepts `{"scope":{"project":"my-project","session":"session-123"},"tokenBudget":1500}`.
@@ -140,7 +141,7 @@ is skipped rather than truncated; increase the budget or inspect the stored requ
 
 ## Health and administration
 
-`GET /health` reports strategy, backend/model identity, device/dtype and process LLM usage.
+`GET /health` reports the daemon `version`, strategy, backend/model identity, device/dtype and process LLM usage.
 It confirms readiness, not provider-key validity or completion of queued writes.
 
 | Endpoint | Behavior |
@@ -154,6 +155,8 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /admin/consolidation_apply` | Apply a proposed run's ops, one transaction per op; requires `consolidationEnabled` |
 | `POST /admin/consolidation_rollback` | Undo an applied run's ops, newest first; ops changed since stay applied |
 | `POST /admin/import_propose`, `import_run`, `import_runs`, `import_apply`, `import_rollback` | [Import runs](#import-runs): a host's existing memories as reviewable proposals, applied and rolled back on request |
+| `POST /admin/list_memories` | One page of records as `get_memory` returns them, newest recorded first, and the `total` matching; filters `project`, `scopeKind`, `sourcePlatform`, `types`, `statuses` (default `current`, `conflict`, `candidate`), `origins`, `text` (case-insensitive substring); `limit` 1–200 (default 50); send `nextCursor` back as `cursor` until it is null |
+| `POST /admin/memory_facets` | Record counts over every status: `projects`, `sourcePlatforms` and `origins` as `{name, count}` sorted by name, `byTypeStatus` and `total` |
 
 Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retrieval_log`, `requests`,
 `store_revisions`, `uncertainties`, `proposals`, `consolidation_runs`, `import_runs`, `import_ledger`,
@@ -314,6 +317,7 @@ OpenAI-compatible chat-completions/JSON contract and `enable_thinking:false`.
 | Concurrency | `--llm-concurrency` / `LLM_MAX_CONCURRENCY` | 24; `service install` and the Python launcher default to 1 |
 | Algorithm | `--memory-strategy` / `MEMORY_STRATEGY` | `mem0` only |
 | Dialogue upload | `--outbox [PATH]` (no environment variable) | Off; without PATH, `~/.local/share/agent-memory-service/harness-outbox.sqlite3` |
+| Web UI | `--ui-dir` / `MEMORY_UI_DIR` | Off: `/ui` answers 404 `NOT_FOUND`. A directory holding the front end's `index.html`, checked at startup; served read-only at `/ui/` with `Cache-Control: no-cache` |
 
 For the algorithm and the retrieval-model provider, URLs and models, precedence is explicit CLI,
 environment, JSON (`memoryStrategy`, `modelProvider`, `embedUrl`, `rerankUrl`, `embedModel`,

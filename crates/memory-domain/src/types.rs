@@ -194,6 +194,14 @@ impl MemoryRec {
             "staleReason": self.stale_reason,
         })
     }
+
+    /// [`Self::public`] plus `statedAt`: the record views of `get_memory` and `list_memories`. Search results
+    /// and their token budgets keep [`Self::public`].
+    pub fn public_with_stated_at(&self) -> Value {
+        let mut v = self.public();
+        v["statedAt"] = Value::String(self.stated_at.clone());
+        v
+    }
 }
 
 // ---------------------------------------------------------------- turns / evidence
@@ -421,6 +429,37 @@ pub struct ConsolidateReq {
 #[serde(rename_all = "camelCase")]
 pub struct ConsolidationRunReq {
     pub run_id: String,
+}
+
+/// `POST /admin/list_memories`: one page of stored records, newest recorded first. Every filter is optional.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMemoriesReq {
+    /// `scope.project` equals
+    #[serde(default)]
+    pub project: Option<String>,
+    /// `scope.kind` equals: "global" | "project" | "platform"
+    #[serde(default)]
+    pub scope_kind: Option<String>,
+    /// `source.platform` equals (the client that wrote the record)
+    #[serde(default)]
+    pub source_platform: Option<String>,
+    #[serde(default)]
+    pub types: Option<Vec<String>>,
+    /// Default: the active statuses (current, conflict, candidate).
+    #[serde(default)]
+    pub statuses: Option<Vec<String>>,
+    /// `source.origin` in
+    #[serde(default)]
+    pub origins: Option<Vec<String>>,
+    /// Case-insensitive substring of `text`.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// `nextCursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
