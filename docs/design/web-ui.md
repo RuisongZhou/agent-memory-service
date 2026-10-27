@@ -157,7 +157,7 @@ Graphiti、memU、本地版 Basic Memory 没有界面；Memobase 的 playground 
 
 ## 6. 安全前提
 
-现状：daemon 只监听 `127.0.0.1`，没有鉴权，也不检查 `Host` 和 `Origin`。
+加网页之前：daemon 只监听 `127.0.0.1`，没有鉴权，也不检查 `Host` 和 `Origin`。
 
 - `/admin/{name}` 的请求体是 `Option<Json<Value>>`。axum 0.8 对没有 `Content-Type` 的请求返回 `None`，按 `{}` 处理。
   因此任何网页用 `fetch(url, {method: "POST", mode: "no-cors"})` 不带请求体，就能触发 `/admin/reindex`（重新嵌入全部记忆，
@@ -167,7 +167,8 @@ Graphiti、memU、本地版 Basic Memory 没有界面；Memobase 的 playground 
   [Local Network Access](https://developer.chrome.com/blog/local-network-access) 授权；其他浏览器没有核实。
 
 网页上线后浏览器就成了正式客户端，所以在第一期之前加一层中间件：`Host` 只接受 `127.0.0.1`、`localhost`、`[::1]`
-加监听端口；带 `Origin` 的请求必须同源；`Sec-Fetch-Site: cross-site` 一律拒绝。这一层不依赖网页，可以单独提交。
+加监听端口；带 `Origin` 的请求必须同源；`Sec-Fetch-Site: cross-site` 一律拒绝。这一层不依赖网页，已经单独实现
+（[http.rs](../../crates/memory-service/src/api/http.rs) 的 `loopback_only`），同样作用于 `/ui/*`。
 
 ## 7. 托管方式和技术栈
 
@@ -238,7 +239,7 @@ Tailwind 4、hash 路由、`diff`（更正前后的词级 diff）。谱系图到
 
 ## 8. 实施顺序
 
-1. Host 和 Origin 中间件（第 6 节），单独提交。
+1. Host 和 Origin 中间件（第 6 节），单独提交（已完成）。
 2. 后端接口（第 5 节）和单元测试。
 3. daemon 的 `--ui-dir` 和 `/ui/` 路由，`/health` 报告版本；前端骨架和第一期的页面；`make ui`、`make test-web`。
 4. 发布流程打前端包，安装器安装前端（7.3）。

@@ -533,7 +533,7 @@ curl -fsS http://127.0.0.1:8765/v1/get_task \
   -d '{"requestId":"REPLACE_WITH_RETURNED_REQUEST_ID"}'
 ```
 
-The daemon enforces loopback binding. For another machine, keep this boundary and deploy an authenticated gateway or an authenticated tunnel to the local service. Platform labels do not authorize access. The supplied MCP bridge and uploader have no gateway credential options; direct gateway authentication needs an adapter change. A remote stdio bridge/tunnel must also preserve transport and scope correctly. This repository does not provide a turnkey multi-user remote deployment.
+The daemon enforces loopback binding. For another machine, keep this boundary and deploy an authenticated gateway or an authenticated tunnel to the local service. The daemon [refuses](api.md#scope-and-idempotency) a request whose `Host` is not its own loopback address and port, so the gateway or tunnel must send `Host: 127.0.0.1:<daemon port>`. Platform labels do not authorize access. The supplied MCP bridge and uploader have no gateway credential options; direct gateway authentication needs an adapter change. A remote stdio bridge/tunnel must also preserve transport and scope correctly. This repository does not provide a turnkey multi-user remote deployment.
 
 
 For MCP, capture and uploader failures, see [client troubleshooting](mcp-harness.md#troubleshooting).

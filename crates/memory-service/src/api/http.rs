@@ -1,7 +1,8 @@
 //! 接入层: local HTTP (`POST /v1/{接口名}`, JSON). Platform is taken from the connection
 //! (`X-Memory-Platform`), never from the request body (2.2).
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -16,7 +17,9 @@ use memory_engine::retrieval;
 use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
 
-pub fn router(eng: Arc<Engine>, ui_dir: Option<&std::path::Path>) -> Router {
+/// The daemon's routes. `port` is the one its listener is bound to, the only one clients may address it by;
+/// `ui_dir` is the web UI's build output served under `/ui` (`--ui-dir`). The loopback check covers every route.
+pub fn router(eng: Arc<Engine>, port: u16, ui_dir: Option<&std::path::Path>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/embeddings", post(embeddings))
@@ -24,6 +27,52 @@ pub fn router(eng: Arc<Engine>, ui_dir: Option<&std::path::Path>) -> Router {
         .route("/admin/{name}", post(admin))
         .merge(super::ui::router(ui_dir))
         .with_state(eng)
+        .layer(middleware::from_fn_with_state(port, loopback_only))
+}
+
+/// The daemon has no authentication; loopback is its boundary. A browser page on another origin can reach it
+/// with a "simple" request (`POST /admin/reindex` without body or content type needs no preflight) or, by
+/// DNS rebinding, under a name of its own that resolves to loopback. Both are refused here, before any route runs.
+async fn loopback_only(State(port): State<u16>, req: Request, next: Next) -> Response {
+    // Only the headers and the URI are borrowed, never the body, which is not `Sync`: the future stays `Send`.
+    let (headers, uri) = (req.headers(), req.uri());
+    // A header that is not visible ASCII reads as empty, which no check accepts: never as an absent header.
+    let header = |name: &str| headers.get(name).map(|v| v.to_str().unwrap_or_default());
+    // An HTTP/2 request has no `Host` header: hyper reports its `:authority` in the URI.
+    let host = header("host").or_else(|| uri.authority().map(|a| a.as_str()));
+    let refused = refusal(host, header("origin"), header("sec-fetch-site"), port);
+    match refused {
+        Some(why) => err_response(ApiError::Forbidden(why.into())),
+        None => next.run(req).await,
+    }
+}
+
+/// Why a request must not be served, or `None`: it is not addressed to the daemon as `127.0.0.1`, `localhost` or
+/// `[::1]` on its port, it comes from another origin, or the browser marks it cross-site. Clients on the machine
+/// (curl, the MCP bridge, the hooks, the installer) send no `Origin` or `Sec-Fetch-Site` and pass.
+fn refusal(
+    host: Option<&str>,
+    origin: Option<&str>,
+    fetch_site: Option<&str>,
+    port: u16,
+) -> Option<&'static str> {
+    let ours = |authority: &str| {
+        authority.rsplit_once(':').is_some_and(|(name, p)| {
+            p.parse() == Ok(port)
+                && ["127.0.0.1", "localhost", "[::1]"]
+                    .iter()
+                    .any(|loopback| loopback.eq_ignore_ascii_case(name))
+        })
+    };
+    if !host.is_some_and(ours) {
+        Some("Host must be 127.0.0.1, localhost or [::1] with the daemon's port")
+    } else if origin.is_some_and(|o| !o.strip_prefix("http://").is_some_and(ours)) {
+        Some("Origin must be the daemon's own loopback address")
+    } else if fetch_site == Some("cross-site") {
+        Some("cross-site requests are refused")
+    } else {
+        None
+    }
 }
 
 fn caller(h: &HeaderMap) -> Caller {
@@ -169,5 +218,107 @@ async fn embeddings(State(eng): State<Arc<Engine>>, Json(body): Json<Value>) -> 
             .into_response()
         }
         Err(e) => err_response(ApiError::Internal(e.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::engine;
+    use axum::http::HeaderValue;
+    use memory_config::ServiceConfig;
+
+    /// A browser page on another origin cannot use the daemon: its `no-cors` fetch to `127.0.0.1` and a name it
+    /// rebinds to loopback are refused, while a client that sends no `Origin` or `Sec-Fetch-Site` and addresses
+    /// the daemon as loopback is served, over HTTP/1.1 and over HTTP/2 (which has no `Host` header).
+    #[tokio::test]
+    async fn the_daemon_refuses_what_a_page_on_another_origin_can_send() {
+        // Each header on its own, the other two being a loopback client's, for a daemon on port 8765.
+        let served = |host: Option<&str>, origin: Option<&str>, site: Option<&str>| {
+            refusal(host, origin, site, 8765).is_none()
+        };
+        let ours = Some("127.0.0.1:8765");
+        for host in ["127.0.0.1:8765", "LOCALHOST:8765", "[::1]:8765"] {
+            assert!(served(Some(host), None, None), "{host}");
+        }
+        for host in [
+            None,
+            Some("evil.example:8765"),
+            Some("127.0.0.1:8766"),
+            Some("127.0.0.1"),
+        ] {
+            assert!(!served(host, None, None), "{host:?}");
+        }
+        for origin in ["http://localhost:8765", "http://[::1]:8765"] {
+            assert!(served(ours, Some(origin), None), "{origin}");
+        }
+        for origin in [
+            "null",
+            "http://evil.example",
+            "http://localhost:3000",
+            "https://127.0.0.1:8765",
+        ] {
+            assert!(!served(ours, Some(origin), None), "{origin}");
+        }
+        for site in ["same-origin", "none"] {
+            assert!(served(ours, None, Some(site)), "{site}");
+        }
+        assert!(!served(ours, None, Some("cross-site")));
+
+        // The router on the port its listener got, as the daemon serves it.
+        let data_dir = std::env::temp_dir().join(memory_rules::util::new_id("memory-http-"));
+        let cfg = ServiceConfig {
+            data_dir,
+            ..Default::default()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = router(engine(cfg), port, None);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let daemon = format!("http://127.0.0.1:{port}");
+        let rebound = format!("evil.example:{port}");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let requests: [(&[(&str, &str)], bool); 6] = [
+            (&[], true),
+            (
+                &[("origin", &daemon), ("sec-fetch-site", "same-origin")],
+                true,
+            ),
+            (&[("host", &rebound)], false),
+            (&[("origin", "http://evil.example")], false),
+            // Not visible ASCII: an Origin that is present, never one that is absent.
+            (&[("origin", "http://é.example")], false),
+            (&[("sec-fetch-site", "cross-site")], false),
+        ];
+        for (headers, served) in requests {
+            // What a refused page sends is the attack: `POST /admin/reindex` with no body or content type.
+            let request = if served {
+                client.get(format!("{daemon}/health"))
+            } else {
+                client.post(format!("{daemon}/admin/reindex"))
+            };
+            let request = headers.iter().fold(request, |request, (name, value)| {
+                request.header(*name, HeaderValue::from_bytes(value.as_bytes()).unwrap())
+            });
+            let response = request.send().await.unwrap();
+            let status = response.status();
+            let body: Value = response.json().await.unwrap();
+            if served {
+                assert_eq!(status, StatusCode::OK, "{headers:?}");
+                assert_eq!(body["ok"], true);
+            } else {
+                assert_eq!(status, StatusCode::FORBIDDEN, "{headers:?}");
+                assert_eq!(body["code"], "FORBIDDEN");
+            }
+        }
+
+        let h2 = reqwest::Client::builder()
+            .no_proxy()
+            .http2_prior_knowledge()
+            .build()
+            .unwrap();
+        let response = h2.get(format!("{daemon}/health")).send().await.unwrap();
+        assert_eq!(response.version(), reqwest::Version::HTTP_2);
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

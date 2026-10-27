@@ -59,17 +59,32 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
+    /// The port the routers below are built for; requests address the daemon on it.
+    const PORT: u16 = 8765;
+
     async fn fetch(app: &Router, path: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
-        let request = Request::get(path).body(Body::empty()).unwrap();
+        fetch_from(app, path, None).await
+    }
+
+    async fn fetch_from(
+        app: &Router,
+        path: &str,
+        origin: Option<&str>,
+    ) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let request = Request::get(path).header(header::HOST, format!("127.0.0.1:{PORT}"));
+        let request = origin
+            .into_iter()
+            .fold(request, |r, o| r.header(header::ORIGIN, o));
+        let request = request.body(Body::empty()).unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         let (parts, body) = response.into_parts();
         let body = to_bytes(body, usize::MAX).await.unwrap().to_vec();
         (parts.status, parts.headers, body)
     }
 
-    /// The directory is checked at startup and served read-only under `/ui`, on the same router as the API;
-    /// without one `/ui` explains how to install the front end. `/health` reports the version the front end
-    /// compares with its own.
+    /// The directory is checked at startup and served read-only under `/ui`, on the same router as the API and
+    /// behind the same loopback check; without one `/ui` explains how to install the front end. `/health` reports
+    /// the version the front end compares with its own.
     #[tokio::test]
     async fn the_ui_directory_is_checked_at_startup_and_served_under_ui() {
         let root = tempfile::tempdir().unwrap();
@@ -83,7 +98,7 @@ mod tests {
         check_dir(&dir).unwrap();
 
         let eng = engine(ServiceConfig::default());
-        let without = crate::http::router(eng.clone(), None);
+        let without = crate::http::router(eng.clone(), PORT, None);
         let (status, _, body) = fetch(&without, "/health").await;
         assert_eq!(status, StatusCode::OK);
         let health: Value = serde_json::from_slice(&body).unwrap();
@@ -100,7 +115,7 @@ mod tests {
             );
         }
 
-        let with = crate::http::router(eng, Some(&dir));
+        let with = crate::http::router(eng, PORT, Some(&dir));
         let (status, headers, _) = fetch(&with, "/ui").await;
         assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(headers[header::LOCATION], "/ui/");
@@ -109,6 +124,12 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, b"<!doctype html>memory");
         assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+        let (status, _, body) =
+            fetch_from(&with, "/ui/", Some(&format!("http://127.0.0.1:{PORT}"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"<!doctype html>memory");
+        let (status, _, _) = fetch_from(&with, "/ui/", Some("http://evil.example")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, headers, body) = fetch(&with, "/ui/assets/app.js").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, b"export {};");
