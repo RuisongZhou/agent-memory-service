@@ -171,9 +171,9 @@ export function RecallsPage() {
                         <span className="mr-1 inline-block w-3 text-zinc-400">{expanded.has(r.id) ? '▾' : '▸'}</span>
                         {formatTime(r.createdAt)}
                       </TD>
-                      <TD>{RETRIEVAL_KIND_LABEL[r.kind] ?? r.kind}</TD>
-                      <TD>{r.platform ?? <span className="text-zinc-400">未知</span>}</TD>
-                      <TD className="max-w-48 truncate"><Where r={r} /></TD>
+                      <TD className="whitespace-nowrap">{RETRIEVAL_KIND_LABEL[r.kind] ?? r.kind}</TD>
+                      <TD className="whitespace-nowrap">{r.platform ?? <span className="text-zinc-400">未知</span>}</TD>
+                      <TD className="max-w-48 truncate whitespace-nowrap"><Where r={r} /></TD>
                       <TD className="max-w-xs truncate">
                         {r.query ?? <span className="text-zinc-400">—</span>}
                         {r.returned.gap && (
@@ -183,7 +183,9 @@ export function RecallsPage() {
                         )}
                       </TD>
                       <TD className="text-right tabular-nums">{r.returned.memories.length}</TD>
-                      <TD className="text-right tabular-nums">{formatNumber(r.returned.tokens)}</TD>
+                      <TD className="text-right tabular-nums">
+                        {r.returned.tokens === undefined ? <span className="text-zinc-400">—</span> : formatNumber(r.returned.tokens)}
+                      </TD>
                       <TD className="whitespace-nowrap"><FeedbackText r={r} /></TD>
                     </tr>
                     {expanded.has(r.id) && (
