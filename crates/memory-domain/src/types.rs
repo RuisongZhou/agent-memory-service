@@ -375,6 +375,9 @@ pub struct SearchReq {
     /// eval-only: false = do not update lastAccessedAt
     #[serde(default)]
     pub touch: Option<bool>,
+    /// eval-only: add every pool candidate's signals and the query's score statistics as `explain`
+    #[serde(default)]
+    pub explain: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

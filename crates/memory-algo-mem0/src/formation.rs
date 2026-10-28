@@ -6,6 +6,7 @@ use anyhow::{anyhow, bail, ensure, Result};
 use memory_domain::types::*;
 use memory_engine::app::tasks;
 use memory_engine::runtime::{engine::Engine, instance::Instance, llm::JsonContract};
+use memory_rules::segments::{segments, Flush, Queued};
 use memory_rules::util;
 use memory_store::schema::{self, request_kind};
 use memory_store::store::{self, Tx};
@@ -213,67 +214,110 @@ pub async fn enqueue(
     Ok(out)
 }
 
+/// Form the segments that are ready on their own (the background worker).
 pub async fn process_jobs(eng: &Arc<Engine>, t: &Arc<Instance>) -> Result<()> {
-    process_until(eng, t, None).await
+    process_until(eng, t, Flush::Ready).await
 }
 
-async fn process_until(eng: &Arc<Engine>, t: &Arc<Instance>, stop: Option<&str>) -> Result<()> {
+async fn process_until(eng: &Arc<Engine>, t: &Arc<Instance>, flush: Flush<'_>) -> Result<()> {
     let _guard = t.lock_formation().await;
-    let jobs = repo::unfinished_jobs(t).await?;
-    for job in jobs {
-        if job["retryAtTs"].as_i64().unwrap_or(0) > util::now().timestamp() {
-            break;
-        }
-        let id = job["requestId"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing requestId"))?;
+    let mut queued = Vec::new();
+    for job in repo::unfinished_jobs(t).await? {
         if job["status"] == "indexing" {
+            // Formed already: publication resumes without a model call.
             publish_committed(eng, t, &job).await?;
-            if stop == Some(id) {
-                break;
-            }
+        } else {
+            queued.push(job);
+        }
+    }
+    let now = util::now().timestamp();
+    let view = queued
+        .iter()
+        .map(|job| queued_view(job, now))
+        .collect::<Result<Vec<_>>>()?;
+    let limits = Mem0Config::from(&eng.cfg).segments;
+    // A conversation whose segment failed in this pass forms nothing later in it: never form a later message
+    // using context preceding an unfinished earlier message.
+    let mut failed: Vec<(&str, &str, &str)> = Vec::new();
+    for (members, ready) in segments(&view, limits, flush) {
+        let conversation = view[members[0]].conversation;
+        if !ready || failed.contains(&conversation) {
             continue;
         }
-        t.store
-            .merge_doc(
-                schema::REQUESTS,
-                id,
-                json!({"status":"running","updatedAt":util::now_str()}),
-            )
-            .await?;
-        if let Err(error) = form(eng, t, &job).await {
+        let jobs: Vec<&Value> = members.iter().map(|&i| &queued[i]).collect();
+        let ids: Vec<&str> = members.iter().map(|&i| view[i].id).collect();
+        for id in &ids {
+            t.store
+                .merge_doc(
+                    schema::REQUESTS,
+                    id,
+                    json!({"status":"running","updatedAt":util::now_str()}),
+                )
+                .await?;
+        }
+        if let Err(error) = form(eng, t, &jobs).await {
             if t.store
-                .get_doc(schema::REQUESTS, id)
+                .get_doc(schema::REQUESTS, ids[0])
                 .await?
                 .is_some_and(|r| r["formed"] == true)
             {
                 return Err(error);
             }
-            let failures = job["failures"].as_u64().unwrap_or(0) + 1;
-            t.store
-                .merge_doc(
-                    schema::REQUESTS,
-                    id,
-                    json!({"status":if failures>=5 {"failed"} else {"queued"},
-                "failures":failures,"error":format!("{error:#}"),"updatedAt":util::now_str(),
-                "retryAtTs":util::now().timestamp()+(1_i64 << failures.min(6))}),
-                )
-                .await?;
-            // Never form a later message using context preceding an unfinished earlier message.
-            break;
-        }
-        if stop == Some(id) {
-            break;
+            for job in &jobs {
+                let failures = job["failures"].as_u64().unwrap_or(0) + 1;
+                t.store
+                    .merge_doc(
+                        schema::REQUESTS,
+                        job["requestId"].as_str().unwrap_or_default(),
+                        json!({"status":if failures>=5 {"failed"} else {"queued"},
+                    "failures":failures,"error":format!("{error:#}"),"updatedAt":util::now_str(),
+                    "retryAtTs":util::now().timestamp()+(1_i64 << failures.min(6))}),
+                    )
+                    .await?;
+            }
+            failed.push(conversation);
         }
     }
     Ok(())
 }
 
-async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
+/// A queued request as the segment rule sees it; one waiting to retry is not formed before its time.
+fn queued_view(job: &Value, now: i64) -> Result<Queued<'_>> {
+    let field = |name: &str| {
+        job[name]
+            .as_str()
+            .ok_or_else(|| anyhow!("request is missing {name}"))
+    };
+    let messages = job["inputMessages"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    Ok(Queued {
+        id: field("requestId")?,
+        conversation: (field("platform")?, field("project")?, field("session")?),
+        infer: job["infer"].as_bool().unwrap_or(true),
+        session_ended: job["sessionEnded"].as_bool().unwrap_or(false),
+        tokens: messages
+            .iter()
+            .map(|m| util::est_tokens(m["content"].as_str().unwrap_or_default()))
+            .sum(),
+        age_secs: now - util::ts_secs(field("createdAt")?),
+        retry_pending: job["retryAtTs"].as_i64().unwrap_or(0) > now,
+    })
+}
+
+/// Form one segment: the queued requests of one conversation, in input order, with one extraction call.
+async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, jobs: &[&Value]) -> Result<()> {
     let started = Instant::now();
-    let id = job["requestId"]
-        .as_str()
-        .ok_or_else(|| anyhow!("missing requestId"))?;
+    let job = jobs[0];
+    let ids = jobs
+        .iter()
+        .map(|j| {
+            j["requestId"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing requestId"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let id = ids[0];
     let project = job["project"]
         .as_str()
         .ok_or_else(|| anyhow!("missing project"))?;
@@ -287,7 +331,12 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
         .as_str()
         .ok_or_else(|| anyhow!("missing platform"))?;
 
-    let messages: Vec<InMessage> = serde_json::from_value(job["inputMessages"].clone())?;
+    let mut messages: Vec<InMessage> = Vec::new();
+    for j in jobs {
+        messages.extend(serde_json::from_value::<Vec<InMessage>>(
+            j["inputMessages"].clone(),
+        )?);
+    }
     let inferred = job["infer"]
         .as_bool()
         .ok_or_else(|| anyhow!("missing infer"))?;
@@ -404,7 +453,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
         t.store
             .log(
                 schema::EXTRACT_LOG,
-                json!({"stage":"Mem0-add","outputFormat":FORMAT,"requestId":id,
+                json!({"stage":"Mem0-add","outputFormat":FORMAT,"requestId":id,"requestIds":ids,
             "status":"model_completed","output":reply.json,"responseLogId":reply.response_log_id,
             "systemHash":util::hex_hash(SYSTEM),
             "inputHash":util::hex_hash(&input)}),
@@ -435,8 +484,10 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
                     })?;
                     let mut inputs: Vec<String> =
                         serde_json::from_value(source["inputRequestIds"].clone())?;
-                    if !inputs.iter().any(|input| input == id) {
-                        inputs.push(id.into());
+                    for id in &ids {
+                        if !inputs.iter().any(|input| input == id) {
+                            inputs.push(id.to_string());
+                        }
                     }
                     repeated_sources.push((mid.to_string(), inputs));
                     continue;
@@ -473,10 +524,10 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
             stated_at: observed.into(),
             source: Source {
                 platform: platform.into(),
-                turn_ids: job["turnId"]
-                    .as_str()
-                    .map(|id| vec![id.into()])
-                    .unwrap_or_default(),
+                turn_ids: jobs
+                    .iter()
+                    .filter_map(|j| j["turnId"].as_str().map(str::to_string))
+                    .collect(),
                 origin: if inferred {
                     candidate.attributed_to
                 } else {
@@ -499,7 +550,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
         tx.put(
             super::SOURCES,
             &mid,
-            json!({"level":"batch","inputRequestIds":[id],
+            json!({"level":"batch","inputRequestIds":ids,
             "observedAt":observed,"attributedTo":attributed,"verifiedClaimSpan":false}),
         )?;
         tx.index_task(schema::MEMORIES, &mid, "upsert_preindexed")?;
@@ -507,18 +558,20 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
             super::HISTORY,
             &util::new_id("h"),
             json!({"memoryId":mid,"event":"ADD",
-            "text":record.text,"requestId":id,"createdAt":now}),
+            "text":record.text,"requestId":id,"requestIds":ids,"createdAt":now}),
         )?;
         memory_ids.push(mid.clone());
         cache.push((mid, vector));
     }
-    tx.merge(
-        schema::REQUESTS,
-        id,
-        json!({"status":"indexing","memoryIds":memory_ids,"formed":true,
-        "searchable":false,"error":null,"updatedAt":now,"latencyMs":{"recall":recall_ms,
-        "model":model_ms,"embed":embed_ms,"total":started.elapsed().as_secs_f64()*1000.0}}),
-    )?;
+    for id in &ids {
+        tx.merge(
+            schema::REQUESTS,
+            id,
+            json!({"status":"indexing","memoryIds":memory_ids,"formed":true,
+            "searchable":false,"error":null,"updatedAt":now,"latencyMs":{"recall":recall_ms,
+            "model":model_ms,"embed":embed_ms,"total":started.elapsed().as_secs_f64()*1000.0}}),
+        )?;
+    }
     t.store.commit(tx).await?;
     // Synchronous readers acquire this cache only after the primary/vector transaction succeeds.
     let mut vectors = t.vecs.write().await;
@@ -530,9 +583,11 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
     // Primary input formation is durable already. Entity publication is a rebuildable
     // projection; failure leaves the request indexing and resumes without generation.
     super::entities::reconcile_locked(eng, t).await?;
-    t.store.merge_doc(schema::REQUESTS,id,json!({"status":"completed","searchable":true,"latencyMs":{"recall":recall_ms,"model":model_ms,
-        "embed":embed_ms,"persist":tick.elapsed().as_secs_f64()*1000.0,
-        "total":started.elapsed().as_secs_f64()*1000.0}})).await?;
+    for id in &ids {
+        t.store.merge_doc(schema::REQUESTS,id,json!({"status":"completed","searchable":true,"latencyMs":{"recall":recall_ms,"model":model_ms,
+            "embed":embed_ms,"persist":tick.elapsed().as_secs_f64()*1000.0,
+            "total":started.elapsed().as_secs_f64()*1000.0}})).await?;
+    }
     Ok(())
 }
 
@@ -561,7 +616,7 @@ async fn wait(eng: &Arc<Engine>, t: &Arc<Instance>, id: &str) -> ApiResult<Value
         // instead of waiting for unrelated later jobs in that worker snapshot.
         let available = t.try_lock_formation().is_some();
         if available {
-            process_until(eng, t, Some(id)).await?;
+            process_until(eng, t, Flush::Through(id)).await?;
         }
         let out = tasks::get_task(
             eng,
@@ -597,7 +652,7 @@ async fn wait(eng: &Arc<Engine>, t: &Arc<Instance>, id: &str) -> ApiResult<Value
 pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value> {
     let start = Instant::now();
     loop {
-        process_jobs(eng, t).await?;
+        process_until(eng, t, Flush::All).await?;
         let pending = repo::unfinished_job_count(t).await?;
         if pending == 0 {
             memory_engine::runtime::indexer::drain(eng, t).await?;

@@ -29,6 +29,8 @@ impl std::error::Error for Refused {}
 
 pub struct ModelHub {
     client: Option<Client>,
+    /// Mock models rerank by word overlap ([`ModelHub::mock_reranking`]).
+    mock_reranker: bool,
     cache: Mutex<LruCache<[u8; 32], Arc<Vec<f32>>>>,
     pub embed_model_id: String,
     pub rerank_model_id: Option<String>,
@@ -51,6 +53,7 @@ impl ModelHub {
     pub fn mock() -> Self {
         Self {
             client: None,
+            mock_reranker: false,
             cache: new_cache(),
             embed_model_id: "mock-bow-1024".into(),
             rerank_model_id: None,
@@ -85,6 +88,7 @@ impl ModelHub {
                 let client = api::Api::new(cfg.embed_url(), &cfg.embed_model, rerank, api_key)?;
                 Self {
                     client: Some(Client::Api(client)),
+                    mock_reranker: false,
                     cache: new_cache(),
                     embed_model_id: cfg.embed_model.clone(),
                     rerank_model_id: rerank.map(|(_, model)| model.to_string()),
@@ -100,6 +104,7 @@ impl ModelHub {
                         .await?;
                 Self {
                     client: Some(Client::SelfHosted(client)),
+                    mock_reranker: false,
                     cache: new_cache(),
                     embed_model_id: identity.embed_model_id,
                     rerank_model_id: identity.rerank_model_id,
@@ -131,11 +136,20 @@ impl ModelHub {
         Ok(hub)
     }
 
+    /// Mock embeddings and a mock reranker that scores a document by the share of the query's words it contains.
+    pub fn mock_reranking() -> Self {
+        Self {
+            mock_reranker: true,
+            rerank_model_id: Some("mock-overlap".into()),
+            ..Self::mock()
+        }
+    }
+
     pub fn has_reranker(&self) -> bool {
         match &self.client {
             Some(Client::Api(c)) => c.has_reranker(),
             Some(Client::SelfHosted(c)) => c.has_reranker(),
-            None => false,
+            None => self.mock_reranker,
         }
     }
 
@@ -194,7 +208,7 @@ impl ModelHub {
         match &self.client {
             Some(Client::Api(c)) => c.rerank(query, docs).await,
             Some(Client::SelfHosted(c)) => c.rerank(query, docs).await,
-            None => Ok(None),
+            None => Ok(Some(docs.iter().map(|d| mock_rerank(query, d)).collect())),
         }
     }
 
@@ -294,6 +308,19 @@ fn new_cache() -> Mutex<LruCache<[u8; 32], Arc<Vec<f32>>>> {
 }
 
 /// Hashed bag-of-words embedding for tests (MEMORY_MOCK_MODELS=1): words and CJK bigrams hashed into dims.
+/// The share of `query`'s words that `doc` contains.
+fn mock_rerank(query: &str, doc: &str) -> f32 {
+    let words = |t: &str| -> std::collections::HashSet<String> {
+        t.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 1)
+            .map(str::to_string)
+            .collect()
+    };
+    let (q, d) = (words(query), words(doc));
+    q.iter().filter(|w| d.contains(*w)).count() as f32 / q.len().max(1) as f32
+}
+
 pub fn mock_embed(text: &str, dim: usize) -> Vec<f32> {
     let mut v = vec![0f32; dim];
     let lower = text.to_lowercase();

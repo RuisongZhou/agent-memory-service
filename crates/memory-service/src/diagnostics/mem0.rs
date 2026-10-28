@@ -1,5 +1,7 @@
 //! Offline integrity checks for the additive strategy, using mock embeddings and no provider.
-use crate::test_support::{engine, fresh_store, generation_stub, memory, stub_engine};
+use crate::test_support::{
+    engine, fresh_store, generation_stub, memory, reranking_engine, stub_engine,
+};
 use memory_algo_mem0::{
     formation as mem0_formation, repo as mem0_repo, retrieval as mem0_retrieval,
 };
@@ -771,6 +773,160 @@ async fn selftest() {
     assert_eq!(history("").await.unwrap().len(), 2);
     assert!(history(repo).await.unwrap().is_empty());
 
+    // Segments: with three turns to a segment, a session's queued turns form in one extraction call whose facts
+    // name every request and turn; a turn short of a segment waits for a drain.
+    let batched = stub_engine(
+        ServiceConfig {
+            mem0_segment_turns: 3,
+            ..Default::default()
+        },
+        &generation_stub().await,
+    );
+    let segment = ReqScope {
+        project: Some("/segments".into()),
+        session: Some("ss".into()),
+        ..Default::default()
+    };
+    let mut segment_requests = Vec::new();
+    for turn in ["s1", "s2", "s3", "s4"] {
+        let queued = ingest::add_memories(
+            &batched,
+            &t,
+            &caller,
+            AddMemoriesReq {
+                scope: segment.clone(),
+                turn_id: Some(turn.into()),
+                messages: Some(vec![InMessage {
+                    role: "user".into(),
+                    content: format!("User keeps note {turn}"),
+                    timestamp: "2026-10-27T09:00:00Z".into(),
+                }]),
+                sync: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        segment_requests.push(queued["requestId"].as_str().unwrap().to_string());
+    }
+    mem0_formation::process_jobs(&batched, &t).await.unwrap();
+    let task = |id: &str| {
+        ingest::get_task(
+            &batched,
+            &t,
+            GetTaskReq {
+                request_id: id.into(),
+            },
+        )
+    };
+    let first = task(&segment_requests[0]).await.unwrap();
+    assert_eq!(first["status"], "completed", "{first}");
+    assert_eq!(
+        task(&segment_requests[2]).await.unwrap()["memoryIds"],
+        first["memoryIds"]
+    );
+    assert_eq!(
+        task(&segment_requests[3]).await.unwrap()["status"],
+        "queued"
+    );
+    assert_eq!(batched.llm.usage_snapshot()["calls"], 1);
+    let facts: Vec<String> = serde_json::from_value(first["memoryIds"].clone()).unwrap();
+    assert_eq!(facts.len(), 3);
+    assert_eq!(
+        memory(&t, &facts[0]).await.source.turn_ids,
+        ["s1", "s2", "s3"]
+    );
+    let sources = t
+        .store
+        .get_doc(memory_algo_mem0::SOURCES, &facts[0])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sources["inputRequestIds"], json!(segment_requests[..3]));
+    mem0_formation::wait_idle(&batched, &t).await.unwrap();
+    assert_eq!(
+        task(&segment_requests[3]).await.unwrap()["status"],
+        "completed"
+    );
+    assert_eq!(batched.llm.usage_snapshot()["calls"], 2);
+
+    // Selective recall: with a reranker, a search returns the memories whose reranker score clears the floor, nothing
+    // for a query no memory answers, and logs the evidence; a request that turns reranking off keeps Mem0's top-k.
+    let reranking = reranking_engine(ServiceConfig {
+        mem0_recall_floor: Some(0.5),
+        ..Default::default()
+    });
+    let selective = ReqScope {
+        project: Some("/selective".into()),
+        session: Some("rs".into()),
+        ..Default::default()
+    };
+    let mut facts = Vec::new();
+    for (turn, text) in [
+        ("r1", "User deploys the service with Docker Compose"),
+        ("r2", "User deploys previews with Docker"),
+        ("r3", "User prefers short answers"),
+    ] {
+        let saved = ingest::add_memories(
+            &reranking,
+            &t,
+            &caller,
+            AddMemoriesReq {
+                scope: selective.clone(),
+                turn_id: Some(turn.into()),
+                text: Some(text.into()),
+                infer: Some(false),
+                sync: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        facts.push(saved["memoryIds"][0].as_str().unwrap().to_string());
+    }
+    let recall = |query: &str, rerank: Option<bool>| {
+        mem0_retrieval::search(
+            &reranking,
+            &t,
+            &caller,
+            SearchReq {
+                query: query.into(),
+                scope: Some(selective.clone()),
+                rerank,
+                ..Default::default()
+            },
+        )
+    };
+    // The query shares 6 of its 9 words with the Compose fact, 3 and 1 with the others.
+    let deploy = "how does the user deploy the service with docker compose";
+    let found = recall(deploy, None).await.unwrap();
+    assert_eq!(ids(&found), [facts[0].clone()]);
+    assert!((found["results"][0]["rerankScore"].as_f64().unwrap() - 6.0 / 9.0).abs() < 1e-6);
+    assert_eq!(found["selection"]["admitted"], 1);
+    let nothing = recall("what is the capital of peru", None).await.unwrap();
+    assert!(
+        ids(&nothing).is_empty() && nothing["gap"] == true,
+        "{nothing}"
+    );
+    let logged = t
+        .store
+        .get_doc(
+            schema::RETRIEVAL_LOG,
+            nothing["retrievalId"].as_str().unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            &logged["selection"]["admitted"],
+            &logged["selection"]["floor"]
+        ),
+        (&json!(0), &json!(0.5))
+    );
+    let unranked = recall(deploy, Some(false)).await.unwrap();
+    assert!(unranked["selection"].is_null() && ids(&unranked).contains(&facts[0]));
+
     // Reads. The project's context and search see the global fact next to its own; the global session's see no
     // project fact; an absent project still means every project to a search.
     let context = |scope: &ReqScope| {
@@ -863,7 +1019,8 @@ async fn selftest() {
             (json!("p2"), json!(repo))
         ]
     );
-    assert_eq!(turns(&listed(&everywhere).await.unwrap()).len(), 7);
+    // Seven turns of these sessions, four of the segment session and three of the selective-recall one.
+    assert_eq!(turns(&listed(&everywhere).await.unwrap()).len(), 14);
     // The recall and request logs select the global session by the project "".
     let filed = requests(json!({"kind": "mem0", "project": ""}))
         .await

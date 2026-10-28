@@ -38,7 +38,8 @@ pub struct ServiceConfig {
     pub memory_strategy: MemoryStrategy,
     #[serde(default = "default_mem0_threshold")]
     pub mem0_threshold: f32,
-    #[serde(default)]
+    /// Load the reranker and rerank searches with it (`mem0Rerank`); selective recall depends on it.
+    #[serde(default = "default_true")]
     pub mem0_rerank: bool,
     #[serde(default)]
     pub mem0_custom_instructions: String,
@@ -46,6 +47,22 @@ pub struct ServiceConfig {
     pub mem0_max_tokens: u32,
     #[serde(default = "default_mem0_top_k")]
     pub mem0_top_k: usize,
+    /// Turns of one conversation formed by one extraction call (1 forms every turn alone).
+    #[serde(default = "default_mem0_segment_turns")]
+    pub mem0_segment_turns: usize,
+    /// Estimated message tokens that fill a segment before `mem0SegmentTurns`.
+    #[serde(default = "default_mem0_segment_tokens")]
+    pub mem0_segment_tokens: usize,
+    /// Seconds a segment's oldest turn waits for more turns before it is formed anyway.
+    #[serde(default = "default_mem0_segment_wait_secs")]
+    pub mem0_segment_wait_secs: u64,
+    /// Lowest reranker score a recalled memory has (`mem0RecallFloor`); unset takes the built-in floor of the
+    /// loaded reranker, which the service knows only for the rerankers it ships with.
+    #[serde(default)]
+    pub mem0_recall_floor: Option<f32>,
+    /// Largest distance, in logits, of a recalled memory's reranker score from the best one's.
+    #[serde(default = "default_mem0_recall_margin")]
+    pub mem0_recall_margin: f32,
     pub data_dir: PathBuf,
     /// The SurrealDB 3.x `surreal` executable that serves the store; a bare name is looked up on PATH.
     #[serde(default = "default_surreal_bin")]
@@ -87,10 +104,15 @@ impl Default for ServiceConfig {
         Self {
             memory_strategy: MemoryStrategy::Mem0,
             mem0_threshold: default_mem0_threshold(),
-            mem0_rerank: false,
+            mem0_rerank: true,
             mem0_custom_instructions: String::new(),
             mem0_max_tokens: default_mem0_max_tokens(),
             mem0_top_k: default_mem0_top_k(),
+            mem0_segment_turns: default_mem0_segment_turns(),
+            mem0_segment_tokens: default_mem0_segment_tokens(),
+            mem0_segment_wait_secs: default_mem0_segment_wait_secs(),
+            mem0_recall_floor: None,
+            mem0_recall_margin: default_mem0_recall_margin(),
             data_dir: PathBuf::from("./memory-data"),
             surreal_bin: default_surreal_bin(),
             model_provider: ModelProvider::Api,
@@ -225,4 +247,24 @@ mod tests {
 
 fn default_mem0_top_k() -> usize {
     20
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_mem0_recall_margin() -> f32 {
+    3.0
+}
+
+fn default_mem0_segment_turns() -> usize {
+    1
+}
+
+fn default_mem0_segment_tokens() -> usize {
+    6000
+}
+
+fn default_mem0_segment_wait_secs() -> u64 {
+    600
 }

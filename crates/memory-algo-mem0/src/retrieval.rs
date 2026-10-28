@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use memory_config::MemoryStrategy;
 use memory_domain::types::*;
 use memory_engine::runtime::{engine::Engine, instance::Instance};
+use memory_rules::selection::RERANK_POOL;
 use memory_rules::util;
 use memory_store::schema;
 use serde_json::{json, Value};
@@ -196,17 +197,43 @@ pub async fn search(
     let query_lemmatized = memory_rules::mem0_hybrid::lemmatize(query);
     let bm25 =
         memory_rules::mem0_hybrid::bm25_scores(&documents, &query_lemmatized, (k * 4).max(60));
-    let entity = super::entities::boosts(eng, t, query, project, platform).await?;
-    let ranked = memory_rules::mem0_hybrid::score_and_rank(
+    // Selective recall reranks the fused top of the pool and returns only what clears the reranker's floor. Without a
+    // reranker, or when the request turns reranking off, search keeps Mem0's hybrid top-k with its entity boost.
+    let rerank = req.rerank.unwrap_or(mem0.rerank);
+    let selection = mem0.recall.filter(|_| rerank && eng.models.has_reranker());
+    let explaining = req.explain.unwrap_or(false);
+    let entity = if selection.is_none() || explaining {
+        super::entities::boosts(eng, t, query, project, platform).await?
+    } else {
+        HashMap::new()
+    };
+    let no_entity = HashMap::new();
+    let mut ranked = memory_rules::mem0_hybrid::score_and_rank(
         candidates
             .iter()
             .map(|(m, score)| (m.id.clone(), *score))
             .collect(),
         &bm25,
-        &entity,
+        if selection.is_some() {
+            &no_entity
+        } else {
+            &entity
+        },
         mem0.threshold,
-        k,
+        usize::MAX,
     );
+    let explained = if explaining {
+        let signals = Signals {
+            pool: &candidates,
+            fused: &ranked,
+            bm25: &bm25,
+            entity: &entity,
+        };
+        Some(explain(eng, t, query, &q, signals, project, platform, &types).await?)
+    } else {
+        None
+    };
+    ranked.truncate(if selection.is_some() { RERANK_POOL } else { k });
     let records: std::collections::HashMap<_, _> = candidates
         .into_iter()
         .map(|(m, _)| (m.id.clone(), m))
@@ -217,21 +244,27 @@ pub async fn search(
         .collect();
     let recall_ms = tick.elapsed().as_secs_f64() * 1000.0;
     let tick = Instant::now();
-    // SDK reranking runs after hybrid topK selection.
-    let rerank = req.rerank.unwrap_or(mem0.rerank);
-    let mut rerank_scores = std::collections::HashMap::new();
-    if rerank && eng.models.has_reranker() && !candidates.is_empty() {
+    let mut rerank_scores = HashMap::new();
+    let mut selected = Value::Null;
+    if let Some(rule) = selection {
         let docs = candidates
             .iter()
             .map(|(m, _)| m.text.clone())
             .collect::<Vec<_>>();
-        // SDK degrades to hybrid ordering if the optional reranker fails.
-        if let Ok(Some(scores)) = eng.models.rerank(query, &docs).await {
-            for ((m, _), score) in candidates.iter().zip(scores) {
+        // The reranker vouches for what selective search returns: when it fails, the search fails.
+        let scores = eng.models.rerank(query, &docs).await?.unwrap_or_default();
+        let top = scores.iter().copied().reduce(f32::max);
+        let scored: Vec<_> = candidates.into_iter().zip(scores).collect();
+        let admitted = memory_rules::selection::select(&scored, rule);
+        selected = json!({"floor":rule.floor,"margin":rule.margin,"reranked":scored.len(),"top":top,
+            "admitted":admitted.len()});
+        candidates = admitted
+            .into_iter()
+            .map(|((m, fused), score)| {
                 rerank_scores.insert(m.id.clone(), score);
-            }
-            candidates.sort_by(|a, b| rerank_scores[&b.0.id].total_cmp(&rerank_scores[&a.0.id]));
-        }
+                (m, fused)
+            })
+            .collect();
     }
     let rerank_ms = tick.elapsed().as_secs_f64() * 1000.0;
     candidates.truncate(k);
@@ -297,15 +330,90 @@ pub async fn search(
         .store
         .log_retrieval(
             json!({"kind":"search","platform":c.platform,"client":c.client,"project":project,"session":scope.session,
-        "query":query,"strategy":MemoryStrategy::Mem0,
+        "query":query,"strategy":MemoryStrategy::Mem0,"selection":selected,
         "returned":{"memories":returned,"tokens":used,"gap":results.is_empty()},"latency":lat,
         "createdAt":ts,"createdTs":util::ts_secs(&ts)}),
         )
         .await?;
-    Ok(
-        json!({"retrievalId":retrieval_id,"strategy":"mem0","results":results,"profiles":[],
-        "recentTurns":[],"uncertainties":[],"gap":results.is_empty(),"tokensUsed":used,"latencyMs":lat}),
-    )
+    let mut out = json!({"retrievalId":retrieval_id,"strategy":"mem0","results":results,"profiles":[],
+        "recentTurns":[],"uncertainties":[],"gap":results.is_empty(),"tokensUsed":used,"latencyMs":lat,
+        "selection":selected});
+    if let Some(explained) = explained {
+        out["explain"] = explained;
+    }
+    Ok(out)
+}
+
+/// Candidates reranked for `explain`: the fused top of the pool.
+const EXPLAIN_RERANK: usize = 30;
+
+struct Signals<'a> {
+    pool: &'a [(MemoryRec, f32)],
+    fused: &'a [(String, f32)],
+    bm25: &'a HashMap<String, f32>,
+    entity: &'a HashMap<String, f32>,
+}
+
+/// Eval diagnostics: each pool candidate's cosine, keyword, entity and fused scores (fused order first), cross-encoder
+/// scores for the fused top `EXPLAIN_RERANK` when a reranker is configured, and the query's cosine over every visible
+/// candidate memory, so that selection rules can be compared offline from one search.
+#[allow(clippy::too_many_arguments)]
+async fn explain(
+    eng: &Arc<Engine>,
+    t: &Arc<Instance>,
+    query: &str,
+    q: &[f32],
+    s: Signals<'_>,
+    project: &str,
+    platform: &str,
+    types: &[String],
+) -> Result<Value> {
+    let fused: HashMap<&str, f32> = s.fused.iter().map(|(id, v)| (id.as_str(), *v)).collect();
+    let mut pool: Vec<&(MemoryRec, f32)> = s.pool.iter().collect();
+    pool.sort_by(|a, b| {
+        let (fa, fb) = (fused.get(a.0.id.as_str()), fused.get(b.0.id.as_str()));
+        fb.partial_cmp(&fa)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.1.total_cmp(&a.1))
+    });
+    let top: Vec<String> = pool
+        .iter()
+        .filter(|(m, _)| fused.contains_key(m.id.as_str()))
+        .take(EXPLAIN_RERANK)
+        .map(|(m, _)| m.text.clone())
+        .collect();
+    let rerank = if eng.models.has_reranker() && !top.is_empty() {
+        eng.models.rerank(query, &top).await?
+    } else {
+        None
+    };
+    let candidates: Vec<Value> = pool
+        .iter()
+        .enumerate()
+        .map(|(i, (m, cosine))| {
+            json!({"id":m.id,"text":m.text,"tokens":util::est_tokens(&m.text) + 8,"cosine":cosine,
+                "bm25":s.bm25.get(&m.id),"entity":s.entity.get(&m.id),"fused":fused.get(m.id.as_str()),
+                "rerank":rerank.as_ref().and_then(|r| r.get(i))})
+        })
+        .collect();
+    let metadata = t.store.active_memory_meta().await?;
+    let cache = t.vecs.read().await;
+    let mut all = Vec::new();
+    for meta in metadata.iter() {
+        let scope: MemScope = serde_json::from_value(meta["scope"].clone())?;
+        if visible(&scope, project, platform)
+            && meta["status"] != S_CANDIDATE
+            && types.iter().any(|kind| meta["type"] == kind.as_str())
+        {
+            if let Some(v) = meta["mid"].as_str().and_then(|id| cache.memories.get(id)) {
+                all.push(util::cosine(q, v) as f64);
+            }
+        }
+    }
+    let n = all.len().max(1) as f64;
+    let mean = all.iter().sum::<f64>() / n;
+    let std = (all.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt();
+    Ok(json!({"visible":all.len(),"cosineMean":mean,"cosineStd":std,"candidates":candidates}))
 }
 
 /// Default SQLite SDK keyword search scans every filtered record. Its corpus

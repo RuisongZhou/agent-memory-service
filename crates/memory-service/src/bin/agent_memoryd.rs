@@ -334,6 +334,7 @@ fn main() -> anyhow::Result<()> {
                 let models =
                     ModelHub::connect(&cfg, &model_api_key, cfg.use_reranker && cfg.mem0_rerank)
                         .await?;
+                memory_service::algorithms::settle_models(&mut cfg, &models)?;
                 let algorithm = memory_service::algorithms::select(cfg.memory_strategy);
                 let eng = Engine::new(cfg, llm, models, algorithm);
                 // open the store eagerly so its workers resume unfinished tasks

@@ -22,14 +22,22 @@ pub(crate) fn stub_engine(cfg: ServiceConfig, url: &str) -> Arc<Engine> {
     engine_with(cfg, Llm::new(url, "stub", "stub-model", 2, 10).unwrap())
 }
 
-fn engine_with(cfg: ServiceConfig, llm: Llm) -> Arc<Engine> {
-    let strategy = cfg.memory_strategy;
-    Engine::new(
+/// Engine with mock embeddings, the word-overlap mock reranker and an unreachable LLM.
+pub(crate) fn reranking_engine(cfg: ServiceConfig) -> Arc<Engine> {
+    engine_on(
         cfg,
-        llm,
-        ModelHub::mock(),
-        crate::algorithms::select(strategy),
+        Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1).unwrap(),
+        ModelHub::mock_reranking(),
     )
+}
+
+fn engine_with(cfg: ServiceConfig, llm: Llm) -> Arc<Engine> {
+    engine_on(cfg, llm, ModelHub::mock())
+}
+
+fn engine_on(cfg: ServiceConfig, llm: Llm, models: ModelHub) -> Arc<Engine> {
+    let strategy = cfg.memory_strategy;
+    Engine::new(cfg, llm, models, crate::algorithms::select(strategy))
 }
 
 /// Generation calls the engine has made.
