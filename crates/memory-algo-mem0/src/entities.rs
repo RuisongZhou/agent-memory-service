@@ -11,7 +11,9 @@ use std::{
 };
 
 pub use memory_rules::mem0_entities::{extract_entities, normalize, Entity};
-const VERSION: &str = "node331-regex-f64-v2";
+// v3: TOPIC rows (lowercase word runs) are no longer projected; they were most of the rows, each embedded, and
+// selective recall ranks with the reranker instead.
+const VERSION: &str = "node331-regex-f64-v3-named";
 
 fn scope_key(scope: &Value) -> String {
     scope.to_string()
@@ -157,23 +159,10 @@ async fn prepare_fact(
     } else if let Some(saved) =
         saved.filter(|s| s["version"] == VERSION && s["text"] == doc["text"])
     {
-        serde_json::from_value(saved["entities"].clone()).unwrap_or_else(|_| {
-            extract_entities(doc["text"].as_str().unwrap_or(""))
-                .into_iter()
-                .map(|entity| Extracted {
-                    text: entity.text,
-                    kind: entity.kind.into(),
-                })
-                .collect()
-        })
+        serde_json::from_value(saved["entities"].clone())
+            .unwrap_or_else(|_| projected(doc["text"].as_str().unwrap_or("")))
     } else {
-        extract_entities(doc["text"].as_str().unwrap_or(""))
-            .into_iter()
-            .map(|entity| Extracted {
-                text: entity.text,
-                kind: entity.kind.into(),
-            })
-            .collect()
+        projected(doc["text"].as_str().unwrap_or(""))
     };
     Ok(Fact {
         doc,
@@ -182,6 +171,18 @@ async fn prepare_fact(
         seq,
         entities,
     })
+}
+
+/// The entities of `text` the projection keeps: named ones (PROPER, QUOTED, IDENTIFIER), not TOPIC word runs.
+fn projected(text: &str) -> Vec<Extracted> {
+    extract_entities(text)
+        .into_iter()
+        .filter(|entity| entity.kind != "TOPIC")
+        .map(|entity| Extracted {
+            text: entity.text,
+            kind: entity.kind.into(),
+        })
+        .collect()
 }
 
 fn extraction(fact: &Fact) -> Value {
@@ -549,6 +550,7 @@ pub async fn boosts(
     reconcile_locked(eng, t).await?;
     let entities = extract_entities(query)
         .into_iter()
+        .filter(|entity| entity.kind != "TOPIC")
         .take(8)
         .collect::<Vec<_>>();
     if entities.is_empty() {

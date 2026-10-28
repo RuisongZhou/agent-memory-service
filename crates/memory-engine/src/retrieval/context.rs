@@ -130,6 +130,9 @@ pub(crate) async fn assemble_context(
     let (n, cost) = pack_prefix(&instruction_costs, cap(500, content_used));
     content_used += cost;
     let instructions = instructions.into_iter().take(n).collect::<Vec<_>>();
+    if req.lean.unwrap_or(false) {
+        return lean_context(t, c, &scope, global, en, instructions, &vis, t0).await;
+    }
 
     // 1. user profile
     let user_profile = latest_profile(t, None).await?;
@@ -368,6 +371,87 @@ pub(crate) async fn assemble_context(
         "projectFacts": project_facts.iter().map(|m| m.public()).collect::<Vec<_>>(),
         "facts": facts_json,
         "skills": skill_lines.iter().map(|l| l.1.clone()).collect::<Vec<_>>(),
+        "text": text,
+        "tokensUsed": used,
+        "retrievalId": retrieval_id,
+    }))
+}
+
+/// The lean context: explicit instructions and a one-line index of the facts this scope can recall.
+#[allow(clippy::too_many_arguments)]
+async fn lean_context(
+    t: &Arc<Instance>,
+    c: &Caller,
+    scope: &ReqScope,
+    global: bool,
+    en: bool,
+    instructions: Vec<MemoryRec>,
+    vis: &Vis,
+    t0: Instant,
+) -> ApiResult<Value> {
+    let tx = if en { &CTX_EN } else { &CTX_ZH };
+    let (mut project, mut shared) = (0usize, 0usize);
+    for row in t.store.active_memory_meta().await?.iter() {
+        if row["type"] != T_FACT || !matches!(row["status"].as_str(), Some(S_CURRENT | S_CONFLICT))
+        {
+            continue;
+        }
+        let memory_scope: MemScope =
+            serde_json::from_value(row["scope"].clone()).map_err(anyhow::Error::from)?;
+        if vis.sees(&memory_scope) {
+            if memory_scope.kind == "project" {
+                project += 1;
+            } else {
+                shared += 1;
+            }
+        }
+    }
+    let mut text = String::new();
+    if !instructions.is_empty() || project + shared > 0 {
+        text.push_str(tx.header);
+        text.push('\n');
+        if !instructions.is_empty() {
+            text.push_str(tx.instructions);
+            text.push('\n');
+            for m in &instructions {
+                text.push_str(&format!("- {}\n", m.text));
+            }
+        }
+        if project + shared > 0 {
+            text.push_str(&if en {
+                format!("[Memory index] {project} project facts and {shared} shared ones. Facts relevant to a prompt are added to it automatically; search_memories finds others.")
+            } else {
+                format!("[记忆索引] 本项目 {project} 条事实，另有 {shared} 条共享事实。与提问相关的事实会自动随提问加入；其他的用 search_memories 查找。")
+            });
+        }
+    }
+    let text = text.trim_end().to_string();
+    let used = util::est_tokens(&text);
+    let ts = util::now_str();
+    let retrieval_id = t
+        .store
+        .log_retrieval(json!({
+            "kind": "context",
+            "platform": c.platform,
+            "client": c.client,
+            "project": if global { Some("") } else { scope.project.as_deref() },
+            "session": scope.session,
+            "query": Value::Null,
+            "returned": {"memories": instructions.iter().enumerate().map(|(i, m)| json!({"id": m.id, "rank": i + 1})).collect::<Vec<_>>(),
+                         "tokens": used},
+            "latency": {"total": ms(t0)},
+            "createdAt": ts,
+            "createdTs": util::ts_secs(&ts),
+        }))
+        .await?;
+    Ok(json!({
+        "profile": Value::Null,
+        "instructions": instructions.iter().map(|m| m.public()).collect::<Vec<_>>(),
+        "projectNotes": Value::Null,
+        "projectFacts": [],
+        "facts": [],
+        "skills": [],
+        "index": {"projectFacts": project, "sharedFacts": shared},
         "text": text,
         "tokensUsed": used,
         "retrievalId": retrieval_id,

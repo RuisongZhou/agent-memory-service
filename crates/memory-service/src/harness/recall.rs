@@ -210,7 +210,8 @@ async fn session_start(
     if let Some(session) = &session {
         scope["session"] = json!(session);
     }
-    let body = json!({"scope": scope, "tokenBudget": args.context_budget});
+    // Instructions and an index of the memories: per-prompt recall brings the relevant facts.
+    let body = json!({"scope": scope, "tokenBudget": args.context_budget, "lean": true});
     let context = daemon
         .post("get_context", &body, &args.platform)
         .await
@@ -753,14 +754,14 @@ mod tests {
         assert_eq!(name, "get_context");
         assert_eq!(
             body,
-            json!({"scope": {"project": "/work/proj", "session": "s1"}, "tokenBudget": 1000})
+            json!({"scope": {"project": "/work/proj", "session": "s1"}, "tokenBudget": 1000, "lean": true})
         );
         // A session without a folder (WorkBuddy's SessionStart) gets global context only.
         let text = inject(&a, without_folder(start("s2"))).await;
         assert!(text.starts_with("<shared-memory scope=\"global\" event=\"SessionStart\">\n"));
         assert_eq!(
             requests.lock().unwrap()[1].1,
-            json!({"scope": {"kind": "global", "session": "s2"}, "tokenBudget": 1000})
+            json!({"scope": {"kind": "global", "session": "s2"}, "tokenBudget": 1000, "lean": true})
         );
         // Claude Code's own project directory wins over the event's `cwd`; another platform ignores it.
         let host = Env {

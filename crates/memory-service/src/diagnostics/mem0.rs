@@ -849,6 +849,26 @@ async fn selftest() {
         "completed"
     );
     assert_eq!(batched.llm.usage_snapshot()["calls"], 2);
+    // The drained turn's prompt shows the facts the session already gave, as the prompt's deduplication reference.
+    let prompts = t
+        .store
+        .select(
+            "SELECT request FROM llm_responses WHERE stage = 'Mem0-add'",
+            vec![],
+        )
+        .await
+        .unwrap();
+    let last = prompts
+        .iter()
+        .filter_map(|row| row["request"]["messages"][1]["content"].as_str())
+        .find(|prompt| prompt.contains("user: User keeps note s4"))
+        .unwrap();
+    assert!(
+        last.contains(
+            "## Recently Extracted Memories\n[\"User keeps note s1\",\"User keeps note s2\",\"User keeps note s3\"]"
+        ),
+        "{last}"
+    );
 
     // Selective recall: with a reranker, a search returns the memories whose reranker score clears the floor, nothing
     // for a query no memory answers, and logs the evidence; a request that turns reranking off keeps Mem0's top-k.
@@ -950,6 +970,26 @@ async fn selftest() {
     );
     assert!(inside.contains(CHINESE) && inside.contains(COMPOSE));
     assert!(alone.contains(CHINESE) && !alone.contains(COMPOSE));
+    // The lean context (SessionStart) indexes the facts the session can recall and shows none of them.
+    let lean = retrieval::get_context(
+        &eng,
+        &t,
+        &caller,
+        GetContextReq {
+            scope: in_folder.clone(),
+            lean: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let text = lean["text"].as_str().unwrap();
+    assert!(
+        text.contains("[记忆索引]") && !text.contains(COMPOSE) && !text.contains(CHINESE),
+        "{text}"
+    );
+    assert!(lean["index"]["projectFacts"].as_u64().unwrap() >= 2);
+    assert!(lean["index"]["sharedFacts"].as_u64().unwrap() >= 1);
     let find = |scope: &ReqScope, query: &str| {
         mem0_retrieval::search(
             &eng,

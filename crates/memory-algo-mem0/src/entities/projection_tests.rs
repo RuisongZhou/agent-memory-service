@@ -61,6 +61,14 @@ async fn cache_handles_correction_raw_delete_projection_failure_and_recovery() -
     reconcile_locked(&eng, &t).await?;
     let before = boosts(&eng, &t, "\"Alice\"", "a", "test").await?;
     assert!(before.contains_key("m1"));
+    // The projection keeps named entities and drops the TOPIC word runs the extractor also finds.
+    let text = "User enjoys hiking mountain trails with Alice";
+    assert!(extract_entities(text).iter().any(|e| e.kind == "TOPIC"));
+    let kept = projected(text);
+    assert!(
+        !kept.is_empty() && kept.iter().all(|e| e.kind != "TOPIC"),
+        "{kept:?}"
+    );
     let projection_revision = t.store.document_revision(&[crate::ENTITY_STATE]);
     reconcile_locked(&eng, &t).await?;
     assert_eq!(

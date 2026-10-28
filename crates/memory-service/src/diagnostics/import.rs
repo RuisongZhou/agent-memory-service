@@ -476,7 +476,7 @@ async fn propose_checks_requests_and_apply_follows_review_decisions() {
         &caller,
         GetContextReq {
             scope: scope.clone(),
-            token_budget: None,
+            ..Default::default()
         },
     )
     .await

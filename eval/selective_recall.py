@@ -192,17 +192,27 @@ def form_one(root, conv, arm, binary, config, llm_url):
     if (target / 'formed.json').exists():
         return
     done = {r['turnId'] for r in jsonl.read(target / 'saves.jsonl')}
+    # With segments, turns are queued as capture queues them and each session ends with its end marker.
+    segmented = config.get('mem0SegmentTurns', 1) > 1
     with daemon(binary, config, target / 'store', llm_url=llm_url, paid=True) as (post, health):
         write_json(target / 'health.json', health)
+        session = None
         for request in turn_requests(conv):
+            if segmented and session not in (None, request['scope']['session']):
+                post('/v1/add_memories', {'turnId': f'{session}-end', 'scope': {'project': cid, 'session': session},
+                                          'sessionEnded': True})
+            session = request['scope']['session']
             if request['turnId'] in done:
                 continue
             tick = time.perf_counter()
-            result = post('/v1/add_memories', request)
-            if result.get('status') != 'completed':
-                raise RuntimeError(f"incomplete formation for {cid} {request['turnId']}: {result}")
+            result = post('/v1/add_memories', {**request, 'sync': not segmented})
+            if result.get('status') != ('queued' if segmented else 'completed'):
+                raise RuntimeError(f"unexpected formation status for {cid} {request['turnId']}: {result}")
             jsonl.append(target / 'saves.jsonl', {'turnId': request['turnId'], 'ms': (time.perf_counter() - tick) * 1000,
                                                   'memoryIds': result.get('memoryIds', [])})
+        if segmented:
+            post('/v1/add_memories', {'turnId': f'{session}-end', 'scope': {'project': cid, 'session': session},
+                                      'sessionEnded': True})
         idle = post('/admin/wait_idle', {})
         if idle.get('status') != 'idle' or idle.get('failedRequests'):
             raise RuntimeError(f'{cid}: {idle}')
@@ -630,10 +640,104 @@ def simulate(root, arm, target_fpr, hosted_scores):
     return out
 
 
+ABSTAIN = 'No information available in the memories.'
+
+
+def served(root, arm, binary):
+    """What `binary` returns from a plain search (topK 15, as the hook asks) for every report-split query of `arm`."""
+    spec = json.loads((root / arm / 'arm.json').read_text())
+    queries = json.loads((root / 'queries.json').read_text())
+    out = root / arm / f'served-{sha(binary)[:12]}.jsonl'
+    done = {r['qid'] for r in jsonl.read(out)}
+    for cid in REPORT:
+        todo = [q for q in queries[cid] if q['qid'] not in done]
+        if not todo:
+            continue
+        with daemon(binary, spec['config'], root / arm / cid / 'store') as (post, health):
+            for q in todo:
+                tick = time.perf_counter()
+                r = post('/v1/search_memories', {'query': q['question'], 'scope': {'project': cid}, 'topK': 15,
+                                                 'tokenBudget': HOOK_BUDGET * 15, 'touch': False})
+                jsonl.append(out, {'qid': q['qid'], 'ms': (time.perf_counter() - tick) * 1000,
+                                   'ids': [x['memory']['id'] for x in r['results']], 'selection': r.get('selection')})
+    return {r['qid']: r for r in jsonl.read(out)}
+
+
+def qa_contexts(root, system):
+    """(arm, rows) for `system`: each report-split own question, and each swap question no memory answers, with the
+    memories the hook would inject for it."""
+    arm, how = system.split(':')
+    texts = {}
+    for cid in REPORT:
+        texts.update({m['id']: m for m in json.loads((root / arm / cid / 'corpus.json').read_text())['memories']})
+    if how == 'selective':
+        picked = served(root, arm, REPO / 'target/fast/agent-memoryd')
+    rows = []
+    for row in rows_of(root, arm, REPORT):
+        if row['kind'] == 'cross' or (row['kind'] == 'swap' and row['relevant']):
+            continue
+        if how == 'current':
+            ordered = fused_order(row)
+        else:
+            by_id = {c['id']: c for c in row['explain']['candidates']}
+            ordered = [by_id.get(i) or {'id': i, 'tokens': util_tokens(texts[i]['text'])} for i in picked[row['qid']]['ids']]
+        injected = [texts[c['id']]['text'] for c, _ in hook_pack(ordered)]
+        rows.append({'qid': row['qid'], 'kind': row['kind'], 'category': row['category'], 'question': row['question'],
+                     'answer': row['answer'] if row['kind'] == 'own' else ABSTAIN, 'injected': injected})
+    return arm, rows
+
+
+def util_tokens(text):
+    """The daemon's estimate: one per CJK character, one per four other characters, plus 8 per record."""
+    cjk = sum(1 for ch in text if '一' <= ch <= '鿿')
+    return cjk + -(-(len(text) - cjk) // 4) + 8
+
+
+async def qa(root, systems, concurrency, max_calls):
+    from common import prompts
+    llm = LLM(concurrency=concurrency, ledger=Ledger(root / 'usage.jsonl'))
+    calls = {'n': 0}
+    try:
+        for system in systems:
+            arm, rows = qa_contexts(root, system)
+            out = root / f'qa-{system.replace(":", "-")}.jsonl'
+            done = {r['qid'] for r in jsonl.read(out)}
+
+            async def one(r):
+                if calls['n'] >= max_calls:
+                    raise RuntimeError('qa call cap reached')
+                calls['n'] += 2
+                context = '\n'.join(r['injected']) if r['injected'] else '(no memories)'
+                a = await llm.chat([{'role': 'system', 'content': prompts.render_unified(context, r['question'])}],
+                                   component=f'qa-answer.{system}', max_tokens=512, meta={'qid': r['qid']})
+                j = await llm.chat([{'role': 'user', 'content': prompts.render_judge(r['question'], r['answer'], a.text)}],
+                                   component=f'qa-judge.{system}', json_mode=True, max_tokens=256, meta={'qid': r['qid']})
+                label = j.json.get('label') if isinstance(j.json, dict) else None
+                if label not in ('CORRECT', 'WRONG'):
+                    raise RuntimeError(f'invalid judge label {label!r} for {r["qid"]}')
+                jsonl.append(out, {**r, 'response': a.text, 'J': int(label == 'CORRECT')})
+            await asyncio.gather(*(one(r) for r in rows if r['qid'] not in done))
+            results = list(jsonl.read(out))
+            summary = {}
+            for key in ['own', 'swap'] + [f'own/{c}' for c in (1, 2, 3, 4)]:
+                kind, _, cat = key.partition('/')
+                sel = [r for r in results if r['kind'] == kind and (not cat or r['category'] == int(cat))]
+                if sel:
+                    summary[key] = {'n': len(sel), 'J': sum(r['J'] for r in sel) / len(sel),
+                                    'memories': sum(len(r['injected']) for r in sel) / len(sel)}
+            write_json(root / f'qa-{system.replace(":", "-")}.summary.json', summary)
+            print(system, json.dumps({k: {m: round(v, 3) for m, v in s.items()} for k, s in summary.items()}), flush=True)
+    finally:
+        await llm.aclose()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', type=Path, required=True)
-    parser.add_argument('--stage', choices=['prepare', 'form', 'search', 'label', 'hosted', 'simulate'], required=True)
+    parser.add_argument('--stage', choices=['prepare', 'form', 'search', 'label', 'hosted', 'simulate', 'qa'],
+                        required=True)
+    parser.add_argument('--systems', default='turn:current,turn:selective,segment:selective',
+                        help='qa: comma-separated arm:current|selective')
     parser.add_argument('--target-fpr', type=float, default=.1, help='calibration false-injection ceiling')
     parser.add_argument('--hosted-scores', action='store_true', help='also replay rules with the hosted models')
     parser.add_argument('--arm', default='turn')
@@ -655,6 +759,8 @@ def main():
         hosted(args.root, args.arm, args.max_label_calls * 3)
     elif args.stage == 'simulate':
         simulate(args.root, args.arm, args.target_fpr, args.hosted_scores)
+    elif args.stage == 'qa':
+        asyncio.run(qa(args.root, args.systems.split(','), args.concurrency, args.max_label_calls * 4))
     else:
         asyncio.run(label(args.root, args.arm, args.concurrency, args.max_label_calls))
 

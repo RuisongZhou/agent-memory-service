@@ -387,6 +387,10 @@ pub struct GetContextReq {
     pub scope: ReqScope,
     #[serde(default)]
     pub token_budget: Option<usize>,
+    /// Instructions and a one-line index of the recallable facts, without fact sections (the SessionStart hook:
+    /// per-prompt recall brings the relevant facts).
+    #[serde(default)]
+    pub lean: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

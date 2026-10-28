@@ -57,9 +57,9 @@ pub async fn failed_job_count(t: &Instance) -> Result<i64> {
         .await
 }
 
-/// Up to ten latest non-empty, durably formed inferred batches in the same conversation.
-/// `formed` is committed with primary memories and sources, including successful extraction of zero memories.
-/// Index publication need not finish before a batch supplies extraction context.
+/// Up to ten latest non-empty, durably formed inferred batches in the same conversation, newest first, with the
+/// facts each formed. `formed` is committed with primary memories and sources, including successful extraction of
+/// zero memories. Index publication need not finish before a batch supplies extraction context.
 pub async fn previous_inputs(
     t: &Instance,
     platform: &str,
@@ -67,7 +67,7 @@ pub async fn previous_inputs(
     session: &str,
     seq: Value,
 ) -> Result<Vec<Value>> {
-    t.store.select("SELECT inputMessages, inputSeq FROM requests WHERE kind = 'mem0' AND platform = $p AND project = $r AND session = $s AND infer = true AND formed = true AND status IN ['indexing', 'completed'] AND array::len(inputMessages) > 0 AND inputSeq < $seq ORDER BY inputSeq DESC LIMIT 10",
+    t.store.select("SELECT inputMessages, inputSeq, memoryIds FROM requests WHERE kind = 'mem0' AND platform = $p AND project = $r AND session = $s AND infer = true AND formed = true AND status IN ['indexing', 'completed'] AND array::len(inputMessages) > 0 AND inputSeq < $seq ORDER BY inputSeq DESC LIMIT 10",
         vec![("p",json!(platform)),("r",json!(project)),("s",json!(session)),("seq",seq)]).await
 }
 

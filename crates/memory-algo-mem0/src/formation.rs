@@ -393,6 +393,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, jobs: &[&Value]) -> Result<(
             job["inputSeq"].clone(),
         )
         .await?;
+        let recent = recent_facts(t, &previous).await?;
         let parsed = previous
             .into_iter()
             .rev()
@@ -416,7 +417,10 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, jobs: &[&Value]) -> Result<(
         let mut sections = vec![
             "## Summary\n".to_string(),
             format!("## Last k Messages\n{history}"),
-            "## Recently Extracted Memories\n[]".into(),
+            format!(
+                "## Recently Extracted Memories\n{}",
+                serde_json::to_string(&recent)?
+            ),
             format!("## Existing Memories\n{old_json}"),
             format!("## New Messages\n{query}"),
             // Service adaptation: preserve the actual timestamp of historical inputs;
@@ -589,6 +593,37 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, jobs: &[&Value]) -> Result<(
             "total":started.elapsed().as_secs_f64()*1000.0}})).await?;
     }
     Ok(())
+}
+
+/// The current facts that the conversation's latest formed requests (`previous`, newest first) formed, at most 20, oldest
+/// first: the prompt's reference for not extracting again what this session already gave.
+async fn recent_facts(t: &Instance, previous: &[Value]) -> Result<Vec<String>> {
+    let mut ids: Vec<String> = Vec::new();
+    for request in previous {
+        for id in request["memoryIds"].as_array().into_iter().flatten().rev() {
+            if let Some(id) = id
+                .as_str()
+                .filter(|id| !ids.iter().any(|known| known == id))
+            {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids.truncate(20);
+    ids.reverse();
+    let records: std::collections::HashMap<String, MemoryRec> = t
+        .store
+        .get_memories(&ids)
+        .await?
+        .into_iter()
+        .map(|m| (m.id.clone(), m))
+        .collect();
+    Ok(ids
+        .iter()
+        .filter_map(|id| records.get(id))
+        .filter(|m| m.status == S_CURRENT)
+        .map(|m| m.text.clone())
+        .collect())
 }
 
 /// Resume after a crash between primary/vector commit and cache publication, without generation.
