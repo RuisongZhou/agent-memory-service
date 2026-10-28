@@ -40,7 +40,8 @@ MCP 桥在启动时取 `CLAUDE_PROJECT_DIR`，没有就取进程的工作目录�
 2. WorkBuddy 不打开工作区时自动建的目录（`~/WorkBuddy` 本身、其下的 `Claw` 和按时间戳命名的子目录及其内部）：
    **global**。用户改过 WorkBuddy 的默认工作区路径时识别不到，这种情况按普通文件夹处理。
 3. 在 git 仓库里：项目是**主仓库的根目录**。worktree 归到主仓库，子目录归到仓库根。沿用导入已有的
-   `repository_root`：worktree 的 `.git` 文件写着 `gitdir: <主仓库>/.git/worktrees/<名字>`，不用调用 git。
+   `repository_root`：worktree 的 `.git` 文件写着 `gitdir: <主仓库>/.git/worktrees/<名字>`，不用调用 git。仓库根就是
+   主目录或在主目录之上时（比如管理 dotfiles 的仓库）不算项目，按第 4 条处理。
 4. 其他情况：项目就是这个文件夹本身。
 
 **项目 ID** 是上述文件夹的规范化绝对路径（解析符号链接，没有结尾的 `/`），例如 `/Users/me/code/agent-memory-service`。

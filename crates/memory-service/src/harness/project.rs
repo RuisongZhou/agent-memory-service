@@ -109,7 +109,9 @@ pub fn resolve(folder: Option<&Path>, home: &Path) -> SessionProject {
         return SessionProject::Global;
     }
     let root = repository_root(&folder);
-    let root = match root == home || root.parent().is_none() {
+    // A repository at the home directory or above it (dotfiles, a whole-disk repository) holds every folder
+    // of the user's and names no project of its own.
+    let root = match home.starts_with(&root) {
         true => folder,
         false => root,
     };
@@ -120,7 +122,8 @@ pub fn resolve(folder: Option<&Path>, home: &Path) -> SessionProject {
 /// `Claw` folder, or a task folder named by the time it was made (`YYYY-MM-DD-HH-MM-SS`), and anything
 /// inside those. A changed default workspace path is not recognized.
 fn workbuddy_default_folder(folder: &Path, home: &Path) -> bool {
-    let Ok(inside) = folder.strip_prefix(home.join("WorkBuddy")) else {
+    // `folder` has its links resolved, so the root must too: `~/WorkBuddy` may link to another disk.
+    let Ok(inside) = folder.strip_prefix(canonical(&home.join("WorkBuddy"))) else {
         return false;
     };
     match inside.components().next() {
@@ -487,11 +490,24 @@ pub(crate) mod tests {
         assert_eq!(resolve(Some(&home), &linked_home), global);
         let gone = plain.join("gone/");
         assert_eq!(of(&gone), project(&plain.join("gone")));
-        // A repository at the home directory is no project of its own: its folders are theirs.
+        // A repository at the home directory, or above it, is no project of its own: its folders are theirs.
         std::fs::create_dir(home.join(".git")).unwrap();
         assert_eq!(of(&home), global);
         assert_eq!(of(&dotfiles), project(&dotfiles));
         assert_eq!(of(&repo), project(&repo));
+        std::fs::remove_dir(home.join(".git")).unwrap();
+        std::fs::create_dir(base.join(".git")).unwrap();
+        assert_eq!(of(&dotfiles), project(&dotfiles));
+        assert_eq!(of(&repo.join("src/deep")), project(&repo));
+        std::fs::remove_dir(base.join(".git")).unwrap();
+        // WorkBuddy's root linked to another disk is still recognised.
+        let elsewhere = base.join("disk/WorkBuddy");
+        std::fs::create_dir_all(elsewhere.join("2026-10-28-10-00-00")).unwrap();
+        let linked = base.join("linked-home");
+        std::fs::create_dir(&linked).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, linked.join("WorkBuddy")).unwrap();
+        let in_task = linked.join("WorkBuddy/2026-10-28-10-00-00");
+        assert_eq!(resolve(Some(&in_task), &linked), global);
         assert_eq!(name("/Users/me/code/app/"), "app");
         assert_eq!((name("/"), name("atlas")), ("/", "atlas"));
     }
