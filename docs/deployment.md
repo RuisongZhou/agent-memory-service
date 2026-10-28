@@ -350,6 +350,7 @@ JSON.
 | `--binary PATH` | The executable the unit runs (default: the `agent-memoryd` you invoked) |
 | `--surreal-bin PATH` | The SurrealDB `surreal` the daemon starts (`serve --surreal-bin`); the unit records its absolute path (default: the first `surreal` on PATH, refused when there is none) |
 | `--ui-dir DIR` | The web UI's files (`serve --ui-dir`): refused unless the directory holds an `index.html`, as the daemon would at startup; the unit records its absolute path. Omit it for no web UI |
+| `--installer PATH` | The launcher of the installer copy the web UI's platform page runs (`serve --installer`; `install.sh service` writes it): refused unless it is an executable file; the unit records its absolute path. Omit it and the page shows terminal commands |
 | `--manager launchd\|systemd`, `--home DIR` | Service manager (launchd on macOS, systemd elsewhere) and the home directory for the unit and default paths (tests) |
 | `--apply` | Write the unit (default: preview) |
 | `--start`, `--restart` | With `--apply`: load (or reload) the service and wait until the daemon answers; also restart an unchanged, loaded service |

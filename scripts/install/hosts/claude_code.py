@@ -5,6 +5,7 @@ folder when they run, so nothing here names one.
 """
 
 import json
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -51,6 +52,13 @@ def host_paths(args, ctx):
 
 def managed_files(args, ctx):
     return [ctx.mcp_file, ctx.settings]
+
+
+def detect(args, ctx):
+    for path in (ctx.settings.parent, ctx.mcp_file):
+        if path.exists():
+            return str(path)
+    return shutil.which('claude')
 
 
 def server_entry(ctx):

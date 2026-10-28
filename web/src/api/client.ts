@@ -1,6 +1,8 @@
 import type {
   AddMemoriesReq,
   ApiErrorBody,
+  ConnectReq,
+  ConnectRes,
   ConsolidationRunDetail,
   ConsolidationRunRes,
   ConsolidationRunSummary,
@@ -33,6 +35,7 @@ import type {
   ListUncertaintiesRes,
   MemoryEntitiesRes,
   PlatformActivityRes,
+  PlatformsRes,
   RequestDetail,
   ResolveUncertaintyReq,
   ResolveUncertaintyRes,
@@ -123,6 +126,9 @@ export const api = {
 
   listRetrievals: (req: ListRetrievalsReq) => post<ListRetrievalsRes>('/admin/list_retrievals', req),
   platformActivity: () => post<PlatformActivityRes>('/admin/platform_activity', {}),
+  /** The installer's report of every platform; 404 NOT_FOUND when the daemon has no installer copy. */
+  platforms: () => post<PlatformsRes>('/admin/platforms', {}),
+  connect: (req: ConnectReq) => post<ConnectRes>('/admin/connect', req),
   listRequests: (req: ListRequestsReq) => post<ListRequestsRes>('/admin/list_requests', req),
   getRequest: (requestId: string) => post<RequestDetail>('/admin/request', { requestId }),
   listModelResponses: (req: ListModelResponsesReq) =>

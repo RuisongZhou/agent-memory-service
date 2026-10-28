@@ -659,6 +659,67 @@ export interface PlatformActivityRes {
   platforms: PlatformActivity[]
 }
 
+/** What `connect` installs on a platform besides its MCP tools. */
+export interface ConnectOptions {
+  capture: boolean
+  recall: boolean
+}
+
+/** One platform as the installer's `status --json` reports it (`/admin/platforms`). */
+export interface PlatformHost {
+  /** The installer's host id, which `/admin/connect` takes. */
+  id: string
+  label: string
+  /** The platform its calls carry (`X-Memory-Platform`). */
+  platform: string
+  /** Whether the platform can capture dialogue and recall through hooks; without either it gets MCP tools only. */
+  capture: boolean
+  recall: boolean
+  /** The configuration files `connect` writes. */
+  files: string[]
+  /** Evidence the platform is on this machine (its configuration directory or CLI), or null. */
+  detected: string | null
+  connected: boolean
+  /** What is installed now, when connected. */
+  options: ConnectOptions | null
+  /** Whether connecting again with the current options would change nothing; null when not connected or unknown. */
+  upToDate: boolean | null
+  canRollback: boolean
+  /** Why its configuration could not be read. */
+  error: string | null
+}
+
+export interface PlatformsRes {
+  ok: boolean
+  /** The daemon platforms connect to; without one, `error` says why and `upToDate` is unknown. */
+  service: { url: string | null; error: string | null }
+  hosts: PlatformHost[]
+  log: string[]
+  error: string | null
+}
+
+export type ConnectAction = 'preview' | 'apply' | 'uninstall' | 'rollback'
+
+export interface ConnectReq {
+  host: string
+  action: ConnectAction
+  /** For preview and apply. */
+  capture?: boolean
+  recall?: boolean
+}
+
+/** One installer run. A failed run is a result too: `ok` false and `error`, with the installer's output in `log`. */
+export interface ConnectRes {
+  ok: boolean
+  host: string
+  mode: ConnectAction
+  changes: { path: string; action: 'create' | 'update' | 'delete' }[]
+  /** The backup a write made, which rollback restores. */
+  backup: string | null
+  log: string[]
+  error: string | null
+}
+
 export interface ListRetrievalsRes {
   retrievals: Retrieval[]
   memories: MemorySummaries

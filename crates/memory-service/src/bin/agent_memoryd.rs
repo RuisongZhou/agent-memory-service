@@ -1,6 +1,6 @@
 //! `agent-memoryd` — 共享记忆库 daemon.
 //!
-//!   agent-memoryd serve  --data-dir D [--surreal-bin PATH] [--env-file .env] [--outbox [PATH]] [--ui-dir PATH] [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
+//!   agent-memoryd serve  --data-dir D [--surreal-bin PATH] [--env-file .env] [--outbox [PATH]] [--ui-dir PATH] [--installer PATH] [--model-provider api|self-hosted] [--embed-url U] [--rerank-url U] [--port 8765] [--prompt-variant zh|en] [--no-reranker]
 //!   agent-memoryd mcp    [--url http://127.0.0.1:8765] [--platform claude-code]   (stdio MCP shim, 6 tools)
 //!   agent-memoryd hook   capture | codex-notify | recall ...   (commands agent hosts run as hooks)
 //!   agent-memoryd outbox status | drain | enqueue ...           (local dialogue outbox)
@@ -91,6 +91,9 @@ enum Cmd {
         /// Serve the web UI's build output (a directory with index.html) under /ui
         #[arg(long, env = "MEMORY_UI_DIR", value_name = "PATH")]
         ui_dir: Option<PathBuf>,
+        /// Launcher of the installer copy the web UI runs to connect agent platforms
+        #[arg(long, value_name = "PATH")]
+        installer: Option<PathBuf>,
     },
     /// MCP stdio shim exposing six memory tools; forwards to a running daemon
     Mcp {
@@ -248,6 +251,7 @@ fn main() -> anyhow::Result<()> {
                 env_file: _,
                 outbox,
                 ui_dir,
+                installer,
             } => {
                 let bind_address: std::net::IpAddr = host.parse()?;
                 anyhow::ensure!(bind_address.is_loopback(), "only loopback binding is supported; remote access requires an authenticated gateway");
@@ -268,6 +272,9 @@ fn main() -> anyhow::Result<()> {
                 let ui_dir = ui_dir.filter(|p| !p.as_os_str().is_empty());
                 if let Some(dir) = &ui_dir {
                     memory_service::api::ui::check_dir(dir)?;
+                }
+                if let Some(path) = &installer {
+                    memory_service::api::platforms::check_installer(path)?;
                 }
                 let mut cfg = ServiceConfig::default();
                 if let Some(p) = config {
@@ -336,7 +343,12 @@ fn main() -> anyhow::Result<()> {
                     tokio::spawn(harness::uploader::run(eng.clone(), path, outbox));
                 }
                 let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
-                let app = http::router(eng.clone(), listener.local_addr()?.port(), ui_dir.as_deref());
+                let app = http::router(
+                    eng.clone(),
+                    listener.local_addr()?.port(),
+                    ui_dir.as_deref(),
+                    installer,
+                );
                 tracing::info!("agent-memoryd listening on http://{host}:{port}");
                 axum::serve(listener, app).await?;
             }

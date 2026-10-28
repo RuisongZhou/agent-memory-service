@@ -18,14 +18,21 @@ use memory_engine::runtime::engine::Engine;
 use memory_engine::runtime::indexer;
 
 /// The daemon's routes. `port` is the one its listener is bound to, the only one clients may address it by;
-/// `ui_dir` is the web UI's build output served under `/ui` (`--ui-dir`). The loopback check covers every route.
-pub fn router(eng: Arc<Engine>, port: u16, ui_dir: Option<&std::path::Path>) -> Router {
+/// `ui_dir` is the web UI's build output served under `/ui` (`--ui-dir`), `installer` what its platform page runs
+/// (`--installer`). The loopback check covers every route.
+pub fn router(
+    eng: Arc<Engine>,
+    port: u16,
+    ui_dir: Option<&std::path::Path>,
+    installer: Option<std::path::PathBuf>,
+) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/embeddings", post(embeddings))
         .route("/v1/{name}", post(api))
         .route("/admin/{name}", post(admin))
         .merge(super::ui::router(ui_dir))
+        .merge(super::platforms::router(installer))
         .with_state(eng)
         .layer(middleware::from_fn_with_state(port, loopback_only))
 }
@@ -293,7 +300,7 @@ mod tests {
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let app = router(engine(cfg), port, None);
+        let app = router(engine(cfg), port, None, None);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let daemon = format!("http://127.0.0.1:{port}");
         let rebound = format!("evil.example:{port}");

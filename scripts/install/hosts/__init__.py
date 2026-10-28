@@ -7,6 +7,8 @@
                                        can inject recall context; False refuses --recall
     add_arguments(parser)              host flags
     host_paths(args, ctx)              set the host's configuration paths on `ctx`
+    detect(args, ctx)                  evidence that the host is on this machine (its configuration
+                                       directory or its CLI), as a string, or None
     managed_files(args, ctx)           every file `changes` may write
     changes(args, ctx, uninstall)      [(path, bytes, mode) or None]: the desired state;
                                        uninstall (or ctx.capture False) drops our entries
