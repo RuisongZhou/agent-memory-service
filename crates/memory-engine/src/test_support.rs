@@ -232,6 +232,7 @@ pub(crate) async fn fresh_store(
     .unwrap();
     let caller = Caller {
         platform: platform.into(),
+        client: ClientKind::Http,
     };
     (Arc::new(t), caller, dir)
 }

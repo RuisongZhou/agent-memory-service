@@ -615,6 +615,8 @@ export interface Retrieval {
   kind: RetrievalKind
   /** Absent on legacy searches. */
   platform?: string
+  /** Absent on rows logged before the client was recorded. */
+  client?: ClientKind
   project?: string
   session?: string
   /** Null for context rows. */
@@ -625,6 +627,36 @@ export interface Retrieval {
   returned: { memories: { id: string; rank: number }[]; tokens?: number; gap?: boolean }
   latency?: Record<string, number>
   feedback?: { used: string[]; applied: string[]; outcome: string; at: string }
+}
+
+/** The program of a platform that made a call (`X-Memory-Client`); `http` when it sent no header. */
+export type ClientKind = 'hook' | 'mcp' | 'http'
+
+/** Calls counted together in `platform_activity`'s window. */
+export interface Calls {
+  count: number
+  lastAt: string
+}
+
+/**
+ * One platform's calls by channel; a channel without calls is absent. `capture` is dialogue its hooks captured,
+ * `hookRecall` its hooks' automatic recall, `mcp` its MCP tools, `other` direct HTTP calls and rows logged before
+ * the client was recorded.
+ */
+export interface PlatformActivity {
+  platform: string
+  lastAt: string
+  capture?: Calls
+  hookRecall?: Calls
+  mcp?: Calls
+  other?: Calls
+}
+
+export interface PlatformActivityRes {
+  /** `"30d"` */
+  window: string
+  /** The platform heard from last first; the web UI's own calls are left out. */
+  platforms: PlatformActivity[]
 }
 
 export interface ListRetrievalsRes {

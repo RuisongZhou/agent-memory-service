@@ -2,19 +2,21 @@ import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { api } from '../api/client'
-import type { Facet, LlmUsage, MemoryType, Stats } from '../api/types'
+import type { Calls, Facet, LlmUsage, MemoryType, PlatformActivity, Stats } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
-import { Badge, Card, Fields, Muted } from '../components/ui'
+import { Badge, Card, Fields, Muted, TD, TH } from '../components/ui'
 import {
   ALL_STATUSES,
   filtersToParams,
   NO_FILTERS,
+  NO_RECALL_FILTERS,
   NO_TASK_FILTERS,
+  recallFiltersToParams,
   taskFiltersToParams,
   type MemoryFilters,
   type RecallFilter,
 } from '../lib/filters'
-import { formatNumber, ORIGIN_LABEL, projectName, STATUS_LABEL, TYPE_LABEL } from '../lib/format'
+import { formatAgo, formatNumber, formatTime, ORIGIN_LABEL, projectName, STATUS_LABEL, TYPE_LABEL } from '../lib/format'
 
 /** The memory list behind a count. Counts cover every status, so the list does too unless one is named. */
 const listLink = (set: Partial<MemoryFilters>) =>
@@ -92,6 +94,73 @@ function Review({ features }: { features?: Stats['features'] }) {
           <li><PageLink to="/tasks?tab=responses">模型调用</PageLink>：失败的生成调用和原始响应</li>
         </ul>
       </div>
+    </Card>
+  )
+}
+
+/** The channels of `platform_activity`, as the card's columns. */
+const CHANNELS: [keyof Omit<PlatformActivity, 'platform' | 'lastAt'>, string][] = [
+  ['capture', 'hook：对话抓取'],
+  ['hookRecall', 'hook：自动召回'],
+  ['mcp', 'MCP 工具'],
+  ['other', '其他'],
+]
+
+const platformRecallsLink = (platform: string) =>
+  `/recalls?${recallFiltersToParams({ ...NO_RECALL_FILTERS, platform })}`
+
+const ChannelCalls = ({ calls }: { calls?: Calls }) =>
+  calls ? (
+    <span title={formatTime(calls.lastAt)}>
+      {formatAgo(calls.lastAt)} · {formatNumber(calls.count)} 次
+    </span>
+  ) : (
+    <span className="text-zinc-300">—</span>
+  )
+
+/**
+ * Which platforms reach the daemon, and through which of their programs. What they call shows they are connected
+ * and work: an installed hook or MCP server does nothing until the platform trusts it and restarts.
+ */
+function Platforms() {
+  const activity = useQuery({ queryKey: ['platform-activity'], queryFn: api.platformActivity })
+  const platforms = activity.data?.platforms
+  return (
+    <Card title="接入平台（近 30 天）">
+      {activity.error && <ErrorNotice error={activity.error} />}
+      {platforms === undefined ? (
+        <Muted>加载中…</Muted>
+      ) : platforms.length === 0 ? (
+        <Muted>近 30 天没有平台调用过记忆服务。</Muted>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr>
+                <TH>平台</TH>
+                {CHANNELS.map(([key, label]) => <TH key={key}>{label}</TH>)}
+              </tr>
+            </thead>
+            <tbody>
+              {platforms.map((p) => (
+                <tr key={p.platform} className="border-t border-zinc-100">
+                  <TD className="whitespace-nowrap">
+                    <PageLink to={platformRecallsLink(p.platform)}>{p.platform}</PageLink>
+                  </TD>
+                  {CHANNELS.map(([key]) => (
+                    <TD key={key} className="whitespace-nowrap"><ChannelCalls calls={p[key]} /></TD>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="mt-3 text-sm text-zinc-500">
+        按调用的程序分：hook 上传抓到的对话、在会话开始和提问时自动召回；MCP 是 agent 主动调用记忆工具，不用就没有记录。“其他”是直接调用 HTTP
+        接口的，以及升级前没记下来源的调用。不含网页自己的调用。某个平台没出现或缺了一项：运行{' '}
+        <code>bash scripts/install.sh connect --host 平台 --apply</code>，再在平台里信任它的 hook 和 MCP 并重启。
+      </p>
     </Card>
   )
 }
@@ -196,6 +265,8 @@ export function OverviewPage() {
           )}
         </Card>
       </div>
+
+      <Platforms />
 
       <Review features={stats.data?.features} />
 

@@ -13,7 +13,7 @@ import {
   RETRIEVAL_KINDS,
   type RecallFilters,
 } from '../lib/filters'
-import { formatNumber, formatTime, labelled, RETRIEVAL_KIND_LABEL } from '../lib/format'
+import { CLIENT_LABEL, formatNumber, formatTime, labelled, RETRIEVAL_KIND_LABEL } from '../lib/format'
 
 const RECENT_LIMIT = 10
 
@@ -172,7 +172,10 @@ export function RecallsPage() {
                         {formatTime(r.createdAt)}
                       </TD>
                       <TD className="whitespace-nowrap">{RETRIEVAL_KIND_LABEL[r.kind] ?? r.kind}</TD>
-                      <TD className="whitespace-nowrap">{r.platform ?? <span className="text-zinc-400">未知</span>}</TD>
+                      <TD className="whitespace-nowrap">
+                        {r.platform ?? <span className="text-zinc-400">未知</span>}
+                        {r.client && <span className="ml-1 text-xs text-zinc-400">{CLIENT_LABEL[r.client]}</span>}
+                      </TD>
                       <TD className="max-w-48 truncate whitespace-nowrap"><Where r={r} /></TD>
                       <TD className="max-w-xs truncate">
                         {r.query ?? <span className="text-zinc-400">—</span>}

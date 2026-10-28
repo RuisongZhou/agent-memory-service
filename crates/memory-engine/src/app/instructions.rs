@@ -95,7 +95,7 @@ pub async fn store(
         created_at: now.clone(),
     };
     let receipt = json!({"requestId":request,"status":"completed","kind":request_kind::INSTRUCTION,
-        "memoryIds":[memory.id],"platform":caller.platform,"project":project.unwrap_or(""),
+        "memoryIds":[memory.id],"platform":caller.platform,"client":caller.client,"project":project.unwrap_or(""),
         "scopeKind":project.map_or("global", |_| "project"),"session":session,
         "createdAt":now,"updatedAt":now});
     let mut tx = Tx::new();

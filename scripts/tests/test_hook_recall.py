@@ -134,7 +134,7 @@ def test_session_start_injects_get_context_framed_and_scoped(tmp_path, daemon, r
     path, headers, body = daemon.requests[0]
     assert path == '/v1/get_context'
     assert body == {'scope': {'project': project, 'session': 's1'}, 'tokenBudget': 1000}
-    assert headers['x-memory-platform'] == 'claude-code'
+    assert headers['x-memory-platform'] == 'claude-code' and headers['x-memory-client'] == 'hook'
     # No folder, as in WorkBuddy's SessionStart: a global session, which reads global memories only.
     text = context(run(tmp_path, daemon.url, start()))
     assert text.startswith('<shared-memory ') and 'event="SessionStart"' in text.splitlines()[0]

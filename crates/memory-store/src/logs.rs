@@ -1,12 +1,16 @@
 //! Typed reads of the logs and the write queue for the admin views: `retrieval_log`, `requests`, `extract_log`
 //! and `llm_responses`. Pages are keysets, newest first, with ties broken by `mid DESC`.
 use anyhow::{Context, Result};
+use chrono::DateTime;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::recalls::WEB_PLATFORM;
 use super::schema;
 use super::store::{conditions, Store};
+use memory_domain::types::ClientKind;
+use memory_rules::util;
 
 /// One keyset page of stored rows, each still keyed by `mid`.
 #[derive(Debug)]
@@ -50,6 +54,30 @@ pub struct ResponseFilter {
     /// output of the wrong shape.
     pub failed_only: bool,
 }
+
+/// The calls of one platform through one client, counted by [`Store::client_activity`].
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCalls {
+    pub platform: String,
+    /// `None` for rows logged before the client was recorded.
+    pub client: Option<ClientKind>,
+    pub count: i64,
+    /// The latest call's `createdAt`.
+    pub last_at: String,
+}
+
+/// What [`Store::client_activity`] counts: calls the recall log holds, and write requests.
+#[derive(Debug, Default)]
+pub struct ClientActivity {
+    pub recalls: Vec<ClientCalls>,
+    pub writes: Vec<ClientCalls>,
+}
+
+/// Each platform's calls through each client since `$since`, the latest by its `createdAt`. Rows without a
+/// platform (searches logged before it was recorded) and the web UI's own are left out.
+const ACTIVITY: &str = "SELECT platform, client, count() AS count, array::max(array::group(createdAt)) AS lastAt \
+     FROM {table} WHERE {since} AND platform != NONE AND platform != $web GROUP BY platform, client";
 
 /// A failed generation call. Only a decoded 2xx reply records `validOutputShape`, true when its output fits.
 const FAILED_RESPONSE: &str = "validOutputShape != true";
@@ -218,6 +246,29 @@ impl Store {
             limit,
         )
         .await
+    }
+
+    /// Calls since second `since`, by platform and client: the recall log's, and the write requests' except the
+    /// turns import runs submit. The two counts run side by side.
+    pub async fn client_activity(&self, since: i64) -> Result<ClientActivity> {
+        let at = DateTime::from_timestamp(since, 0).context("since out of range")?;
+        let query = |table, cond| ACTIVITY.replace("{table}", table).replace("{since}", cond);
+        let recalls = query(schema::RETRIEVAL_LOG, "createdTs >= $since");
+        let writes = query(schema::REQUESTS, "createdAt >= $since AND !importRunId");
+        let (recalls, writes) = tokio::try_join!(
+            self.select_as(
+                &recalls,
+                vec![("since", json!(since)), ("web", json!(WEB_PLATFORM))]
+            ),
+            self.select_as(
+                &writes,
+                vec![
+                    ("since", json!(util::fmt_ts(&at))),
+                    ("web", json!(WEB_PLATFORM))
+                ]
+            ),
+        )?;
+        Ok(ClientActivity { recalls, writes })
     }
 
     /// The `extract_log` rows of a request, in no particular order: they carry no time of their own.

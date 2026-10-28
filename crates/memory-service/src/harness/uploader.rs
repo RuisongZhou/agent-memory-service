@@ -9,7 +9,7 @@ use std::time::Duration;
 use super::outbox::{drain_once, Outbox, Sender, UploaderLock};
 use super::CallError;
 use crate::api::http;
-use memory_domain::types::Caller;
+use memory_domain::types::{Caller, ClientKind};
 use memory_engine::runtime::engine::Engine;
 
 /// Pause between passes. A pass over an idle outbox is two indexed SQLite reads.
@@ -27,6 +27,7 @@ impl Sender for InProcess {
     ) -> Result<Value, CallError> {
         let caller = Caller {
             platform: platform.into(),
+            client: ClientKind::Hook,
         };
         http::call(&self.0, &caller, name, body)
             .await

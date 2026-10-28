@@ -3,7 +3,7 @@
 use axum::routing::post;
 use axum::{Json, Router};
 use memory_config::ServiceConfig;
-use memory_domain::types::{Caller, MemoryRec};
+use memory_domain::types::{Caller, ClientKind, MemoryRec};
 use memory_engine::runtime::{engine::Engine, instance::Instance, llm::Llm, models::ModelHub};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -54,6 +54,7 @@ pub(crate) async fn fresh_store(
     .unwrap();
     let caller = Caller {
         platform: platform.into(),
+        client: ClientKind::Http,
     };
     (Arc::new(t), caller, dir)
 }
