@@ -1,7 +1,7 @@
 """Offline installer tests: temporary homes only, no host restarts, daemons or model requests.
 
-The end-to-end check at the bottom runs the real offline verification when a built
-agent-memoryd exists; it starts a temporary mock daemon and a local generation stub.
+The end-to-end check at the bottom runs the real offline verification of `connect` (and the daemon check of
+`service`) when a built agent-memoryd exists; it starts a temporary mock daemon and a local generation stub.
 """
 import hashlib
 import json
@@ -53,9 +53,10 @@ def fake_binary(tmp_path):
 
 @pytest.fixture
 def offline(monkeypatch):
-    """Skip the mock-daemon check; tests below exercise planning and the transaction."""
+    """Skip the mock-daemon checks; tests below exercise planning and the transaction."""
     calls = []
     monkeypatch.setattr(checks, 'verify_local', lambda host, ctx: calls.append(host.ID))
+    monkeypatch.setattr(checks, 'verify_service', lambda ctx: calls.append('service'))
     return calls
 
 
@@ -66,13 +67,14 @@ def run(capsys, *argv):
 
 
 def install_args(host, home, binary, *extra):
-    """A platform registration only: the daemon service would start in the real login session."""
-    return ['--host', host, '--home', home, '--binary', binary, '--url', UNUSED_URL,
-            '--non-interactive', '--skip-host-check', '--no-service', *extra]
+    """`connect` to a daemon of your own (--binary and --url): no service is read."""
+    return ['connect', '--host', host, '--home', home, '--binary', binary, '--url', UNUSED_URL,
+            '--skip-host-check', *extra]
 
 
 def ctx_for(host, tmp_path, *extra):
-    module, args = core.arguments(['--host', host.ID, '--home', str(tmp_path), '--binary', '/opt/agent-memoryd', *extra])
+    _, module, args = core.arguments(['connect', '--host', host.ID, '--home', str(tmp_path),
+                                      '--binary', '/opt/agent-memoryd', '--url', 'http://127.0.0.1:8765', *extra])
     return args, core.context(module, args)
 
 
@@ -549,9 +551,10 @@ def test_dsh_dump_reader_finds_our_row_once():
 
 
 def test_dsh_host_check_requires_the_row_once_and_no_new_warnings(tmp_path, monkeypatch, capsys):
-    module, args = core.arguments(['--host', 'deepseek-harness', '--home', str(tmp_path),
-                                   '--binary', '/Users/someone/a very long checkout path/agent-memory-service'
-                                   '/target/fast/agent-memoryd', '--dsh-binary', sys.executable])
+    _, module, args = core.arguments(['connect', '--host', 'deepseek-harness', '--home', str(tmp_path),
+                                      '--binary', '/Users/someone/a very long checkout path/agent-memory-service'
+                                      '/target/fast/agent-memoryd', '--url', 'http://127.0.0.1:8765',
+                                      '--dsh-binary', sys.executable])
     ctx = core.context(module, args)
     planned = {ctx.patch: b'planned'}
     outputs = {b'planned': (0, DUMP, ['warn: a']), None: (0, '', ['warn: a'])}
@@ -589,14 +592,13 @@ def test_discover_probe_must_send_clients_back_to_initialize(tmp_path, reply, fa
 
 
 def find_dsh():
-    module, args = core.arguments(['--host', 'deepseek-harness'])
+    _, module, args = core.arguments(['connect', '--host', 'deepseek-harness'])
     return deepseek_harness.find_dsh(args, types.SimpleNamespace(home=Path.home()))
 
 
 @pytest.mark.skipif(find_dsh() is None, reason='needs the dsh CLI (PATH or the DeepSeek Harness app)')
 def test_dsh_itself_composes_the_planned_patch(tmp_path, capsys):
-    module, args = core.arguments(['--host', 'deepseek-harness', '--home', str(tmp_path), '--binary', '/opt/agent-memoryd'])
-    ctx = core.context(module, args)
+    args, ctx = ctx_for(deepseek_harness, tmp_path)
     ctx.patch.parent.mkdir()
     ctx.patch.write_text(PATCH)
     planned = {path: data for path, data, _ in filter(None, deepseek_harness.changes(args, ctx, False))}
@@ -610,8 +612,18 @@ def test_preview_writes_nothing(tmp_path, capsys, fake_binary, fake_surreal):
     code, output = run(capsys, *install_args('codex', tmp_path, fake_binary))
     assert code == 0 and 'preview only' in output and 'config.toml' in output
     assert "[plan] project: the session's folder" in output
-    assert f'[plan] surreal={fake_surreal}:' in output
+    assert f'[plan] surreal={fake_surreal}:' in output and 'from --binary and --url' in output
     assert not (tmp_path / '.codex').exists() and not (tmp_path / '.local').exists()
+    # The daemon's preview: what `service --apply` would do, with nothing built, asked for or written.
+    for mode in ([], ['--dry-run']):
+        code, output = run(capsys, 'service', '--home', tmp_path, '--surreal-bin', fake_surreal, *mode)
+        assert code == 0 and 'preview only' in output and f'[plan] surreal={fake_surreal}:' in output, output
+        assert 'port 8765 (an installed service keeps its own)' in output and '[plan] env file=' in output
+        assert f'[plan] outbox={tmp_path / core.OUTBOX}:' in output and '[plan] web UI=' in output
+        assert 'the API key is asked for, hidden' in output and '[build]' not in output
+    code, output = run(capsys, 'service', '--home', tmp_path, '--port', 9000, '--binary', fake_binary)
+    assert code == 0 and 'port 9000:' in output and f'binary={fake_binary} (--binary, used as is)' in output
+    assert not (tmp_path / '.local').exists() and not (tmp_path / '.config').exists()
 
 
 def test_apply_needs_surrealdb_3_before_anything_else(tmp_path, capsys, fake_binary, offline, monkeypatch):
@@ -628,6 +640,9 @@ def test_apply_needs_surrealdb_3_before_anything_else(tmp_path, capsys, fake_bin
     code, output = run(capsys, *argv, '--surreal-bin', older)
     assert code == 1 and 'is SurrealDB 2.3.7; the daemon needs SurrealDB 3.2 or a later 3.x' in output, output
     assert offline == [] and not (tmp_path / '.workbuddy').exists()
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)  # the service flow, in its own login home
+    code, output = run(capsys, 'service', '--home', tmp_path, '--binary', fake_binary, '--apply', '--non-interactive')
+    assert code == 1 and 'SurrealDB is not installed' in output and offline == [], output
 
 
 
@@ -664,11 +679,11 @@ def test_apply_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary, offli
     assert oct((tmp_path / '.workbuddy/mcp.json').stat().st_mode & 0o777) == '0o600'
     code, output = run(capsys, *argv)
     assert code == 0 and 'nothing written' in output
-    code, output = run(capsys, '--host', 'workbuddy', '--home', tmp_path, '--rollback')
+    code, output = run(capsys, 'connect', '--host', 'workbuddy', '--home', tmp_path, '--rollback')
     assert code == 0, output
     assert settings.read_bytes() == original and not (tmp_path / '.workbuddy/mcp.json').exists()
     run(capsys, *argv)
-    code, output = run(capsys, '--host', 'workbuddy', '--home', tmp_path, '--uninstall')
+    code, output = run(capsys, 'connect', '--host', 'workbuddy', '--home', tmp_path, '--uninstall')
     assert code == 0, output
     assert json.loads(settings.read_text()) == json.loads(original)
     assert not (tmp_path / '.workbuddy/mcp.json').exists()  # it only ever held our entry
@@ -722,9 +737,9 @@ def test_concurrent_edits_and_later_edits_are_never_overwritten(tmp_path, capsys
     monkeypatch.setattr(checks, 'verify_local', lambda host, ctx: None)
     assert run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))[0] == 0
     config.write_text(config.read_text() + '\n[tui]\nx = 1\n')
-    code, output = run(capsys, '--host', 'codex', '--home', tmp_path, '--rollback')
+    code, output = run(capsys, 'connect', '--host', 'codex', '--home', tmp_path, '--rollback')
     assert code == 1 and 'Changed since installation' in output and '[tui]' in config.read_text()
-    code, output = run(capsys, '--host', 'codex', '--home', tmp_path, '--uninstall')
+    code, output = run(capsys, 'connect', '--host', 'codex', '--home', tmp_path, '--uninstall')
     assert code == 0 and tomllib.loads(config.read_text()) == {'model': 'edited meanwhile', 'tui': {'x': 1}}
 
 
@@ -751,10 +766,10 @@ def test_claude_code_rollback_undoes_the_named_config_dir_only(tmp_path, capsys,
                                                  '--claude-config-dir', config_dir, '--apply'))
         assert code == 0, output
         assert 'every project' in output and '"disableAllHooks": true' in output  # user level; how to opt a project out
-    code, output = run(capsys, '--host', 'claude-code', '--home', tmp_path, '--claude-config-dir', first, '--rollback')
+    code, output = run(capsys, 'connect', '--host', 'claude-code', '--home', tmp_path, '--claude-config-dir', first, '--rollback')
     assert code == 0, output
     assert not (first / '.claude.json').exists() and (second / '.claude.json').exists()
-    code, output = run(capsys, '--host', 'claude-code', '--home', tmp_path, '--claude-config-dir', first, '--rollback')
+    code, output = run(capsys, 'connect', '--host', 'claude-code', '--home', tmp_path, '--claude-config-dir', first, '--rollback')
     assert code == 1 and 'already rolled back' in output
 
 
@@ -770,10 +785,10 @@ def test_dsh_install_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary,
     assert patch.read_text().startswith(PATCH) and f'command: "{fake_binary}"' in patch.read_text()
     code, output = run(capsys, *argv)
     assert code == 0 and 'nothing written' in output
-    code, output = run(capsys, '--host', 'deepseek-harness', '--home', tmp_path, '--rollback')
+    code, output = run(capsys, 'connect', '--host', 'deepseek-harness', '--home', tmp_path, '--rollback')
     assert code == 0 and patch.read_text() == PATCH, output
     run(capsys, *argv)
-    code, output = run(capsys, '--host', 'deepseek-harness', '--home', tmp_path, '--uninstall')
+    code, output = run(capsys, 'connect', '--host', 'deepseek-harness', '--home', tmp_path, '--uninstall')
     assert code == 0 and patch.read_text() == PATCH, output
 
 
@@ -822,7 +837,7 @@ def test_codex_rerun_gives_notify_back_and_captures_with_hooks(tmp_path, capsys,
     assert 'notify no longer runs the collector; it runs' in output and 'UserPromptSubmit, Stop and SessionEnd' in output
     code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))
     assert code == 0 and 'nothing written' in output and 'notify no longer' not in output, output
-    code, output = run(capsys, '--host', 'codex', '--home', tmp_path, '--rollback')
+    code, output = run(capsys, 'connect', '--host', 'codex', '--home', tmp_path, '--rollback')
     assert code == 0 and config.read_bytes() == original, output
 
 
@@ -884,24 +899,49 @@ def test_argument_errors(tmp_path, capsys, fake_binary):
         assert f'unrecognized arguments: {option}' in capsys.readouterr().err
     code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--url', 'http://u:p@host:1'))
     assert code == 1 and 'without credentials' in output
-    code, output = run(capsys, '--host', 'codex', '--home', tmp_path, '--rollback')
+    code, output = run(capsys, 'connect', '--host', 'codex', '--home', tmp_path, '--rollback')
     assert code == 1 and 'No Codex installation backup' in output
-    code, output = run(capsys, '--host', 'claude-code', '--home', tmp_path, '--rollback')
+    code, output = run(capsys, 'connect', '--host', 'claude-code', '--home', tmp_path, '--rollback')
     assert code == 1 and 'No Claude Code installation backup' in output
+    # No command, the old single form and an unknown word fail with exit 2 and a message naming both commands;
+    # each command refuses the other's options.
+    for argv, message in (([], 'a command is required'), (['--host', 'codex', '--apply'], 'the single `install.sh --host HOST`'),
+                          (['install', '--apply'], "unknown command 'install'")):
+        with pytest.raises(SystemExit) as error:
+            core.main(argv)
+        err = capsys.readouterr().err
+        assert error.value.code == 2 and message in err, err
+        assert 'install.sh service --apply' in err and 'install.sh connect --host HOST --apply' in err
+    with pytest.raises(SystemExit) as error:
+        core.main(['--help'])
+    assert error.value.code == 0 and 'service' in capsys.readouterr().out
+    for argv, message in ((['connect', '--apply'], 'required: --host'),
+                          (['connect', '--host', 'codex', '--no-service'], 'unrecognized arguments: --no-service'),
+                          (['connect', '--host', 'codex', '--verify-model'], 'unrecognized arguments: --verify-model'),
+                          (['connect', '--host', 'codex', '--apply', '--dry-run'], 'not allowed with argument'),
+                          (['service', '--host', 'codex'], 'unrecognized arguments: --host codex'),
+                          (['service', '--recall'], 'unrecognized arguments: --recall'),
+                          (['service', '--port', '70000'], 'must be between 1 and 65535'),
+                          (['service', '--apply', '--uninstall'], 'not allowed with argument')):
+        with pytest.raises(SystemExit) as error:
+            core.main(argv)
+        assert error.value.code == 2 and message in capsys.readouterr().err, argv
 
 
 # --- runtime: binary, env file and daemon service -------------------------------------
 
 KEY = 'offline-test-key-1'  # not shaped like a provider key (check_public.py)
-NOT_INSTALLED = {'manager': 'launchd', 'unit': '/nowhere/local.agent-memory-daemon.plist', 'installed': False,
-                 'managed': False, 'binary': None, 'envFile': None, 'dataDir': None, 'outbox': None, 'uiDir': None,
+NOT_INSTALLED = {'manager': 'launchd' if sys.platform == 'darwin' else 'systemd',
+                 'unit': '/nowhere/local.agent-memory-daemon.plist', 'installed': False, 'managed': False,
+                 'binary': None, 'envFile': None, 'dataDir': None, 'surrealBin': None, 'outbox': None, 'uiDir': None,
                  'port': None, 'llmConcurrency': None}
 
 
 @pytest.fixture
 def service_binary(tmp_path):
     """An agent-memoryd stand-in: answers the installer's probes, reads its `service status --json` from
-    status.json beside it and records each `service install` in calls.jsonl (exit code from `exit`)."""
+    status.json beside it and records each `service install` and `uninstall` in calls.jsonl (exit code from
+    `exit`)."""
     path = tmp_path / 'svc/agent-memoryd'
     path.parent.mkdir()
     path.write_text(f'''#!{sys.executable}
@@ -912,7 +952,7 @@ if '--help' in args:
 elif args[:3] == ['service', 'status', '--json']:
     status = here / 'status.json'
     print(status.read_text() if status.exists() else {json.dumps(NOT_INSTALLED)!r})
-elif args[:2] == ['service', 'install']:
+elif args[:1] == ['service'] and args[1] in ('install', 'uninstall'):
     with (here / 'calls.jsonl').open('a') as calls:
         calls.write(json.dumps(args) + '\\n')
     sys.exit(int((here / 'exit').read_text()) if (here / 'exit').exists() else 0)
@@ -924,9 +964,16 @@ elif args[:2] == ['service', 'install']:
 @pytest.fixture
 def session(tmp_path, monkeypatch, offline, fake_surreal):
     """The temporary directory as the login home, with no daemon answering and the outbox uploaded. No npm is
-    on PATH and no release UI bundle can be downloaded, so no web UI is installed."""
+    on PATH and no release UI bundle can be downloaded, so no web UI is installed. The service manager is a
+    stand-in too: `launchctl` and `systemctl` only log their command line in manager.log (exit code from
+    manager.exit), so nothing reaches the real launchd or systemd."""
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('PATH', str(fake_surreal.parent))
+    for manager in ('launchctl', 'systemctl'):
+        tool = fake_surreal.parent / manager
+        tool.write_text(f'#!/bin/sh\necho "{manager} $*" >> "{tmp_path}/manager.log"\n'  # no PATH: builtins only
+                        f'[ -f "{tmp_path}/manager.exit" ] && read -r code < "{tmp_path}/manager.exit"\nexit ${{code:-0}}\n')
+        tool.chmod(0o755)
     monkeypatch.setattr(ui, 'RELEASES', (tmp_path / 'releases').as_uri())
     monkeypatch.setattr(checks, 'daemon_health', lambda url: None)
     monkeypatch.setattr(checks, 'uploader_running', lambda outbox: True)
@@ -936,8 +983,8 @@ def session(tmp_path, monkeypatch, offline, fake_surreal):
     return tmp_path
 
 
-def service_install_args(host, home, binary, *extra):
-    return ['--host', host, '--home', home, '--binary', binary, '--non-interactive', '--skip-host-check', *extra]
+def service_args(home, binary, *extra):
+    return ['service', '--home', home, '--binary', binary, '--non-interactive', *extra]
 
 
 def service_calls(binary):
@@ -989,11 +1036,11 @@ def test_the_key_comes_from_a_file_the_environment_or_a_hidden_prompt(tmp_path, 
             runtime.read_key(types.SimpleNamespace(**dict(vars(args), non_interactive=False)))
 
 
-def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys, service_binary, fake_surreal):
-    argv = service_install_args('workbuddy', session, service_binary, '--apply',
-                                '--key-file', session / 'key.txt')
+def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys, service_binary, fake_surreal, offline):
+    argv = service_args(session, service_binary, '--apply', '--key-file', session / 'key.txt')
     code, output = run(capsys, *argv)
     assert code == 0, output
+    assert offline == ['service']  # the binary was started once as a temporary daemon, before the service
     env = session / '.config/agent-memory-service/.env'
     assert runtime.env_value(env.read_text(), 'QWEN_API_KEY') == KEY and KEY not in output
     assert oct(env.stat().st_mode & 0o777) == '0o600' and oct(env.parent.stat().st_mode & 0o777) == '0o700'
@@ -1002,8 +1049,9 @@ def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys,
     assert flag(call, '--binary') == str(service_binary) and flag(call, '--env-file') == str(env)
     assert flag(call, '--surreal-bin') == str(fake_surreal)  # the unit records the SurrealDB found on PATH
     assert flag(call, '--port') == '8765' and flag(call, '--home') == str(session)
-    assert flag(call, '--outbox') == str(session / core.OUTBOX)  # the daemon uploads what capture writes
+    assert flag(call, '--outbox') == str(session / core.OUTBOX)  # the service uploads what platforms capture
     assert flag(call, '--data-dir') is None  # service default
+    assert '[next] connect a platform: bash scripts/install.sh connect --host' in output
     # A rerun reuses the env file: no key needed, nothing rewritten, no restart; the same key from
     # --key-file changes nothing either.
     stamp = env.stat().st_mtime_ns
@@ -1018,55 +1066,60 @@ def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys,
     assert len(list((session / core.STATE / 'env').iterdir())) == 1  # the replaced file was backed up
 
 
-def test_mcp_only_installs_the_service_without_an_outbox(session, capsys, service_binary):
-    code, output = run(capsys, *service_install_args('deepseek-harness', session, service_binary, '--apply',
-                                                     '--key-file', session / 'key.txt'))
-    assert code == 0, output
-    (call,) = service_calls(service_binary)
-    assert '--outbox' not in call
-
-
-def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, service_binary):
+def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, service_binary, fake_surreal):
     env = session / 'checkout/.env'
     env.parent.mkdir()
     env.write_text(f'QWEN_API_KEY={KEY}\n')
+    recorded = session / 'opt/surreal'  # a SurrealDB off PATH, which the unit records
+    recorded.parent.mkdir()
+    shutil.copy(fake_surreal, recorded)
     status = dict(NOT_INSTALLED, installed=True, managed=True, envFile=str(env), dataDir='/data/mem0', outbox=None,
-                  port=8765, llmConcurrency=2)
+                  port=8765, llmConcurrency=2, surrealBin=str(recorded))
     (service_binary.parent / 'status.json').write_text(json.dumps(status))
     installed_unit(session)
-    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--apply'))
+    code, output = run(capsys, *service_args(session, service_binary, '--apply'))
     assert code == 0, output
     (call,) = service_calls(service_binary)
     assert flag(call, '--env-file') == str(env) and flag(call, '--data-dir') == '/data/mem0'
-    assert flag(call, '--llm-concurrency') == '2'
-    assert flag(call, '--outbox') == str(session / core.OUTBOX)  # capture adds the upload
+    assert flag(call, '--llm-concurrency') == '2' and flag(call, '--surreal-bin') == str(recorded)
+    assert flag(call, '--outbox') == str(session / core.OUTBOX)  # a unit without an uploader gets one
     assert not (session / '.config/agent-memory-service/.env').exists()
 
-    (service_binary.parent / 'status.json').write_text(json.dumps(dict(status, port=9000)))
-    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--apply'))
-    assert code == 1 and '--url http://127.0.0.1:9000' in output
-    (service_binary.parent / 'status.json').write_text(json.dumps(dict(status, outbox='/elsewhere/outbox.sqlite3')))
-    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--apply'))
-    assert code == 1 and '--outbox /elsewhere/outbox.sqlite3' in output
+    # The port and outbox the unit has stay without a flag; a flag changes them and says that platforms
+    # connected earlier keep the old ones.
+    (service_binary.parent / 'status.json').write_text(
+        json.dumps(dict(status, port=9000, outbox='/elsewhere/outbox.sqlite3')))
+    code, output = run(capsys, *service_args(session, service_binary, '--apply'))
+    call = service_calls(service_binary)[-1]
+    assert code == 0 and flag(call, '--port') == '9000' and flag(call, '--outbox') == '/elsewhere/outbox.sqlite3'
+    assert 'platforms connected before' not in output, output
+    code, output = run(capsys, *service_args(session, service_binary, '--apply', '--port', 9001,
+                                             '--outbox', session / 'up.sqlite3'))
+    call = service_calls(service_binary)[-1]
+    assert code == 0 and flag(call, '--port') == '9001' and flag(call, '--outbox') == str(session / 'up.sqlite3')
+    assert 'now listens on port 9001' in output and 'platforms connected before' in output, output
+    (service_binary.parent / 'status.json').write_text(json.dumps(dict(status, port=None)))
+    code, output = run(capsys, *service_args(session, service_binary, '--apply'))
+    assert code == 1 and 'Cannot read the port' in output, output
     del status['uiDir']  # a binary older than the checkout
     (service_binary.parent / 'status.json').write_text(json.dumps(status))
-    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--apply'))
+    code, output = run(capsys, *service_args(session, service_binary, '--apply'))
     assert code == 1 and 'older than this checkout (service status --json has no uiDir)' in output, output
-    assert len(service_calls(service_binary)) == 1
+    assert len(service_calls(service_binary)) == 3
 
 
-def test_a_hand_made_unit_and_a_daemon_started_by_hand_are_left_alone(session, capsys, service_binary, monkeypatch):
+def test_a_hand_made_unit_and_a_daemon_started_by_hand_are_refused(session, capsys, service_binary, monkeypatch):
+    """The installer replaces neither; a platform connects to such a daemon with --binary and --url."""
     status = dict(NOT_INSTALLED, installed=True, managed=False, port=8765)
     (service_binary.parent / 'status.json').write_text(json.dumps(status))
     installed_unit(session)
-    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--apply'))
-    assert code == 0 and 'not written by agent-memoryd service install' in output, output
+    code, output = run(capsys, *service_args(session, service_binary, '--apply', '--key-file', session / 'key.txt'))
+    assert code == 1 and 'not written by agent-memoryd service install' in output and 'connect --binary' in output
     (service_binary.parent / 'status.json').unlink()
     runtime.unit_path(session).unlink()
     monkeypatch.setattr(checks, 'daemon_health', lambda url: {'memoryStrategy': 'mem0'})
-    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--apply'))
-    assert code == 0 and 'started by hand' in output, output
-    # No key was needed: nothing under the env file's directory (on Linux the unit above lived in ~/.config too).
+    code, output = run(capsys, *service_args(session, service_binary, '--apply'))  # no key: refused before it is asked
+    assert code == 1 and 'started yourself' in output and 'connect --binary PATH --url http://127.0.0.1:8765' in output
     assert service_calls(service_binary) == [] and not (session / runtime.ENV_FILE).parent.exists()
 
 
@@ -1076,20 +1129,19 @@ def test_the_installed_binary_and_env_file_come_back_when_a_check_fails(session,
     installed.parent.mkdir(parents=True)
     installed.write_text('#!/bin/sh\n# the previous build\n')
     installed.chmod(0o755)
-    argv = ['--host', 'workbuddy', '--home', session, '--apply', '--non-interactive',
-            '--skip-host-check', '--key-file', session / 'key.txt']
+    argv = ['service', '--home', session, '--apply', '--non-interactive', '--key-file', session / 'key.txt']
 
-    def fail(host, ctx):
+    def fail(ctx):
         assert ctx.binary == installed and installed.read_bytes() == service_binary.read_bytes()
         raise core.InstallError('verification failed')
-    monkeypatch.setattr(checks, 'verify_local', fail)
+    monkeypatch.setattr(checks, 'verify_service', fail)
     code, output = run(capsys, *argv)
     assert code == 1 and 'verification failed' in output
     assert installed.read_text() == '#!/bin/sh\n# the previous build\n'
-    assert not (session / '.config/agent-memory-service/.env').exists() and not (session / '.workbuddy').exists()
+    assert not (session / '.config/agent-memory-service/.env').exists() and service_calls(service_binary) == []
     assert sorted(p.name for p in installed.parent.iterdir()) == ['agent-memoryd']
 
-    monkeypatch.setattr(checks, 'verify_local', lambda host, ctx: None)
+    monkeypatch.setattr(checks, 'verify_service', lambda ctx: None)
     code, output = run(capsys, *argv)
     assert code == 0, output
     assert installed.read_bytes() == service_binary.read_bytes() and os.access(installed, os.X_OK)
@@ -1102,8 +1154,7 @@ def test_the_installed_binary_and_env_file_come_back_when_a_check_fails(session,
 def test_the_web_ui_is_built_downloaded_or_skipped_and_served_by_the_service(session, capsys, service_binary,
                                                                               monkeypatch):
     target = session / ui.UI_DIR
-    argv = service_install_args('workbuddy', session, service_binary, '--apply',
-                                '--key-file', session / 'key.txt')
+    argv = service_args(session, service_binary, '--apply', '--key-file', session / 'key.txt')
     served = lambda: flag(service_calls(service_binary)[-1], '--ui-dir')
     code, output = run(capsys, *argv[:-3])  # the preview
     assert code == 0 and f'[plan] web UI={target}, downloaded from {ui.bundle_url()}' in output, output
@@ -1170,34 +1221,110 @@ def test_the_key_is_asked_for_before_the_build(session, capsys, service_binary, 
     monkeypatch.setattr(sys, 'stdin', types.SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(runtime.getpass, 'getpass', lambda prompt: events.append('prompt') or KEY)
     monkeypatch.setattr(core, 'build_binary', lambda args: events.append('build') or service_binary)
-    code, output = run(capsys, '--host', 'workbuddy', '--home', session, '--apply',
-                       '--skip-host-check')
+    code, output = run(capsys, 'service', '--home', session, '--apply')
     assert code == 0 and events == ['prompt', 'build'], output
     assert runtime.env_value((session / '.config/agent-memory-service/.env').read_text(), 'QWEN_API_KEY') == KEY
 
 
-def test_a_service_that_does_not_start_fails_after_writing(session, capsys, service_binary):
+def test_a_service_that_does_not_start_fails_but_keeps_the_binary_and_env_file(session, capsys, service_binary):
     (service_binary.parent / 'exit').write_text('1')
-    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--apply',
-                                                     '--key-file', session / 'key.txt'))
-    assert code == 1 and 'did not start' in output and 'configuration is written' in output
-    assert (session / '.workbuddy/settings.json').is_file()
+    code, output = run(capsys, *service_args(session, service_binary, '--apply', '--key-file', session / 'key.txt'))
+    assert code == 1 and 'did not start' in output and 'in place' in output
     assert (session / '.config/agent-memory-service/.env').is_file()  # kept for the rerun
 
 
-def test_service_options_need_the_login_home_and_a_loopback_url(tmp_path, capsys, fake_binary, offline):
-    code, output = run(capsys, '--host', 'workbuddy', '--home', tmp_path, '--binary', fake_binary,
-                       '--apply', '--non-interactive')
-    assert code == 1 and 'add --no-service' in output and not (tmp_path / '.workbuddy').exists()
-    with pytest.raises(SystemExit):
-        core.main([str(a) for a in install_args('workbuddy', tmp_path, fake_binary, '--key-file', 'k')])
-    assert 'leave out --no-service' in capsys.readouterr().err
-    code, output = run(capsys, '--host', 'deepseek-harness', '--home', tmp_path, '--binary', fake_binary,
-                       '--url', 'http://10.0.0.5:8765')
-    assert code == 0 and 'daemon service not managed' in output, output
-    code, output = run(capsys, '--host', 'deepseek-harness', '--home', tmp_path, '--binary', fake_binary,
-                       '--url', 'http://10.0.0.5:8765', '--verify-model', '--apply')
-    assert code == 1 and '--verify-model' in output
+def test_uninstall_stops_the_service_removes_the_unit_and_names_what_stays(session, capsys, service_binary):
+    for mode in ('--apply', '--uninstall'):  # another home than the login session's is for previews and tests
+        code, output = run(capsys, 'service', '--home', session / 'elsewhere', '--binary', service_binary, mode)
+        assert code == 1 and '--home is for previews and tests' in output, output
+    uninstall = ['service', '--home', session, '--binary', service_binary, '--uninstall']
+    code, output = run(capsys, *uninstall)
+    assert code == 0 and 'nothing to remove' in output and service_calls(service_binary) == [], output
+    assert not (session / 'manager.log').exists() and not (session / 'elsewhere').exists()
+    # A platform is connected; the service is installed with a web UI and data of its own.
+    code, output = run(capsys, *install_args('workbuddy', session, service_binary, '--apply'))
+    assert code == 0, output
+    status = dict(NOT_INSTALLED, installed=True, managed=True, binary=str(service_binary), envFile='/cfg/.env',
+                  dataDir='/data/mem0', uiDir='/ui', outbox='/up/outbox.sqlite3', port=8765)
+    (service_binary.parent / 'status.json').write_text(json.dumps(status))
+    installed_unit(session)
+    (session / 'manager.exit').write_text('3')  # a service that is not loaded: noted, and the unit is still removed
+    code, output = run(capsys, *uninstall)
+    assert code == 0, output
+    stop = (f'launchctl bootout gui/{os.getuid()}/local.agent-memory-daemon' if sys.platform == 'darwin'
+            else 'systemctl --user disable --now agent-memory.service')
+    assert (session / 'manager.log').read_text() == stop + '\n'  # the stand-in manager ran, not the real one
+    assert f'[service] {stop}' in output and 'the service may not have been loaded' in output
+    assert service_calls(service_binary) == [['service', 'uninstall', '--apply', '--home', str(session)]]
+    for kept in (f'binary: {service_binary}', 'env file (the model key): /cfg/.env', 'memory data: /data/mem0',
+                 'web UI: /ui', 'outbox: /up/outbox.sqlite3'):
+        assert kept in output
+    assert 'still connected, with no daemon now: workbuddy.' in output and 'connect --host HOST --uninstall' in output
+    code, output = run(capsys, 'connect', '--host', 'workbuddy', '--home', session, '--uninstall')
+    assert code == 0, output
+    code, output = run(capsys, *uninstall)
+    assert code == 0 and 'still connected' not in output, output  # nothing left connected: no note
+    (service_binary.parent / 'status.json').write_text(json.dumps(dict(status, managed=False)))
+    code, output = run(capsys, *uninstall)
+    assert code == 1 and 'stop and remove it yourself' in output, output
+    assert len(service_calls(service_binary)) == 2
+
+
+def test_connect_reads_the_binary_url_and_outbox_from_the_installed_service(session, capsys, service_binary,
+                                                                            fake_surreal, offline):
+    argv = ['connect', '--host', 'workbuddy', '--home', session, '--skip-host-check', '--recall']
+    run_connect = lambda *extra: run(capsys, *argv, *extra)
+    # Without a service, `connect` needs both --binary and --url, and otherwise names the command to run first.
+    for extra in ([], ['--apply'], ['--binary', service_binary], ['--url', 'http://127.0.0.1:9000', '--apply']):
+        code, output = run_connect(*extra)
+        assert code == 1 and 'run `bash scripts/install.sh service --apply` first' in output, output
+    assert not (session / '.workbuddy').exists() and offline == []
+    # A unit whose binary is not where `connect` looks: it says so, rather than that no service is installed.
+    installed_unit(session)
+    code, output = run_connect()
+    assert code == 1 and 'pass --binary with the agent-memoryd it runs' in output, output
+    # An installed service gives the installed binary, its port and its outbox, and the SurrealDB it records.
+    installed = session / runtime.BINARY
+    installed.parent.mkdir(parents=True)
+    shutil.copy(service_binary, installed)
+    alt = session / 'alt/surreal'
+    alt.parent.mkdir()
+    shutil.copy(fake_surreal, alt)
+    outbox = session / 'up/outbox.sqlite3'
+    status = dict(NOT_INSTALLED, installed=True, managed=True, binary=str(installed), port=9000,
+                  outbox=str(outbox), surrealBin=str(alt))
+    for binary in (installed, service_binary):  # each stand-in reads the status beside itself
+        (binary.parent / 'status.json').write_text(json.dumps(status))
+    code, output = run_connect()
+    assert code == 0 and 'daemon=http://127.0.0.1:9000' in output, output
+    assert f'binary={installed}, from the installed service' in output and f'[plan] outbox={outbox}' in output
+    assert f'[plan] surreal={alt}:' in output and not (session / '.workbuddy').exists()
+    # Explicit flags win; --binary alone still asks that binary for the rest.
+    code, output = run_connect('--url', 'http://127.0.0.1:9100', '--outbox', session / 'mine.sqlite3',
+                               '--surreal-bin', fake_surreal)
+    assert code == 0 and 'daemon=http://127.0.0.1:9100' in output and f'[plan] outbox={session / "mine.sqlite3"}' in output
+    assert f'[plan] surreal={fake_surreal}:' in output
+    code, output = run_connect('--binary', service_binary)
+    assert code == 0 and f'binary={service_binary}, from the installed service' in output, output
+    code, output = run_connect('--apply')
+    assert code == 0 and offline == ['workbuddy'], output
+    mcp = json.loads((session / '.workbuddy/mcp.json').read_text())['mcpServers']['shared-memory']
+    assert mcp['command'] == str(installed) and mcp['args'][:3] == ['mcp', '--url', 'http://127.0.0.1:9000']
+    commands = [shlex.split(g['hooks'][0]['command'])
+                for groups in json.loads((session / '.workbuddy/settings.json').read_text())['hooks'].values()
+                for g in groups]
+    assert all(words[0] == str(installed) for words in commands)
+    assert {flag(words, '--outbox') for words in commands if words[1:3] == ['hook', 'capture']} == {str(outbox)}
+    # An upgrade of the service then names the connected platform instead of asking to connect one.
+    (session / '.config/agent-memory-service').mkdir(parents=True, exist_ok=True)
+    (session / '.config/agent-memory-service/.env').write_text(f'QWEN_API_KEY={KEY}\n')
+    code, output = run(capsys, *service_args(session, installed, '--apply'))
+    assert code == 0 and '[next] connected: workbuddy.' in output, output
+    assert {flag(words, '--url') for words in commands if words[1:3] == ['hook', 'recall']} == {'http://127.0.0.1:9000'}
+    # A unit written by hand is not read, and the message says what to pass instead.
+    (installed.parent / 'status.json').write_text(json.dumps(dict(status, managed=False)))
+    code, output = run_connect()
+    assert code == 1 and 'pass --binary and --url together' in output, output
 
 
 def test_verify_model_needs_an_env_file_with_the_key(tmp_path):
@@ -1226,7 +1353,7 @@ def test_check_daemon_runs_with_the_installing_users_home(tmp_path, monkeypatch)
 def test_rollback_and_uninstall_keep_the_shared_runtime(tmp_path, capsys, fake_binary, offline):
     run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--apply'))
     for argv in (['--rollback'], ['--uninstall']):
-        code, output = run(capsys, '--host', 'workbuddy', '--home', tmp_path, *argv)
+        code, output = run(capsys, 'connect', '--host', 'workbuddy', '--home', tmp_path, *argv)
         assert code == 0 and 'kept for other platforms' in output, output
         run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--apply'))
 
@@ -1255,3 +1382,7 @@ def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     assert not (tmp_path / core.RECALL_STATE).exists()  # and a temporary recall record
     # The check's memories lived in its temporary daemon; only its empty session folder stays.
     assert list((tmp_path / core.STATE / checks.CHECK_FOLDER).iterdir()) == []
+    if host == core.HOSTS[0]:  # once: the built binary also answers what `service` and `connect` read from it
+        status = runtime.service_status(BINARY, tmp_path)  # every key plan_service and daemon read
+        assert status['installed'] is False and status['port'] is None
+        checks.verify_service(types.SimpleNamespace(binary=BINARY, surreal=Path(SURREAL)))

@@ -1,15 +1,14 @@
 """The web UI the daemon service serves under /ui/ (docs/design/web-ui.md §7.3).
 
-The installer builds the front end with `make ui` when npm is on PATH. Without npm, or when that build
+`install.sh service` builds the front end with `make ui` when npm is on PATH. Without npm, or when that build
 fails, it downloads the UI bundle of this checkout's version from the GitHub release and checks it
 against the release's SHA-256. When neither works it goes on without a web UI. The files go to
 ~/.local/share/agent-memory-service/ui, beside the memory data, and `service install --ui-dir` records
 that directory in the unit. A release bundle matches the code only on its release tag; elsewhere the page
 shows a version banner, so a local build comes first.
 
-`--no-ui` skips all of this, and a UI directory the installed service already serves stays. With
---no-service, or a daemon the installer does not manage, there is no unit to record the UI in, so none is
-installed. A failed installation leaves the new UI in place; the daemon reads the files on each request.
+`--no-ui` skips all of this, and a UI directory the installed service already serves stays. A failed
+installation leaves the new UI in place; the daemon reads the files on each request.
 """
 
 import hashlib
@@ -70,7 +69,7 @@ def install(args, ctx, plan):
             print(f'[note] no web UI installed: {source} has no index.html')
             return
         place(source, target)
-    print(f'[install] {target}: the web UI, at {ctx.url}/ui/ once the service runs')
+    print(f'[install] {target}: the web UI, at {plan.url}/ui/ once the service runs')
     plan.ui_dir = str(target)
 
 

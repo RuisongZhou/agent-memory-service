@@ -1,19 +1,21 @@
-"""One-command install: the shared-memory daemon plus its MCP bridge and dialogue collector in an agent host.
+"""One-command install: `service` sets up the shared-memory daemon, `connect` registers an agent platform with it.
 
-Shared installer: arguments, configuration merges, backup/rollback and the
-install flow. Standard library only (Python 3.11+). Each agent host is one module in `hosts/`
-(see hosts/__init__.py for the interface); runtime.py owns the binary, env file and service the
-hosts share; this module owns everything else. Entry point: `scripts/install.sh --host <id>`.
+Shared installer: arguments, configuration merges, backup/rollback and the two flows. Standard library only
+(Python 3.11+). Each agent host is one module in `hosts/` (see hosts/__init__.py for the interface); runtime.py
+owns the binary, env file and service; this module owns everything else. Entry point:
+`scripts/install.sh service|connect`.
 
-With --apply the installer checks the user's SurrealDB 3.x (the daemon starts their `surreal` to serve its
-store; SurrealDB is never installed here), builds `agent-memoryd` and installs it in ~/.local/bin, writes the
-model key into a private env file (asked for hidden, never taken from an argument), verifies the
-exact commands it will register against a temporary mock daemon (checks.py), registers the stdio
-MCP bridge, the dialogue collector and, with --recall, the automatic recall hooks in the host's
-own configuration, and finally installs and starts the daemon as a LaunchAgent / systemd user
-service (runtime.py; --no-service leaves the daemon to you) that also serves the web UI, built here or
-downloaded (ui.py; --no-ui skips it). Every entry runs `agent-memoryd`, so hosts need no Python.
-Self-hosted model servers are never installed or started.
+`service --apply` (also the upgrade command) checks the user's SurrealDB 3.x (the daemon starts their `surreal`
+to serve its store; SurrealDB is never installed here), builds `agent-memoryd` and installs it in ~/.local/bin,
+writes the model key into a private env file (asked for hidden, never taken from an argument), installs the
+web UI (ui.py; --no-ui skips it), starts the binary once as a temporary mock daemon (checks.py), and installs and
+starts the daemon as a LaunchAgent / systemd user service. `service --uninstall` stops it and removes the unit.
+
+`connect --host <id> --apply` takes the binary, URL and outbox from that service (or `--binary` and `--url` for a
+daemon you run yourself), verifies the exact commands it will register against a temporary mock daemon
+(checks.py), and registers the stdio MCP bridge, the dialogue collector and, with --recall, the automatic recall
+hooks in the host's own configuration. It builds nothing, asks for no key and never touches the service. Every
+entry runs `agent-memoryd`, so hosts need no Python. Self-hosted model servers are never installed or started.
 """
 
 import argparse
@@ -22,6 +24,7 @@ import datetime
 import fcntl
 import hashlib
 import importlib
+import io
 import json
 import os
 import re
@@ -30,10 +33,9 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
 import types
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -53,6 +55,7 @@ RECALL_STATE = Path('.local/state/agent-memory-service/recall-state.sqlite3')  #
 RECALL_EVENTS = ('SessionStart', 'UserPromptSubmit')
 RECALL_TIMEOUT = 5  # seconds; recall itself gives up after 2
 LOOPBACK = ('127.0.0.1', 'localhost', '::1')
+DEFAULT_PORT = 8765  # of the service
 
 
 class InstallError(Exception):
@@ -456,7 +459,7 @@ def rollback(host, ctx, target):
     for item in manifest['files']:
         print(f"[rollback] restored {item['path']}")
     print(f'[rollback] undid {backup.name}. Restart {host.LABEL}.')
-    print_shared(ctx)
+    print_shared()
 
 
 # --- environment checks -----------------------------------------------------
@@ -473,18 +476,21 @@ def check_url(url):
 def build_binary(args):
     """The agent-memoryd to install: built from this checkout, or --binary."""
     if args.binary:
-        binary = args.binary
-    else:
-        command = ['cargo', 'build', '--locked', '-p', 'memory-service', '--bin', 'agent-memoryd',
-                   '--profile', 'fast']
-        print('[build] ' + shlex.join(command))
-        try:
-            subprocess.run(command, cwd=ROOT, check=True)
-        except FileNotFoundError as error:
-            raise InstallError('Rust/Cargo is required to build agent-memoryd; or pass --binary') from error
-        except subprocess.CalledProcessError as error:
-            raise InstallError(f'cargo build failed (exit {error.returncode})') from error
-        binary = DEFAULT_BINARY
+        return check_binary(args.binary)
+    command = ['cargo', 'build', '--locked', '-p', 'memory-service', '--bin', 'agent-memoryd',
+               '--profile', 'fast']
+    print('[build] ' + shlex.join(command))
+    try:
+        subprocess.run(command, cwd=ROOT, check=True)
+    except FileNotFoundError as error:
+        raise InstallError('Rust/Cargo is required to build agent-memoryd; or pass --binary') from error
+    except subprocess.CalledProcessError as error:
+        raise InstallError(f'cargo build failed (exit {error.returncode})') from error
+    return check_binary(DEFAULT_BINARY)
+
+
+def check_binary(binary):
+    """`binary` as an agent-memoryd whose hook commands the platforms can run."""
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise InstallError(f'Executable not found: {binary}')
     # Hooks of an older binary would fail on its argument parser, and exit 2 blocks a prompt.
@@ -496,45 +502,69 @@ def build_binary(args):
 
 # --- arguments --------------------------------------------------------------
 
+COMMANDS = ('service', 'connect')
+USAGE = ('install.sh service [--apply | --dry-run | --uninstall] [options]\n'
+         '       install.sh connect --host HOST [--apply | --dry-run | --rollback [BACKUP] | --uninstall] [options]')
+SERVICE_DESCRIPTION = ('Install the shared-memory daemon as a user service (LaunchAgent on macOS, systemd user '
+                       'unit on Linux): binary, model key, web UI. Run it again after `git pull` to upgrade. '
+                       'Preview unless --apply is given.')
+
+
+CONNECT_DESCRIPTION = ('Connect one agent platform to the shared-memory daemon: its MCP bridge and hooks. '
+                       'Builds nothing, asks for no key and leaves the service alone. Preview unless --apply is given.')
+
+
 def load_host(host_id):
     return importlib.import_module('hosts.' + host_id.replace('-', '_'))
 
 
+def port_number(text):
+    port = int(text)
+    if not 0 < port < 65536:
+        raise argparse.ArgumentTypeError('must be between 1 and 65535')
+    return port
+
+
 def arguments(argv=None):
-    pre = argparse.ArgumentParser(prog='install.sh', add_help=False)
-    pre.add_argument('--host', choices=HOSTS)
-    known, _ = pre.parse_known_args(argv)
-    if known.host is None:
-        parser = argparse.ArgumentParser(prog='install.sh', description=__doc__.splitlines()[0])
-        parser.add_argument('--host', choices=HOSTS, required=True, help='agent platform to install into')
-        parser.parse_args(argv)
-    host = load_host(known.host)
-    parser = argparse.ArgumentParser(prog='install.sh', description=host.DESCRIPTION)
-    parser.add_argument('--host', choices=HOSTS, required=True, help='agent platform to install into')
+    """(command, host, args) from the command line; host is None for `service`."""
+    argv = sys.argv[1:] if argv is None else list(argv)
+    command = argv[0] if argv else None
+    if command not in COMMANDS:
+        usage = argparse.ArgumentParser(
+            prog='install.sh', usage=USAGE, formatter_class=argparse.RawDescriptionHelpFormatter,
+            description='Install the shared-memory daemon, then connect agent platforms to it.\n\n'
+                        '  service   the daemon: binary, model key, web UI and user service; also the upgrade\n'
+                        f"  connect   one platform ({', '.join(HOSTS)}): its MCP bridge and hooks",
+            epilog='Both preview unless --apply is given. See `install.sh service --help` and '
+                   '`install.sh connect --host HOST --help`.')
+        if command in ('-h', '--help'):
+            usage.print_help()
+            raise SystemExit(0)
+        what = ('a command is required' if command is None else
+                f'{command} cannot come first: the single `install.sh --host HOST` form is gone'
+                if command.startswith('-') else f'unknown command {command!r}')
+        usage.error(f'{what}. Install the daemon with `install.sh service --apply`, then connect a platform with '
+                    '`install.sh connect --host HOST --apply`')
+    if command == 'service':
+        return command, None, service_arguments(argv[1:])
+    return (command, *connect_arguments(argv[1:]))
+
+
+def service_arguments(argv):
+    parser = argparse.ArgumentParser(prog='install.sh service', description=SERVICE_DESCRIPTION)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--apply', action='store_true',
-                      help='build, verify offline, write, then start the daemon service (default: preview)')
+                      help='check SurrealDB, build, install the binary, key and web UI, then (re)start the service '
+                           '(default: preview)')
     mode.add_argument('--dry-run', action='store_true', help='preview only; no build, writes or network')
-    mode.add_argument('--rollback', nargs='?', const='latest', metavar='BACKUP',
-                      help='restore the files of the latest (or given) installation backup')
     mode.add_argument('--uninstall', action='store_true',
-                      help="remove only this project's MCP and capture entries (backed up)")
-    parser.add_argument('--url', default='http://127.0.0.1:8765', help='daemon base URL (default: %(default)s)')
-    parser.add_argument('--no-capture', action='store_true',
-                        help='install (or keep) no dialogue collector')
-    parser.add_argument('--recall', action='store_true',
-                        help='also inject shared memory automatically: get_context on SessionStart and '
-                             'search results on UserPromptSubmit (loopback daemon only); without it, '
-                             'recall hooks this installer manages are removed')
+                      help='stop the service and remove its unit; the data, env file, binary and web UI stay')
     parser.add_argument('--binary', type=absolute,
-                        help='use this agent-memoryd as is (bridge, hooks and service) instead of building one '
-                             'and installing it in ~/.local/bin')
+                        help='use this agent-memoryd as is (the unit runs it) instead of building one and '
+                             'installing it in ~/.local/bin')
     parser.add_argument('--surreal-bin', type=absolute, metavar='PATH',
                         help='SurrealDB 3.x `surreal` the daemon starts to serve its store (default: the first '
                              '`surreal` on PATH); SurrealDB is installed separately')
-    parser.add_argument('--no-service', action='store_true',
-                        help='register the platform only: no env file, model key or daemon service '
-                             '(run the daemon yourself)')
     parser.add_argument('--no-ui', action='store_true',
                         help='install no web UI: neither `make ui` nor the release download; a UI the '
                              'service already serves stays')
@@ -549,52 +579,100 @@ def arguments(argv=None):
     parser.add_argument('--verify-model', action='store_true',
                         help="also check the env file's real models: one synthetic fact is formed and found in a "
                              'temporary store (a few model calls)')
-    parser.add_argument('--outbox', type=absolute, help='collector outbox (default: the collector default)')
+    parser.add_argument('--outbox', type=absolute,
+                        help='outbox the service uploads (default: the installed service\'s, else the collector '
+                             'default under ~/.local/share/agent-memory-service)')
+    parser.add_argument('--port', type=port_number,
+                        help=f'port the service listens on, on 127.0.0.1 (default: the installed service\'s, '
+                             f'else {DEFAULT_PORT})')
+    parser.add_argument('--home', type=absolute, default=Path.home(),
+                        help='home directory (tests and previews; applying needs your own)')
+    parser.add_argument('--non-interactive', action='store_true', help='never prompt; fail on a missing key')
+    return parser.parse_args(argv)
+
+
+def connect_arguments(argv):
+    """(host, args) of `connect`: the host's own options come from its module, so --host is read first."""
+    pre = argparse.ArgumentParser(prog='install.sh connect', add_help=False)
+    pre.add_argument('--host', choices=HOSTS)
+    known, _ = pre.parse_known_args(argv)
+    if known.host is None:
+        parser = argparse.ArgumentParser(prog='install.sh connect', description=CONNECT_DESCRIPTION)
+        parser.add_argument('--host', choices=HOSTS, required=True, help='agent platform to connect')
+        parser.parse_args(argv)
+    host = load_host(known.host)
+    parser = argparse.ArgumentParser(prog='install.sh connect', description=host.DESCRIPTION)
+    parser.add_argument('--host', choices=HOSTS, required=True, help='agent platform to connect')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--apply', action='store_true',
+                      help='verify offline, then write the platform configuration (default: preview)')
+    mode.add_argument('--dry-run', action='store_true', help='preview only; no writes or network')
+    mode.add_argument('--rollback', nargs='?', const='latest', metavar='BACKUP',
+                      help='restore the files of the latest (or given) installation backup')
+    mode.add_argument('--uninstall', action='store_true',
+                      help="remove only this project's MCP and capture entries (backed up)")
+    parser.add_argument('--no-capture', action='store_true',
+                        help='install (or keep) no dialogue collector')
+    parser.add_argument('--recall', action='store_true',
+                        help='also inject shared memory automatically: get_context on SessionStart and '
+                             'search results on UserPromptSubmit (loopback daemon only); without it, '
+                             'recall hooks this installer manages are removed')
+    parser.add_argument('--binary', type=absolute,
+                        help="the agent-memoryd the entries run (default: the installed service's); with --url, "
+                             'a daemon you run yourself, and no service is read')
+    parser.add_argument('--url', help="daemon base URL (default: the installed service's, on 127.0.0.1)")
+    parser.add_argument('--outbox', type=absolute,
+                        help="collector outbox (default: the installed service's, else the collector default)")
+    parser.add_argument('--surreal-bin', type=absolute, metavar='PATH',
+                        help="SurrealDB 3.x `surreal` the offline checks' temporary daemons start (default: the "
+                             "installed service's, else the first `surreal` on PATH)")
     parser.add_argument('--home', type=absolute, default=Path.home(), help='home directory (for isolated installs)')
     parser.add_argument('--skip-host-check', action='store_true',
                         help="do not run the host's own CLI to parse the planned configuration")
-    parser.add_argument('--non-interactive', action='store_true', help='never prompt; fail on missing values')
     host.add_arguments(parser)
-    args = parser.parse_args(argv)
-    if args.no_service:
-        for name in ('env_file', 'key_file', 'verify_model'):
-            if getattr(args, name):
-                parser.error(f"--{name.replace('_', '-')} configures the daemon service; leave out --no-service")
-    return host, args
+    return host, parser.parse_args(argv)
+
+
+def service_context(args):
+    """Paths and settings of the daemon service."""
+    home = args.home
+    if (args.apply or args.uninstall) and home != Path.home():
+        raise InstallError('--home is for previews and tests: the service starts and stops in your own login '
+                           'session, so applying or uninstalling needs your own home directory')
+    import runtime
+    ctx = types.SimpleNamespace(home=home, binary=args.binary or home / runtime.BINARY,
+                                surreal=runtime.find_surreal(args), port=args.port or DEFAULT_PORT,
+                                outbox=home / OUTBOX, state_root=home / STATE)
+    ctx.url = runtime.service_url(ctx.port)
+    return ctx
 
 
 def context(host, args):
-    """Paths and settings for one host. host_paths may narrow ctx.state to one target."""
-    home = args.home
+    """Paths and settings for one host. host_paths may narrow ctx.state to one target.
+
+    The daemon (runtime.daemon) is resolved unless the run only restores or removes entries.
+    """
     if args.recall and not host.RECALL:
         raise InstallError(f'{host.LABEL} gets MCP tools only; the installer writes no recall hooks there, '
                            'so leave out --recall')
+    home = args.home
     ctx = types.SimpleNamespace(home=home, platform=host.PLATFORM,
                                 capture=host.CAPTURE and not args.no_capture, recall=args.recall)
-    ctx.url = check_url(args.url)
-    if ctx.recall and urlsplit(ctx.url).hostname not in LOOPBACK:
-        # Every prompt becomes a search query, and the daemon has no authentication: keep it on this
-        # machine. (With hosted retrieval models the daemon still sends each prompt to their API.)
-        raise InstallError('--recall needs a loopback daemon --url, for example http://127.0.0.1:8765')
-    import runtime
-    ctx.binary = args.binary or home / runtime.BINARY
-    ctx.surreal = runtime.find_surreal(args)
-    ctx.port = runtime.service_port(ctx.url)
-    ctx.manage_service = not args.no_service and ctx.port is not None
-    ctx.service_started = False
-    if args.verify_model and not ctx.manage_service:
-        raise InstallError(f'--verify-model checks the daemon service this installer runs; --url {ctx.url} '
-                           'is not a loopback http URL with a port')
-    if args.apply and ctx.manage_service and home != Path.home():
-        raise InstallError('--home installs into another home directory, but the service starts in your own '
-                           'login session; add --no-service')
-    ctx.outbox = args.outbox or home / OUTBOX
-    # Name the outbox in commands only when it differs from the hooks' own default.
-    ctx.outbox_arg = None if ctx.outbox == Path.home() / OUTBOX else ctx.outbox
     ctx.recall_state = home / RECALL_STATE
     ctx.recall_state_arg = None if ctx.recall_state == Path.home() / RECALL_STATE else ctx.recall_state
     ctx.state_root = home / STATE
     ctx.state = ctx.state_root / host.ID
+    if not (args.rollback or args.uninstall):
+        import runtime
+        daemon = runtime.daemon(args)
+        ctx.binary, ctx.url, ctx.outbox, ctx.surreal, ctx.origin = (
+            daemon.binary, daemon.url, daemon.outbox, daemon.surreal, daemon.origin)
+        if ctx.recall and urlsplit(ctx.url).hostname not in LOOPBACK:
+            # Every prompt becomes a search query, and the daemon has no authentication: keep it on this
+            # machine. (With hosted retrieval models the daemon still sends each prompt to their API.)
+            raise InstallError('--recall needs a loopback daemon --url, for example http://127.0.0.1:8765')
+        # Name the outbox in commands only when it differs from the hooks' own default.
+        ctx.outbox_arg = None if ctx.outbox == Path.home() / OUTBOX else ctx.outbox
     host.host_paths(args, ctx)
     return ctx
 
@@ -610,8 +688,9 @@ def plan(host, args, ctx, uninstall=False):
 
 def print_plan(host, args, ctx):
     print(f'[plan] host={host.LABEL} platform={ctx.platform} daemon={ctx.url}')
+    print(f'[plan] binary={ctx.binary}, from {ctx.origin}')
     import runtime
-    runtime.print_plan(args, ctx)
+    runtime.print_surreal(ctx, 'the offline checks start temporary daemons with it')
     if ctx.capture:
         print(f'[plan] capture collector={ctx.binary} hook capture')
         print(f'[plan] outbox={ctx.outbox}')
@@ -650,24 +729,22 @@ def daemon_status(ctx):
     import checks
     health = checks.daemon_health(ctx.url)
     if health is None:
-        print(f'[note] no daemon answered at {ctx.url}/health; start it as in docs/deployment.md'
+        print(f'[note] no daemon answered at {ctx.url}/health; start the service with '
+              '`bash scripts/install.sh service --apply`, or your own daemon as in docs/deployment.md'
               + ('; recall injects nothing until it answers' if ctx.recall else ''))
     else:
         print(f"[check] daemon at {ctx.url} is up (strategy {health.get('memoryStrategy')})")
     if ctx.recall:
         for line in recall_privacy(health):
             print(line)
-    # A service that just started takes the outbox lock right after it answers.
-    deadline = time.monotonic() + (5 if ctx.service_started else 0)
-    while ctx.capture and not checks.uploader_running(ctx.outbox) and time.monotonic() < deadline:
-        time.sleep(0.2)
     if ctx.capture and not checks.uploader_running(ctx.outbox):
         print('[note] no uploader holds the outbox lock; captured turns stay queued until one runs.')
-        print(f'       Start the daemon with --outbox {shlex.quote(str(ctx.outbox))} (docs/deployment.md), or run:')
+        print(f'       Rerun `bash scripts/install.sh service --apply` (the service uploads the outbox), start your '
+              f'daemon with --outbox {shlex.quote(str(ctx.outbox))} (docs/deployment.md), or run:')
         print('       ' + shlex.join(drain_argv(ctx)))
 
 
-def install(host, args):
+def connect(host, args):
     ctx = context(host, args)
     if args.rollback:
         rollback(host, ctx, args.rollback)
@@ -679,45 +756,89 @@ def install(host, args):
         with installation_lock(ctx.state_root):
             apply_changes(changes, ctx.state, expected)
         print(f'[uninstall] removed from {host.LABEL}. Restart it. Revert with --rollback.')
-        print_shared(ctx)
+        print_shared()
         return
     print_plan(host, args, ctx)
     changes, expected = plan(host, args, ctx)
     for path, data, _ in changes:
         print(f"[plan] {'update' if data is not None else 'delete'} {path}")
     if not args.apply:
-        print('[result] preview only. Rerun with --apply to build, verify, write and start the daemon.')
+        print('[result] preview only. Rerun with --apply to verify offline and write.')
         return
     import checks
     import runtime
-    import ui
     runtime.check_surreal(ctx)
-    runtime.prepare(args, ctx)  # the key prompt comes before the build, so the rest runs unattended
-    source = build_binary(args)
-    service = runtime.plan_service(args, ctx, source)
+    check_binary(ctx.binary)
     with installation_lock(ctx.state_root):
-        if service is not None:
-            ui.install(args, ctx, service)
-        # The checks run the installed binary: exactly the commands the configuration will hold.
-        with runtime.staged(ctx, None if args.binary else source, service):
-            checks.verify_local(host, ctx)
-            if not args.skip_host_check:
-                host.host_check(args, ctx, {path: data for path, data, _ in changes})
-            if args.verify_model:
-                checks.verify_model(ctx, service.env_file if service else args.env_file)
-            apply_changes(changes, ctx.state, expected)
-        if service is not None:
-            runtime.start_service(ctx, service)
+        # The checks run the binary the configuration will hold: exactly the commands it will register.
+        checks.verify_local(host, ctx)
+        if not args.skip_host_check:
+            host.host_check(args, ctx, {path: data for path, data, _ in changes})
+        apply_changes(changes, ctx.state, expected)
     daemon_status(ctx)
     for line in host.post_install(args, ctx):
         print(line)
 
 
-def print_shared(ctx):
-    """What --rollback and --uninstall leave for the other platforms, and how to remove it."""
-    print(f'[note] the binary {ctx.binary}, the daemon service, its env file, web UI, memory data and the outbox')
-    print('       are kept for other platforms. To remove the service: agent-memoryd service status shows how to')
-    print('       stop it, then agent-memoryd service uninstall --apply (docs/deployment.md#install-the-service).')
+def connected(home):
+    """The ids of the platforms whose default configuration in `home` still holds entries this installer manages."""
+    found = []
+    for host_id in HOSTS:
+        host, args = connect_arguments(['--host', host_id, '--home', str(home), '--uninstall'])
+        try:  # a configuration that cannot be read is reported, never fatal: the service work is already done
+            with redirect_stdout(io.StringIO()):  # the host's plan notes are for a connect run
+                changes, _ = plan(host, args, context(host, args), uninstall=True)
+        except (InstallError, OSError, ValueError) as error:
+            print(f'[note] cannot tell whether {host.LABEL} is connected: {error}')
+            continue
+        if changes:
+            found.append(host_id)
+    return found
+
+
+def service(args):
+    ctx = service_context(args)
+    import checks
+    import runtime
+    import ui
+    if args.uninstall:
+        with installation_lock(ctx.state_root):
+            runtime.uninstall_service(ctx)
+        if clients := connected(ctx.home):
+            print(f"[note] still connected, with no daemon now: {', '.join(clients)}. Remove each with "
+                  '`bash scripts/install.sh connect --host HOST --uninstall`, or bring the service back with '
+                  '`bash scripts/install.sh service --apply`.')
+        return
+    runtime.print_plan(args, ctx)
+    if not args.apply:
+        print('[result] preview only. Rerun with --apply to build, check, install and start the daemon service.')
+        return
+    if args.surreal_bin or not runtime.unit_path(ctx.home).exists():
+        runtime.check_surreal(ctx)  # an installed unit's own SurrealDB is checked once it is read
+    runtime.check_free(ctx)
+    runtime.prepare(args, ctx)  # the key prompt comes before the build, so the rest runs unattended
+    source = build_binary(args)
+    plan = runtime.plan_service(args, ctx, source)
+    with installation_lock(ctx.state_root):
+        ui.install(args, ctx, plan)
+        # The checks run the installed binary: the one the service will run.
+        with runtime.staged(ctx, None if args.binary else source, plan):
+            checks.verify_service(ctx)
+            if args.verify_model:
+                checks.verify_model(ctx, plan.env_file)
+        runtime.start_service(ctx, plan)
+    runtime.report_service(plan)
+    if clients := connected(ctx.home):
+        print(f"[next] connected: {', '.join(clients)}. When an upgrade changes their entries, rerun "
+              '`bash scripts/install.sh connect --host HOST --apply` for each (rerunning is always safe)')
+    else:
+        print(f'[next] connect a platform: bash scripts/install.sh connect --host <{"|".join(HOSTS)}> --apply')
+
+
+def print_shared():
+    """What `connect --rollback` and `--uninstall` leave for the other platforms, and how to remove it."""
+    print('[note] the shared service (binary, env file, web UI, memory data, outbox) is kept for other platforms.')
+    print('       To remove the service: bash scripts/install.sh service --uninstall')
 
 
 def interrupted(signum, frame):
@@ -734,7 +855,8 @@ def main(argv=None):
         for signum in (signal.SIGTERM, signal.SIGHUP):
             signal.signal(signum, interrupted)
     try:
-        install(*arguments(argv))
+        command, host, args = arguments(argv)
+        service(args) if command == 'service' else connect(host, args)
         return 0
     except (InstallError, OSError, ValueError, subprocess.SubprocessError, EOFError) as error:
         message = str(error) if isinstance(error, InstallError) else f'{type(error).__name__}: {error}'

@@ -274,7 +274,7 @@ Tailwind 4、hash 路由、`diff`（更正前后的词级 diff）。谱系图到
 | 安装方式 | 前端从哪里来 |
 |---|---|
 | 发布的二进制包 | 发布流程每个版本构建一次前端（和平台无关），放进各平台压缩包的 `ui/` 目录，同时单独上传 `agent-memory-ui-<版本>.tar.gz` 和它的 SHA-256 |
-| 源码安装（`install.sh`） | 有 Node 时用 `make ui` 在本地构建；没有时下载与当前版本对应的前端包并校验 SHA-256；两样都不行就跳过，daemon 照常运行，只是没有网页。`--no-ui` 直接跳过，已安装的服务原来提供的网页保留。前端装到 `~/.local/share/agent-memory-service/ui`（和记忆数据同级），`service install --ui-dir` 把这个目录记进服务配置；安装器不管理服务时（`--no-service`、手写的服务文件、手动启动的 daemon）不装前端 |
+| 源码安装（`install.sh service`） | 有 Node 时用 `make ui` 在本地构建；没有时下载与当前版本对应的前端包并校验 SHA-256；两样都不行就跳过，daemon 照常运行，只是没有网页。`--no-ui` 直接跳过，已安装的服务原来提供的网页保留。前端装到 `~/.local/share/agent-memory-service/ui`（和记忆数据同级），`service install --ui-dir` 把这个目录记进服务配置；手写的服务文件和手动启动的 daemon 不由安装器管理（`install.sh service` 拒绝它们），也不装前端 |
 | 开发 | `make ui` 输出到 `web/dist`，`--ui-dir web/dist` |
 
 下载的前端包只有在 checkout 正好是某个发布 tag 时才和代码一致。在 main 上安装时版本可能对不上，页面会提示

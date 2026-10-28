@@ -1,6 +1,7 @@
 """Installation checks. Only the opt-in `verify_model` reaches a model provider; none touches the real store.
 
-`verify_local` runs the exact bridge and collector commands an installation
+`verify_service` (`install.sh service`) starts the binary as a temporary mock-retrieval daemon and waits
+for /health. `verify_local` (`connect`) runs the exact bridge and collector commands an installation
 writes against a temporary mock-retrieval daemon whose generation endpoint is a
 local deterministic stub: the version-probe fallback, MCP handshake, the six
 tools, a context read and, with capture, host-format events -> outbox -> the
@@ -11,7 +12,7 @@ recall command and must inject the formed fact exactly once per session.
 instead, which forms one synthetic fact and finds it again.
 
 The hooks take a session's project from its folder, so the synthetic events carry the `cwd` of a dedicated
-check folder (`check_folder`) and the checks search that folder's project. Both daemons keep their data in
+check folder (`check_folder`) and the checks search that folder's project. Every temporary daemon keeps its data in
 a temporary directory that is deleted afterwards: a check leaves no memory behind, in this project or any other.
 """
 
@@ -388,6 +389,16 @@ def verify_local(host, ctx):
     if ctx.recall:
         steps += f', {host.LABEL} recall -> SessionStart and prompt context, no repeats, silent without a daemon'
     print(f'[check] offline mock daemon: {steps} passed')
+
+
+def verify_service(ctx):
+    """The binary about to serve starts against the user's SurrealDB and answers /health: a temporary
+    mock-retrieval daemon with its data in a temporary directory."""
+    with tempfile.TemporaryDirectory(prefix='agent-memory-install-') as temporary:
+        with (generation_stub() as (generation, _),
+              mock_daemon(ctx.binary, ctx.surreal, Path(temporary), generation)):
+            pass  # temporary_daemon returns once /health answers
+    print(f'[check] offline mock daemon: {ctx.binary} started with {ctx.surreal} and answered /health')
 
 
 def verify_model(ctx, env_file):

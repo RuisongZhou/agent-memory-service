@@ -97,27 +97,37 @@ git clone https://github.com/RuisongZhou/agent-memory-service.git
 cd agent-memory-service
 ```
 
-### 3. 接入客户端
+### 3. 安装服务，再接入客户端
 
-安装时不用指定项目：hooks 和 MCP 桥在运行时从会话所在的文件夹确定项目（见[项目路由](#安装器做了什么)）。要共享项目
+分两步，按顺序执行。**服务**是本机唯一的 daemon；**客户端**是连到它的一个 Agent 平台。服务只装一次，然后给你用到的每个平台
+各接入一次。
+
+```bash
+bash scripts/install.sh service --apply
+```
+
+它会检查 SurrealDB，以隐藏输入的方式询问模型 API key，构建二进制，安装网页，并把 daemon 作为用户服务启动。去掉 `--apply`
+可以只预览。
+
+接入时不用指定项目：hooks 和 MCP 桥在运行时从会话所在的文件夹确定项目（见[项目路由](#安装器做了什么)）。要共享项目
 记忆的客户端，必须连到**同一个 daemon**，并打开**同一个文件夹**。
 
 #### Codex CLI / App
 
 ```bash
-bash scripts/install.sh --host codex --apply --recall
+bash scripts/install.sh connect --host codex --apply --recall
 ```
 
 重启 Codex，然后在 `/hooks`（App 中为 **Settings → Hooks**）里信任 `shared-memory` 的 hooks（带 `--recall` 时共 5 个）。
 hooks 被信任之前，捕获和召回都不会运行。
 
-Codex 按 hook 的内容记录信任。如果重跑安装时换了二进制路径或选项，或者升级后 hooks 有变化，需要重新信任。
+Codex 按 hook 的内容记录信任。如果重跑 `connect` 时换了二进制路径或选项，或者升级后 hooks 有变化，需要重新信任。
 见 [Codex hooks](docs/mcp-harness.md#codex-hooks)。
 
 #### Claude Code
 
 ```bash
-bash scripts/install.sh --host claude-code --apply --recall
+bash scripts/install.sh connect --host claude-code --apply --recall
 ```
 
 重启 Claude Code，用 `/mcp` 查看 `shared-memory` 的状态。它装在用户级，它和它的 hooks 对所有项目生效。
@@ -125,7 +135,7 @@ bash scripts/install.sh --host claude-code --apply --recall
 #### WorkBuddy
 
 ```bash
-bash scripts/install.sh --host workbuddy --apply --recall
+bash scripts/install.sh connect --host workbuddy --apply --recall
 ```
 
 重启 WorkBuddy。在 **连接器 → 自定义连接器** 中信任 `shared-memory`，并启用全部 8 个工具。
@@ -133,7 +143,7 @@ bash scripts/install.sh --host workbuddy --apply --recall
 #### DeepSeek Harness
 
 ```bash
-bash scripts/install.sh --host deepseek-harness --apply
+bash scripts/install.sh connect --host deepseek-harness --apply
 ```
 
 重启 DeepSeek Harness 并新建会话。这个集成只提供 MCP 工具，不接受 `--recall`。MCP 桥运行在 `dsh` 的工作目录，不是
@@ -141,11 +151,12 @@ bash scripts/install.sh --host deepseek-harness --apply
 
 #### 安装器做了什么
 
-首次安装时，安装器以隐藏输入的方式询问 API key。它会构建二进制、检查集成、合并客户端配置，并把 daemon 作为用户服务
-启动。之后给其他客户端安装时，复用同一个 daemon 和密钥。服务同时在 `http://127.0.0.1:8765/ui/` 提供网页：有 npm 时
-安装器用 `make ui` 构建，没有时从对应版本的发布下载，两样都不行就不装网页。
+`service --apply` 会检查 SurrealDB，首次安装时以隐藏输入的方式询问 API key，构建二进制，先把它作为临时 mock daemon 启动
+做一次检查，再安装成用户服务（macOS 上是 LaunchAgent，Linux 上是 systemd 用户单元）。服务同时在
+`http://127.0.0.1:8765/ui/` 提供网页：有 npm 时安装器用 `make ui` 构建，没有时从对应版本的发布下载，两样都不行就不装网页。
 
-安装器会保留已有的、无关的 MCP server、hooks 和设置。去掉 `--apply` 可以只预览。
+`connect --apply` 不构建、不询问密钥。它从已安装的服务读取二进制、URL 和 outbox，用临时 mock daemon 检查要注册的命令，
+再合并平台的配置，并保留已有的、无关的 MCP server、hooks 和设置。两条命令去掉 `--apply` 都可以只预览。
 
 > **项目路由**：安装器不指定项目；hooks 和 MCP 桥在运行时从会话所在的文件夹确定项目。这个文件夹是工作目录（Claude Code
 > 用它启动时所在的文件夹）。在 git 仓库里，项目是主仓库的根目录，所以子目录和 worktree 共用一个项目；其他文件夹各自是
@@ -159,18 +170,21 @@ bash scripts/install.sh --host deepseek-harness --apply
 
 **其他配置：**
 
-- **只装 MCP**：Codex、Claude Code 或 WorkBuddy 加 `--no-capture` 并去掉 `--recall`。之后想加上 hooks，用完整命令重新
-  运行即可。
+- **只装 MCP**：Codex、Claude Code 或 WorkBuddy 的 `connect` 加 `--no-capture` 并去掉 `--recall`。之后想加上 hooks，用完整
+  命令重新运行 `connect` 即可。
 - **只捕获、不自动召回**：去掉 `--recall`。
-- **不装网页**：加 `--no-ui`；服务原来提供的网页保留。
-- **使用已有二进制**：用 `--binary /absolute/path/to/agent-memoryd` 跳过构建，例如配合
+- **不装网页**：`service` 加 `--no-ui`；服务原来提供的网页保留。
+- **使用已有二进制**：`service --binary /absolute/path/to/agent-memoryd` 跳过构建，例如配合
   [release 包](docs/deployment.md#release-archive)。
-- **自定义部署**：要指定数据目录、端口或自托管模型，按 [部署与运维](docs/deployment.md) 操作。
-- **让 Agent 帮你安装**：能执行命令的 Agent 可以按 [安装说明](docs/mcp-harness.md#one-command-install) 操作。Agent 的
+- **自己运行 daemon**：`connect --host codex --apply --binary /absolute/path/to/agent-memoryd --url http://127.0.0.1:8765`
+  只注册平台，不安装服务；daemon 按 [部署与运维](docs/deployment.md) 自行启动。
+- **自定义部署**：要指定数据目录、端口或自托管模型，按 [部署与运维](docs/deployment.md) 操作；`service` 支持 `--port`
+  和 `--outbox`。
+- **让 Agent 帮你安装**：能执行命令的 Agent 可以按 [安装说明](docs/mcp-harness.md#installer) 操作。Agent 的
   shell 通常无法隐藏输入，密钥请你自己用 `--key-file` 或在本地终端提供，不要放进聊天或命令参数。上面各客户端里的确认
   步骤仍需你本人完成。
 
-全部选项、配置变更、备份和卸载见 [安装说明](docs/mcp-harness.md#one-command-install)。
+全部选项、配置变更、备份和卸载见 [安装说明](docs/mcp-harness.md#installer)。
 
 ### 4. 试一下共享记忆
 
@@ -293,11 +307,13 @@ curl -fsS http://127.0.0.1:8765/health        # 记忆策略、模型和 LLM 用
 
 - **日志**：macOS 在 `~/Library/Logs/agent-memory-service/daemon.stderr.log`；Linux 用
   `journalctl --user -u agent-memory.service`。
-- **升级**：`git pull` 后，对每个已安装的客户端重新运行原来的安装命令；二进制有变化时会被替换，服务随之重启，网页也会
-  更新。SurrealDB 保持在 3.x。
+- **升级**：`git pull` 后运行一次 `bash scripts/install.sh service --apply`，不论接了几个客户端：它会重新构建、替换二进制和
+  网页，并重启服务。只有发布说明提到某个平台的 hook 或 MCP 桥条目有变化时，才需要对它重跑 `connect`；`connect` 是幂等的，
+  随时重跑都安全。SurrealDB 保持在 3.x。
 - **更换密钥或模型**：编辑 `~/.config/agent-memory-service/.env`（见 [配置](docs/api.md#configuration)），然后重启服务。
-- **卸载**：在安装命令上加 `--uninstall` 去掉某个客户端的配置；停止并删除服务见
-  [安装服务](docs/deployment.md#install-the-service)。
+- **卸载**：对每个已接入的平台运行 `bash scripts/install.sh connect --host HOST --uninstall`，然后运行
+  `bash scripts/install.sh service --uninstall`：它会停止服务并删除服务单元，保留记忆数据、env 文件、二进制和网页
+  （见 [安装服务](docs/deployment.md#install-the-service)）。
 - **排查**：见 [部署问题](docs/deployment.md#common-problems) 和 [客户端排查](docs/mcp-harness.md#troubleshooting)。
 
 默认的本地路径：
@@ -329,7 +345,7 @@ curl -fsS http://127.0.0.1:8765/health        # 记忆策略、模型和 LLM 用
 真实的用户服务。
 
 目前的验证**还不包括在真实客户端和真实模型下完整的端到端验收**，详情见
-[安装器验证了什么](docs/mcp-harness.md#merges-backups-and-rollback)。安装器可选的 `--verify-model` 检查会在临时存储上
+[安装器验证了什么](docs/mcp-harness.md#merges-backups-and-rollback)。可选的 `service --verify-model` 检查会在临时存储上
 使用真实模型，可能产生 API 费用。
 
 开发时运行：

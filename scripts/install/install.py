@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Install the shared-memory daemon and register its MCP bridge and hooks in an agent host.
+"""Install the shared-memory daemon as a user service, and connect agent platforms to it.
 
-Usage: install.py --host <codex|claude-code|workbuddy|deepseek-harness> [--apply] [options]; see core.py.
+Usage: install.py service [--apply | --dry-run | --uninstall] [options]
+       install.py connect --host <codex|claude-code|workbuddy|deepseek-harness> [--apply | ...] [options]
+See core.py.
 """
 import sys
 

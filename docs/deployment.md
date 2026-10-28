@@ -1,17 +1,18 @@
 # Deployment and operations
 
 Install and operate the service from the repository root. Install [SurrealDB](#install-surrealdb)
-first; the [one-command installer](mcp-harness.md#one-command-install) checks it and performs steps 2–5 of
-[install and deploy](#install-and-deploy) for you: it builds the binary into `~/.local/bin`, writes the
-model key into `~/.config/agent-memory-service/.env` and runs the daemon as a service, then connects an
-agent platform:
+first; the [installer](mcp-harness.md#installer) checks it and performs steps 2–5 of
+[install and deploy](#install-and-deploy) for you in two steps. `service` builds the binary into `~/.local/bin`,
+writes the model key into `~/.config/agent-memory-service/.env` and runs the daemon as a service; `connect`
+then registers an agent platform with it:
 
 ```sh
-bash scripts/install.sh --host codex --apply
+bash scripts/install.sh service --apply
+bash scripts/install.sh connect --host codex --apply
 ```
 
-The installer needs only the platform: hooks and the MCP bridge take each session's project from its folder
-([project routing](../README.md#what-the-installer-does)).
+Run `service` again after `git pull` to upgrade. `connect` needs only the platform: hooks and the MCP bridge take
+each session's project from its folder ([project routing](../README.md#what-the-installer-does)).
 
 The rest of this guide describes those steps for a manual or customized deployment and for operating
 the daemon. For client registration and dialogue capture by hand, continue with
@@ -29,7 +30,7 @@ the daemon. For client registration and dialogue capture by hand, continue with
 | Optional dialogue collector | `agent-memoryd hook capture` run by a Codex, Claude Code or WorkBuddy hook | Writes a local SQLite outbox |
 | Optional uploader | The daemon started with `--outbox`, or one `agent-memoryd outbox drain` per outbox | Submits dialogue and polls task receipts |
 
-Configure the model key and start the daemon before connecting agent clients; [one command](mcp-harness.md#one-command-install) does both and then registers a client. MCP registration alone, by hand or with the installer's `--no-service`, makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context (the installer's `--recall` adds hooks that do).
+Configure the model key and start the daemon before connecting agent clients; [`install.sh service`](mcp-harness.md#installer) does both, and `install.sh connect` then registers a client. MCP registration alone, by hand or with `connect --binary PATH --url URL` for a daemon you run yourself, makes tools available; it does not start the daemon, capture conversations, or automatically inject memory into the agent's context (`connect --recall` adds hooks that do).
 
 The daemon exposes ordinary JSON HTTP endpoints, **not an HTTP MCP endpoint**. Configure clients with a stdio command, not an MCP `url` pointing to port 8765. There is no `/mcp`, SSE, or Streamable HTTP MCP endpoint in this repository.
 
@@ -49,7 +50,7 @@ section run from the repository root unless stated otherwise.
 | [Release archive](#release-archive) | `curl`, `tar` and `shasum` |
 | [Build from source](#build-from-source) | Git, Make, curl, a current stable Rust toolchain with Cargo and a native C compiler (SQLite is compiled in) |
 
-Python **3.11 or later** is needed only for the [one-command installer](mcp-harness.md#one-command-install)
+Python **3.11 or later** is needed only for the [installer](mcp-harness.md#installer)
 (`scripts/install.sh`), the optional [Python launcher](#python-launcher) and
 [evaluation](../eval/README.md). The daemon, the MCP bridge and the capture and recall hooks do not use
 it. The default retrieval models are hosted, so no model weights or GPU are needed. To run the models
@@ -109,7 +110,7 @@ when the daemon dies without stopping it. If SurrealDB exits, the daemon exits t
 manager restarts both. The daemon looks `surreal` up on PATH unless `--surreal-bin PATH` (or
 `MEMORY_SURREAL_BIN`) names it; `service install` records the absolute path in the unit, because service
 managers start the daemon with a minimal PATH. The daemon refuses, before starting it, a `surreal` older than
-3.2 or from another major release, and so does the one-command installer before it writes anything. CI tests
+3.2 or from another major release, and so does the installer before it writes anything. CI tests
 3.2.4. SurrealDB is distributed under its own license (Business Source
 License 1.1 with an additional use grant); see [third-party notes](../THIRD_PARTY.md).
 
@@ -148,13 +149,17 @@ by a browser, run `xattr -d com.apple.quarantine "$name/agent-memoryd"` before i
 The [release workflow](../.github/workflows/release.yml) builds the archives with `--release`.
 
 The daemon needs nothing else from the repository. To deploy this binary and register agent clients
-with it, run the [installer](mcp-harness.md#one-command-install) from a checkout of the same version with
-`--binary`; it then builds nothing, writes that path into every command it installs and runs the service
-with it:
+with it, run the [installer](mcp-harness.md#installer) from a checkout of the same version with
+`--binary`; `service` then builds nothing and runs the service with that path, and `connect` reads it back
+from the service and writes it into every command it installs. Installed at `~/.local/bin/agent-memoryd`,
+the binary is also where `connect` looks for the service:
 
 ```sh
-bash scripts/install.sh --host codex --apply --binary "$HOME/.local/bin/agent-memoryd"
+bash scripts/install.sh service --apply --binary "$HOME/.local/bin/agent-memoryd"
+bash scripts/install.sh connect --host codex --apply
 ```
+
+(A binary at another path is named in both commands: `connect --binary PATH` asks it for the service.)
 
 #### Build from source
 
@@ -330,9 +335,10 @@ With `--start` as well, it runs those commands itself instead, in your login ses
 one whose file changed; systemd reloads and enables the unit and starts or restarts it. A loaded,
 unchanged service is left running, unless `--restart` asks to restart it, for example after replacing
 its binary. `--start` refuses when a daemon the service did not start already answers on the port, and
-a unit under another `--home`. The [one-command installer](mcp-harness.md#one-command-install) runs
+a unit under another `--home`. [`install.sh service`](mcp-harness.md#installer) runs
 `service install --apply --start` and keeps the options of a unit it finds, which it reads with
-`agent-memoryd service status --json`.
+`agent-memoryd service status --json`; `install.sh connect` reads the binary, port and outbox from the same
+JSON.
 
 | Option | Meaning |
 |---|---|
@@ -368,18 +374,20 @@ still holds an `index.html`, on Linux whether the unit is enabled, and whether a
 port. `service status --json` prints the unit's settings (binary, env file, data directory, SurrealDB
 executable, outbox, web UI directory, port, concurrency) as one JSON object for scripts, without the health
 check.
-To remove the service, stop it first, with `launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"`
-or `systemctl --user disable --now agent-memory.service`, then run
-`agent-memoryd service uninstall --apply`. It backs up and deletes the unit file and leaves the data,
-outbox, logs and env file alone; on Linux it refuses while the unit is still enabled.
+To remove the service, run `bash scripts/install.sh service --uninstall`: it stops it for you and runs
+`agent-memoryd service uninstall --apply`. By hand, stop it first, with
+`launchctl bootout "gui/$(id -u)/local.agent-memory-daemon"` or `systemctl --user disable --now
+agent-memory.service`, then run `agent-memoryd service uninstall --apply`. It backs up and deletes the unit
+file and leaves the data, outbox, logs and env file alone; on Linux it refuses while the unit is still enabled.
+Platforms still connected have no daemon then: remove them with `install.sh connect --host HOST --uninstall`.
 
 The service runs the binary and `surreal` at the recorded paths. A Homebrew or install-script upgrade of
 SurrealDB keeps its path, so a restart picks up the new version; after moving `surreal`, rerun
 `service install`. In a checkout, `make build` replaces
 `target/fast/agent-memoryd` in place and a restart picks up the new build, while `cargo clean` removes
-it; install a release binary's upgrades to the same path. The one-command installer records its
-`~/.local/bin/agent-memoryd` instead, and a rerun that builds a new binary replaces it and restarts the
-service. After changing an option, rerun `service install --apply` (with `--start` to restart it) or
+it; install a release binary's upgrades to the same path. The installer records its
+`~/.local/bin/agent-memoryd` instead, and a rerun of `install.sh service --apply` that builds a new binary
+replaces it and restarts the service. After changing an option, rerun `service install --apply` (with `--start` to restart it) or
 restart the service as printed.
 
 ### macOS LaunchAgents
@@ -536,7 +544,7 @@ With the LaunchAgent setup, use `launchctl bootout` for the selected service lab
 | Service restarts repeatedly or never answers | Run `agent-memoryd service status`; read `~/Library/Logs/agent-memory-service/daemon.stderr.log` or `journalctl --user -u agent-memory.service`. A missing env file, a missing key or a port already in use stops startup |
 | `LLM API key not configured` or provider 401 | Check the env file, exported overrides, and provider access; direct binary launches read a dotenv file only with `--env-file` |
 | Legacy jobs at startup | Complete them with the preserved version or use a fresh store; see [compatibility](api.md#compatibility) |
-| `SurrealDB is not installed` or `not an executable SurrealDB` | [Install SurrealDB](#install-surrealdb), or name it with `--surreal-bin`. A service runs the path it was installed with; after moving `surreal`, rerun `service install` (or the one-command installer) |
+| `SurrealDB is not installed` or `not an executable SurrealDB` | [Install SurrealDB](#install-surrealdb), or name it with `--surreal-bin`. A service runs the path it was installed with; after moving `surreal`, rerun `service install` (or `install.sh service --apply`) |
 | `SurrealDB (...) did not start on ...` | The lines after it are SurrealDB's own output. Check `surreal db version` or `surreal version` (3.2 or a later 3.x) and that the data directory is writable |
 | `... is in use by another agent-memoryd` | Another daemon serves that data directory; stop it first (`agent-memoryd service status` shows the service's) |
 | `cannot sign in to SurrealDB as root` | `store/db.password` does not belong to `store/db`; restore both from the same backup |

@@ -102,28 +102,38 @@ git clone https://github.com/RuisongZhou/agent-memory-service.git
 cd agent-memory-service
 ```
 
-### 3. Connect your client
+### 3. Install the service, then connect your client
 
-You do not name a project when you install. Hooks and the MCP bridge take it from the folder a session is opened in
+Two commands, in this order. The **service** is the one daemon on your machine; a **client** is one agent platform
+that talks to it. Install the service once, then connect each platform you use.
+
+```bash
+bash scripts/install.sh service --apply
+```
+
+It checks SurrealDB, asks for the model API key (hidden input), builds the binary, installs the web UI and starts the
+daemon as a user service. Leave out `--apply` to preview.
+
+You do not name a project when you connect. Hooks and the MCP bridge take it from the folder a session is opened in
 (see [project routing](#what-the-installer-does)). Clients sharing project memories must connect to the **same daemon**
 and be opened in the **same folder**.
 
 #### Codex CLI / App
 
 ```bash
-bash scripts/install.sh --host codex --apply --recall
+bash scripts/install.sh connect --host codex --apply --recall
 ```
 
 Restart Codex, then trust the `shared-memory` hooks (five with `--recall`) in `/hooks`, or **Settings → Hooks** in the
 app. Capture and recall will not run until their hooks are trusted.
 
-Codex records trust by hook content. If you rerun the installer with a different binary path or option, or an upgrade
+Codex records trust by hook content. If you rerun `connect` with a different binary path or option, or an upgrade
 changes the hooks, trust them again. See [Codex hooks](docs/mcp-harness.md#codex-hooks).
 
 #### Claude Code
 
 ```bash
-bash scripts/install.sh --host claude-code --apply --recall
+bash scripts/install.sh connect --host claude-code --apply --recall
 ```
 
 Restart Claude Code and use `/mcp` to inspect the `shared-memory` server. It is installed at user level, so it and its
@@ -132,7 +142,7 @@ hooks apply to every project.
 #### WorkBuddy
 
 ```bash
-bash scripts/install.sh --host workbuddy --apply --recall
+bash scripts/install.sh connect --host workbuddy --apply --recall
 ```
 
 Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memory` and enable all eight tools.
@@ -140,7 +150,7 @@ Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memo
 #### DeepSeek Harness
 
 ```bash
-bash scripts/install.sh --host deepseek-harness --apply
+bash scripts/install.sh connect --host deepseek-harness --apply
 ```
 
 Restart DeepSeek Harness and start a new session. This integration provides MCP tools only; it does not accept
@@ -149,14 +159,15 @@ absolute path) when asking the agent to use memory.
 
 #### What the installer does
 
-On the first installation, the installer prompts for the API key with hidden input. It builds the binary, checks the
-integration, merges client configuration and starts the daemon as a user service. Subsequent client installations
-reuse the daemon and key. The service also serves the web UI at `http://127.0.0.1:8765/ui/`: the installer builds it
-with `make ui` when npm is available, else downloads it from the matching release, and goes on without it when
-neither works.
+`service --apply` checks SurrealDB, prompts for the API key with hidden input on the first installation, builds the
+binary, starts it once as a temporary mock daemon to check it, and installs it as a user service (a LaunchAgent on
+macOS, a systemd user unit on Linux). The service also serves the web UI at `http://127.0.0.1:8765/ui/`: the installer
+builds it with `make ui` when npm is available, else downloads it from the matching release, and goes on without it
+when neither works.
 
-The installer preserves existing unrelated MCP servers, hooks and settings. Remove `--apply` to preview the
-installation.
+`connect --apply` builds nothing and asks for no key. It reads the binary, URL and outbox from the installed service,
+checks the commands it will register against a temporary mock daemon, and merges the platform's configuration. It
+preserves existing unrelated MCP servers, hooks and settings. Remove `--apply` from either command to preview it.
 
 > **Project routing:** the installer names no project; hooks and the MCP bridge take it from the folder of the session
 > when they run. That folder is the working directory (for Claude Code, the folder it was started in). Inside a git
@@ -172,21 +183,24 @@ installation.
 
 **Other configurations:**
 
-- **MCP only:** for Codex, Claude Code or WorkBuddy, add `--no-capture` and omit `--recall`. To add hooks later, rerun
-  with the full command.
+- **MCP only:** for Codex, Claude Code or WorkBuddy, add `--no-capture` to `connect` and omit `--recall`. To add hooks
+  later, rerun `connect` with the full command.
 - **Capture without automatic recall:** omit `--recall`.
-- **No web UI:** add `--no-ui`; a web UI the service already serves stays.
-- **Existing binary:** use `--binary /absolute/path/to/agent-memoryd` to skip the build, for example with a
+- **No web UI:** add `--no-ui` to `service`; a web UI the service already serves stays.
+- **Existing binary:** `service --binary /absolute/path/to/agent-memoryd` skips the build, for example with a
   [release archive](docs/deployment.md#release-archive).
+- **A daemon you run yourself:** `connect --host codex --apply --binary /absolute/path/to/agent-memoryd --url
+  http://127.0.0.1:8765` registers a platform without installing a service; start the daemon as in
+  [deployment](docs/deployment.md).
 - **Custom deployment:** to choose the data directory, port or self-hosted models, follow
-  [deployment and operations](docs/deployment.md).
+  [deployment and operations](docs/deployment.md); `service` takes `--port` and `--outbox`.
 - **Install through an agent:** an agent that can run commands can follow
-  [the installation guide](docs/mcp-harness.md#one-command-install). Agent shells usually cannot take hidden input, so
+  [the installation guide](docs/mcp-harness.md#installer). Agent shells usually cannot take hidden input, so
   provide the key yourself with `--key-file` or in a local terminal, never in chat or command arguments. Client
   confirmation in the steps above still needs you.
 
 Full options, configuration changes, backups and uninstall instructions are in the
-[installation guide](docs/mcp-harness.md#one-command-install).
+[installation guide](docs/mcp-harness.md#installer).
 
 ### 4. Try sharing a memory
 
@@ -323,14 +337,17 @@ curl -fsS http://127.0.0.1:8765/health        # memory strategy, models and LLM 
 
 - **Logs:** `~/Library/Logs/agent-memory-service/daemon.stderr.log` on macOS;
   `journalctl --user -u agent-memory.service` on Linux.
-- **Upgrade:** after `git pull`, rerun the original install command for each installed client; a changed binary is
-  replaced and the service restarted, and the web UI is replaced. Keep SurrealDB on 3.x.
+- **Upgrade:** after `git pull`, run `bash scripts/install.sh service --apply` once, however many clients are
+  connected: it rebuilds, replaces the binary and the web UI and restarts the service. Rerun `connect` for a platform
+  only when the release notes say its hook or bridge entries changed; `connect` is idempotent, so rerunning it is
+  always safe. Keep SurrealDB on 3.x.
 - **Outbox retention:** uploaded turns stay in the outbox; `~/.local/bin/agent-memoryd outbox prune --older-than 30d`
   deletes the finished ones captured more than 30 days ago (see [the uploader](docs/mcp-harness.md#run-and-inspect-the-uploader)).
 - **Change key or models:** edit `~/.config/agent-memory-service/.env` (see [configuration](docs/api.md#configuration)),
   then restart the service.
-- **Uninstall:** add `--uninstall` to the install command to remove a client's configuration; to stop and remove the
-  service, see [install the service](docs/deployment.md#install-the-service).
+- **Uninstall:** run `bash scripts/install.sh connect --host HOST --uninstall` for each connected platform, then
+  `bash scripts/install.sh service --uninstall`, which stops the service and removes its unit and keeps the memory
+  data, env file, binary and web UI (see [install the service](docs/deployment.md#install-the-service)).
 - **Troubleshooting:** see [deployment problems](docs/deployment.md#common-problems) and
   [client troubleshooting](docs/mcp-harness.md#troubleshooting).
 
@@ -361,8 +378,8 @@ Offline installation checks run in CI. Client CLI configuration parsing has been
 commands have unit coverage, but CI does not start real user services.
 
 The documented validation does **not yet include a complete live-client, real-model end-to-end acceptance run**. See
-[what the installer verifies](docs/mcp-harness.md#merges-backups-and-rollback) for details. The installer's optional
-`--verify-model` check uses real models against a temporary store and may incur API charges.
+[what the installer verifies](docs/mcp-harness.md#merges-backups-and-rollback) for details. The optional
+`service --verify-model` check uses real models against a temporary store and may incur API charges.
 
 For development:
 
