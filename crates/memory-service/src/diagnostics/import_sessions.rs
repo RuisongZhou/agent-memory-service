@@ -253,6 +253,7 @@ async fn session_turns_are_registered_admitted_once_and_rolled_back_fact_by_fact
     // What is not the run's applied turn is refused.
     let codex = Caller {
         platform: "codex".into(),
+        client: ClientKind::Hook,
     };
     let s1_2 = || submission(&turns.s1_2, Some(&r1));
     let mut wrong_project = s1_2();

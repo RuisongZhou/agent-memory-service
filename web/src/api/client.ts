@@ -32,6 +32,7 @@ import type {
   ListUncertaintiesReq,
   ListUncertaintiesRes,
   MemoryEntitiesRes,
+  PlatformActivityRes,
   RequestDetail,
   ResolveUncertaintyReq,
   ResolveUncertaintyRes,
@@ -121,6 +122,7 @@ export const api = {
   resolveUncertainty: (req: ResolveUncertaintyReq) => post<ResolveUncertaintyRes>('/v1/resolve_uncertainty', req),
 
   listRetrievals: (req: ListRetrievalsReq) => post<ListRetrievalsRes>('/admin/list_retrievals', req),
+  platformActivity: () => post<PlatformActivityRes>('/admin/platform_activity', {}),
   listRequests: (req: ListRequestsReq) => post<ListRequestsRes>('/admin/list_requests', req),
   getRequest: (requestId: string) => post<RequestDetail>('/admin/request', { requestId }),
   listModelResponses: (req: ListModelResponsesReq) =>

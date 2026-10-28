@@ -67,7 +67,7 @@ def test_cli_capture_then_actual_http_upload(tmp_path):
         assert [m['content'] for m in requests[0][2]['messages']] == ['original user','original assistant']
         assert requests[0][2]['scope'] == {'project': str(folder.resolve()), 'session': 's1'}
         assert requests[1][2]['scope'] == {'kind': 'global', 'session': 'w1'}
-        assert requests[1][1]['x-memory-platform'] == 'workbuddy'
+        assert requests[1][1]['x-memory-platform'] == 'workbuddy' and requests[1][1]['x-memory-client'] == 'hook'
         assert [m['content'] for m in requests[1][2]['messages']] == ['idless user','idless assistant']
     finally:
         server.shutdown()

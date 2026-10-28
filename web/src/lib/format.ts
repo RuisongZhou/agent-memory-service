@@ -1,4 +1,4 @@
-import type { MemScope, MemoryStatus, MemoryType, ScopeKind } from '../api/types'
+import type { ClientKind, MemScope, MemoryStatus, MemoryType, ScopeKind } from '../api/types'
 
 export const TYPE_LABEL: Record<MemoryType, string> = {
   fact: '事实',
@@ -26,6 +26,9 @@ export const ORIGIN_LABEL: Record<string, string> = {
   inferred: '推断',
   imported: '导入',
 }
+
+/** Who made a call on a platform (`X-Memory-Client`). */
+export const CLIENT_LABEL: Record<ClientKind, string> = { hook: 'hook', mcp: 'MCP', http: 'HTTP' }
 
 /** The memory list's recall filter (`RECALL_FILTERS`). */
 export const RECALL_FILTER_LABEL = { never: '从未被召回', '30': '30 天没被召回', '90': '90 天没被召回' } as const
@@ -72,6 +75,15 @@ export function formatTime(value: string | null | undefined): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+/** How long before `now` an RFC3339 time was, in its largest whole unit; under a minute (or ahead) is 刚刚. */
+export function formatAgo(value: string, now = Date.now()): string {
+  const minutes = Math.floor((now - new Date(value).getTime()) / 60_000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟前`
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} 小时前`
+  return `${Math.floor(minutes / (24 * 60))} 天前`
 }
 
 export const formatNumber = (n: number) => n.toLocaleString('zh-CN')

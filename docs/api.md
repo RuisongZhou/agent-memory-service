@@ -35,6 +35,7 @@ call the [import endpoints](#import-runs) as the connection's platform; the MCP 
 | Field | Meaning |
 |---|---|
 | `X-Memory-Platform` | Calling adapter; MCP sets it through `--platform`, not a model-selected identity |
+| `X-Memory-Client` | The platform's program that calls: `hook` (its hooks, and the uploader that sends what they captured), `mcp` (its MCP bridge) or `http` (the default when absent: any other HTTP client). Any other value is `400 INVALID_ARGUMENT`. Recall and write logs record it as `client`, for [`platform_activity`](#health-and-administration) |
 | `scope.project` | The project a memory belongs to: normally the absolute path of the session's folder, such as `/Users/me/code/repo`, which the hooks and the MCP bridge choose ([project from the session folder](design/project-routing.md)). Any nonempty string other than `*` is valid |
 | `scope.kind` | `"project"` (the default) or `"global"`, a session with no project folder. `"global"` comes without `scope.project`: sending both, or any other kind, is `400 INVALID_ARGUMENT` |
 | `scope.session` | Actual native session ID; use a stable device prefix if IDs can collide |
@@ -181,6 +182,7 @@ It confirms readiness, not provider-key validity or completion of queued writes.
 | `POST /admin/consolidation_runs` | Consolidation runs, newest first, without `clusters`, `proposalIds` and `responseLogIds`; filter `project`; `limit` 1–200 (default 20); not gated by `consolidationEnabled` |
 | `POST /admin/consolidation_run` | `{runId}`: `run` and `proposals` as `consolidation_apply` returns them, and `memories`, a summary `{id, type, status, text, scope}` of every memory a proposal names (deleted ones left out) |
 | `POST /admin/list_retrievals` | One page of `retrieval_log` rows with `id`, newest first, and `memories` summarizing each memory they returned; filters `kind` (`search` or `context`), `platform`, `excludePlatforms` (rows without a platform are kept), `project`, `session`, `memoryId` (rows of the last 30 days only; the response then has `window: "30d"`); `limit` 1–200 (default 50); cursor as for `list_memories` |
+| `POST /admin/platform_activity` | The platforms that called in the last 30 days, by channel: `{window: "30d", platforms}`, the platform heard from last first. A platform is `{platform, lastAt, capture?, hookRecall?, mcp?, other?}`, each channel `{count, lastAt}` and absent without calls: `capture` counts the write requests of `client: "hook"` (captured dialogue; the turns of import runs are left out), `hookRecall` the `retrieval_log` rows of `client: "hook"`, `mcp` both of `client: "mcp"`, and `other` both of `client: "http"` and rows logged before the client was recorded. The web UI's calls and rows without a platform are left out |
 | `POST /admin/list_requests` | One page of write requests with `id`, newest first, without `inputMessages` but with `messageCount`; filters `statuses`, `kind` (`mem0` or `instruction`), `platform`, `project`; `limit` 1–200 (default 50); cursor as for `list_memories` |
 | `POST /admin/request` | `{requestId}`: the whole `request`, its `extract_log` rows (`extractions`, oldest first) and the `llm_responses` rows they name (`responses`), each with `id`. A request whose every generation call failed has neither; see `list_model_responses` |
 | `POST /admin/list_model_responses` | One page of `llm_responses` rows as stored with `id`, newest first; filters `stage`, `failedOnly` (no `validOutputShape:true`: a transport error, an HTTP status outside 2xx, a body that is not JSON or output of the wrong shape); `limit` 1–100 (default 20); cursor as for `list_memories` |
@@ -189,10 +191,11 @@ Export table names include `llm_usage`, `llm_responses`, `extract_log`, `retriev
 `store_revisions`, `uncertainties`, `proposals`, `consolidation_runs`, `import_runs`, `import_ledger`,
 `import_extractions` and [Mem0 private tables](architecture.md#entity-projection-and-storage).
 A `retrieval_log` row is one `search_memories` or `get_context` call: `kind` (`search` or `context`), the
-caller's `platform`, `project`, `session`, `createdAt`/`createdTs`, `returned.memories` (ids and ranks),
+caller's `platform` and `client`, `project`, `session`, `createdAt`/`createdTs`, `returned.memories` (ids and ranks),
 `returned.tokens` and, for searches, `query` and `returned.gap` (nothing found; counted in `stats`
 `retrieval.gapSearches`). Startup fills in `kind`, `createdTs` and `gap` on searches logged before these
-fields existed; their platform, project, session and `returned.tokens` stay absent.
+fields existed; their platform, project, session and `returned.tokens` stay absent. Write requests also record the
+caller's `platform` and `client`; rows logged before the client was recorded have no `client`.
 Embedding token usage is approximate, not provider billing. Reindex HTTP errors produce a nonzero CLI exit.
 
 ### Recalls

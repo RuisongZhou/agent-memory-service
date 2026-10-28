@@ -296,7 +296,7 @@ pub async fn search(
     let retrieval_id = t
         .store
         .log_retrieval(
-            json!({"kind":"search","platform":c.platform,"project":project,"session":scope.session,
+            json!({"kind":"search","platform":c.platform,"client":c.client,"project":project,"session":scope.session,
         "query":query,"strategy":MemoryStrategy::Mem0,
         "returned":{"memories":returned,"tokens":used,"gap":results.is_empty()},"latency":lat,
         "createdAt":ts,"createdTs":util::ts_secs(&ts)}),

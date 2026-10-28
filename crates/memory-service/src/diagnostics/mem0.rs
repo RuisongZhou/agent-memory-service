@@ -335,9 +335,15 @@ async fn selftest() {
         (
             &context[0]["kind"],
             &context[0]["query"],
-            &context[0]["platform"]
+            &context[0]["platform"],
+            &context[0]["client"]
         ),
-        (&json!("context"), &Value::Null, &json!("test"))
+        (
+            &json!("context"),
+            &Value::Null,
+            &json!("test"),
+            &json!("http")
+        )
     );
     assert!(context[0].get("feedback").is_none());
     for (filter, want) in [
@@ -887,5 +893,73 @@ async fn selftest() {
             Err(ApiError::InvalidArgument(_))
         ));
     }
+
+    // ---- platform activity over 30 days, by the program that called: Codex's hooks captured a turn and read the
+    // context, and its MCP bridge searched. A hook's context read 31 days old and a turn an import run submitted
+    // are not counted, nor are the web UI's calls and the rows without a platform. "test" sent no client header.
+    let codex = |client| Caller {
+        platform: "codex".into(),
+        client,
+    };
+    let hook = codex(ClientKind::Hook);
+    let captured = AddMemoriesReq {
+        scope: scope.clone(),
+        turn_id: Some("c1".into()),
+        text: Some("codex listens on port 9000".into()),
+        infer: Some(false),
+        sync: Some(true),
+        ..Default::default()
+    };
+    ingest::add_memories(&eng, &t, &hook, captured)
+        .await
+        .unwrap();
+    let read = GetContextReq {
+        scope: scope.clone(),
+        ..Default::default()
+    };
+    retrieval::get_context(&eng, &t, &hook, read).await.unwrap();
+    let searched = SearchReq {
+        query: "port".into(),
+        scope: Some(scope.clone()),
+        ..Default::default()
+    };
+    mem0_retrieval::search(&eng, &t, &codex(ClientKind::Mcp), searched)
+        .await
+        .unwrap();
+    let month_ago = now - chrono::Duration::days(31);
+    t.store
+        .log(
+            schema::RETRIEVAL_LOG,
+            json!({"kind": "context", "platform": "codex", "client": "hook",
+            "createdAt": util::fmt_ts(&month_ago), "createdTs": month_ago.timestamp()}),
+        )
+        .await
+        .unwrap();
+    t.store
+        .log(
+            schema::REQUESTS,
+            json!({"kind": "mem0", "platform": "codex", "client": "hook",
+            "importRunId": "ir1", "createdAt": util::now_str()}),
+        )
+        .await
+        .unwrap();
+    let activity = management::platform_activity(&t).await.unwrap();
+    assert_eq!(activity["window"], "30d");
+    let platforms = activity["platforms"].as_array().unwrap();
+    let keys = |row: &Value| row.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    // Codex was heard from last, so it comes first.
+    assert_eq!(platforms.len(), 2, "{activity}");
+    assert_eq!(platforms[0]["platform"], "codex");
+    assert_eq!(
+        keys(&platforms[0]),
+        ["capture", "hookRecall", "lastAt", "mcp", "platform"]
+    );
+    for channel in ["capture", "hookRecall", "mcp"] {
+        assert_eq!(platforms[0][channel]["count"], 1, "{channel}");
+    }
+    assert_eq!(platforms[0]["lastAt"], platforms[0]["mcp"]["lastAt"]);
+    assert_eq!(platforms[1]["platform"], "test");
+    assert_eq!(keys(&platforms[1]), ["lastAt", "other", "platform"]);
+
     println!("mem0: contract, scope, raw/idempotent writes, immediate visibility, publication recovery, correction, deletion, zero generation, global sessions passed; data {}", dir.display());
 }

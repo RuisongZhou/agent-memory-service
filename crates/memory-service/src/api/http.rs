@@ -75,13 +75,19 @@ fn refusal(
     }
 }
 
-fn caller(h: &HeaderMap) -> Caller {
+fn caller(h: &HeaderMap) -> ApiResult<Caller> {
     let platform = h
         .get("x-memory-platform")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("sdk")
         .to_string();
-    Caller { platform }
+    let client = match h.get("x-memory-client") {
+        None => ClientKind::Http,
+        Some(v) => v.to_str().ok().and_then(ClientKind::parse).ok_or_else(|| {
+            ApiError::InvalidArgument("X-Memory-Client must be hook, mcp or http".into())
+        })?,
+    };
+    Ok(Caller { platform, client })
 }
 
 pub(super) fn err_response(e: ApiError) -> Response {
@@ -136,7 +142,8 @@ async fn api(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    match call(&eng, &caller(&headers), &name, body).await {
+    let res = async { call(&eng, &caller(&headers)?, &name, body).await }.await;
+    match res {
         Ok(v) => Json(v).into_response(),
         Err(e) => err_response(e),
     }
@@ -179,6 +186,7 @@ async fn admin(
             "list_requests" => management::list_requests(&t, parse(body)?).await,
             "request" => management::request(&t, parse(body)?).await,
             "list_model_responses" => management::list_model_responses(&t, parse(body)?).await,
+            "platform_activity" => management::platform_activity(&t).await,
             other => Err(ApiError::NotFound(format!("unknown admin action {other}"))),
         }
     }
@@ -241,7 +249,8 @@ mod tests {
 
     /// A browser page on another origin cannot use the daemon: its `no-cors` fetch to `127.0.0.1` and a name it
     /// rebinds to loopback are refused, while a client that sends no `Origin` or `Sec-Fetch-Site` and addresses
-    /// the daemon as loopback is served, over HTTP/1.1 and over HTTP/2 (which has no `Host` header).
+    /// the daemon as loopback is served, over HTTP/1.1 and over HTTP/2 (which has no `Host` header). A call naming
+    /// a client the daemon does not know (`X-Memory-Client`) is refused.
     #[tokio::test]
     async fn the_daemon_refuses_what_a_page_on_another_origin_can_send() {
         // Each header on its own, the other two being a loopback client's, for a daemon on port 8765.
@@ -331,5 +340,20 @@ mod tests {
         let response = h2.get(format!("{daemon}/health")).send().await.unwrap();
         assert_eq!(response.version(), reqwest::Version::HTTP_2);
         assert_eq!(response.status(), StatusCode::OK);
+
+        // A client the daemon does not know is refused before the call runs.
+        let response = client
+            .post(format!("{daemon}/v1/get_context"))
+            .header("x-memory-client", "robot")
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.unwrap();
+        assert!(body["message"]
+            .as_str()
+            .unwrap()
+            .contains("X-Memory-Client"));
     }
 }

@@ -627,6 +627,33 @@ pub struct FeedbackReq {
 #[derive(Debug, Clone)]
 pub struct Caller {
     pub platform: String,
+    pub client: ClientKind,
+}
+
+/// Which program of a platform made a call (`X-Memory-Client`): its hooks, including the uploader that sends
+/// what they captured; its MCP bridge; or anything else on the HTTP interface, which sends no header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClientKind {
+    Hook,
+    Mcp,
+    Http,
+}
+
+impl ClientKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hook => "hook",
+            Self::Mcp => "mcp",
+            Self::Http => "http",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::Hook, Self::Mcp, Self::Http]
+            .into_iter()
+            .find(|kind| kind.as_str() == s)
+    }
 }
 
 // ---------------------------------------------------------------- errors

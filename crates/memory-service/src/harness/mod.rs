@@ -12,6 +12,7 @@ pub mod recall;
 pub mod uploader;
 
 use clap::Subcommand;
+use memory_domain::types::ClientKind;
 use serde_json::{json, Value};
 use std::fmt;
 use std::io::Read;
@@ -423,7 +424,8 @@ impl From<CallError> for AdminError {
     }
 }
 
-/// JSON client for the daemon's public interface (`POST {base}/v1/{name}`).
+/// JSON client for the daemon's public interface (`POST {base}/v1/{name}`): the hooks' and the dialogue
+/// uploader's, which call as `X-Memory-Client: hook`. Operator commands use it for admin calls.
 pub struct Daemon {
     client: reqwest::Client,
     base: String,
@@ -446,7 +448,11 @@ impl Daemon {
     /// One call; the response must be a JSON object of at most 1 MiB.
     pub async fn post(&self, name: &str, body: &Value, platform: &str) -> Result<Value, CallError> {
         let url = format!("{}/v1/{name}", self.base);
-        let response = self.send(url, body, platform).await?;
+        let response = self
+            .request(url, body, platform)
+            .header("X-Memory-Client", ClientKind::Hook.as_str())
+            .send()
+            .await?;
         if !response.status().is_success() {
             return Err(CallError::Status(response.status().as_u16()));
         }
@@ -462,7 +468,11 @@ impl Daemon {
         platform: &str,
     ) -> Result<Value, AdminError> {
         let url = format!("{}/admin/{name}", self.base);
-        let response = self.send(url, body, platform).await?;
+        let response = self
+            .request(url, body, platform)
+            .send()
+            .await
+            .map_err(CallError::from)?;
         if !response.status().is_success() {
             let error = CallError::Status(response.status().as_u16());
             let message = json_object(response, MAX_ERROR_BODY)
@@ -474,19 +484,11 @@ impl Daemon {
         Ok(json_object(response, MAX_ADMIN_RESPONSE).await?)
     }
 
-    async fn send(
-        &self,
-        url: String,
-        body: &Value,
-        platform: &str,
-    ) -> Result<reqwest::Response, CallError> {
-        Ok(self
-            .client
+    fn request(&self, url: String, body: &Value, platform: &str) -> reqwest::RequestBuilder {
+        self.client
             .post(url)
             .header("X-Memory-Platform", platform)
             .json(body)
-            .send()
-            .await?)
     }
 }
 

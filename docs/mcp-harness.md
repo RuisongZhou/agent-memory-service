@@ -892,6 +892,7 @@ not list them as established facts.
 | Symptom | Check or action |
 |---|---|
 | Installer refuses to write | Read the `[error]` line: it names the conflicting entry; nothing was changed. Fix it or edit the configuration by hand as in the sections above |
+| Not sure a platform is connected | The web UI's overview lists, under 接入平台, each platform that called in the last 30 days and when its hooks last captured dialogue, its hooks last recalled and its MCP tools were last used. A platform missing there, or missing its hooks, has not been connected, trusted or restarted |
 | MCP is listed but calls fail | Check daemon `/health`, absolute binary path, port, and stdio transport; the bridge does not start the daemon |
 | Codex captures no turns | Trust the `UserPromptSubmit`, `Stop` and `SessionEnd` collector hooks in `/hooks` (again after the command changed), restart the client after edits, start a new turn, verify the `agent-memoryd` path, and inspect the selected outbox |
 | Claude Stop pairing fails | Start a new turn with capture hooks installed; verify required event fields and the matching platform and session folder (a prompt and its `Stop` must resolve to the same project) |

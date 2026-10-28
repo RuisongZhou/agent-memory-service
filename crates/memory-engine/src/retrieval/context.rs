@@ -350,6 +350,7 @@ pub(crate) async fn assemble_context(
         .log_retrieval(json!({
             "kind": "context",
             "platform": c.platform,
+            "client": c.client,
             "project": if global { Some("") } else { scope.project.as_deref() },
             "session": scope.session,
             "query": Value::Null,

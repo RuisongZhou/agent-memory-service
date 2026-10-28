@@ -10,7 +10,7 @@ use super::store::{rid, Store, Tx};
 use memory_rules::util;
 
 /// The platform of the web UI. Its own searches and context previews are not recalls by an agent.
-const WEB_PLATFORM: &str = "web";
+pub(crate) const WEB_PLATFORM: &str = "web";
 
 /// When a memory was last returned to an agent, and how many calls returned it.
 #[derive(Debug, Clone, PartialEq)]

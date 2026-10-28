@@ -38,6 +38,7 @@ DEFINE INDEX IF NOT EXISTS index_tasks_created ON index_tasks FIELDS createdTs;
 DEFINE TABLE IF NOT EXISTS index_meta SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS store_revisions SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS requests SCHEMALESS;
+DEFINE INDEX IF NOT EXISTS requests_created ON requests FIELDS createdAt;
 DEFINE TABLE IF NOT EXISTS retrieval_log SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS retrieval_log_created ON retrieval_log FIELDS createdTs;
 DEFINE TABLE IF NOT EXISTS memory_recalls SCHEMALESS;

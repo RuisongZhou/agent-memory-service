@@ -1,6 +1,6 @@
 //! 接入层 — MCP stdio shim: forwards each call of the six memory tools to
-//! the daemon's HTTP API (`POST {url}/v1/{name}`) with `X-Memory-Platform: <platform>` — the platform is a
-//! property of the connection, never of the arguments (2.2). The project is a property of the connection
+//! the daemon's HTTP API (`POST {url}/v1/{name}`) with `X-Memory-Platform: <platform>` and
+//! `X-Memory-Client: mcp` — the platform is a property of the connection, never of the arguments (2.2). The project is a property of the connection
 //! too, by default: the folder the bridge was started in (`harness::project`, docs/design/project-routing.md),
 //! filled into a call that gives none. An import a person drives in the conversation
 //! (docs/design/memory-import-mcp.md) is the shim's own: the prompt `import_memories` and the tools
@@ -18,6 +18,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use crate::harness::import::{chat, client::Client, platform_label, prompt};
 use crate::harness::project::{Env, SessionProject};
+use memory_domain::types::ClientKind;
 
 /// Protocol revisions the bridge serves: the `initialize` era only. rmcp 3.2 and the TypeScript SDK
 /// 2.2 (DeepSeek Harness 0.2.1) disagree on 2026-07-28 result shapes (`tools/list` lacks the
@@ -374,6 +375,7 @@ impl Shim {
             .http
             .post(format!("{}/v1/{name}", self.url))
             .header("X-Memory-Platform", &self.platform)
+            .header("X-Memory-Client", ClientKind::Mcp.as_str())
             .json(&args);
         match req.send().await {
             Ok(resp) => {
@@ -686,7 +688,7 @@ mod tests {
     }
 
     /// The bridge fills a call's missing project from its default (or says `kind: "global"`), changes nothing
-    /// else, and never forwards an import run id.
+    /// else, never forwards an import run id, and names itself the client of every call.
     #[tokio::test]
     async fn the_bridge_fills_in_the_default_project_and_never_forwards_an_import_run_id() {
         use axum::extract::Path as UrlPath;
@@ -696,9 +698,12 @@ mod tests {
         let app = Router::new().route(
             "/v1/{name}",
             post(
-                move |UrlPath(name): UrlPath<String>, Json(body): Json<Value>| {
+                move |UrlPath(name): UrlPath<String>,
+                      headers: axum::http::HeaderMap,
+                      Json(body): Json<Value>| {
                     let record = record.clone();
                     async move {
+                        assert_eq!(headers["x-memory-client"], "mcp", "{name}");
                         record.lock().unwrap().push((name, body));
                         Json(json!({"requestId": "rq1"}))
                     }
