@@ -1,20 +1,21 @@
-"""The runtime shared by every platform's entries: the installed binary, the env file and the daemon service.
+"""The daemon service `install.sh service` sets up: the installed binary, the env file and the user service.
 
-The one-command install sets these up while it registers a platform, and reuses them on later runs:
+`service --apply` (also the upgrade) installs these and reuses them on later runs:
 
 - SurrealDB is the user's own: the daemon starts their `surreal` (SurrealDB 3.x; `--surreal-bin`, else the
   first on PATH) to serve its store. The installer checks it before anything else runs, never installs it;
-- the binary is copied to `~/.local/bin/agent-memoryd`, so the entries survive `cargo clean` or a moved
-  checkout (`--binary` uses a given executable as is);
+- the binary is copied to `~/.local/bin/agent-memoryd`, so the platforms' entries survive `cargo clean` or a
+  moved checkout (`--binary` uses a given executable as is);
 - the env file (`~/.config/agent-memory-service/.env`, mode 0600) holds the model key, which comes from
   `--key-file`, the environment or a hidden prompt, never from an argument; a file with a key is reused;
 - the web UI goes to `~/.local/share/agent-memory-service/ui` (ui.py);
 - `agent-memoryd service install --apply --start` writes the LaunchAgent / systemd user unit and starts
   it, with `--ui-dir` when a web UI is installed. The options of a unit it wrote earlier are kept; a unit
-  written by hand and a daemon started by hand are left alone.
+  written by hand and a daemon started by hand are refused, not replaced.
 
-The binary and the env file are put back if the installation fails before the platform's
-configuration is written; `--rollback` and `--uninstall` leave all of them to the other platforms.
+The binary and the env file are put back if a check fails before the service starts. `service --uninstall`
+stops the service and removes its unit; the data, env file, binary and web UI stay. `connect` (core.py)
+reads the binary, URL and outbox back from the installed service (`daemon`).
 """
 
 import datetime
@@ -28,11 +29,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import core
 import ui
@@ -47,29 +48,33 @@ SURREAL_VERSIONS = ((3, 2), (4, 0))
 INSTALL_SURREAL = ('install SurrealDB 3.x: `brew install surrealdb/tap/surreal` on macOS, or '
                    '`curl -sSf https://install.surrealdb.com | sh` (docs/deployment.md#install-surrealdb)')
 SERVICE_TIMEOUT = 240  # seconds; `--start` waits up to 60 s for the daemon and 10 s for launchd
-# The `service status --json` settings plan_service reads; an older binary lacks some.
-STATUS_KEYS = {'installed', 'managed', 'unit', 'envFile', 'dataDir', 'outbox', 'uiDir', 'port', 'llmConcurrency'}
+DATA_DIR = Path('.local/share/agent-memory-service/mem0')  # relative to home; the service's default store
+LAUNCHD_LABEL = 'local.agent-memory-daemon'
+SYSTEMD_UNIT = 'agent-memory.service'
+# The `service status --json` settings plan_service and daemon read; an older binary lacks some.
+STATUS_KEYS = {'installed', 'managed', 'unit', 'manager', 'binary', 'envFile', 'dataDir', 'surrealBin', 'outbox',
+               'uiDir', 'port', 'llmConcurrency'}
 
 
-def service_port(url):
-    """The port of a daemon URL the service can serve (plain HTTP on loopback, explicit port), or None."""
-    parts = urlsplit(url)
-    return parts.port if parts.scheme == 'http' and parts.hostname in core.LOOPBACK else None
+def service_url(port):
+    """The daemon URL of a service on `port`: it always listens on loopback."""
+    return f'http://127.0.0.1:{port}'
 
 
 def unit_path(home):
     """The unit file `service install` writes (service.rs); only its existence is checked before the build."""
     if sys.platform == 'darwin':
-        return home / 'Library/LaunchAgents/local.agent-memory-daemon.plist'
-    return home / '.config/systemd/user/agent-memory.service'
+        return home / f'Library/LaunchAgents/{LAUNCHD_LABEL}.plist'
+    return home / f'.config/systemd/user/{SYSTEMD_UNIT}'
 
 
 # --- SurrealDB ----------------------------------------------------------------------
 
-def find_surreal(args):
-    """The `surreal` the daemon starts for its store: --surreal-bin, else the first on PATH; None when missing."""
-    if args.surreal_bin:
-        return args.surreal_bin
+def find_surreal(args, recorded=None):
+    """The `surreal` the daemon starts for its store: --surreal-bin, else the one the installed service
+    `recorded`, else the first on PATH; None when missing."""
+    if args.surreal_bin or recorded:
+        return args.surreal_bin or Path(recorded)
     found = shutil.which('surreal')
     return core.absolute(found) if found else None
 
@@ -160,7 +165,7 @@ def read_key(args):
         secret = getpass.getpass(f'Model API key for the memory daemon ({KEY}, input hidden): ').strip()
     else:
         raise InstallError(f'The daemon needs a model API key: pass --key-file PATH, set {args.api_key_env}, '
-                           'run interactively, or register the platform only with --no-service')
+                           'or run interactively')
     # serve --env-file reads one line and strips quotes: the key must be one plain token.
     if not secret or any(c.isspace() or c in '"\'' or not c.isprintable() for c in secret):
         raise InstallError(f'The API key from {source} must be one line without spaces or quotes')
@@ -169,26 +174,39 @@ def read_key(args):
 
 # --- planning ----------------------------------------------------------------------
 
+def print_surreal(ctx, purpose):
+    surreal = ctx.surreal or f'<required: {INSTALL_SURREAL}>'
+    print(f'[plan] surreal={surreal}: SurrealDB, installed by you; {purpose}')
+
+
 def print_plan(args, ctx):
+    """The `service` preview."""
     if args.binary:
         print(f'[plan] binary={ctx.binary} (--binary, used as is)')
     else:
         print(f'[plan] binary={ctx.binary}, copied from {core.DEFAULT_BINARY.relative_to(core.ROOT)} after the build')
-    surreal = ctx.surreal or f'<required: {INSTALL_SURREAL}>'
-    print(f'[plan] surreal={surreal}: SurrealDB, installed by you; the daemon starts it to serve its store')
-    if not ctx.manage_service:
-        reason = '--no-service' if args.no_service else f'--url {ctx.url} is not a loopback http URL with a port'
-        print(f'[plan] daemon service not managed ({reason}); run the daemon yourself (docs/deployment.md)')
-        return
+    print_surreal(ctx, 'the daemon starts it to serve its store')
     env = args.env_file or ctx.home / ENV_FILE
     state = 'with a key' if env_value(read_file(env), KEY) else 'the API key is asked for, hidden'
     if args.key_file:
         state = 'the API key is replaced from --key-file'
-    print(f'[plan] daemon service on 127.0.0.1:{ctx.port} (LaunchAgent on macOS, systemd user unit on Linux), '
+    port = f'port {args.port}' if args.port else f'port {core.DEFAULT_PORT} (an installed service keeps its own)'
+    print(f'[plan] daemon service on 127.0.0.1, {port}: a LaunchAgent on macOS, a systemd user unit on Linux, '
           'installed or updated, then started')
-    print(f'[plan] env file={env} ({state}); an installed service keeps its env file, data and options, '
-          'and a daemon started by hand is left alone')
+    print(f'[plan] env file={env} ({state}); an installed service keeps its env file, data and options')
+    print(f'[plan] outbox={args.outbox or ctx.outbox}: the service uploads what the platforms capture '
+          "(an installed service's own outbox is kept)")
     ui.print_plan(args, ctx)
+
+
+def check_free(ctx):
+    """Refuse a daemon started by hand on the port before anything is asked for or built: the service could not
+    start beside it. (An installed unit's port is read once the binary exists.)"""
+    import checks
+    if not unit_path(ctx.home).exists() and checks.daemon_health(ctx.url) is not None:
+        raise InstallError(f'A daemon you started yourself already answers at {ctx.url}; stop it, then rerun, or '
+                           f'pass another --port. To use it as it is, run `install.sh connect --binary PATH --url '
+                           f'{ctx.url}` instead of installing a service')
 
 
 def prepare(args, ctx):
@@ -198,11 +216,8 @@ def prepare(args, ctx):
     question waits for plan_service.
     """
     ctx.secret = None
-    if not ctx.manage_service or (unit_path(ctx.home).exists() and not args.env_file):
+    if unit_path(ctx.home).exists() and not args.env_file:
         return
-    import checks
-    if not unit_path(ctx.home).exists() and checks.daemon_health(ctx.url) is not None:
-        return  # started by hand; plan_service leaves it alone
     if needs_key(args, args.env_file or ctx.home / ENV_FILE):
         ctx.secret = read_key(args)
 
@@ -227,34 +242,23 @@ def service_status(binary, home):
 
 
 def plan_service(args, ctx, binary):
-    """The daemon phase: None when the service is left alone, else its options and the env file change.
+    """The service's options and the env file change.
 
-    A unit `service install` wrote keeps its options; only the binary changes, capture adds the outbox
-    and ui.install the web UI. A unit written by hand and a daemon started by hand are never replaced.
+    A unit `service install` wrote keeps its options; only the binary changes, and the outbox, the port, the
+    env file and the web UI where a flag names another (ui.install sets the UI). A unit written by hand is
+    never replaced.
     """
-    if not ctx.manage_service:
-        return None
-    import checks
     status = service_status(binary, ctx.home)
     installed = status['installed']
     if installed and not status['managed']:
-        print(f"[note] {status['unit']} was not written by agent-memoryd service install; it is left as is")
-        return None
-    if not installed and checks.daemon_health(ctx.url) is not None:
-        print(f'[note] a daemon started by hand answers at {ctx.url}; it is used as is, and no service is installed')
-        return None
-    if installed and status['port'] is None:
-        raise InstallError(f"Cannot read the port of {status['unit']}; fix its --port or reinstall it with "
+        raise InstallError(f"{status['unit']} was not written by agent-memoryd service install, so the installer "
+                           'does not replace it; remove it, or connect platforms to that daemon with '
+                           '`install.sh connect --binary PATH --url URL`')
+    if installed and status['port'] is None and not args.port:
+        raise InstallError(f"Cannot read the port of {status['unit']}; pass --port or reinstall it with "
                            'agent-memoryd service install')
-    if installed and status['port'] != ctx.port:
-        raise InstallError(f"The installed service listens on port {status['port']}; pass "
-                           f"--url http://127.0.0.1:{status['port']}")
-    outbox = status['outbox'] if installed else None
-    if ctx.capture:
-        if outbox is not None and Path(outbox) != ctx.outbox:
-            raise InstallError(f'The installed service uploads {outbox}, but capture would write {ctx.outbox}; '
-                               f'pass --outbox {shlex.quote(outbox)}')
-        outbox = str(ctx.outbox)
+    port = args.port or (status['port'] if installed else core.DEFAULT_PORT)
+    outbox = args.outbox or Path(status['outbox'] if installed and status['outbox'] else ctx.outbox)
     ui_dir = status['uiDir']
     if ui_dir is not None and not (Path(ui_dir) / 'index.html').is_file():
         # The daemon would refuse to start with it.
@@ -263,8 +267,12 @@ def plan_service(args, ctx, binary):
         ui_dir = None
     env_file = args.env_file or (Path(status['envFile']) if installed and status['envFile'] else ctx.home / ENV_FILE)
     plan = types.SimpleNamespace(
-        env_file=env_file, env_change=None, outbox=outbox, ui_dir=ui_dir,
+        env_file=env_file, env_change=None, outbox=outbox, ui_dir=ui_dir, port=port, url=service_url(port),
         data_dir=status['dataDir'], llm_concurrency=status['llmConcurrency'])
+    if installed and (port != status['port'] or (status['outbox'] and str(outbox) != status['outbox'])):
+        print(f'[note] the service now listens on port {port} and uploads {outbox} (it was port {status["port"]}, '
+              f'outbox {status["outbox"]}); platforms connected before keep the old values until you rerun '
+              '`install.sh connect` for each')
     if needs_key(args, env_file):
         secret = ctx.secret or read_key(args)
         current = read_file(env_file)
@@ -272,6 +280,37 @@ def plan_service(args, ctx, binary):
         if text != current:  # --key-file with the key already in place writes nothing
             plan.env_change = (env_file, text.encode())
     return plan
+
+
+def daemon(args):
+    """The daemon a platform connects to: its binary, URL, outbox and SurrealDB.
+
+    These come from the managed service installed in --home (`<binary> service status --json`, asked of
+    --binary or the installed binary); --binary, --url and --outbox win over the service's values. With
+    --binary and --url together nothing is read: that is a daemon you run yourself, which `connect` needs no
+    service for.
+    """
+    status = None
+    if not (args.binary and args.url):
+        asked = args.binary or args.home / BINARY
+        if asked.is_file():
+            status = service_status(asked, args.home)
+        if status is None or not status['installed']:
+            raise InstallError(f'No daemon service is installed in {args.home}: run `bash scripts/install.sh service '
+                               '--apply` first. For a daemon you run yourself, pass --binary and --url together')
+        if not status['managed']:
+            raise InstallError(f"{status['unit']} was not written by agent-memoryd service install, so its settings "
+                               'are not read; pass --binary and --url together')
+    if status is not None and status['port'] is None and not args.url:
+        raise InstallError(f"Cannot read the port of {status['unit']}; pass --url or reinstall it with "
+                           '`install.sh service --apply`')
+    recorded = lambda key: status[key] if status else None
+    return types.SimpleNamespace(
+        binary=args.binary or Path(status['binary']),
+        url=core.check_url(args.url) if args.url else service_url(status['port']),
+        outbox=args.outbox or Path(recorded('outbox') or args.home / core.OUTBOX),
+        surreal=find_surreal(args, recorded('surrealBin')),
+        origin='the installed service' if status else '--binary and --url: a daemon you run yourself')
 
 
 # --- writing -----------------------------------------------------------------------
@@ -383,8 +422,8 @@ def start_service(ctx, plan):
     """`service install --apply --start` with the planned options; fails unless the daemon answers."""
     argv = [str(ctx.binary), 'service', 'install', '--apply', '--start', '--home', str(ctx.home),
             '--binary', str(ctx.binary), '--surreal-bin', str(ctx.surreal), '--env-file', str(plan.env_file),
-            '--port', str(ctx.port)]
-    for flag, value in (('--data-dir', plan.data_dir), ('--outbox', plan.outbox), ('--ui-dir', plan.ui_dir),
+            '--port', str(plan.port), '--outbox', str(plan.outbox)]
+    for flag, value in (('--data-dir', plan.data_dir), ('--ui-dir', plan.ui_dir),
                         ('--llm-concurrency', plan.llm_concurrency)):
         if value is not None:
             argv += [flag, str(value)]
@@ -398,6 +437,62 @@ def start_service(ctx, plan):
     except subprocess.TimeoutExpired as error:
         raise InstallError('The daemon service did not start in time; see `agent-memoryd service status`') from error
     if result.returncode:
-        raise InstallError(f'The daemon service did not start (see above). The platform configuration is '
-                           f'written; fix the cause, for example the key in {plan.env_file}, then rerun')
-    ctx.service_started = True
+        raise InstallError(f'The daemon service did not start (see above). The binary and the env file are in '
+                           f'place; fix the cause, for example the key in {plan.env_file}, then rerun')
+
+
+def report_service(plan):
+    """Report (never fail on) the service that just started and its uploader."""
+    import checks
+    health = checks.daemon_health(plan.url)
+    if health is None:
+        print(f'[note] no daemon answered at {plan.url}/health yet; see `agent-memoryd service status`')
+    else:
+        print(f"[check] the service at {plan.url} is up (strategy {health.get('memoryStrategy')})")
+    # The service takes the outbox lock right after it answers.
+    deadline = time.monotonic() + 5
+    while not checks.uploader_running(plan.outbox) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if checks.uploader_running(plan.outbox):
+        print(f'[check] the service uploads {plan.outbox}')
+    else:
+        print(f'[note] the service holds no lock on {plan.outbox} yet; captured turns stay queued until it does')
+    print(f'[next] connect a platform: bash scripts/install.sh connect --host <{"|".join(core.HOSTS)}> --apply')
+
+
+def stop_argv(manager):
+    """The command that stops a loaded service: what `service uninstall` expects done first."""
+    if manager == 'launchd':
+        return ['launchctl', 'bootout', f'gui/{os.getuid()}/{LAUNCHD_LABEL}']
+    return ['systemctl', '--user', 'disable', '--now', SYSTEMD_UNIT]
+
+
+def uninstall_service(ctx):
+    """Stop the service and have the daemon remove its unit. The data, env file, binary and web UI stay."""
+    unit = unit_path(ctx.home)
+    if not unit.exists():
+        print(f'[uninstall] no service unit at {unit}; nothing to remove')
+        return
+    if not ctx.binary.is_file():
+        raise InstallError(f'{ctx.binary} removes the unit, but it does not exist; pass --binary')
+    status = service_status(ctx.binary, ctx.home)
+    if not status['managed']:
+        raise InstallError(f'{unit} was not written by agent-memoryd service install; stop and remove it yourself')
+    stop = stop_argv(status['manager'])
+    print('[service] ' + shlex.join(stop))
+    result = subprocess.run(stop, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    if result.returncode:  # a service that was not running is fine; systemd's uninstall refuses one still enabled
+        reason = (result.stderr.strip().splitlines() or ['no output'])[-1][:200]
+        print(f'[note] {shlex.join(stop)} exited {result.returncode} ({reason}); the service may not have been loaded')
+    argv = [str(ctx.binary), 'service', 'uninstall', '--apply', '--home', str(ctx.home)]
+    print('[service] ' + shlex.join(argv))
+    sys.stdout.flush()
+    if subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=SERVICE_TIMEOUT).returncode:
+        raise InstallError('The service unit was not removed (see above)')
+    print('[uninstall] the service is stopped and its unit removed; these stay, delete them by hand to remove everything:')
+    kept = [('memory data', status['dataDir'] or ctx.home / DATA_DIR), ('env file (the model key)', status['envFile']),
+            ('binary', status['binary']), ('web UI', status['uiDir']),
+            ('outbox', status['outbox'] or ctx.home / core.OUTBOX)]
+    for name, path in kept:
+        if path:
+            print(f'         {name}: {path}')

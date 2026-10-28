@@ -1,8 +1,8 @@
 # MCP and harness integration
 
-This is the client setup and dialogue-capture guide. The [one-command installer](#one-command-install)
-deploys the daemon and connects a client in one step; for a manual setup, start the daemon using
-[deployment instructions](deployment.md) first. Request fields and response contracts belong to
+This is the client setup and dialogue-capture guide. The [installer](#installer)
+deploys the daemon (`install.sh service`) and connects a client (`install.sh connect`); for a manual
+setup, start the daemon using [deployment instructions](deployment.md) first. Request fields and response contracts belong to
 [the API reference](api.md); implementation details belong to [architecture](architecture.md).
 
 The bridge is a local stdio child process that forwards tools to the HTTP daemon. It does not start
@@ -12,20 +12,30 @@ optional [recall hooks](#automatic-recall) inject memory into the agent's contex
 collector and recall are all subcommands of the one `agent-memoryd` binary, and the daemon itself is
 the uploader when started with `--outbox`.
 Templates must be merged into the target client's existing configuration with absolute executable paths.
-The [one-command installer](#one-command-install) performs that merge for Codex, Claude Code, WorkBuddy and
-DeepSeek Harness, and installs and starts the daemon they share.
+The [installer](#installer) performs that merge for Codex, Claude Code, WorkBuddy and
+DeepSeek Harness; its `service` command installs and starts the daemon they share.
 
-## One-command install
+## Installer
 
-`scripts/install.sh` deploys the daemon and connects one agent platform to it. It registers the stdio
-bridge, unless `--no-capture` is given the [dialogue collector](#automatically-save-conversations), and
-with `--recall` the [automatic recall](#automatic-recall) hooks; DeepSeek Harness gets the bridge only.
-Without `--apply` it only previews; the preview names the SurrealDB it found, or says it is missing. With
-`--apply`, in this order:
+`scripts/install.sh` has two commands. Both preview unless `--apply` is given.
+
+```sh
+bash scripts/install.sh service --apply                     # the daemon, once per machine; also the upgrade
+bash scripts/install.sh connect --host codex --apply --recall   # one agent platform, once per platform
+```
+
+A bare `install.sh`, or the earlier single form `install.sh --host X`, prints the usage and exits 2.
+
+### `install.sh service`
+
+The machine's daemon: SurrealDB check, binary, model key, web UI and the user service. With `--apply`,
+in this order:
 
 1. It checks SurrealDB: `--surreal-bin PATH`, else the first `surreal` on PATH, must be SurrealDB 3.2 or a
    later 3.x. The daemon starts it to serve its store; the installer never installs it, and stops here,
    with the official install commands, when it is missing ([install SurrealDB](deployment.md#install-surrealdb)).
+   It also refuses a daemon you started yourself on the port: stop it first, or connect to it with
+   `connect --binary PATH --url URL`.
 2. It asks for the model API key, hidden, when the daemon's env file has none yet (see below).
 3. It builds `agent-memoryd` (as `make build`) and copies it to `~/.local/bin/agent-memoryd`, so the
    installed commands survive `cargo clean` or a moved checkout. `--binary PATH` uses an existing
@@ -35,20 +45,18 @@ Without `--apply` it only previews; the preview names the SurrealDB it found, or
    GitHub release and checked against the release's SHA-256. When neither works it goes on without one.
    A release bundle matches the code only on its release tag; elsewhere the page shows a version banner,
    so a local build comes first. `--no-ui` skips this step.
-5. It checks the exact commands it will register, run from the installed binary, against a temporary
-   mock daemon (on a temporary store with its own SurrealDB server) and the platform's own CLI
-   ([checks](#installer-checks)).
-6. It backs up and writes the platform's configuration.
-7. It installs the daemon as a LaunchAgent or systemd user service with
+5. It stages the binary and starts it once as a temporary mock daemon (on a temporary store with its own
+   SurrealDB server); it must answer `/health` before the service is touched. With `--verify-model` it
+   then runs the [real-model check](#installer-checks).
+6. It installs the daemon as a LaunchAgent or systemd user service with
    [`agent-memoryd service install --apply --start`](deployment.md#install-the-service), with `--outbox`
-   when the platform captures dialogue, `--surreal-bin` set to the SurrealDB it checked and `--ui-dir`
-   when a web UI is installed, and waits until `/health` answers. The web UI is then at
-   `http://127.0.0.1:8765/ui/`.
+   (the service always uploads the outbox the platforms capture into), `--surreal-bin` set to the SurrealDB
+   it checked and `--ui-dir` when a web UI is installed, and waits until `/health` answers. The web UI is
+   then at `http://127.0.0.1:8765/ui/`.
 
-If a step before the last fails, the installer puts back the configuration files, the binary and the
-env file it changed; a new web UI stays, since the daemon reads its files on each request. A service that
-does not start leaves the written configuration in place: the error names the cause, typically the key,
-and a rerun continues from there.
+If a step before the last fails, the installer puts back the binary and the env file it changed; a new web
+UI stays, since the daemon reads its files on each request. A service that does not start leaves the binary and
+env file in place: the error names the cause, typically the key, and a rerun continues from there.
 
 The env file is `~/.config/agent-memory-service/.env` (directory 0700, file 0600), created from
 [.env.example](../.env.example) with the hosted defaults; an installed service keeps the env file it
@@ -60,45 +68,90 @@ an edited file is first copied to `~/.local/state/agent-memory-service/installat
 settings, such as another generation model or [self-hosted retrieval models](self-hosted-models.md),
 are edited in that file; the service reads it at each start.
 
-The binary, env file, web UI and service are shared: a later run for another platform reuses them, so only
-the first run asks for the key. To upgrade, pull the checkout and rerun each platform's command: a rerun
-replaces the binary when the build changed and then restarts the service, and replaces the web UI. An
-installed service keeps its data directory, env file, port, concurrency and web UI; only its binary
-changes, capture adds `--outbox` and a newly installed web UI `--ui-dir`. With `--no-ui`, or when no UI
-could be built or downloaded, the service keeps the web UI it already serves, unless its directory lost
-its `index.html`. A unit that `service install` did not write
-and a daemon started by hand are left alone and used as they are. `--no-service` registers the platform
-only, as for a daemon you run yourself; the installer then needs no key. A `--url` other than a loopback
-`http://` URL with a port is never served by the installed service.
+**Upgrade:** `git pull`, then `bash scripts/install.sh service --apply`. It rebuilds, replaces the binary
+when the build changed and the web UI, and restarts the service once, however many platforms are connected.
+An installed service keeps its data directory, env file, port, outbox, concurrency and web UI: `--port` and
+`--outbox` change the first and the outbox (platforms connected earlier keep the old values until you rerun
+`connect` for them). With `--no-ui`, or when no UI could be built or downloaded, the service keeps the web UI
+it already serves, unless its directory lost its `index.html`. A unit that `service install` did not write is
+refused, not replaced. The service always listens on `127.0.0.1`.
+
+| `service` option | Meaning |
+|---|---|
+| `--dry-run` (default) / `--apply` / `--uninstall` | Preview only / check, build, install and start the service / stop the service and remove its unit |
+| `--binary` | Use an existing `agent-memoryd` as is (it must have the `hook` commands and `service install --start`); the unit runs it |
+| `--surreal-bin` | The SurrealDB `surreal` the daemon starts (default: the first on PATH) |
+| `--no-ui` | Install no web UI: no `make ui` and no download; a web UI the service already serves stays |
+| `--env-file`, `--key-file`, `--api-key-env NAME` | The daemon's env file; a file whose key replaces the env file's; the variable read when the env file has no key (`QWEN_API_KEY`) |
+| `--verify-model` | Also check the env file's real models in a temporary store ([below](#installer-checks)); makes a few model calls |
+| `--outbox` | The outbox the service uploads (default: the installed service's, else `~/.local/share/agent-memory-service/harness-outbox.sqlite3`) |
+| `--port` | The service's port (default: the installed service's, else 8765) |
+| `--home`, `--non-interactive` | Preview for another home (applying and uninstalling need your own: the service lives in your login session), or never prompt (fail on a missing key) |
+
+**Uninstall the service:** `bash scripts/install.sh service --uninstall` stops it (`launchctl bootout
+"gui/$(id -u)/local.agent-memory-daemon"` on macOS, `systemctl --user disable --now agent-memory.service` on
+Linux) and has `agent-memoryd service uninstall --apply` remove the unit. It leaves the memory data, the env file,
+the binary, the web UI and the outbox where they are and prints their paths. It also notes the platforms that
+still hold `shared-memory` entries, since they have no daemon now; remove them with `connect --uninstall` first,
+as below.
+
+### `install.sh connect`
+
+One platform's MCP bridge and hooks. It builds nothing, asks for no key and never changes the service. It
+registers the stdio bridge, unless `--no-capture` is given the
+[dialogue collector](#automatically-save-conversations), and with `--recall` the
+[automatic recall](#automatic-recall) hooks; DeepSeek Harness gets the bridge only. Without `--apply` it only
+previews; the preview names the daemon, its source and the SurrealDB it found, or says it is missing.
+
+**Where the binary, URL and outbox come from.** By default from the managed service installed by
+`install.sh service`: `connect` runs `<binary> service status --json` (with `--binary`, else
+`~/.local/bin/agent-memoryd`) and uses the binary the unit runs, `http://127.0.0.1:<port>` and the service's outbox,
+and the SurrealDB it records for the offline checks. `--binary`, `--url`, `--outbox` and `--surreal-bin` win over
+those values. For a daemon you run yourself, pass `--binary` and `--url` together: nothing is read from a
+service then, and you start the daemon (and an uploader) as in [deployment](deployment.md#5-start-the-shared-daemon).
+With no managed service installed and not both flags, `connect` refuses and names the command to run first,
+`bash scripts/install.sh service --apply`. A service installed with `service --binary PATH` is read with
+`connect --binary PATH`. `--recall` needs a loopback URL.
+
+With `--apply`, in this order:
+
+1. It checks SurrealDB and that the binary has the `hook` commands.
+2. It checks the exact commands it will register, run from that binary, against a temporary mock daemon (on a
+   temporary store with its own SurrealDB server) and the platform's own CLI ([checks](#installer-checks)).
+3. It backs up and writes the platform's configuration.
+4. It reports whether a daemon answers at the URL and an uploader holds the outbox, then lists what only you can
+   do (restart the platform, trust hooks).
+
+`connect` is idempotent: rerunning it with the same options writes nothing, so it is always safe to rerun. After
+an upgrade rerun it only when the release notes say the hook or bridge entries changed.
 
 Requirements: macOS or Linux (on Windows, WSL), a checkout of this repository, SurrealDB 3.2 or a later 3.x
-([installed by you](deployment.md#install-surrealdb), also with `--no-service`: the checks run a temporary
+([installed by you](deployment.md#install-surrealdb); `connect` too needs it: the checks run a temporary
 daemon), Python 3.11+ to run the installer itself (the only component that needs Python), Rust/Cargo to build
-the binary unless `--binary` is given, and a model API key unless `--no-service` is given. Node.js 20.19+ or 22.12+
+the binary for `service` unless `--binary` is given, and a model API key for `service`. Node.js 20.19+ or 22.12+
 with npm is optional: it builds the web UI, which is otherwise downloaded. The MCP bridge and the
 hooks all run `agent-memoryd`, so the agent host needs no Python. Run from the checkout:
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
 |---|---|---|---|---|
-| Codex CLI / App | `bash scripts/install.sh --host codex --apply` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]`; `~/.codex/hooks.json`: `UserPromptSubmit`, `Stop`, `SessionEnd` | [Hooks](#codex-hooks) paired by `turn_id`; `notify` is left to other programs | Restart Codex; trust the three `shared-memory capture` hooks in `/hooks` (App: Settings → Hooks); nothing is captured before that |
-| Claude Code | `bash scripts/install.sh --host claude-code --apply` | `~/.claude.json` (the MCP server) and `~/.claude/settings.json` (the hooks): user level, so every project | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; check `/mcp` |
-| WorkBuddy | `bash scripts/install.sh --host workbuddy --apply` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
-| DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness), and its [default project is not per session](#project-routing) | Restart DeepSeek Harness and start a new session |
+| Codex CLI / App | `bash scripts/install.sh connect --host codex --apply` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]`; `~/.codex/hooks.json`: `UserPromptSubmit`, `Stop`, `SessionEnd` | [Hooks](#codex-hooks) paired by `turn_id`; `notify` is left to other programs | Restart Codex; trust the three `shared-memory capture` hooks in `/hooks` (App: Settings → Hooks); nothing is captured before that |
+| Claude Code | `bash scripts/install.sh connect --host claude-code --apply` | `~/.claude.json` (the MCP server) and `~/.claude/settings.json` (the hooks): user level, so every project | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; check `/mcp` |
+| WorkBuddy | `bash scripts/install.sh connect --host workbuddy --apply` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
+| DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh connect --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness), and its [default project is not per session](#project-routing) | Restart DeepSeek Harness and start a new session |
 
 No command names a project: the hooks run in every session of the platform, and each session's memories go
 to the project of the folder it works in ([project routing](#project-routing)).
 
 With `--recall`, Codex, Claude Code and WorkBuddy also get a `SessionStart` and a `UserPromptSubmit`
-recall hook (Codex: trust both in `/hooks` as well). `--recall` needs a loopback `--url`;
+recall hook (Codex: trust both in `/hooks` as well). `--recall` needs a loopback URL;
 it is refused for DeepSeek Harness, which gets MCP tools only. Every prompt becomes a search query, which
 the default hosted retrieval models receive; see [privacy](#automatic-recall).
 
 On a platform with capture, captured turns also need an uploader. The installed service is one: it runs
-the daemon with `--outbox` on the outbox the collector writes, the default one unless the installer's
-`--outbox` names another. With `--no-service` or a daemon started by hand, start that daemon with
-`--outbox` ([deployment](deployment.md#5-start-the-shared-daemon)), or keep a standalone uploader running
-against the installer's `--url`; the installer prints the exact command when no uploader holds the
-outbox:
+the daemon with `--outbox` on the outbox the collector writes, which `connect` reads from the service. With a
+daemon you run yourself, start it with `--outbox`
+([deployment](deployment.md#5-start-the-shared-daemon)), or keep a standalone uploader running
+against the `--url`; `connect` prints the exact command when no uploader holds the outbox:
 
 ```sh
 "$HOME/.local/bin/agent-memoryd" outbox drain --url http://127.0.0.1:8765
@@ -108,26 +161,28 @@ Open the same folder on every platform that should share memory, and add the
 [shared memory workflow](#shared-memory-workflow) to `AGENTS.md`/`CLAUDE.md`. To stop the hooks in one
 project, see [turning the hooks off per project](#turning-the-hooks-off-per-project).
 
-| Option | Meaning |
+| `connect` option | Meaning |
 |---|---|
-| `--dry-run` (default) / `--apply` | Preview only / build, verify, write and start the daemon service |
-| `--url` | Daemon base URL (`http://127.0.0.1:8765`) for the bridge, the service's port and the printed uploader command |
+| `--host` | `codex`, `claude-code`, `workbuddy` or `deepseek-harness` (required) |
+| `--dry-run` (default) / `--apply` | Preview only / verify offline and write the platform's configuration |
 | `--no-capture` | No dialogue collector; removes collector entries this installer manages |
 | `--recall` | Add the [automatic recall](#automatic-recall) hooks (not for DeepSeek Harness); without it, a rerun removes recall entries this installer manages |
-| `--no-service` | Register the platform only: no env file, key, daemon service or web UI |
-| `--no-ui` | Install no web UI: no `make ui` and no download; a web UI the service already serves stays |
-| `--env-file`, `--key-file`, `--api-key-env NAME` | The daemon's env file; a file whose key replaces the env file's; the variable read when the env file has no key (`QWEN_API_KEY`) |
-| `--verify-model` | Also check the env file's real models in a temporary store (below); makes a few model calls |
-| `--binary`, `--outbox` | Use an existing `agent-memoryd` as is (it must have the `hook` commands and `service install --start`), or a non-default outbox |
+| `--binary`, `--url`, `--outbox` | Override the installed service's binary, URL and outbox; `--binary` with `--url` names a daemon you run yourself (it must have the `hook` commands) |
+| `--surreal-bin` | The SurrealDB the offline checks' temporary daemons start (default: the one the service records, else the first on PATH) |
 | `--codex-home`; `--claude-config-dir`; `--workbuddy-home`, `--mcp-target`; `--dsh-home`, `--dsh-binary` | Platform locations and, for DeepSeek Harness, the `dsh` CLI that parses the result; host environment variables such as `CODEX_HOME` or `DSH_HOME` are not read |
-| `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, never prompt (fail on a missing key), or install into another home (tests; needs `--no-service`) |
-| `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only the entries this installer wrote. Both keep the binary, env file, service, memory data and outbox for the other platforms |
+| `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, accepted for scripts (`connect` never prompts), or install into another home (tests) |
+| `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only the entries this installer wrote. Both keep the service, its binary, env file, memory data and outbox for the other platforms, and need no `--binary` or `--url` |
+
+**Uninstall everything:** `connect --host H --uninstall` for each platform you connected, then
+`service --uninstall`.
 
 ### Installer checks
 
-Every `--apply` runs these checks before writing the platform's configuration; none of the first four
+Every `connect --apply` runs checks 1 to 4 before writing the platform's configuration, and `service --apply`
+runs the daemon check and, with `--verify-model`, check 5 before it starts the service; none of the first four
 reaches a model provider or the real store. The temporary daemon starts the checked SurrealDB on its
-temporary store and stops it when the checks end:
+temporary store and stops it when the checks end. `service` first starts the binary alone as such a daemon and
+waits for `/health`; the checks below are `connect`'s:
 
 1. The bridge, started exactly as configured, completes the MCP handshake, lists the
    [eight tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
@@ -154,7 +209,7 @@ temporary store and stops it when the checks end:
    on `PATH` or in the Desktop app), which must compose the `shared-memory` row exactly once, as written,
    with no warning the current file lacks.
    WorkBuddy has no such CLI; its JSON is checked by the installer only.
-5. With `--verify-model`, a temporary daemon started with the real env file on a temporary data
+5. With `service --verify-model`, a temporary daemon started with the real env file on a temporary data
    directory forms one synthetic fact from a two-message dialogue and must find it with
    `search_memories`. This makes real calls: the retrieval-model probe at startup, one formation (at
    most four generation attempts) and two embeddings. Without it, the service's start checks the
@@ -176,9 +231,9 @@ project's `.codex/config.toml`, a project-level `.codex/hooks.json` collector ho
 `.mcp.json`; remove such entries yourself.
 Backups live in `~/.local/state/agent-memory-service/installations/<platform>/`. `--rollback` undoes the
 latest installation for the same target and refuses when a file changed after it, as happens when Codex records hook trust or Claude Code
-updates `~/.claude.json`; use `--uninstall` then. Neither touches the binary, the env file, the daemon
-service, its data or the outbox, which the other platforms share; to remove the service, stop it and
-run `agent-memoryd service uninstall --apply` ([deployment](deployment.md#install-the-service)).
+updates `~/.claude.json`; use `connect --uninstall` then. Neither touches the binary, the env file, the daemon
+service, its data or the outbox, which the other platforms share; to remove the service, run
+`bash scripts/install.sh service --uninstall` ([deployment](deployment.md#install-the-service)).
 
 Verification scope: the offline checks above and the CLI parsing checks (Codex CLI 0.163.0, Claude Code
 2.1.305, `dsh` from DeepSeek Harness 0.2.1-rc.2) have run on macOS; without a platform's CLI the installer
@@ -187,8 +242,8 @@ Claude Code hooks reference. WorkBuddy hook payloads follow events recorded from
 [pd-memory](https://github.com/RuisongZhou/pd-memory) integration. For DeepSeek Harness, its bundled MCP
 client SDK (`@modelcontextprotocol/client` 2.2.0) was connected to the bridge once by hand: probe,
 `-32022`, `initialize` 2025-11-25, `tools/list`. The service step's launchctl and systemctl commands
-are unit-tested as a plan; CI installs every platform with `--no-service`. No installation has been
-exercised in a live client session with a real provider; confirm with `--verify-model` and the
+are unit-tested as a plan; CI connects every platform to a daemon of its own (`connect --binary --url`). No
+installation has been exercised in a live client session with a real provider; confirm with `service --verify-model` and the
 [sharing check](#shared-memory-workflow).
 
 ## Project routing
@@ -425,7 +480,7 @@ from the hook input schemas embedded in Codex CLI 0.163.0 (`turn_id` is Codex's 
 
 Capture leaves `notify` alone; Codex runs only one notify program, and Codex Computer Use, for example,
 uses it. Earlier installers captured turns with `notify = [<agent-memoryd>, "hook", "codex-notify", ...]`,
-wrapping a notify program already set (after `--`). A rerun of the installer, `--no-capture` or
+wrapping a notify program already set (after `--`). A rerun of `connect`, `--no-capture` or
 `--uninstall` removes that entry and puts a wrapped program back. `agent-memoryd hook codex-notify`
 remains for such setups: it captures the `agent-turn-complete` event Codex appends as the last
 argument, and after `--` it first starts the program it wraps with the same event, waiting up to
@@ -456,8 +511,8 @@ an open prompt, such as a continued reply, is ignored instead of failing; only t
 turn is captured. `UserPromptSubmit`, `Stop` and `SessionEnd` carry the session's `cwd`, which gives the project
 (`Stop` and `SessionEnd` of a turn resolve as its prompt did, which keeps them paired); the capture ignores
 `SessionStart`. The GUI reads only user-level `~/.workbuddy/settings.json` hooks, and switching sessions
-or quitting may not send `SessionEnd`; completed turns are still queued on `Stop`. Use the
-[installer](#one-command-install) or copy its hook entries; there is no separate template. Standalone
+or quitting may not send `SessionEnd`; completed turns are still queued on `Stop`. Use
+[`install.sh connect`](#installer) or copy its hook entries; there is no separate template. Standalone
 CodeBuddy Code keeps its configuration in `~/.codebuddy` and is not covered by `--host workbuddy`.
 
 ### Run and inspect the uploader
@@ -536,7 +591,7 @@ The project is the folder's [canonical path](#project-routing); a session withou
 ## Automatic recall
 
 `agent-memoryd hook recall` injects shared memory through the hooks of Codex, Claude Code and WorkBuddy.
-The installer adds it with `--recall`, as its own hook groups next to the collector's. Capture is
+`connect` adds it with `--recall`, as its own hook groups next to the collector's. Capture is
 unchanged and recall works without it. DeepSeek Harness gets MCP tools only, and the installer refuses
 `--recall` there. Recall is its own hook command because its failure contract is the reverse of the
 collector's: the collector exits 1 so faults surface, while recall always exits 0 so even a broken
@@ -562,7 +617,7 @@ only through `get_context`. Stored text is flattened to one line and cannot clos
 | Tokens | The daemon packs the `SessionStart` budget, and returns whole records for `UserPromptSubmit`. Recall packs `--search-budget` itself and counts a result as the daemon does: its text at one token per CJK character and one per four other characters, plus 8. Searching wider than it injects lets recall skip what the session was shown and still fill the budget, and lets a record too long for the budget arrive to be cut. An excerpt needs room for 32 tokens of text; with less left, that result waits for a later prompt and shorter ones may still fit. `--max-chars` (6000) also caps the block in whole lines, marked `[truncated]`, below Claude Code's 10,000-character limit for one `additionalContext` |
 | Repeats | A per-session record of shown memory IDs (`~/.local/state/agent-memory-service/recall-state.sqlite3`, mode 0600, IDs only, pruned after 30 days) keeps prompts from re-injecting what this session was already shown. It holds only what was injected, excerpts included. If the record fails, recall injects unfiltered; each prompt still stays within budget |
 | Scope | `--platform` comes from the installed command; the session and the project come from the event: its folder gives the project, as for capture ([project routing](#project-routing)). Search covers that project plus visible global records. A session without a project (the folder is the home directory, `/` or a WorkBuddy default folder, or the event has none) reads global records only, and its block opens with `scope="global"` instead of `project="…"` |
-| Network | The URL must be loopback (`127.0.0.1`, `localhost`, `::1`), and proxy variables are ignored; the installer refuses `--recall` with another `--url` |
+| Network | The URL must be loopback (`127.0.0.1`, `localhost`, `::1`), and proxy variables are ignored; the installer refuses `--recall` with another URL |
 | Daemon down | Nothing is injected and the prompt proceeds; recall resumes when the daemon answers |
 
 Privacy: every prompt goes to the local daemon as a search query, even without capture, and the daemon
@@ -571,7 +626,7 @@ query with its [retrieval models](deployment.md#4-configure-the-retrieval-models
 hosted provider (`api`), **every prompt (up to 2000 characters) is sent to the hosted embedding API**,
 and, when Mem0 reranking is enabled, to the rerank API together with up to `topK` (15) candidate memories. Only
 `self-hosted` models on this machine keep prompts local. `SessionStart` (`get_context`) makes no model
-call. The installer notes which provider the daemon at `--url` uses.
+call. `connect` notes which provider the daemon at its URL uses.
 
 Hosts differ in when the hooks run. Codex runs them only after you trust them in `/hooks` (App:
 Settings → Hooks). Claude Code runs the collector and recall `UserPromptSubmit` hooks in parallel and
@@ -581,7 +636,7 @@ showed is kept apart from the prompts' (a global memory may be shown once more w
 Its order relative to the first prompt is not guaranteed, which does no harm: a late `SessionStart` starts
 only the global record over. Change
 `--context-budget`, `--search-budget`, `--top-k`, `--max-chars` or `--timeout` by editing the installed
-command, and keep `--timeout` below the hook timeout. A rerun of the installer replaces edited commands.
+command, and keep `--timeout` below the hook timeout. A rerun of `connect` replaces edited commands.
 To see what a hook would inject, run it by hand:
 
 ```sh
@@ -596,7 +651,7 @@ The event's `cwd` is the project folder; leave it out to see what a session with
 
 Installers before `agent-memoryd hook` wrote hooks that run `scripts/harness_memory.py` and
 `scripts/harness_recall.py` with Python 3.11. Those scripts are no longer in the repository, so after an
-update such a hook makes Python exit 2, which blocks prompts. Rerun the installer with the same options:
+update such a hook makes Python exit 2, which blocks prompts. Rerun `connect` with the same options:
 it recognizes these entries and replaces them with `agent-memoryd hook` commands. The daemon keeps using
 the existing outbox and recall record; stop a separately running Python uploader.
 
@@ -729,7 +784,7 @@ your own reply. The [design](design/memory-import-mcp.md) explains the choices.
 
 **Before you start**
 
-- The daemon is running, and the host is connected with the installer (or by hand) and restarted, so it lists the
+- The daemon is running, and the host is connected with `install.sh connect` (or by hand) and restarted, so it lists the
   eight `shared-memory` tools, including `propose_import` and `apply_import`.
 - Pick the project to import into and a platform label for the source: `chatgpt`, `gemini`,
   `claude-ai`, or `self` for what the connected agent itself remembers. The project defaults to the
@@ -843,10 +898,10 @@ not list them as established facts.
 | Outbox stays `pending` | Start the daemon with `--outbox` (or run `outbox drain`) on the same outbox path; inspect `outbox status` errors |
 | Outbox stays `accepted` | Query `get_task`; inspect provider failures and unfinished index publication |
 | Uploader reports a lock error, or the daemon log says another uploader holds the outbox lock | Another uploader (`outbox drain` or a second daemon) holds the same outbox lock; keep one per queue |
-| DeepSeek Harness lists no `mcp__shared-memory__*` tools | Restart it and start a new session; rerun the installer, which reports whether `dsh --dump-config` reads the row; check the daemon URL |
+| DeepSeek Harness lists no `mcp__shared-memory__*` tools | Restart it and start a new session; rerun `connect --host deepseek-harness`, which reports whether `dsh --dump-config` reads the row; check the daemon URL |
 | Cross-agent recall is empty | Check the same daemon, that both sessions opened the same folder (the project ID is its repository root's path), record scope, completion state, token budget, and explicit cross-platform raw-input scope |
 | Memories are filed under the wrong project, or as global | The session's folder decides ([project routing](#project-routing)): the home directory, `/` and WorkBuddy's default folders are global, and DeepSeek Harness's and WorkBuddy's MCP default may not be the session's folder: pass `project`. A recall block's opening tag names the project (or says `scope="global"`), and the web UI lists the projects |
-| Hooks fail with `unexpected argument '--project'` | Hooks written before the project came from the folder. Rerun the installer for the user-level hooks (Codex, WorkBuddy, Claude Code). An earlier Claude Code installation in one workspace also wrote `<workspace>/.claude/settings.local.json` and `<workspace>/.mcp.json`, which the installer no longer touches: delete their `shared-memory` hook entries and server there |
+| Hooks fail with `unexpected argument '--project'` | Hooks written before the project came from the folder. Rerun `connect` for the user-level hooks (Codex, WorkBuddy, Claude Code). An earlier Claude Code installation in one workspace also wrote `<workspace>/.claude/settings.local.json` and `<workspace>/.mcp.json`, which the installer no longer touches: delete their `shared-memory` hook entries and server there |
 | Automatic recall injects nothing | Check the daemon at the loopback `--url`, trust the recall hooks in Codex, and run the hook by hand as in [automatic recall](#automatic-recall); stderr names the error type |
 | `import plan` finds no Claude Code notes | Pass the repository (or a worktree of it) as `--workspace`: Claude Code keeps one memory directory per repository. `--all` also finds directories by their transcripts' `cwd` |
 | `import propose` fails with HTTP 503 | Extract units need the daemon's generation key; set it, or plan with `--no-extract` |

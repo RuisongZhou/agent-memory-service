@@ -22,7 +22,7 @@ against its SHA-256.
 | `crates/` | The service; [architecture](docs/architecture.md#layers-and-ownership) describes each layer |
 | `docs/` | Documentation of the current service, one topic per page; `docs/design/` holds design notes, which may describe parts not built yet |
 | `examples/` | Editable service configuration, MCP and capture templates, and the memory export prompts |
-| `scripts/` | Service operation and check scripts, including the one-command installer `scripts/install.sh` |
+| `scripts/` | Service operation and check scripts, including the installer `scripts/install.sh` |
 | `eval/` | SDK baselines, datasets, evaluation protocol, experiments and past reports |
 | `results/` | Ignored service logs and check results |
 | `eval/results/` | Ignored evaluation evidence, run records and stores |
@@ -49,9 +49,9 @@ Code under `eval/` has no tests of its own: install the evaluation dependencies 
 `test-workspace` runs every crate's unit tests in one cargo invocation, so shared dependencies compile once.
 `test-rust` (pure crates) and `test-service` (domain/store/engine/algorithm/service crates) run each half alone.
 The store tests drive whole use cases against a temporary store on its own SurrealDB server, with mock retrieval
-models and a local deterministic generation stub. The end-to-end installer tests run the one-command installer
-with capture and recall for every platform into a temporary home, with `--no-service` so that they need no key
-and start no service. No check calls a paid provider. `check-public` scans the Git index for credentials.
+models and a local deterministic generation stub. The end-to-end installer tests run `install.sh connect`
+with capture and recall for every platform into a temporary home, against the built binary as a daemon run by hand
+(`--binary`, `--url`), so that they need no key and start no service. No check calls a paid provider. `check-public` scans the Git index for credentials.
 See the [CI workflow](.github/workflows/ci.yml) and [script inventory](scripts/README.md).
 
 For documentation-only changes, verify links/anchors, source/configuration references and the Git diff;

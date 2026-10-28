@@ -483,7 +483,7 @@ Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` �
 - `scripts/install.sh` 增加 `--import [notes|sessions|all]`，默认不导入。
 - 交互运行时，安装结束后执行 `agent-memoryd import plan` 并显示汇总。汇总里有生成调用时，先问是否 propose；propose 之后
   显示提议汇总，再问是否 apply。非交互运行只有显式传了 `--import` 才导入，而且只到 propose 为止，apply 要单独执行。
-- 导入需要 daemon 已经运行，安装器在服务启动之后再做。`--no-service` 时只生成计划，并打印后续命令。
+- 导入需要 daemon 已经运行，所以放在 `install.sh connect` 里做（`install.sh service` 已经启动了 daemon）。daemon 没有响应时只生成计划，并打印后续命令。
 - 安装器的端到端测试用合成的宿主目录覆盖 plan、propose 和 apply，抽取使用本地确定性的生成桩，不访问模型。
 
 ## 7. 代码位置
