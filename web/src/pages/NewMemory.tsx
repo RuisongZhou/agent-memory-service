@@ -6,7 +6,7 @@ import type { AddMemoriesReq, MemScope, ScopeKind, Task } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { Button, Card, Check, Field, Fields, Input, MemoryLink, ModelCall, Muted, Textarea } from '../components/ui'
 import { SCOPE_KINDS } from '../lib/filters'
-import { byteLength, charLength, labelled, SCOPE_LABEL } from '../lib/format'
+import { byteLength, charLength, labelled, projectName, SCOPE_LABEL } from '../lib/format'
 
 // docs/api.md, Writes: explicit text is at most 4 KB; an instruction also at most 1024 characters.
 const MAX_TEXT_BYTES = 4096
@@ -109,7 +109,7 @@ export function NewMemoryPage() {
             <Field label="项目">
               <Input list="projects" value={project} onChange={(e) => setProject(e.target.value)} />
               <datalist id="projects">
-                {facets.data?.projects.map((p) => <option key={p.name} value={p.name} />)}
+                {facets.data?.projects.map((p) => <option key={p.name} value={p.name} label={projectName(p.name)} />)}
               </datalist>
             </Field>
             <Field label="会话">

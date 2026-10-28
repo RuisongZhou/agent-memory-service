@@ -98,6 +98,8 @@ pub(crate) async fn assemble_context(
 ) -> ApiResult<Value> {
     let cfg = &eng.cfg;
     let scope = req.scope.clone();
+    // A session with no project folder names no project, so it reads what an absent project reads.
+    let global = scope.is_global()?;
     let budget = req.token_budget.unwrap_or(cfg.context_token_budget);
     if budget == 0 {
         return Err(ApiError::InvalidArgument("tokenBudget must be > 0".into()));
@@ -348,7 +350,7 @@ pub(crate) async fn assemble_context(
         .log_retrieval(json!({
             "kind": "context",
             "platform": c.platform,
-            "project": scope.project,
+            "project": if global { Some("") } else { scope.project.as_deref() },
             "session": scope.session,
             "query": Value::Null,
             "returned": {"memories": returned.iter().enumerate().map(|(i, id)| json!({"id": id, "rank": i + 1})).collect::<Vec<_>>(),

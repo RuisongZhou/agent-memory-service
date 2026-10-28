@@ -14,7 +14,7 @@ import {
   type MemoryFilters,
   type RecallFilter,
 } from '../lib/filters'
-import { formatNumber, ORIGIN_LABEL, STATUS_LABEL, TYPE_LABEL } from '../lib/format'
+import { formatNumber, ORIGIN_LABEL, projectName, STATUS_LABEL, TYPE_LABEL } from '../lib/format'
 
 /** The memory list behind a count. Counts cover every status, so the list does too unless one is named. */
 const listLink = (set: Partial<MemoryFilters>) =>
@@ -115,11 +115,13 @@ function Staleness({ retrieval }: { retrieval?: Stats['retrieval'] }) {
   )
 }
 
-function FacetList({ title, facets, link, labels }: {
+function FacetList({ title, facets, link, labels, show }: {
   title: string
   facets: Facet[]
   link: (name: string) => string
   labels?: Record<string, string>
+  /** How a name reads when it is not the whole story; the name itself is then the tooltip. */
+  show?: (name: string) => string
 }) {
   return (
     <Card title={title}>
@@ -129,8 +131,8 @@ function FacetList({ title, facets, link, labels }: {
         <ul className="space-y-1 text-sm">
           {facets.map((f) => (
             <li key={f.name} className="flex justify-between gap-2">
-              <Link to={link(f.name)} className="truncate text-sky-700 hover:underline">
-                {labels?.[f.name] ? `${labels[f.name]} (${f.name})` : f.name}
+              <Link to={link(f.name)} title={show && f.name} className="truncate text-sky-700 hover:underline">
+                {labels?.[f.name] ? `${labels[f.name]} (${f.name})` : show ? show(f.name) : f.name}
               </Link>
               <span className="text-zinc-600 tabular-nums">{formatNumber(f.count)}</span>
             </li>
@@ -240,7 +242,12 @@ export function OverviewPage() {
 
       {facets.data && (
         <div className="grid gap-4 md:grid-cols-3">
-          <FacetList title="项目" facets={facets.data.projects} link={(project) => listLink({ project })} />
+          <FacetList
+            title="项目"
+            facets={facets.data.projects}
+            link={(project) => listLink({ project })}
+            show={projectName}
+          />
           <FacetList
             title="写入平台"
             facets={facets.data.sourcePlatforms}

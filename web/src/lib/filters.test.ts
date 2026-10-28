@@ -18,6 +18,7 @@ import {
   taskFiltersToParams,
   taskRequest,
 } from './filters'
+import { projectName, projectOption } from './format'
 
 describe('list filters', () => {
   it('default to the active statuses (NO_FILTERS), drop values the daemon would reject, and leave both out of URL and body', () => {
@@ -53,14 +54,14 @@ describe('list filters', () => {
     }
   })
 
-  it('round-trip through the hash query and map to a request body', () => {
+  it('round-trip through the hash query, with a folder path as the project, and map to a request body', () => {
     const query =
-      'project=demo&scope=project&platform=codex&type=instruction&origin=user&status=current%2Cstale&q=%E7%AB%AF%E5%8F%A3&recall=30'
+      'project=%2FUsers%2Fme%2Fmy+repo&scope=project&platform=codex&type=instruction&origin=user&status=current%2Cstale&q=%E7%AB%AF%E5%8F%A3&recall=30'
     const f = filtersFromParams(new URLSearchParams(query))
     expect(f.statuses).toEqual(['current', 'stale'])
     expect(filtersToParams(f).toString()).toBe(query)
     expect(listRequest(f, 'c1')).toEqual({
-      project: 'demo',
+      project: '/Users/me/my repo',
       scopeKind: 'project',
       sourcePlatform: 'codex',
       types: ['instruction'],
@@ -73,9 +74,19 @@ describe('list filters', () => {
 
     // The recall filter is one choice, so the daemon never gets both `neverRecalled` and `notRecalledDays`.
     const never = listRequest({ ...f, recall: 'never' })
-    expect(never).toMatchObject({ project: 'demo', neverRecalled: true })
+    expect(never).toMatchObject({ project: '/Users/me/my repo', neverRecalled: true })
     expect(never).not.toHaveProperty('notRecalledDays')
     expect(listRequest({ ...NO_FILTERS, recall: '90' })).toEqual({ notRecalledDays: 90 })
+
+    // A project id is its folder's path: tables show the last segment (the path is their tooltip) and other ids as they are.
+    expect(['/Users/me/my repo', '/Users/me/repo/', '/', 'demo', ''].map(projectName)).toEqual([
+      'my repo',
+      'repo',
+      '/',
+      'demo',
+      '',
+    ])
+    expect([f.project, 'demo'].map(projectOption)).toEqual(['my repo — /Users/me/my repo', 'demo'])
 
     const entityQuery = 'project=demo&type=PERSON&q=%E7%AB%AF%E5%8F%A3'
     const entity = entityFiltersFromParams(new URLSearchParams(entityQuery))

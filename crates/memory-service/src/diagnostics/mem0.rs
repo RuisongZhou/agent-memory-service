@@ -1,6 +1,8 @@
 //! Offline integrity checks for the additive strategy, using mock embeddings and no provider.
-use crate::test_support::{engine, fresh_store};
-use memory_algo_mem0::{formation as mem0_formation, retrieval as mem0_retrieval};
+use crate::test_support::{engine, fresh_store, generation_stub, memory, stub_engine};
+use memory_algo_mem0::{
+    formation as mem0_formation, repo as mem0_repo, retrieval as mem0_retrieval,
+};
 use memory_config::ServiceConfig;
 use memory_domain::types::*;
 use memory_engine::app::{ingest, management};
@@ -9,6 +11,7 @@ use memory_engine::runtime::indexer;
 use memory_rules::util;
 use memory_store::recalls::Recall;
 use memory_store::schema;
+use memory_store::store::Tx;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -627,5 +630,262 @@ async fn selftest() {
         Err(ApiError::NotFound(_))
     ));
     assert_eq!(eng.llm.usage_snapshot()["calls"], 0);
-    println!("mem0: contract, scope, raw/idempotent writes, immediate visibility, publication recovery, correction, deletion, zero generation passed; data {}", dir.display());
+
+    // ---- a session with no project folder (`kind: "global"`) next to one in a folder, whose path is its project
+    // id. Dialogue formed by the generation stub: a global session forms global facts, which every project sees
+    // and the global session sees alone.
+    let stubbed = stub_engine(ServiceConfig::default(), &generation_stub().await);
+    let repo = "/Users/me/my repo/项目";
+    let no_folder = ReqScope {
+        kind: Some("global".into()),
+        session: Some("gs".into()),
+        ..Default::default()
+    };
+    let in_folder = ReqScope {
+        project: Some(repo.into()),
+        session: Some("ps".into()),
+        ..Default::default()
+    };
+    let say = |scope: &ReqScope, turn: &str, text: &str| {
+        ingest::add_memories(
+            &stubbed,
+            &t,
+            &caller,
+            AddMemoriesReq {
+                scope: scope.clone(),
+                turn_id: Some(turn.into()),
+                messages: Some(vec![InMessage {
+                    role: "user".into(),
+                    content: text.into(),
+                    timestamp: "2026-10-27T09:00:00Z".into(),
+                }]),
+                sync: Some(true),
+                ..Default::default()
+            },
+        )
+    };
+    const CHINESE: &str = "User prefers answers in Chinese";
+    const COMPOSE: &str = "User deploys with Docker Compose";
+    let formed = say(&no_folder, "g1", CHINESE).await.unwrap();
+    assert_eq!(formed["status"], "completed", "{formed}");
+    let g = formed["memoryIds"][0].as_str().unwrap().to_string();
+    let fact = memory(&t, &g).await;
+    assert_eq!(
+        (fact.scope, fact.source.origin.as_str()),
+        (MemScope::global(), ORIGIN_USER)
+    );
+    // Its request is filed under the project "", which no project id is, with the scope kind.
+    let row = t
+        .store
+        .get_doc(schema::REQUESTS, formed["requestId"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (&row["project"], &row["scopeKind"]),
+        (&json!(""), &json!("global"))
+    );
+    let p = say(&in_folder, "p1", COMPOSE).await.unwrap()["memoryIds"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(memory(&t, &p).await.scope, MemScope::project(repo));
+    // A request queued before scope kinds existed has none; it named a project and forms project facts.
+    let queued = ingest::add_memories(
+        &stubbed,
+        &t,
+        &caller,
+        AddMemoriesReq {
+            scope: in_folder.clone(),
+            turn_id: Some("p0".into()),
+            messages: Some(vec![InMessage {
+                role: "user".into(),
+                content: "User runs tests with cargo nextest".into(),
+                timestamp: "2026-10-27T09:00:00Z".into(),
+            }]),
+            sync: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let legacy_id = queued["requestId"].as_str().unwrap();
+    let mut tx = Tx::new();
+    tx.clear_fields(schema::REQUESTS, legacy_id, &["scopeKind"])
+        .unwrap();
+    t.store.commit(tx).await.unwrap();
+    mem0_formation::process_jobs(&stubbed, &t).await.unwrap();
+    let legacy = ingest::get_task(
+        &stubbed,
+        &t,
+        GetTaskReq {
+            request_id: legacy_id.into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(legacy["status"], "completed", "{legacy}");
+    let legacy_fact = legacy["memoryIds"][0].as_str().unwrap();
+    assert_eq!(memory(&t, legacy_fact).await.scope, MemScope::project(repo));
+    // The same text in another turn of either session is that session's fact again; the project's own copy is
+    // another fact, since the content key names the project (`""` for global).
+    assert_eq!(
+        say(&no_folder, "g2", CHINESE).await.unwrap()["memoryIds"][0],
+        g
+    );
+    let copy = say(&in_folder, "p2", CHINESE).await.unwrap()["memoryIds"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(memory(&t, &copy).await.scope, MemScope::project(repo));
+    // Formation recalls existing facts and prior inputs by the same project: for a global request the global
+    // facts and global batches, never a project's.
+    let mut recalled = Vec::new();
+    for project in ["", repo] {
+        let found = mem0_retrieval::dense(
+            &eng,
+            &t,
+            COMPOSE,
+            project,
+            "test",
+            &[T_FACT.into()],
+            -1.0,
+            10,
+        )
+        .await
+        .unwrap();
+        recalled.push(found.into_iter().map(|(m, _)| m.id).collect::<Vec<_>>());
+    }
+    let (global_recall, folder_recall) = (&recalled[0], &recalled[1]);
+    assert!(global_recall.contains(&g) && !global_recall.contains(&p));
+    assert!(folder_recall.contains(&g) && folder_recall.contains(&p));
+    let history = |project: &'static str| {
+        mem0_repo::previous_inputs(&t, "test", project, "gs", json!(i64::MAX))
+    };
+    assert_eq!(history("").await.unwrap().len(), 2);
+    assert!(history(repo).await.unwrap().is_empty());
+
+    // Reads. The project's context and search see the global fact next to its own; the global session's see no
+    // project fact; an absent project still means every project to a search.
+    let context = |scope: &ReqScope| {
+        retrieval::get_context(
+            &eng,
+            &t,
+            &caller,
+            GetContextReq {
+                scope: scope.clone(),
+                ..Default::default()
+            },
+        )
+    };
+    let inside = context(&in_folder).await.unwrap();
+    let (inside, alone) = (
+        inside["text"].as_str().unwrap().to_string(),
+        context(&no_folder).await.unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    );
+    assert!(inside.contains(CHINESE) && inside.contains(COMPOSE));
+    assert!(alone.contains(CHINESE) && !alone.contains(COMPOSE));
+    let find = |scope: &ReqScope, query: &str| {
+        mem0_retrieval::search(
+            &eng,
+            &t,
+            &caller,
+            SearchReq {
+                query: query.into(),
+                scope: Some(scope.clone()),
+                ..Default::default()
+            },
+        )
+    };
+    let everywhere = ReqScope::default();
+    for (scope, query, sees) in [
+        (&in_folder, CHINESE, &g),
+        (&in_folder, COMPOSE, &p),
+        (&no_folder, CHINESE, &g),
+        (&everywhere, COMPOSE, &p),
+    ] {
+        assert!(
+            ids(&find(scope, query).await.unwrap()).contains(sees),
+            "{query}"
+        );
+    }
+    assert!(!ids(&find(&no_folder, COMPOSE).await.unwrap()).contains(&p));
+    let logged = t
+        .store
+        .get_doc(
+            schema::RETRIEVAL_LOG,
+            find(&no_folder, COMPOSE).await.unwrap()["retrievalId"]
+                .as_str()
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(logged["project"], "");
+    // Its turns are the global session's; an absent project lists every session's.
+    let listed = |scope: &ReqScope| {
+        mem0_retrieval::list_inputs(
+            &eng,
+            &t,
+            &caller,
+            ListTurnsReq {
+                scope: scope.clone(),
+                ..Default::default()
+            },
+        )
+    };
+    let turns = |listed: &Value| -> Vec<(Value, Value)> {
+        listed["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|turn| (turn["turnId"].clone(), turn["project"].clone()))
+            .collect()
+    };
+    assert_eq!(
+        turns(&listed(&no_folder).await.unwrap()),
+        [(json!("g1"), json!("")), (json!("g2"), json!(""))]
+    );
+    assert_eq!(
+        turns(&listed(&in_folder).await.unwrap()),
+        [
+            (json!("p1"), json!(repo)),
+            (json!("p0"), json!(repo)),
+            (json!("p2"), json!(repo))
+        ]
+    );
+    assert_eq!(turns(&listed(&everywhere).await.unwrap()).len(), 7);
+    // The recall and request logs select the global session by the project "".
+    let filed = requests(json!({"kind": "mem0", "project": ""}))
+        .await
+        .unwrap();
+    assert_eq!(request_ids(&filed).len(), 2, "{filed}");
+    // `kind` is "project" or "global", and "global" names no project.
+    for bad in [
+        ReqScope {
+            project: Some("a".into()),
+            ..no_folder.clone()
+        },
+        ReqScope {
+            kind: Some("workspace".into()),
+            ..no_folder.clone()
+        },
+    ] {
+        assert!(matches!(
+            say(&bad, "bad", CHINESE).await,
+            Err(ApiError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            find(&bad, CHINESE).await,
+            Err(ApiError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            listed(&bad).await,
+            Err(ApiError::InvalidArgument(_))
+        ));
+    }
+    println!("mem0: contract, scope, raw/idempotent writes, immediate visibility, publication recovery, correction, deletion, zero generation, global sessions passed; data {}", dir.display());
 }

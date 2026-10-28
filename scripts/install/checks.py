@@ -9,6 +9,10 @@ host-format SessionStart / UserPromptSubmit events run through the installed
 recall command and must inject the formed fact exactly once per session.
 `verify_model` (--verify-model) starts a temporary daemon with the real env file
 instead, which forms one synthetic fact and finds it again.
+
+The hooks take a session's project from its folder, so the synthetic events carry the `cwd` of a dedicated
+check folder (`check_folder`) and the checks search that folder's project. Both daemons keep their data in
+a temporary directory that is deleted afterwards: a check leaves no memory behind, in this project or any other.
 """
 
 import collections
@@ -25,6 +29,7 @@ import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote
 from urllib.request import ProxyHandler, Request, build_opener
 
 import core
@@ -35,6 +40,7 @@ USER = 'Remember for this project: keep the source of every decision.'
 ASSISTANT = 'Noted; decisions will keep their sources.'
 FACT = 'Installer check: project decisions keep their sources.'
 SESSION = 'installer-check'
+CHECK_FOLDER = 'check-project'  # under the installer's state directory
 # Synthetic dialogue for --verify-model, in the language of the default (zh) formation prompt; it only
 # ever reaches a temporary store and the configured model provider.
 MODEL_USER = '请记住：Boreal 项目的内部代号是 Nacre-731。'
@@ -56,6 +62,8 @@ LOOPBACK = '127.0.0.1,localhost,::1'
 def check_env(home):
     """A minimal environment: no provider settings or real home directory (except for the check daemon).
 
+    Nothing else is inherited either, `CLAUDE_PROJECT_DIR` included: the installer may run inside a Claude
+    Code session, and that variable would override the folder the synthetic events carry.
     Proxy variables stay, as the host passes them on to the bridge and the user's
     shell to the uploader: both must reach the loopback daemon regardless.
     """
@@ -277,11 +285,21 @@ def wait_uploaded(ctx, outbox, env, expected):
     raise InstallError(f'captured turns did not complete: {statuses}')
 
 
+def check_folder(ctx):
+    """The session folder of the synthetic events: a folder of its own, which is not a git repository, so its
+    canonical path is its project. Never the home directory, which hooks file as global memories."""
+    folder = ctx.state_root / CHECK_FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    return str(folder.resolve())
+
+
 def seed(bridge, ctx):
     """Form FACT without the collector (recall installed with --no-capture)."""
     stamp = '2026-01-01T00:00:00Z'
+    # The turn key of the real hooks: every part percent-encoded, so a path cannot split it.
+    turn_id = '/'.join(quote(part, safe='') for part in (ctx.check_project, SESSION, 'recall-check'))
     bridge.call('add_memories', {
-        'scope': {'project': ctx.project, 'session': SESSION}, 'turnId': f'{ctx.project}/{SESSION}/recall-check',
+        'scope': {'project': ctx.check_project, 'session': SESSION}, 'turnId': turn_id,
         'sync': True, 'messages': [{'role': 'user', 'content': USER, 'timestamp': stamp},
                                    {'role': 'assistant', 'content': ASSISTANT, 'timestamp': stamp}]})
 
@@ -311,18 +329,26 @@ def check_recall(host, ctx, root, url, env):
     state = root / 'recall-state.sqlite3'
     context = lambda name, session, prompt=None, daemon=url: recall_context(
         host, ctx, name, session, daemon, state, env, prompt)
-    # The prompt repeats FACT: this checks the wiring, not retrieval quality under mock models.
-    if FACT not in context('SessionStart', 'recall-1'):
-        raise InstallError('recall: SessionStart context lacks the formed fact')
+    # A host event without a folder (WorkBuddy's SessionStart) is global: it must not carry the project fact,
+    # and the first prompt brings the fact in instead. The prompt repeats FACT: this checks the wiring, not
+    # retrieval quality under mock models.
+    folder_at_start = 'cwd' in host.recall_event(ctx, 'SessionStart', 'recall-1')
+    if (FACT in context('SessionStart', 'recall-1')) != folder_at_start:
+        raise InstallError('recall: SessionStart context lacks the formed fact' if folder_at_start
+                           else 'recall: SessionStart context had the project fact without a session folder')
     if FACT not in context('UserPromptSubmit', 'recall-2', FACT):
         raise InstallError('recall: UserPromptSubmit context lacks the formed fact')
+    if (FACT in context('UserPromptSubmit', 'recall-1', FACT)) == folder_at_start:
+        raise InstallError('recall: a prompt repeated what SessionStart already injected' if folder_at_start
+                           else 'recall: the first prompt lacks the project fact SessionStart could not know')
     if context('UserPromptSubmit', 'recall-1', FACT):
-        raise InstallError('recall: a prompt repeated what SessionStart already injected')
+        raise InstallError('recall: a prompt repeated what was already injected')
     if context('UserPromptSubmit', 'recall-3', FACT, daemon=f'http://127.0.0.1:{free_port()}'):
         raise InstallError('recall: injected context without a daemon')
 
 
 def verify_local(host, ctx):
+    ctx.check_project = check_folder(ctx)
     with tempfile.TemporaryDirectory(prefix='agent-memory-install-') as temporary:
         root = Path(temporary)
         env = check_env(root)
@@ -339,13 +365,13 @@ def verify_local(host, ctx):
                 names = {tool['name'] for tool in bridge.request('tools/list', {})['tools']}
                 if names != core.TOOLS:
                     raise InstallError(f'bridge must expose the {len(core.TOOLS)} memory tools; got {sorted(names)}')
-                scope = {'project': ctx.project or 'installer-check', 'session': SESSION}
+                scope = {'project': ctx.check_project, 'session': SESSION}
                 bridge.call('get_context', {'scope': scope, 'tokenBudget': 500})
                 if ctx.capture:
                     events, expected = host.capture_events(ctx, outbox)
                     run_capture(events, env)
                     wait_uploaded(ctx, outbox, env, expected)
-                    found = bridge.call('search_memories', {'query': FACT, 'scope': {'project': ctx.project}})
+                    found = bridge.call('search_memories', {'query': FACT, 'scope': {'project': ctx.check_project}})
                     if FACT not in [r.get('memory', {}).get('text') for r in found.get('results', [])]:
                         raise InstallError('a captured turn was formed but the bridge could not find it')
                 if ctx.recall:

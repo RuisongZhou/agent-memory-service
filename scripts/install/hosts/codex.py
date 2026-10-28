@@ -56,10 +56,6 @@ def managed_files(args, ctx):
     return [ctx.config_toml, ctx.hooks_json]
 
 
-def default_project(args, ctx):
-    return None
-
-
 def server_entry(ctx):
     return {'command': str(ctx.binary), 'args': core.bridge_args(ctx.url, PLATFORM),
             'tool_timeout_sec': TOOL_TIMEOUT_SEC}
@@ -285,7 +281,7 @@ def capture_events(ctx, outbox):
     nothing; the second is queued, then closed by SessionEnd.
     """
     command = core.hook_command(ctx, outbox)
-    base = {'session_id': checks.SESSION, 'transcript_path': None, 'cwd': str(ctx.home), 'model': 'installer',
+    base = {'session_id': checks.SESSION, 'transcript_path': None, 'cwd': ctx.check_project, 'model': 'installer',
             'permission_mode': 'default'}
     prompt = lambda turn, text: dict(base, hook_event_name='UserPromptSubmit', turn_id=turn, prompt=text)
     stop = lambda turn, reply: dict(base, hook_event_name='Stop', turn_id=turn, stop_hook_active=False,
@@ -298,7 +294,7 @@ def capture_events(ctx, outbox):
 
 def recall_event(ctx, name, session, prompt=None):
     """Every field Codex 0.163's session-start / user-prompt-submit input schemas require."""
-    base = {'hook_event_name': name, 'session_id': session, 'transcript_path': None, 'cwd': str(ctx.home),
+    base = {'hook_event_name': name, 'session_id': session, 'transcript_path': None, 'cwd': ctx.check_project,
             'model': 'installer', 'permission_mode': 'default'}
     if name == 'SessionStart':
         return dict(base, source='startup')
@@ -418,18 +414,21 @@ def post_install(args, ctx):
     trust = []
     if ctx.capture:
         trust.append(f'"{CAPTURE_NAME}" on UserPromptSubmit, Stop and SessionEnd: saves each completed turn '
-                     f'under project "{ctx.project}"')
+                     "under the project of the session's folder")
     if ctx.recall:
-        trust.append(f'"{RECALL_NAME}" on SessionStart and UserPromptSubmit: injects project "{ctx.project}" memory')
+        trust.append(f'"{RECALL_NAME}" on SessionStart and UserPromptSubmit: injects that project\'s memory')
     lines += ['[todo] 1. Restart Codex (CLI and App share ~/.codex) and check /mcp.']
     if trust:
         lines += ['[todo] 2. Run /hooks (App: Settings -> Hooks) and trust each of these hooks:']
         lines += [f'           - {hook}' for hook in trust]
         lines += ['         Codex runs no hook you have not reviewed, and this installer cannot trust them for you.',
-                  '         Trust them again after a rerun changes them (another --project, binary path or option).']
+                  '         Trust them again after a rerun changes them (another binary path or option).',
+                  '         The hooks run in every Codex session; the project is its working directory (a git repository:',
+                  '         its root), and a session in your home directory uses global memories.',
+                  '         To stop them in one project, set `[features] hooks = false` in that project\'s',
+                  '         .codex/config.toml (unverified; the project must be trusted).']
     if ctx.capture:
         status = [str(ctx.binary), 'outbox', 'status', *(['--outbox', str(ctx.outbox_arg)] if ctx.outbox_arg else [])]
         lines += [f'[todo] 3. After one Codex turn, {shlex.join(status)} lists it.']
-    lines += [f'[next] add the shared memory workflow for project "{ctx.project or "<id>"}" to AGENTS.md:',
-              '       docs/mcp-harness.md#shared-memory-workflow']
+    lines += ['[next] add the shared memory workflow to AGENTS.md: docs/mcp-harness.md#shared-memory-workflow']
     return lines

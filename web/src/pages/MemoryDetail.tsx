@@ -8,7 +8,7 @@ import { DiffView } from '../components/DiffView'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { MemoryText, StatusBadge, TypeBadge } from '../components/memory'
 import { Modal } from '../components/Modal'
-import { Badge, Button, Card, Field, Fields, Input, MemoryLink, Muted, Pre, Textarea } from '../components/ui'
+import { Badge, Button, Card, Field, Fields, Input, MemoryLink, Muted, Pre, ProjectName, ScopeText, Textarea } from '../components/ui'
 import {
   byteLength,
   EVIDENCE_ROLE_LABEL,
@@ -16,7 +16,6 @@ import {
   labelled,
   ORIGIN_LABEL,
   RELATION_LABEL,
-  scopeText,
 } from '../lib/format'
 import { MemoryEntities } from './Entities'
 import { Lineage } from './Lineage'
@@ -79,7 +78,7 @@ function MemoryDetail({ id }: { id: string }) {
 
 function recordFields(m: StatedMemory): [string, ReactNode][] {
   const rows: [string, ReactNode][] = [
-    ['范围', scopeText(m.scope)],
+    ['范围', <ScopeText scope={m.scope} />],
     ['写入平台', m.source.platform],
     ['来源', labelled(ORIGIN_LABEL, m.source.origin)],
     ['对话轮次', dash(m.source.turnIds.join('、'))],
@@ -196,7 +195,7 @@ function Turns({ turnIds }: { turnIds: string[] }) {
         {turns.data?.turns.map((t) => (
           <div key={t.requestId}>
             <p className="mb-1 text-xs text-zinc-500">
-              <span className="font-mono">{t.turnId}</span> · {t.platform} · {t.project}/{t.session} · 抽取状态 {t.extractState}
+              <span className="font-mono">{t.turnId}</span> · {t.platform} · <ProjectName id={t.project} />/{t.session} · 抽取状态 {t.extractState}
             </p>
             <ul className="space-y-1">
               {t.messages.map((msg, i) => (

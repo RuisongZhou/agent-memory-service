@@ -159,7 +159,12 @@ pub async fn search(
             "platform is supplied by the connection".into(),
         ));
     }
-    let project = scope.project.as_deref().unwrap_or("*");
+    // The project `""` is no project: only global and platform memories, as for a session with no project folder.
+    let project = if scope.is_global()? {
+        ""
+    } else {
+        scope.project.as_deref().unwrap_or("*")
+    };
     let platform = if scope.platform.as_deref() == Some("*") {
         "*"
     } else {
@@ -391,7 +396,12 @@ pub async fn list_inputs(
     let rows = repo::list_inputs(
         t,
         InputFilter {
-            project: req.scope.project.as_deref().filter(|s| *s != "*"),
+            // A global session's requests are filed under the project `""`.
+            project: if req.scope.is_global()? {
+                Some("")
+            } else {
+                req.scope.project.as_deref().filter(|s| *s != "*")
+            },
             platform,
             session: req.scope.session.as_deref().filter(|s| *s != "*"),
             turn_ids: req.turn_ids,

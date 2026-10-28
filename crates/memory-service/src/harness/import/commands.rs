@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 use super::client::{self, Client, RunView};
 use super::plan::{self, Plan, PlanOptions, SessionOptions};
 use super::source::{Issue, ScanContext, ScanOutput};
-use super::{project, review, shown, DaemonArgs, Host, Include, PlanArgs, DEFAULT_URL};
+use super::{review, shown, DaemonArgs, Host, Include, PlanArgs, DEFAULT_URL};
 use crate::harness::outbox::{Outbox, Queued};
+use crate::harness::project::{repository_root, resolve, SessionProject};
 use crate::harness::{expand, home, invalid, Error};
 
 /// Seconds per daemon request of every command but `propose`.
@@ -51,6 +52,7 @@ pub fn make_plan(args: &PlanArgs, now: DateTime<Utc>) -> Result<(PathBuf, Plan),
     }
     let home = args.home.as_deref().map(expand).unwrap_or_else(home);
     let workspaces = workspace_roots(&args.workspaces)?;
+    let project = plan_project(args, &home)?;
     let ctx = ScanContext {
         home: home.clone(),
         claude_config_dir: args.claude_config_dir.as_deref().map(expand),
@@ -73,7 +75,7 @@ pub fn make_plan(args: &PlanArgs, now: DateTime<Utc>) -> Result<(PathBuf, Plan),
     let host = args.host.label(args.label.as_deref());
     let options = PlanOptions {
         host: host.clone(),
-        project: args.project.clone(),
+        project: project.clone(),
         home: home.clone(),
         workspaces,
         limits: ImportLimits {
@@ -90,10 +92,32 @@ pub fn make_plan(args: &PlanArgs, now: DateTime<Utc>) -> Result<(PathBuf, Plan),
     let plan = plan::build(scan, &options)?;
     let path = match args.out.as_deref() {
         Some(out) => expand(out),
-        None => plan::default_path(&home, &host, &args.project, now),
+        None => plan::default_path(&home, &host, &project, now),
     };
     plan::write(&plan, &path)?;
     Ok((path, plan))
+}
+
+/// The project a plan imports into: `--project`, or, for a host that reads workspaces and exactly one
+/// `--workspace`, the project the hooks file that folder's sessions under (docs/design/project-routing.md §3).
+fn plan_project(args: &PlanArgs, home: &Path) -> Result<String, Error> {
+    if let Some(project) = &args.project {
+        return Ok(project.clone());
+    }
+    let hosts_with_workspaces = matches!(args.host, Host::ClaudeCode | Host::Codex);
+    let (true, [workspace]) = (hosts_with_workspaces, args.workspaces.as_slice()) else {
+        return Err(invalid(
+            "--project is required, except for --host claude-code or codex with exactly one --workspace",
+        ));
+    };
+    let workspace = expand(workspace);
+    match resolve(Some(&workspace), home) {
+        SessionProject::Project(id) => Ok(id),
+        SessionProject::Global => Err(invalid(format!(
+            "--project is required: {} is the home directory or a folder WorkBuddy makes itself, which hold global memories, not a project",
+            shown(&workspace)
+        ))),
+    }
 }
 
 /// The repository roots of the `--workspace` directories, each once.
@@ -107,7 +131,7 @@ fn workspace_roots(dirs: &[PathBuf]) -> Result<Vec<PathBuf>, Error> {
                 shown(&path)
             )));
         }
-        let root = project::repository_root(&path);
+        let root = repository_root(&path);
         if !roots.contains(&root) {
             roots.push(root);
         }
@@ -788,7 +812,7 @@ mod tests {
     fn plan_args(home: &Path, host: Host) -> PlanArgs {
         PlanArgs {
             host,
-            project: "my-project".into(),
+            project: Some("my-project".into()),
             workspaces: vec![],
             all: false,
             from: None,
@@ -865,6 +889,36 @@ mod tests {
             " --home ",
         ] {
             assert!(report.contains(part), "{part}\n{report}");
+        }
+
+        // Without --project the single workspace names it: the project capture and recall file its sessions
+        // under, the folder's path.
+        std::fs::create_dir(workspace.join(".git")).unwrap();
+        let mut by_folder = plan_args(home.path(), Host::Codex);
+        by_folder.project = None;
+        by_folder.workspaces = vec![workspace.clone()];
+        let (path, plan) = make_plan(&by_folder, now).unwrap();
+        let folder = std::fs::canonicalize(&workspace).unwrap();
+        assert_eq!(plan.summary.project, folder.to_str().unwrap());
+        assert!(path.ends_with("codex-my-app-20261022T120000Z.plan.jsonl"));
+        // Several workspaces, none, another host, or a folder that is no project leave it to --project.
+        let mut two = by_folder.clone();
+        two.workspaces = vec![workspace.clone(), workspace.clone()];
+        let mut none = by_folder.clone();
+        none.workspaces.clear();
+        let mut workbuddy = by_folder.clone();
+        workbuddy.host = Host::Workbuddy;
+        let mut at_home = by_folder.clone();
+        at_home.workspaces = vec![home.path().to_path_buf()];
+        for (wrong, why) in [
+            (two, "exactly one --workspace"),
+            (none, "exactly one --workspace"),
+            (workbuddy, "--host claude-code or codex"),
+            (at_home, "not a project"),
+        ] {
+            let error = message(&make_plan(&wrong, now).unwrap_err());
+            assert!(error.contains("--project is required"), "{error}");
+            assert!(error.contains(why), "{error}");
         }
 
         // Flags of other hosts and missing workspaces are refused before anything is read.
@@ -1498,7 +1552,12 @@ mod tests {
             captured
                 .lock()
                 .unwrap()
-                .capture_hook(&event, PROJECT, HOST, None)
+                .capture_hook(
+                    &event,
+                    &crate::harness::project::SessionProject::Project(PROJECT.into()),
+                    HOST,
+                    None,
+                )
                 .unwrap();
         }
         assert_eq!(drain_once(&captured, &sender).await.unwrap(), 0);

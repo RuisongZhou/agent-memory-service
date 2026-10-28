@@ -11,11 +11,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use super::project::{repository_root, within};
+use super::project::within;
 use super::source::{
     entries, line_offset, read_text, timestamp, Adapter, Locators, Policy, ScanContext, ScanOutput,
     Segment, SourceDoc,
 };
+use crate::harness::project::repository_root;
 use crate::harness::{invalid, Error};
 
 pub const HOST: &str = "codex";
@@ -448,9 +449,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "runs git; run by harness::import::project::tests::tests_that_run_git_pass_in_a_child_process"]
+    #[ignore = "runs git; run by harness::project::tests::tests_that_run_git_pass_in_a_child_process"]
     fn a_memories_repository_records_its_head() {
-        use crate::harness::import::project::tests::{git, git_available};
+        use crate::harness::project::tests::{git, git_available};
         if !git_available() {
             return;
         }

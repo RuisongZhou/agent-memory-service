@@ -17,7 +17,8 @@ pub struct Vis {
 }
 
 impl Vis {
-    /// `scope.project` defaults to nothing (only global + platform memories are visible without a project).
+    /// `scope.project` defaults to nothing (only global + platform memories are visible without a project, which
+    /// is also all a `kind: "global"` session sees).
     /// The platform always comes from the connection (2.2); the only value a caller may pass is "*".
     pub fn new(scope: &ReqScope, caller_platform: &str) -> Self {
         let project = match scope.project.as_deref().map(str::trim) {

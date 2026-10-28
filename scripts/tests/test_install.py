@@ -72,8 +72,7 @@ def install_args(host, home, binary, *extra):
 
 
 def ctx_for(host, tmp_path, *extra):
-    module, args = core.arguments(['--host', host.ID, '--home', str(tmp_path), '--project', 'proj',
-                                   '--binary', '/opt/agent-memoryd', *extra])
+    module, args = core.arguments(['--host', host.ID, '--home', str(tmp_path), '--binary', '/opt/agent-memoryd', *extra])
     return args, core.context(module, args)
 
 
@@ -157,34 +156,32 @@ def test_a_dispatcher_hook_that_forwards_to_the_collector_is_kept(capsys):
 
 
 def test_claude_code_replaces_the_documented_manual_setup(tmp_path):
-    workspace = tmp_path / 'project'
-    (workspace / '.claude').mkdir(parents=True)
-    shutil.copy(ROOT / 'examples/claude-code.mcp.json', workspace / '.mcp.json')
-    shutil.copy(ROOT / 'examples/claude-code.settings.json', workspace / '.claude/settings.local.json')
-    args, ctx = ctx_for(claude_code, tmp_path, '--workspace', str(workspace))
+    (tmp_path / '.claude').mkdir()
+    shutil.copy(ROOT / 'examples/claude-code.mcp.json', tmp_path / '.claude.json')
+    shutil.copy(ROOT / 'examples/claude-code.settings.json', tmp_path / '.claude/settings.json')
+    args, ctx = ctx_for(claude_code, tmp_path)
     changes = {path: json.loads(data) for path, data, _ in filter(None, claude_code.changes(args, ctx, False))}
-    server = changes[workspace / '.mcp.json']['mcpServers']['shared-memory']
+    server = changes[tmp_path / '.claude.json']['mcpServers']['shared-memory']
     assert server['command'] == '/opt/agent-memoryd'
-    hooks = changes[workspace / '.claude/settings.local.json']['hooks']
+    hooks = changes[tmp_path / '.claude/settings.json']['hooks']
     assert set(hooks) == set(claude_code.EVENTS) and all(len(groups) == 1 for groups in hooks.values())
     words = shlex.split(hooks['Stop'][0]['hooks'][0]['command'])
-    assert words[:3] == ['/opt/agent-memoryd', 'hook', 'capture']
-    assert words[-4:] == ['--project', 'proj', '--platform', 'claude-code']
+    assert words[:3] == ['/opt/agent-memoryd', 'hook', 'capture'] and words[-2:] == ['--platform', 'claude-code']
+    assert '--project' not in words  # the session's folder decides
 
 
 def test_a_rerun_migrates_python_hook_entries_to_the_binary(tmp_path):
-    workspace = tmp_path / 'project'
-    (workspace / '.claude').mkdir(parents=True)
+    (tmp_path / '.claude').mkdir()
     legacy = lambda script, *rest: {'type': 'command', 'timeout': 3,
                                     'command': f'/usr/bin/python3 /repo/scripts/{script} --project proj {" ".join(rest)}'}
     mine = {'type': 'command', 'command': 'echo mine'}
     hooks = {event: [{'hooks': [legacy('harness_memory.py', 'hook')]}] for event in claude_code.EVENTS}
     hooks['UserPromptSubmit'].append({'hooks': [legacy('harness_recall.py', '--url', 'http://127.0.0.1:8765')]})
     hooks['SessionStart'] = [{'hooks': [mine]}, {'hooks': [legacy('harness_recall.py')]}]
-    (workspace / '.claude/settings.local.json').write_text(json.dumps({'hooks': hooks}))
-    args, ctx = ctx_for(claude_code, tmp_path, '--workspace', str(workspace), '--recall')
+    (tmp_path / '.claude/settings.json').write_text(json.dumps({'hooks': hooks}))
+    args, ctx = ctx_for(claude_code, tmp_path, '--recall')
     planned = {path.name: json.loads(data) for path, data, _ in filter(None, claude_code.changes(args, ctx, False))}
-    migrated = planned['settings.local.json']['hooks']
+    migrated = planned['settings.json']['hooks']
     commands = [h['command'] for groups in migrated.values() for g in groups for h in g['hooks']]
     assert not any('harness_' in command for command in commands)
     assert migrated['SessionStart'] == [{'hooks': [mine]}, {'hooks': [core.recall_handler(ctx)]}]  # kept in place
@@ -206,10 +203,7 @@ def test_workbuddy_enables_the_cli_server_and_pairs_without_turn_ids(tmp_path):
 
 def recall_hooks(module, tmp_path, *extra):
     """{event: [handler groups]} the host's planned hook file holds."""
-    workspace = tmp_path / 'project'
-    workspace.mkdir(exist_ok=True)
-    flags = ['--workspace', str(workspace)] if module is claude_code else []
-    args, ctx = ctx_for(module, tmp_path, *flags, *extra)
+    args, ctx = ctx_for(module, tmp_path, *extra)
     planned = {path: data for path, data, _ in filter(None, module.changes(args, ctx, False))}
     hook_file = ctx.hooks_json if module is codex else ctx.settings
     if hook_file not in planned:  # already as desired
@@ -245,8 +239,8 @@ def test_recall_adds_its_own_groups_and_a_rerun_without_it_removes_them(module, 
         assert group['hooks'] == [core.recall_handler(ctx, getattr(module, 'RECALL_NAME', None))]
         assert group['hooks'][0]['timeout'] == core.RECALL_TIMEOUT
         words = shlex.split(group['hooks'][0]['command'])
-        assert words[:3] == ['/opt/agent-memoryd', 'hook', 'recall'] and words[-6:] == [
-            '--project', 'proj', '--platform', module.PLATFORM, '--url', 'http://127.0.0.1:8765']
+        assert words[:3] == ['/opt/agent-memoryd', 'hook', 'recall']
+        assert words[-4:] == ['--platform', module.PLATFORM, '--url', 'http://127.0.0.1:8765'] and '--project' not in words
     capture = {event for event, groups in hooks.items() for g in groups if core.owned_handler(g['hooks'][0])}
     assert capture == set(module.EVENTS)  # capture is unchanged alongside recall
     hook_file = ctx.hooks_json if module is codex else ctx.settings
@@ -258,14 +252,12 @@ def test_recall_adds_its_own_groups_and_a_rerun_without_it_removes_them(module, 
     assert {event for event, groups in without.items() for g in groups if core.owned_handler(g['hooks'][0])} == capture
 
 
-def test_recall_without_capture_needs_a_project_and_a_loopback_daemon(tmp_path, capsys, fake_binary, offline):
-    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--no-capture', '--recall', '--apply'))
-    assert code == 1 and '--project' in output
-    remote = install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--recall', '--apply')
+def test_recall_without_capture_needs_a_loopback_daemon(tmp_path, capsys, fake_binary, offline):
+    remote = install_args('workbuddy', tmp_path, fake_binary, '--recall', '--apply')
     code, output = run(capsys, *remote[:remote.index('--url')], *remote[remote.index('--url') + 2:],
                        '--url', 'http://10.0.0.5:8765')
     assert code == 1 and 'loopback' in output and not (tmp_path / '.workbuddy').exists()
-    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--no-capture',
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--no-capture',
                                              '--recall', '--apply'))
     assert code == 0 and offline == ['workbuddy'], output
     hooks = json.loads((tmp_path / '.workbuddy/settings.json').read_text())['hooks']
@@ -274,6 +266,38 @@ def test_recall_without_capture_needs_a_project_and_a_loopback_daemon(tmp_path, 
     assert f"--state {tmp_path / core.RECALL_STATE}" in command  # an isolated home keeps its own record
     code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--no-capture', '--apply'))
     assert code == 0 and not (tmp_path / '.workbuddy/settings.json').exists()  # it only held recall hooks
+
+
+@pytest.mark.parametrize('module', [claude_code, codex, workbuddy])
+def test_the_recall_check_expects_the_project_fact_at_session_start_only_where_the_event_has_a_folder(
+        module, tmp_path, monkeypatch):
+    """check_recall against a stand-in for the hook, which files a session under the folder its event names."""
+    args, ctx = ctx_for(module, tmp_path)
+    ctx.check_project = str(tmp_path / 'check-project')
+    shown = set()
+
+    def hook(known):
+        def recall(host, ctx, name, session, url, state, env, prompt=None):
+            event = host.recall_event(ctx, name, session, prompt)
+            # The fact is a project's: a global session lacks it, and a session sees each memory once.
+            if url != 'live' or not known(event) or (session in shown and name == 'UserPromptSubmit'):
+                return ''
+            shown.add(session)
+            return checks.FACT
+        monkeypatch.setattr(checks, 'recall_context', recall)
+        shown.clear()
+    hook(lambda event: event.get('cwd') == ctx.check_project)
+    checks.check_recall(module, ctx, tmp_path, 'live', {})  # WorkBuddy's SessionStart has no folder: global only
+    assert ('cwd' in module.recall_event(ctx, 'SessionStart', 's')) == (module is not workbuddy)
+    hook(lambda event: True)  # a hook that ignores the missing folder files WorkBuddy's SessionStart under the project
+    if module is workbuddy:
+        with pytest.raises(core.InstallError, match='without a session folder'):
+            checks.check_recall(module, ctx, tmp_path, 'live', {})
+    else:
+        checks.check_recall(module, ctx, tmp_path, 'live', {})
+    hook(lambda event: False)  # a hook that never knows the project injects nothing
+    with pytest.raises(core.InstallError, match='lacks the formed fact'):
+        checks.check_recall(module, ctx, tmp_path, 'live', {})
 
 
 API = {'modelBackend': 'api', 'modelDevice': 'https://models.example/v1', 'rerankModel': None}
@@ -288,7 +312,7 @@ API = {'modelBackend': 'api', 'modelDevice': 'https://models.example/v1', 'reran
 ])
 def test_recall_says_where_prompts_go(tmp_path, capsys, fake_binary, offline, monkeypatch, health, expected):
     monkeypatch.setattr(checks, 'daemon_health', lambda url: health and dict(health, memoryStrategy='mem0'))
-    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--recall', '--apply'))
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--recall', '--apply'))
     assert code == 0, output
     assert 'the daemon sends it to the embedding API' in output  # in the plan, before anything is written
     for text in expected:
@@ -298,10 +322,10 @@ def test_recall_says_where_prompts_go(tmp_path, capsys, fake_binary, offline, mo
 
 def test_no_recall_note_without_recall_or_with_mock_models(tmp_path, capsys, fake_binary, offline, monkeypatch):
     monkeypatch.setattr(checks, 'daemon_health', lambda url: dict(API, memoryStrategy='mem0'))
-    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--apply'))
     assert code == 0 and 'embedding' not in output, output
     monkeypatch.setattr(checks, 'daemon_health', lambda url: {'modelBackend': 'mock', 'memoryStrategy': 'mem0'})
-    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--recall', '--apply'))
+    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--recall', '--apply'))
     assert code == 0 and 'for embedding' not in output and 'MEMORY_MODEL_PROVIDER' not in output, output
 
 
@@ -583,15 +607,16 @@ def test_dsh_itself_composes_the_planned_patch(tmp_path, capsys):
 # --- install flow -----------------------------------------------------------------
 
 def test_preview_writes_nothing(tmp_path, capsys, fake_binary, fake_surreal):
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p'))
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary))
     assert code == 0 and 'preview only' in output and 'config.toml' in output
+    assert "[plan] project: the session's folder" in output
     assert f'[plan] surreal={fake_surreal}:' in output
     assert not (tmp_path / '.codex').exists() and not (tmp_path / '.local').exists()
 
 
 def test_apply_needs_surrealdb_3_before_anything_else(tmp_path, capsys, fake_binary, offline, monkeypatch):
     monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
-    argv = install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply')
+    argv = install_args('workbuddy', tmp_path, fake_binary, '--apply')
     code, output = run(capsys, *argv)
     assert code == 1 and 'SurrealDB is not installed' in output and 'install.surrealdb.com' in output, output
     code, output = run(capsys, *argv[:-1])  # the preview names what is missing
@@ -629,9 +654,10 @@ def test_apply_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary, offli
     settings.parent.mkdir()
     settings.write_text(json.dumps({'theme': 'dark', 'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'echo hi'}]}]}}))
     original = settings.read_bytes()
-    argv = install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply')
+    argv = install_args('workbuddy', tmp_path, fake_binary, '--apply')
     code, output = run(capsys, *argv)
     assert code == 0 and offline == ['workbuddy'], output
+    assert 'every WorkBuddy conversation under the project of its folder' in output and 'No per-project switch' in output
     installed = json.loads(settings.read_text())
     assert installed['theme'] == 'dark' and len(installed['hooks']['Stop']) == 2
     assert (tmp_path / '.workbuddy/mcp.json').is_file() and (tmp_path / '.workbuddy/.mcp.json').is_file()
@@ -649,7 +675,7 @@ def test_apply_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary, offli
 
 
 def test_no_capture_installs_mcp_only_and_removes_existing_capture(tmp_path, capsys, fake_binary, offline):
-    run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))
     hooks = json.loads((tmp_path / '.codex/hooks.json').read_text())['hooks']
     assert set(hooks) == set(codex.EVENTS) and all(core.owned_handler(g['hooks'][0]) for gs in hooks.values() for g in gs)
     assert 'notify' not in tomllib.loads((tmp_path / '.codex/config.toml').read_text())  # left to other programs
@@ -664,7 +690,7 @@ def test_failed_verification_writes_nothing(tmp_path, capsys, fake_binary, monke
     def fail(host, ctx):
         raise core.InstallError('verification failed')
     monkeypatch.setattr(checks, 'verify_local', fail)
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))
     assert code == 1 and 'verification failed' in output
     assert not (tmp_path / '.codex').exists()
 
@@ -679,7 +705,7 @@ def test_a_write_failure_restores_files_already_written(tmp_path, capsys, fake_b
             raise OSError('disk full')
         real(path, data, mode)
     monkeypatch.setattr(core, 'atomic_write', flaky)
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))
     assert code == 1 and 'original files restored' in output
     assert config.read_text() == 'model = "x"\n' and not (tmp_path / '.codex/hooks.json').exists()
 
@@ -690,11 +716,11 @@ def test_concurrent_edits_and_later_edits_are_never_overwritten(tmp_path, capsys
         config.parent.mkdir(exist_ok=True)
         config.write_text('model = "edited meanwhile"\n')
     monkeypatch.setattr(checks, 'verify_local', edit_during_check)
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))
     assert code == 1 and 'changed during installation' in output
     assert config.read_text() == 'model = "edited meanwhile"\n'
     monkeypatch.setattr(checks, 'verify_local', lambda host, ctx: None)
-    assert run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))[0] == 0
+    assert run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))[0] == 0
     config.write_text(config.read_text() + '\n[tui]\nx = 1\n')
     code, output = run(capsys, '--host', 'codex', '--home', tmp_path, '--rollback')
     assert code == 1 and 'Changed since installation' in output and '[tui]' in config.read_text()
@@ -702,44 +728,33 @@ def test_concurrent_edits_and_later_edits_are_never_overwritten(tmp_path, capsys
     assert code == 0 and tomllib.loads(config.read_text()) == {'model': 'edited meanwhile', 'tui': {'x': 1}}
 
 
-def test_claude_code_checks_local_scope_and_clears_an_earlier_rejection(tmp_path):
-    workspace = tmp_path / 'project'
-    (workspace / '.claude').mkdir(parents=True)
-    (workspace / '.claude/settings.local.json').write_text(json.dumps(
-        {'disabledMcpjsonServers': ['shared-memory', 'other'], 'enabledMcpjsonServers': ['x']}))
-    stale = {'type': 'stdio', 'command': '/old/agent-memoryd', 'args': ['mcp', '--platform', 'mcp']}
-    (tmp_path / '.claude.json').write_text(json.dumps(
-        {'projects': {str(workspace): {'mcpServers': {'shared-memory': stale}}}, 'numStartups': 3}))
-    args, ctx = ctx_for(claude_code, tmp_path, '--workspace', str(workspace))
-    with pytest.raises(core.InstallError, match='claude mcp remove shared-memory -s local'):
-        claude_code.changes(args, ctx, False)
-    (tmp_path / '.claude.json').write_text(json.dumps({'projects': {str(workspace): {'mcpServers': {}}}}))
-    changes = {path.name: json.loads(data) for path, data, _ in filter(None, claude_code.changes(args, ctx, False))}
-    assert changes['settings.local.json']['disabledMcpjsonServers'] == ['other']
-    assert changes['settings.local.json']['enabledMcpjsonServers'] == ['x']
-
-
-def test_claude_code_user_scope_follows_a_legacy_global_config(tmp_path):
+def test_claude_code_installs_at_user_level_and_follows_a_legacy_global_config(tmp_path, capsys):
     legacy = tmp_path / '.claude/.config.json'
     legacy.parent.mkdir()
-    legacy.write_text(json.dumps({'theme': 'dark'}))
-    args, ctx = ctx_for(claude_code, tmp_path, '--scope', 'user')
+    stale = {'type': 'stdio', 'command': '/old/agent-memoryd', 'args': ['mcp', '--platform', 'mcp']}
+    legacy.write_text(json.dumps({'theme': 'dark', 'projects': {'/work/a': {'mcpServers': {'shared-memory': stale}}}}))
+    args, ctx = ctx_for(claude_code, tmp_path)
     assert ctx.mcp_file == legacy and ctx.settings == tmp_path / '.claude/settings.json'
+    changes = {path: json.loads(data) for path, data, _ in filter(None, claude_code.changes(args, ctx, False))}
+    assert changes[legacy]['theme'] == 'dark' and changes[legacy]['projects']['/work/a']['mcpServers'] == {
+        'shared-memory': stale}  # a local-scope entry is the user's to remove: only noted
+    output = capsys.readouterr().out
+    assert '1 project(s) in' in output and 'overrides this user-scope one' in output
     legacy.write_text('')
-    assert ctx_for(claude_code, tmp_path, '--scope', 'user')[1].mcp_file == tmp_path / '.claude.json'
+    assert ctx_for(claude_code, tmp_path)[1].mcp_file == tmp_path / '.claude.json'
 
 
-def test_claude_code_rollback_undoes_the_named_workspace_only(tmp_path, capsys, fake_binary, offline):
+def test_claude_code_rollback_undoes_the_named_config_dir_only(tmp_path, capsys, fake_binary, offline):
     first, second = tmp_path / 'a', tmp_path / 'b'
-    first.mkdir(), second.mkdir()
-    for workspace in (first, second):
-        code, output = run(capsys, *install_args('claude-code', tmp_path, fake_binary, '--project', 'p',
-                                                 '--workspace', workspace, '--apply'))
+    for config_dir in (first, second):
+        code, output = run(capsys, *install_args('claude-code', tmp_path, fake_binary,
+                                                 '--claude-config-dir', config_dir, '--apply'))
         assert code == 0, output
-    code, output = run(capsys, '--host', 'claude-code', '--home', tmp_path, '--workspace', first, '--rollback')
+        assert 'every project' in output and '"disableAllHooks": true' in output  # user level; how to opt a project out
+    code, output = run(capsys, '--host', 'claude-code', '--home', tmp_path, '--claude-config-dir', first, '--rollback')
     assert code == 0, output
-    assert not (first / '.mcp.json').exists() and (second / '.mcp.json').exists()
-    code, output = run(capsys, '--host', 'claude-code', '--home', tmp_path, '--workspace', first, '--rollback')
+    assert not (first / '.claude.json').exists() and (second / '.claude.json').exists()
+    code, output = run(capsys, '--host', 'claude-code', '--home', tmp_path, '--claude-config-dir', first, '--rollback')
     assert code == 1 and 'already rolled back' in output
 
 
@@ -751,6 +766,7 @@ def test_dsh_install_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary,
     code, output = run(capsys, *argv)
     assert code == 0 and offline == ['deepseek-harness'], output
     assert 'MCP tools only' in output and 'uploader' not in output
+    assert 'pass `project` explicitly' in output  # the bridge's default folder is dsh's, not a session's
     assert patch.read_text().startswith(PATCH) and f'command: "{fake_binary}"' in patch.read_text()
     code, output = run(capsys, *argv)
     assert code == 0 and 'nothing written' in output
@@ -759,15 +775,12 @@ def test_dsh_install_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary,
     run(capsys, *argv)
     code, output = run(capsys, '--host', 'deepseek-harness', '--home', tmp_path, '--uninstall')
     assert code == 0 and patch.read_text() == PATCH, output
-    code, output = run(capsys, *install_args('deepseek-harness', tmp_path, fake_binary, '--project', 'p'))
-    assert code == 1 and 'MCP tools only' in output and patch.read_text() == PATCH
 
 
 def test_installed_commands_stay_recognizable(tmp_path):
     assert core.owned_handler({'command': "python3 /a/harness_memory.py --note 'a # b' --project p hook"})
     for module in (claude_code, codex, workbuddy):
-        workspace = ['--workspace', str(tmp_path)] if module is claude_code else []
-        args, ctx = ctx_for(module, tmp_path, *workspace, '--project', 'it has spaces')
+        args, ctx = ctx_for(module, tmp_path, '--binary', '/opt/it has spaces/agent-memoryd')
         assert core.owned_handler({'command': core.hook_command(ctx)})
         assert core.owned_recall({'command': core.recall_command(ctx)})
     # notify entries earlier installers wrote, plain or wrapping another program, are recognized for removal.
@@ -778,13 +791,15 @@ def test_installed_commands_stay_recognizable(tmp_path):
 
 
 def test_codex_install_ends_with_the_steps_only_the_user_can_take(tmp_path, capsys, fake_binary, offline):
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--recall', '--apply'))
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--recall', '--apply'))
     assert code == 0, output
     todo = output[output.index('[todo] 1.'):]
     assert todo.index('[todo] 1. Restart Codex') < todo.index('[todo] 2. Run /hooks') < todo.index('[todo] 3.')
     assert f'"{codex.CAPTURE_NAME}" on UserPromptSubmit, Stop and SessionEnd' in todo
     assert f'"{codex.RECALL_NAME}" on SessionStart and UserPromptSubmit' in todo
     assert 'this installer cannot trust them for you' in todo
+    assert 'run in every Codex session' in todo and '[features] hooks = false' in todo  # the project comes from the folder
+    assert 'under project "' not in todo and '--project' not in todo
     assert f'outbox status --outbox {shlex.quote(str(tmp_path / core.OUTBOX))} lists it' in todo  # an isolated home names its outbox
     code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--no-capture', '--apply'))
     assert code == 0 and '[todo] 1.' in output and '[todo] 2.' not in output, output  # MCP only: nothing to trust
@@ -798,14 +813,14 @@ def test_codex_rerun_gives_notify_back_and_captures_with_hooks(tmp_path, capsys,
                'default', '--', CLIENT, 'turn-ended']
     config.write_text(f'notify = {json.dumps(earlier)}\n')
     original = config.read_bytes()
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))
     assert code == 0, output
     assert tomllib.loads(config.read_text())['notify'] == [CLIENT, 'turn-ended']
     hooks = json.loads((tmp_path / '.codex/hooks.json').read_text())['hooks']
     assert set(hooks) == set(codex.EVENTS)
     assert '[plan] notify: remove the collector an earlier install set; it runs' in output
     assert 'notify no longer runs the collector; it runs' in output and 'UserPromptSubmit, Stop and SessionEnd' in output
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))
     assert code == 0 and 'nothing written' in output and 'notify no longer' not in output, output
     code, output = run(capsys, '--host', 'codex', '--home', tmp_path, '--rollback')
     assert code == 0 and config.read_bytes() == original, output
@@ -816,7 +831,7 @@ def test_codex_installs_capture_over_a_config_toml_with_a_bom(tmp_path, capsys, 
     config = tmp_path / '.codex/config.toml'
     config.parent.mkdir()
     config.write_bytes('\ufeffmodel = "x"\n'.encode())
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--apply'))
     assert code == 0, output
     assert config.read_bytes().startswith('\ufeffmodel = "x"\n'.encode())
     assert set(json.loads((tmp_path / '.codex/hooks.json').read_text())['hooks']) == set(codex.EVENTS)
@@ -855,25 +870,24 @@ def test_a_binary_without_hook_commands_is_refused(tmp_path, capsys, offline):
     old.parent.mkdir()
     old.write_text('#!/bin/sh\necho "Usage: agent-memoryd mcp [--url URL] [--platform NAME]"\n')
     old.chmod(0o755)
-    code, output = run(capsys, *install_args('codex', tmp_path, old, '--project', 'p', '--apply'))
+    code, output = run(capsys, *install_args('codex', tmp_path, old, '--apply'))
     assert code == 1 and 'has no hook commands' in output and offline == []
     assert not (tmp_path / '.codex').exists()
 
 
 def test_argument_errors(tmp_path, capsys, fake_binary):
-    with pytest.raises(SystemExit):
-        core.main([str(a) for a in install_args('codex', tmp_path, fake_binary, '--project=-team')])
-    assert 'must not start with' in capsys.readouterr().err
-    code, output = run(capsys, *install_args('claude-code', tmp_path, fake_binary, '--project', 'p'))
-    assert code == 1 and '--workspace' in output
-    code, output = run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--apply'))
-    assert code == 1 and '--project' in output
-    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--project', 'p', '--url', 'http://u:p@host:1'))
+    # The project comes from each session's folder: nothing at install time names one, or a workspace.
+    for host, option, value in (('codex', '--project', 'p'), ('claude-code', '--workspace', tmp_path),
+                                ('claude-code', '--scope', 'user')):
+        with pytest.raises(SystemExit):
+            core.main([str(a) for a in install_args(host, tmp_path, fake_binary, option, value)])
+        assert f'unrecognized arguments: {option}' in capsys.readouterr().err
+    code, output = run(capsys, *install_args('codex', tmp_path, fake_binary, '--url', 'http://u:p@host:1'))
     assert code == 1 and 'without credentials' in output
     code, output = run(capsys, '--host', 'codex', '--home', tmp_path, '--rollback')
     assert code == 1 and 'No Codex installation backup' in output
     code, output = run(capsys, '--host', 'claude-code', '--home', tmp_path, '--rollback')
-    assert code == 1 and '--workspace' in output  # rollback is per project
+    assert code == 1 and 'No Claude Code installation backup' in output
 
 
 # --- runtime: binary, env file and daemon service -------------------------------------
@@ -976,7 +990,7 @@ def test_the_key_comes_from_a_file_the_environment_or_a_hidden_prompt(tmp_path, 
 
 
 def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys, service_binary, fake_surreal):
-    argv = service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply',
+    argv = service_install_args('workbuddy', session, service_binary, '--apply',
                                 '--key-file', session / 'key.txt')
     code, output = run(capsys, *argv)
     assert code == 0, output
@@ -1020,7 +1034,7 @@ def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, se
                   port=8765, llmConcurrency=2)
     (service_binary.parent / 'status.json').write_text(json.dumps(status))
     installed_unit(session)
-    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--apply'))
     assert code == 0, output
     (call,) = service_calls(service_binary)
     assert flag(call, '--env-file') == str(env) and flag(call, '--data-dir') == '/data/mem0'
@@ -1029,14 +1043,14 @@ def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, se
     assert not (session / '.config/agent-memory-service/.env').exists()
 
     (service_binary.parent / 'status.json').write_text(json.dumps(dict(status, port=9000)))
-    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--apply'))
     assert code == 1 and '--url http://127.0.0.1:9000' in output
     (service_binary.parent / 'status.json').write_text(json.dumps(dict(status, outbox='/elsewhere/outbox.sqlite3')))
-    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--apply'))
     assert code == 1 and '--outbox /elsewhere/outbox.sqlite3' in output
     del status['uiDir']  # a binary older than the checkout
     (service_binary.parent / 'status.json').write_text(json.dumps(status))
-    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *service_install_args('codex', session, service_binary, '--apply'))
     assert code == 1 and 'older than this checkout (service status --json has no uiDir)' in output, output
     assert len(service_calls(service_binary)) == 1
 
@@ -1045,12 +1059,12 @@ def test_a_hand_made_unit_and_a_daemon_started_by_hand_are_left_alone(session, c
     status = dict(NOT_INSTALLED, installed=True, managed=False, port=8765)
     (service_binary.parent / 'status.json').write_text(json.dumps(status))
     installed_unit(session)
-    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--apply'))
     assert code == 0 and 'not written by agent-memoryd service install' in output, output
     (service_binary.parent / 'status.json').unlink()
     runtime.unit_path(session).unlink()
     monkeypatch.setattr(checks, 'daemon_health', lambda url: {'memoryStrategy': 'mem0'})
-    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply'))
+    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--apply'))
     assert code == 0 and 'started by hand' in output, output
     # No key was needed: nothing under the env file's directory (on Linux the unit above lived in ~/.config too).
     assert service_calls(service_binary) == [] and not (session / runtime.ENV_FILE).parent.exists()
@@ -1062,7 +1076,7 @@ def test_the_installed_binary_and_env_file_come_back_when_a_check_fails(session,
     installed.parent.mkdir(parents=True)
     installed.write_text('#!/bin/sh\n# the previous build\n')
     installed.chmod(0o755)
-    argv = ['--host', 'workbuddy', '--home', session, '--project', 'p', '--apply', '--non-interactive',
+    argv = ['--host', 'workbuddy', '--home', session, '--apply', '--non-interactive',
             '--skip-host-check', '--key-file', session / 'key.txt']
 
     def fail(host, ctx):
@@ -1088,7 +1102,7 @@ def test_the_installed_binary_and_env_file_come_back_when_a_check_fails(session,
 def test_the_web_ui_is_built_downloaded_or_skipped_and_served_by_the_service(session, capsys, service_binary,
                                                                               monkeypatch):
     target = session / ui.UI_DIR
-    argv = service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply',
+    argv = service_install_args('workbuddy', session, service_binary, '--apply',
                                 '--key-file', session / 'key.txt')
     served = lambda: flag(service_calls(service_binary)[-1], '--ui-dir')
     code, output = run(capsys, *argv[:-3])  # the preview
@@ -1156,7 +1170,7 @@ def test_the_key_is_asked_for_before_the_build(session, capsys, service_binary, 
     monkeypatch.setattr(sys, 'stdin', types.SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(runtime.getpass, 'getpass', lambda prompt: events.append('prompt') or KEY)
     monkeypatch.setattr(core, 'build_binary', lambda args: events.append('build') or service_binary)
-    code, output = run(capsys, '--host', 'workbuddy', '--home', session, '--project', 'p', '--apply',
+    code, output = run(capsys, '--host', 'workbuddy', '--home', session, '--apply',
                        '--skip-host-check')
     assert code == 0 and events == ['prompt', 'build'], output
     assert runtime.env_value((session / '.config/agent-memory-service/.env').read_text(), 'QWEN_API_KEY') == KEY
@@ -1164,7 +1178,7 @@ def test_the_key_is_asked_for_before_the_build(session, capsys, service_binary, 
 
 def test_a_service_that_does_not_start_fails_after_writing(session, capsys, service_binary):
     (service_binary.parent / 'exit').write_text('1')
-    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--project', 'p', '--apply',
+    code, output = run(capsys, *service_install_args('workbuddy', session, service_binary, '--apply',
                                                      '--key-file', session / 'key.txt'))
     assert code == 1 and 'did not start' in output and 'configuration is written' in output
     assert (session / '.workbuddy/settings.json').is_file()
@@ -1172,7 +1186,7 @@ def test_a_service_that_does_not_start_fails_after_writing(session, capsys, serv
 
 
 def test_service_options_need_the_login_home_and_a_loopback_url(tmp_path, capsys, fake_binary, offline):
-    code, output = run(capsys, '--host', 'workbuddy', '--home', tmp_path, '--binary', fake_binary, '--project', 'p',
+    code, output = run(capsys, '--host', 'workbuddy', '--home', tmp_path, '--binary', fake_binary,
                        '--apply', '--non-interactive')
     assert code == 1 and 'add --no-service' in output and not (tmp_path / '.workbuddy').exists()
     with pytest.raises(SystemExit):
@@ -1195,7 +1209,10 @@ def test_verify_model_needs_an_env_file_with_the_key(tmp_path):
         checks.verify_model(ctx, tmp_path / '.env')
 
 
-def test_check_daemon_runs_with_the_installing_users_home(tmp_path):
+def test_check_daemon_runs_with_the_installing_users_home(tmp_path, monkeypatch):
+    # The installer may itself run in a Claude Code session; the checks' hooks must not inherit its folder.
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', '/elsewhere')
+    assert 'CLAUDE_PROJECT_DIR' not in checks.check_env(tmp_path)
     # SurrealDB's install-script `surreal` is a launcher that finds its database under ~/.surrealdb.
     daemon = tmp_path / 'agent-memoryd'
     daemon.write_text(f'#!/bin/sh\necho "$HOME" > {tmp_path / "home"}\n')
@@ -1207,11 +1224,11 @@ def test_check_daemon_runs_with_the_installing_users_home(tmp_path):
 
 
 def test_rollback_and_uninstall_keep_the_shared_runtime(tmp_path, capsys, fake_binary, offline):
-    run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply'))
+    run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--apply'))
     for argv in (['--rollback'], ['--uninstall']):
         code, output = run(capsys, '--host', 'workbuddy', '--home', tmp_path, *argv)
         assert code == 0 and 'kept for other platforms' in output, output
-        run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--project', 'p', '--apply'))
+        run(capsys, *install_args('workbuddy', tmp_path, fake_binary, '--apply'))
 
 
 # --- real offline verification ------------------------------------------------------
@@ -1221,15 +1238,13 @@ def test_rollback_and_uninstall_keep_the_shared_runtime(tmp_path, capsys, fake_b
 @pytest.mark.parametrize('host,flags', [(host, ['--recall'] if core.load_host(host).RECALL else []) for host in core.HOSTS]
                          + [('workbuddy', ['--no-capture', '--recall'])])
 def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
-    workspace = tmp_path / 'project'
-    workspace.mkdir()
     capture = core.load_host(host).CAPTURE
-    extra = ['--workspace', str(workspace)] if host == 'claude-code' else []
-    extra += ['--project', 'install-test'] if capture else []
+    # CLAUDE_PROJECT_DIR is what a Claude Code session exports; the checks must not let it pick their project.
+    environment = {'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable, 'HOME': str(Path.home()),
+                   'CLAUDE_PROJECT_DIR': str(tmp_path)}
     result = subprocess.run(['bash', str(ROOT / 'scripts/install.sh'), *map(str, install_args(
-        host, tmp_path, BINARY, '--apply', '--surreal-bin', SURREAL, *flags, *extra))],
-        capture_output=True, text=True, timeout=300,
-        env={'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable, 'HOME': str(Path.home())})
+        host, tmp_path, BINARY, '--apply', '--surreal-bin', SURREAL, *flags))],
+        capture_output=True, text=True, timeout=300, env=environment)
     assert result.returncode == 0, result.stdout + result.stderr
     check = next(line for line in result.stdout.splitlines() if line.startswith('[check] offline mock daemon'))
     assert check.startswith('[check] offline mock daemon: server/discover fallback, MCP handshake, 6 tools, get_context')
@@ -1238,3 +1253,5 @@ def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     assert check.endswith(' passed')
     assert not (tmp_path / core.OUTBOX).exists()  # verification used a temporary outbox
     assert not (tmp_path / core.RECALL_STATE).exists()  # and a temporary recall record
+    # The check's memories lived in its temporary daemon; only its empty session folder stays.
+    assert list((tmp_path / core.STATE / checks.CHECK_FOLDER).iterdir()) == []

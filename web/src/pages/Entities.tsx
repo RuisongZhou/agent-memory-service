@@ -4,14 +4,27 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { api, ApiError } from '../api/client'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { StatusBadge, TypeBadge } from '../components/memory'
-import { Button, Card, FacetOptions, Field, Fields, Input, Muted, RefreshButton, Select, TD, TH } from '../components/ui'
+import {
+  Button,
+  Card,
+  FacetOptions,
+  Field,
+  Fields,
+  Input,
+  Muted,
+  RefreshButton,
+  ScopeText,
+  Select,
+  TD,
+  TH,
+} from '../components/ui'
 import {
   entityFiltersFromParams,
   entityFiltersToParams,
   entityRequest,
   type EntityFilters,
 } from '../lib/filters'
-import { formatNumber, formatTime, scopeText } from '../lib/format'
+import { formatNumber, formatTime, projectOption } from '../lib/format'
 
 /** How current the entity view is. It is read as stored: only searches and writes bring it up to date. */
 export function ProjectionNote({ updatedAt }: { updatedAt: string | null }) {
@@ -37,7 +50,12 @@ function Filters({ filters, types, update }: {
           <Select value={filters.project} onChange={(e) => update({ project: e.target.value })}>
             <option value="">全部</option>
             {/* The facet counts memories, not entities. */}
-            <FacetOptions facets={facets.data?.projects ?? []} selected={filters.project} counts={false} />
+            <FacetOptions
+              facets={facets.data?.projects ?? []}
+              selected={filters.project}
+              show={projectOption}
+              counts={false}
+            />
           </Select>
         </Field>
         <Field label="类型" hint="数量按上面选的项目统计">
@@ -112,7 +130,7 @@ export function EntitiesPage() {
                       <Link to={`/entities/${e.id}`} title={e.text} className="hover:underline">{e.text}</Link>
                     </TD>
                     <TD className="whitespace-nowrap">{e.entityType}</TD>
-                    <TD className="whitespace-nowrap">{scopeText(e.scope)}</TD>
+                    <TD className="whitespace-nowrap"><ScopeText scope={e.scope} /></TD>
                     <TD className="text-right tabular-nums">{formatNumber(e.memoryCount)}</TD>
                   </tr>
                 ))}
@@ -163,7 +181,7 @@ export function EntityPage() {
           rows={[
             ['类型', entity.entityType],
             ['规范化文本', entity.normalizedText],
-            ['范围', scopeText(entity.scope)],
+            ['范围', <ScopeText scope={entity.scope} />],
             ['关联记忆数', formatNumber(entity.memoryCount)],
             ['实体 id', <span className="font-mono">{entity.id}</span>],
           ]}
@@ -200,7 +218,7 @@ export function EntityPage() {
                     </TD>
                     <TD><TypeBadge type={m.type} /></TD>
                     <TD><StatusBadge status={m.status} /></TD>
-                    <TD className="whitespace-nowrap">{scopeText(m.scope)}</TD>
+                    <TD className="whitespace-nowrap"><ScopeText scope={m.scope} /></TD>
                     <TD className="whitespace-nowrap">{formatTime(m.recordedAt)}</TD>
                   </tr>
                 ))}

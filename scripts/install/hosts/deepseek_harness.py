@@ -53,10 +53,6 @@ def managed_files(args, ctx):
     return [ctx.patch]
 
 
-def default_project(args, ctx):
-    return None
-
-
 def server_config(ctx):
     return {'serverName': SERVER, 'transport': 'stdio', 'command': str(ctx.binary),
             'args': core.bridge_args(ctx.url, PLATFORM), 'toolCallTimeoutMs': TOOL_TIMEOUT_MS}
@@ -271,6 +267,8 @@ def post_install(args, ctx):
              f'         mcp__{SERVER}__*. MCP tools only: no dialogue is captured automatically.',
              '         With the official DeepSeek API, dsh uploads session logs, tool results included, by',
              '         default; turn it off in Settings -> General if memories must stay local.',
+             '         The bridge runs in the working directory of dsh, not of a session, so its default project is',
+             '         unreliable: have the agent pass `project` explicitly (docs/mcp-harness.md#use-with-deepseek-harness).',
              '[next] add the shared memory workflow to the agent instructions: docs/mcp-harness.md#shared-memory-workflow']
     if not ctx.host_home_existed:
         lines.insert(0, f'[note] {ctx.host_home} did not exist before; DeepSeek Harness reads the row when it first starts')

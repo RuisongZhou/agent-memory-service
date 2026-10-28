@@ -5,7 +5,23 @@ import { api } from '../api/client'
 import type { Extraction, ModelResponse, RequestDetail } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { ReviewStatusBadge } from '../components/memory'
-import { Badge, Button, Card, Check, Field, Fields, Input, MemoryLink, Muted, Pre, RefreshButton, Select, TD, TH } from '../components/ui'
+import {
+  Badge,
+  Button,
+  Card,
+  Check,
+  Field,
+  Fields,
+  Input,
+  MemoryLink,
+  Muted,
+  Pre,
+  ProjectName,
+  RefreshButton,
+  Select,
+  TD,
+  TH,
+} from '../components/ui'
 import {
   REQUEST_KINDS,
   responsesRequest,
@@ -158,7 +174,7 @@ function Requests({ filters, update }: TabProps) {
                     <TD className="whitespace-nowrap">{formatTime(r.createdAt)}</TD>
                     <TD className="whitespace-nowrap">{REQUEST_KIND_LABEL[r.kind] ?? r.kind}</TD>
                     <TD className="whitespace-nowrap">{r.platform}</TD>
-                    <TD className="max-w-48 truncate whitespace-nowrap">{r.project} / {r.session}</TD>
+                    <TD className="max-w-48 truncate whitespace-nowrap"><ProjectName id={r.project} /> / {r.session}</TD>
                     <TD><ReviewStatusBadge status={r.status} /></TD>
                     <TD className="text-right tabular-nums">{r.failures ?? 0}</TD>
                     <TD className="max-w-xs truncate text-red-700">
@@ -341,7 +357,7 @@ function RequestView({ detail, refresh }: { detail: RequestDetail; refresh: Reac
   const rows: [string, ReactNode][] = [
     ['类型', labelled(REQUEST_KIND_LABEL, r.kind)],
     ['平台', r.platform],
-    ['项目 / 会话', `${r.project} / ${r.session}`],
+    ['项目 / 会话', <><ProjectName id={r.project} /> / {r.session}</>],
     ['创建时间', formatTime(r.createdAt)],
     ['更新时间', formatTime(r.updatedAt)],
     ['写入的记忆', ids(r.memoryIds)],

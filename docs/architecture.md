@@ -36,18 +36,20 @@ strategy.
 ## Write path
 
 1. The transport parses the request; application admission redacts credentials in the text and messages
-   (the import rules), validates scope and routes explicit instructions to their synchronous path. Mem0 validates message roles, timestamp order and input shape.
+   (the import rules), validates scope (a project, or `kind:"global"` for a session with no project folder) and routes explicit instructions to their synchronous path. Mem0 validates message roles, timestamp order and input shape.
 2. Under the ingest lock, formation checks the platform/turn idempotency key and commits the complete
    input, sequence number and `queued` request. Asynchronous acknowledgement confirms this commit.
 3. One ordered worker takes the formation lock. It prepares prior messages and retrieves
-   up to ten visible existing facts using **pure vector recall**, not the public hybrid search path.
+   up to ten visible existing facts using **pure vector recall**, not the public hybrid search path. Visible means
+   global facts, the caller platform's facts and the request's project's facts; a global request has no project.
 4. The prompt combines the vendored additive template, historical messages, existing facts with
    temporary IDs, full new messages, observation/current dates and optional custom instructions.
    The `zh` mode adds an instruction to match the new messages' language and script.
 5. Generation returns a `memory` array. Strict local validation checks sequential string IDs, nonempty
    text, attribution and links to supplied existing IDs. Malformed output receives bounded repair;
-   raw provider responses are persisted before parsing. The service assigns database IDs and scope.
-6. A project-scoped BLAKE3 content key separates raw and inferred writes. Duplicate text reuses an active
+   raw provider responses are persisted before parsing. The service assigns database IDs and scope: the request's project, or global for a `kind:"global"` request.
+6. A BLAKE3 content key over the project (empty for a global request), the text and the raw or inferred mode
+   separates projects, global facts, and raw and inferred writes. Duplicate text reuses an active
    memory and extends batch provenance. This is exact content deduplication, not semantic deduplication.
 7. New fact vectors are embedded in a batch. Primary memories, vectors, source batches, history,
    index tasks and the `indexing` checkpoint commit atomically.
@@ -60,12 +62,26 @@ Explicit instructions use the application path instead of this extraction pipeli
 deletion are explicit operations; additive formation does not automatically rewrite older assertions.
 Opt-in [consolidation](#consolidation) proposes such rewrites and applies them only on request.
 
+### Project and global scope
+
+A memory's project comes from the session's folder, chosen by the hooks and the MCP bridge
+([design](design/project-routing.md)); the daemon only receives it as `scope.project`, normally an absolute path.
+A session with no folder sends `scope.kind:"global"` and no project. `ReqScope::is_global` is the one place the
+daemon checks `kind`: every write and read entry point asks it, so downstream code trusts the answer. A global
+dialogue write is queued as a request filed under the project `""` with `scopeKind:"global"`; no project id can be
+empty, so everything keyed by project (recall of existing facts, earlier batches, the content key, the `list_turns`
+and request filters) finds global requests and global facts and no others. Formation stores its facts with a global
+scope, which every project's `get_context` and search sees. A global read sees global and platform memories only.
+Turn keys are never rebuilt by the daemon: the adapters send `project/session/nativeTurnId` with each component
+percent-encoded, so a path-like project id cannot run into the session and an empty project gives `/session/nativeTurnId`.
+Project ids are bound as query parameters and hashed into record keys, never used as a key themselves.
+
 ### Three distinct text views
 
 | View | Rule |
 |---|---|
 | Stored input and current formation batch | Full original messages; no old 8 KB head/tail clipping |
-| Historical prompt context | Latest ten messages from preceding formed, inferred requests in the same platform/project/session; at most 300 UTF-16 units per message |
+| Historical prompt context | Latest ten messages from preceding formed, inferred requests in the same platform/project/session (a global request's project is `""`); at most 300 UTF-16 units per message |
 | Embedding/reranking input | Model adapter token limit; truncating the model input does not alter stored text |
 
 Historical eligibility requires `formed:true` and status `indexing` or `completed`; raw and failed jobs

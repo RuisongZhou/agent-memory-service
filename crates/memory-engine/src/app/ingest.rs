@@ -89,13 +89,20 @@ pub async fn wait_idle(eng: &Arc<Engine>, t: &Arc<Instance>) -> ApiResult<Value>
     eng.wait_idle(t).await
 }
 
-fn required_scope(req: &AddMemoriesReq) -> ApiResult<(&str, &str)> {
-    let project = req
-        .scope
-        .project
-        .as_deref()
-        .filter(|s| !s.trim().is_empty() && *s != "*")
-        .ok_or_else(|| ApiError::InvalidArgument("scope.project is required".into()))?;
+/// The project a write files its memories under, `None` for a session with no project folder (`kind: "global"`),
+/// and its session. Past this, a write's `scope.project` is `Some` exactly when it names a project.
+fn required_scope(req: &AddMemoriesReq) -> ApiResult<(Option<&str>, &str)> {
+    let project = if req.scope.is_global()? {
+        None
+    } else {
+        Some(
+            req.scope
+                .project
+                .as_deref()
+                .filter(|s| !s.trim().is_empty() && *s != "*")
+                .ok_or_else(|| ApiError::InvalidArgument("scope.project is required".into()))?,
+        )
+    };
     let session = req
         .scope
         .session

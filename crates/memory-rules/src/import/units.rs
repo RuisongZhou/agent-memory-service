@@ -252,7 +252,8 @@ pub fn unit_key(host: &str, native_id: &str, locator: &str) -> String {
 
 /// The turn id dialogue capture gives a host's turn, `project/session/native_id` with each part quoted as in
 /// `unit_key`: the dialogue outbox and session import (design §6.10) share it, so the daemon's `platform +
-/// turnId` deduplication finds an imported turn that capture already sent.
+/// turnId` deduplication finds an imported turn that capture already sent. The project of a session with no
+/// project folder (`scope.kind: "global"`) is empty, so its keys start with `/`.
 pub fn turn_key(project: &str, session: &str, native_id: &str) -> String {
     [project, session, native_id].map(quote).join("/")
 }
@@ -457,6 +458,15 @@ mod tests {
             "a%3Ab:c%23d#%E5%8F%91%E5%B8%83~"
         );
         assert_eq!(turn_key("p", "s 1", "a/b?"), "p/s%201/a%2Fb%3F");
+        // A project id is the session folder's path: its `/`, spaces and non-ASCII characters are escaped, so it
+        // cannot run into the session. A session with no project folder has the empty project, whose keys start
+        // with `/` and so never equal a project's.
+        assert_eq!(
+            turn_key("/Users/me/my repo/项目", "s1", "t1"),
+            "%2FUsers%2Fme%2Fmy%20repo%2F%E9%A1%B9%E7%9B%AE/s1/t1"
+        );
+        assert_eq!(turn_key("", "s1", "t1"), "/s1/t1");
+        assert_ne!(turn_key("", "a/b", "t1"), turn_key("a", "b", "t1"));
     }
 
     #[test]

@@ -3,28 +3,28 @@
     "UserPromptSubmit": [{
       "hooks": [{
         "type": "command",
-        "command": "\"/absolute/path/agent-memory-service/target/fast/agent-memoryd\" hook capture --project agent-memory-service --platform claude-code",
+        "command": "\"/absolute/path/agent-memory-service/target/fast/agent-memoryd\" hook capture --platform claude-code",
         "timeout": 3
       }]
     }],
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "\"/absolute/path/agent-memory-service/target/fast/agent-memoryd\" hook capture --project agent-memory-service --platform claude-code",
+        "command": "\"/absolute/path/agent-memory-service/target/fast/agent-memoryd\" hook capture --platform claude-code",
         "timeout": 3
       }]
     }],
     "StopFailure": [{
       "hooks": [{
         "type": "command",
-        "command": "\"/absolute/path/agent-memory-service/target/fast/agent-memoryd\" hook capture --project agent-memory-service --platform claude-code",
+        "command": "\"/absolute/path/agent-memory-service/target/fast/agent-memoryd\" hook capture --platform claude-code",
         "timeout": 3
       }]
     }],
     "SessionEnd": [{
       "hooks": [{
         "type": "command",
-        "command": "\"/absolute/path/agent-memory-service/target/fast/agent-memoryd\" hook capture --project agent-memory-service --platform claude-code",
+        "command": "\"/absolute/path/agent-memory-service/target/fast/agent-memoryd\" hook capture --platform claude-code",
         "timeout": 3
       }]
     }]

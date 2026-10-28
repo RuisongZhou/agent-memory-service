@@ -80,13 +80,16 @@ hooks all run `agent-memoryd`, so the agent host needs no Python. Run from the c
 
 | Platform | Command | Configuration written | Capture | Still to do by hand |
 |---|---|---|---|---|
-| Codex CLI / App | `bash scripts/install.sh --host codex --apply --project my-project` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]`; `~/.codex/hooks.json`: `UserPromptSubmit`, `Stop`, `SessionEnd` | [Hooks](#codex-hooks) paired by `turn_id`; `notify` is left to other programs | Restart Codex; trust the three `shared-memory capture` hooks in `/hooks` (App: Settings → Hooks); nothing is captured before that |
-| Claude Code | `bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project` | `<project>/.mcp.json` and `<project>/.claude/settings.local.json`; `--scope user`: `~/.claude.json` and `~/.claude/settings.json` | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; approve the project MCP server (`/mcp`) |
-| WorkBuddy | `bash scripts/install.sh --host workbuddy --apply --project my-project` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
-| DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness); `--project` is refused | Restart DeepSeek Harness and start a new session |
+| Codex CLI / App | `bash scripts/install.sh --host codex --apply` | `~/.codex/config.toml`: `[mcp_servers.shared-memory]`; `~/.codex/hooks.json`: `UserPromptSubmit`, `Stop`, `SessionEnd` | [Hooks](#codex-hooks) paired by `turn_id`; `notify` is left to other programs | Restart Codex; trust the three `shared-memory capture` hooks in `/hooks` (App: Settings → Hooks); nothing is captured before that |
+| Claude Code | `bash scripts/install.sh --host claude-code --apply` | `~/.claude.json` (the MCP server) and `~/.claude/settings.json` (the hooks): user level, so every project | `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` hooks | Restart Claude Code; check `/mcp` |
+| WorkBuddy | `bash scripts/install.sh --host workbuddy --apply` | `~/.workbuddy/mcp.json` (GUI), `~/.workbuddy/.mcp.json` (its bundled CodeBuddy CLI), hooks in `~/.workbuddy/settings.json` | `UserPromptSubmit`, `Stop`, `SessionEnd` hooks, [paired without turn IDs](#workbuddy-hooks) | Restart WorkBuddy; trust `shared-memory` in Connectors → Custom connector |
+| DeepSeek Harness (Desktop app and `dsh`) | `bash scripts/install.sh --host deepseek-harness --apply` | `~/.dsh/cordis.patch.yml`: one marker-delimited `@deepseek-ai/dsh-mcp-client` row | None: [MCP tools only](#use-with-deepseek-harness), and its [default project is not per session](#project-routing) | Restart DeepSeek Harness and start a new session |
+
+No command names a project: the hooks run in every session of the platform, and each session's memories go
+to the project of the folder it works in ([project routing](#project-routing)).
 
 With `--recall`, Codex, Claude Code and WorkBuddy also get a `SessionStart` and a `UserPromptSubmit`
-recall hook (Codex: trust both in `/hooks` as well). `--recall` needs `--project` and a loopback `--url`;
+recall hook (Codex: trust both in `/hooks` as well). `--recall` needs a loopback `--url`;
 it is refused for DeepSeek Harness, which gets MCP tools only. Every prompt becomes a search query, which
 the default hosted retrieval models receive; see [privacy](#automatic-recall).
 
@@ -101,16 +104,13 @@ outbox:
 "$HOME/.local/bin/agent-memoryd" outbox drain --url http://127.0.0.1:8765
 ```
 
-Capture and recall commands fix `--project`. Codex hooks, WorkBuddy hooks and Claude Code `--scope user` are
-user-level, so every session on that platform is filed under that project; Claude Code's default project
-scope binds one project directory. Use the same `--project` on every platform that should
-share memory, and add the [shared memory workflow](#shared-memory-workflow) to `AGENTS.md`/`CLAUDE.md`.
-MCP tools are not tied to the installed project.
+Open the same folder on every platform that should share memory, and add the
+[shared memory workflow](#shared-memory-workflow) to `AGENTS.md`/`CLAUDE.md`. To stop the hooks in one
+project, see [turning the hooks off per project](#turning-the-hooks-off-per-project).
 
 | Option | Meaning |
 |---|---|
 | `--dry-run` (default) / `--apply` | Preview only / build, verify, write and start the daemon service |
-| `--project ID` | Stable shared project ID recorded with captured turns; prompted for when interactive; refused for DeepSeek Harness |
 | `--url` | Daemon base URL (`http://127.0.0.1:8765`) for the bridge, the service's port and the printed uploader command |
 | `--no-capture` | No dialogue collector; removes collector entries this installer manages |
 | `--recall` | Add the [automatic recall](#automatic-recall) hooks (not for DeepSeek Harness); without it, a rerun removes recall entries this installer manages |
@@ -119,9 +119,9 @@ MCP tools are not tied to the installed project.
 | `--env-file`, `--key-file`, `--api-key-env NAME` | The daemon's env file; a file whose key replaces the env file's; the variable read when the env file has no key (`QWEN_API_KEY`) |
 | `--verify-model` | Also check the env file's real models in a temporary store (below); makes a few model calls |
 | `--binary`, `--outbox` | Use an existing `agent-memoryd` as is (it must have the `hook` commands and `service install --start`), or a non-default outbox |
-| `--codex-home`; `--scope`, `--workspace`, `--claude-config-dir`; `--workbuddy-home`, `--mcp-target`; `--dsh-home`, `--dsh-binary` | Platform locations and, for DeepSeek Harness, the `dsh` CLI that parses the result; host environment variables such as `CODEX_HOME` or `DSH_HOME` are not read |
-| `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, never prompt (fail on a missing project ID or key), or install into another home (tests; needs `--no-service`) |
-| `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only this project's entries. Both keep the binary, env file, service, memory data and outbox for the other platforms |
+| `--codex-home`; `--claude-config-dir`; `--workbuddy-home`, `--mcp-target`; `--dsh-home`, `--dsh-binary` | Platform locations and, for DeepSeek Harness, the `dsh` CLI that parses the result; host environment variables such as `CODEX_HOME` or `DSH_HOME` are not read |
+| `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, never prompt (fail on a missing key), or install into another home (tests; needs `--no-service`) |
+| `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only the entries this installer wrote. Both keep the binary, env file, service, memory data and outbox for the other platforms |
 
 ### Installer checks
 
@@ -137,13 +137,17 @@ temporary store and stops it when the checks end:
    a loopback daemon.
 2. With capture, platform-shaped events run through the installed collector command into a temporary
    outbox; the temporary daemon's own uploader (`serve --outbox`) submits them; a local generation stub
-   forms one fact; the bridge finds it with `search_memories` under the configured project.
+   forms one fact; the bridge finds it with `search_memories` in the project of a check folder the
+   installer makes for this (never your home directory, which would file the check's turns as global).
+   The events carry that folder as their `cwd`, and the installer runs them without `CLAUDE_PROJECT_DIR`,
+   which it may have inherited from a Claude Code session.
    Codex's events include a turn that ends without a final message, which must queue nothing.
 3. With recall (after forming the fact through the bridge when capture is off), platform-shaped
    `SessionStart` and `UserPromptSubmit` events run through the installed recall command. Each output
    must be one JSON object of the shape Codex's hook schema allows, and both injected contexts must
-   contain the formed fact. A prompt in the session that already saw it must inject nothing, and so must
-   a prompt when no daemon answers.
+   contain the formed fact (WorkBuddy's `SessionStart` has no `cwd`, as in the real app, so its start
+   context holds global memories only and the fact appears with its prompt). A prompt in the session that
+   already saw it must inject nothing, and so must a prompt when no daemon answers.
 4. When the platform's CLI is installed, it parses a copy of the planned files in a temporary home:
    `codex mcp get` and `codex app-server` `hooks/list` (collector and recall hooks) for Codex,
    `claude mcp get` for Claude Code, and `dsh --profile web --dump-config` for DeepSeek Harness (found
@@ -165,14 +169,13 @@ the Python script an earlier installer wrote instead (see [migration](#migrate-f
 so a dispatcher that forwards to them stays yours. Reruns with the same options write nothing, and a file
 that removing the installer's entries leaves empty is deleted. The installer refuses, without writing, a different server already named
 `shared-memory`, Codex hooks defined under `[hooks]` in `config.toml`, TOML forms it cannot edit safely,
-symlinked configuration files, a Claude Code local-scope `shared-memory` for the workspace, which
-would take precedence, and a DeepSeek Harness `cordis.patch.yml` that is not a plain top-level YAML list,
+symlinked configuration files, a Claude Code `shared-memory` of another scope that would take
+precedence, and a DeepSeek Harness `cordis.patch.yml` that is not a plain top-level YAML list,
 has damaged installer markers or already holds another `shared-memory` row. It cannot see a trusted
 project's `.codex/config.toml`, a project-level `.codex/hooks.json` collector hook or another project's
 `.mcp.json`; remove such entries yourself.
-Backups live in `~/.local/state/agent-memory-service/installations/<platform>/`, one history per
-Claude Code project or user configuration. `--rollback` undoes the latest installation for the same
-target and refuses when a file changed after it, as happens when Codex records hook trust or Claude Code
+Backups live in `~/.local/state/agent-memory-service/installations/<platform>/`. `--rollback` undoes the
+latest installation for the same target and refuses when a file changed after it, as happens when Codex records hook trust or Claude Code
 updates `~/.claude.json`; use `--uninstall` then. Neither touches the binary, the env file, the daemon
 service, its data or the outbox, which the other platforms share; to remove the service, stop it and
 run `agent-memoryd service uninstall --apply` ([deployment](deployment.md#install-the-service)).
@@ -187,6 +190,71 @@ client SDK (`@modelcontextprotocol/client` 2.2.0) was connected to the bridge on
 are unit-tested as a plan; CI installs every platform with `--no-service`. No installation has been
 exercised in a live client session with a real provider; confirm with `--verify-model` and the
 [sharing check](#shared-memory-workflow).
+
+## Project routing
+
+Memories are filed under a project, and the project is the folder the session works in; nothing at install
+time names it ([design](design/project-routing.md)). The capture and recall hooks work it out from each
+event, and the MCP bridge once when it starts, by these rules in order:
+
+1. **The session folder.** On Claude Code, a non-empty `CLAUDE_PROJECT_DIR`: the folder the session started
+   in, which stays through `cd` and worktree switches; otherwise the event's `cwd`. On the other platforms,
+   the event's `cwd`. The bridge takes `CLAUDE_PROJECT_DIR` for `--platform claude-code`, and otherwise its
+   own working directory.
+2. **No project (global).** No folder at all, the home directory, `/`, and the folders WorkBuddy makes when no
+   workspace is open: `~/WorkBuddy` itself, `~/WorkBuddy/Claw`, a folder named by the time it was made
+   (`2026-10-28-09-15-30`) directly under `~/WorkBuddy`, and anything inside the last two. A folder of your
+   own in `~/WorkBuddy` is an ordinary one, and so are the folders of a default workspace path you changed in
+   WorkBuddy's settings, which is not recognized. A session without a project writes
+   global memories, which every project's recall and context show, and its own recall reads global
+   memories only.
+3. **Inside git:** the main repository's root. A subdirectory maps to its repository and a worktree to its
+   main repository, read from the worktree's `.git` file without running `git`. A repository at the home
+   directory (dotfiles) is no project of its own: a folder inside it counts as outside git.
+4. **Otherwise** the folder itself.
+
+The project ID is that folder's canonical absolute path (symbolic links resolved, no trailing `/`), such as
+`/Users/me/code/agent-memory-service`: two folders with the same name stay apart, and moving a folder starts a
+new project. The web UI shows the last segment, with the full path as a tooltip. A hook finds the folder
+from its own event, so it needs nothing on its command line; `hook capture`, `hook codex-notify` and
+`hook recall` take `--platform` and no project.
+
+| Platform | The hooks' folder | The MCP bridge's default project |
+|---|---|---|
+| Claude Code | `CLAUDE_PROJECT_DIR`, else the event's `cwd` | `CLAUDE_PROJECT_DIR`, else the directory Claude Code starts the bridge in |
+| Codex | the `cwd` of every event | the bridge's working directory, which is the session's unless the server entry sets `cwd` (the installer does not) |
+| WorkBuddy | the `cwd` of `UserPromptSubmit`, `Stop` and `SessionEnd`; `SessionStart` has none, so its recall asks for global memories only and the first prompt's recall brings the project in | the bridge inherits its worker's working directory; that it is the conversation's folder is **unverified**, so pass `project` |
+| DeepSeek Harness | no hooks | the working directory of the `dsh` process, which does **not** follow the session: the default is usually global or an unrelated folder, so pass `project` |
+
+**MCP tools.** `scope.project` is optional on `add_memories`, `search_memories`, `get_context` and
+`list_turns`. Left out, the bridge uses its default project, or sends `scope.kind: "global"` when the default
+is global (the connection has no project folder): a global write files global memory, a global read
+sees global and platform memories only. A `project` the agent gives is passed on unchanged, and `*` on a
+read still means every project. The bridge states its default project in its server instructions, so the
+agent knows what it omits. Reads without a `scope` now mean the default project, not every project: ask for
+`project: "*"` to search them all. `propose_import` and the `import_memories` prompt need a project: they
+use the default, and refuse when it is global and none is given. The bridge does not use MCP roots (the
+latest specification deprecates them, and Codex, WorkBuddy and DeepSeek Harness do not support them).
+
+**Global sessions in recall.** A session without a project injects its context as
+`<shared-memory scope="global" event="SessionStart">`; a project's opens with
+`<shared-memory project="/Users/me/code/app" event="SessionStart">`. The outbox and the record of shown
+memories key a global session by the empty string, and a captured global turn carries
+`"scope": {"kind": "global", "session": …}` and a turn ID whose project part is empty.
+
+### Turning the hooks off per project
+
+Hooks run in every session, so stopping them in one project is the platform's job:
+
+- **Claude Code:** set `"disableAllHooks": true` in that project's `.claude/settings.json` or
+  `.claude/settings.local.json`. It stops every hook there, not only this service's.
+- **Codex:** `~/.codex/hooks.json` hooks run for every trusted session, in untrusted projects too (marking a
+  project untrusted drops only that project's own hooks). Turning hooks off in a trusted project's
+  `.codex/config.toml` with `[features]` `hooks = false` should stop them there; that is **unverified**.
+- **WorkBuddy:** no per-project switch is known. A session in `~/WorkBuddy`'s default folders is already
+  global.
+
+The MCP server stays registered either way; remove or disable it in the platform to drop the tools too.
 
 ## Use with Codex
 
@@ -215,20 +283,22 @@ tool_timeout_sec = 180
 
 Use either registration method for this server and preserve existing settings. Local Codex clients share MCP configuration on the same host; project configuration requires a trusted project. Restart/reload the client after changing its configuration, inspect `/mcp` in the CLI, and confirm the eight tools in the [API reference](api.md#interfaces) are available. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
+Leave `cwd` out of the server entry: Codex then starts the bridge in the session's working directory, which is its [default project](#project-routing).
+
 Add the [shared memory workflow](#shared-memory-workflow) to the target project's `AGENTS.md`. For automatic capture, follow the separate [Codex hooks setup](#codex-hooks). A local stdio setup requires the executable and daemon to be reachable from the host running the client; a cloud container has its own loopback address.
 
 ## Use with Claude Code
 
-From the **target project** directory, register the bridge:
+Register the bridge for all your projects (user scope, as the installer does); its default project is then the folder Claude Code is started in:
 
 ```sh
-claude mcp add --transport stdio --scope project shared-memory -- \
+claude mcp add --transport stdio --scope user shared-memory -- \
   /absolute/path/agent-memory-service/target/fast/agent-memoryd \
   mcp --url http://127.0.0.1:8765 --platform claude-code
 claude mcp list
 ```
 
-Alternatively, merge [examples/claude-code.mcp.json](../examples/claude-code.mcp.json) into the target project's `.mcp.json`:
+Alternatively, merge the `mcpServers` entry of [examples/claude-code.mcp.json](../examples/claude-code.mcp.json) into `~/.claude.json`, or into one project's `.mcp.json` to register the bridge for that project only:
 
 ```json
 {
@@ -242,7 +312,7 @@ Alternatively, merge [examples/claude-code.mcp.json](../examples/claude-code.mcp
 }
 ```
 
-Preserve other MCP servers. Project scope writes `.mcp.json`; use `--scope user` for registration across projects or the default local scope for a private project registration. Start/restart Claude Code, enable the project server when prompted, and check `/mcp` for connection status. See the [official Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
+Preserve other MCP servers. Project scope (`--scope project`) writes a project's `.mcp.json`, and the default local scope a private registration for one project. Start/restart Claude Code, enable a project server when prompted, and check `/mcp` for connection status. See the [official Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
 
 Add the [shared memory workflow](#shared-memory-workflow) to the target project's `CLAUDE.md`. Optional conversation capture uses [Claude Code hooks](#claude-code-hooks); MCP alone does not capture it.
 
@@ -252,6 +322,13 @@ DeepSeek Harness (`dsh` and the Desktop app) gets the eight tools, named `mcp__s
 and no automatic capture: its Claude Code and Codex hook bridges pass no transcript and no final reply
 and send no `SessionEnd`, so the collector would have nothing to save. Ask the agent to save with
 `add_memories`, and put the [shared memory workflow](#shared-memory-workflow) in its instructions.
+
+**Pass `project` here.** The bridge's default project is the working directory of the `dsh` process, which
+is the same for every session and not the folder a session works in (the Desktop app starts `dsh` elsewhere
+entirely). The default is therefore usually global or an unrelated folder, and an agent that leaves
+`scope.project` out files its memories there. Put the project's absolute path in the instructions
+(`project: "/Users/me/code/app"` on every call), as the [workflow](#shared-memory-workflow) says. The same
+holds for WorkBuddy's MCP tools, whose working directory is unverified.
 
 `~/.dsh/cordis.patch.yml` is the home-level patch list that every profile, the Desktop app's included,
 applies after its own layers. The installer keeps one block in it and leaves every other byte alone:
@@ -285,14 +362,17 @@ app manages its own profile files under `~/.dsh/profiles/desktop/`; the installe
 
 ## Shared memory workflow
 
-Use the same daemon and stable project ID across clients. Give each client its own platform label and use the actual native session ID for each session.
+Use the same daemon across clients, and open the same folder in each: the [project](#project-routing) is the session's folder. Give each client its own platform label and use the actual native session ID for each session.
 
 See [scope and idempotency](api.md#scope-and-idempotency) for field meanings and retry keys.
 
-Merge an instruction such as this into the target project's `AGENTS.md` or `CLAUDE.md`, replacing the project ID:
+Merge an instruction such as this into the target project's `AGENTS.md` or `CLAUDE.md`:
 
 ```text
-Use shared-memory with project "my-project" and the actual current session ID.
+Use shared-memory with the actual current session ID. Leave out scope.project: the
+connection's default project is this session's folder. If the server instructions say
+the default project is global, pass scope.project with the absolute path of the project
+folder you are working in.
 At session start or resume, call get_context with a modest tokenBudget, unless
 shared-memory context was already loaded automatically.
 Search for relevant past decisions before repeating investigation; inspect sources
@@ -310,21 +390,21 @@ The [API reference](api.md#interfaces) lists the eight MCP tools and the HTTP-on
 With [automatic recall](#automatic-recall) installed, the session-start `get_context` and a search per
 prompt happen without the agent; the remaining steps still apply.
 
-For example, ask either agent: “Use shared-memory to load context for project `my-project`, then search for our previous storage decision and show its source.” To save a behavior requirement, ask: “Remember as an instruction for `my-project`: include sources when reporting project decisions.” These prompts use tools; they do not require the agent to copy its complete conversation.
+For example, ask either agent: “Use shared-memory to load context for this project, then search for our previous storage decision and show its source.” To save a behavior requirement, ask: “Remember as an instruction for this project: include sources when reporting project decisions.” These prompts use tools; they do not require the agent to copy its complete conversation.
 
-To verify sharing, save that project instruction in Codex, then ask Claude Code to call `get_context` for the same project. It should see the instruction despite using a different platform/session. Repeat after a daemon restart with the same data directory. For inferred facts, first check the write receipt and then use `search_memories`; instructions are read through `get_context` rather than ordinary fact search.
+To verify sharing, save that project instruction in Codex, then ask Claude Code, started in the same folder, to call `get_context`. It should see the instruction despite using a different platform/session. Repeat after a daemon restart with the same data directory. For inferred facts, first check the write receipt and then use `search_memories`; instructions are read through `get_context` rather than ordinary fact search.
 
 ## Automatically save conversations
 
 Automatic saving requires **both a collector and a running uploader**. The collector (`agent-memoryd hook capture`, run by Codex, Claude Code and WorkBuddy hooks) captures completed user/assistant text into a local durable queue without waiting for the daemon. The uploader, the daemon itself when started with `--outbox` or a standalone `agent-memoryd outbox drain`, submits it without involving the agent's main model. Capture does not include tool traces, reasoning, images, or every possible client/subagent lifecycle.
 
-Use the same `--project` and `--platform` in capture commands as in the corresponding MCP setup. Hooks written by earlier installers also pass `--tenant`, which is ignored: a daemon serves one store. If you change `--outbox`, every collector, uploader, and status command must use that same path. One outbox can contain both Codex and Claude Code records for one daemon.
+Capture commands take `--platform`, the label of the corresponding MCP setup, and no project: each event's folder gives it ([project routing](#project-routing)). Hooks written by earlier installers also pass `--tenant`, which is ignored: a daemon serves one store. If you change `--outbox`, every collector, uploader, and status command must use that same path. One outbox can contain both Codex and Claude Code records for one daemon.
 
 ### Codex hooks
 
 Codex captures turns through hooks, as Claude Code does. Merge
 [examples/codex.hooks.json](../examples/codex.hooks.json) into user-level `~/.codex/hooks.json`, as the
-installer does, replacing the binary path and project ID:
+installer does, replacing the binary path:
 
 | Event | Adapter behavior |
 |---|---|
@@ -337,7 +417,7 @@ Codex runs a hook only after you trust it: review and trust the three collector 
 collector hooks `shared-memory capture` and the [recall hooks](#automatic-recall) `shared-memory recall`,
 and a hook without one shows as Unnamed hook. The installer cannot trust them for you: Codex has no command for it, and
 `/hooks` records your review in `config.toml` (`[hooks.state]`) through the app-server's generic config
-write. The installer never writes those records itself, which would skip that review. Its closing output lists the hooks to trust. Codex records trust per command, so changing `--project`, the binary path or
+write. The installer never writes those records itself, which would skip that review. Its closing output lists the hooks to trust. Codex records trust per command, so changing the binary path or
 another option needs trust again, and untrusted or changed hooks are skipped. Start a new turn after
 installing; a `Stop` from a turn whose prompt was not captured cannot be paired. The payload fields come
 from the hook input schemas embedded in Codex CLI 0.163.0 (`turn_id` is Codex's extension). See the
@@ -353,7 +433,7 @@ argument, and after `--` it first starts the program it wraps with the same even
 
 ### Claude Code hooks
 
-Merge the `hooks` object from [examples/claude-code.settings.json](../examples/claude-code.settings.json) into the target project's `.claude/settings.local.json`. Replace every binary path and project ID; preserve existing hooks and permissions. The template sets a three-second timeout and runs the collector synchronously only for local SQLite writes.
+Merge the `hooks` object from [examples/claude-code.settings.json](../examples/claude-code.settings.json) into your user settings, `~/.claude/settings.json`, as the installer does: the hooks then run in every project, each filed under its own folder. Replace every binary path; preserve existing hooks and permissions. The template sets a three-second timeout and runs the collector synchronously only for local SQLite writes.
 
 | Event | Adapter behavior |
 |---|---|
@@ -373,7 +453,9 @@ WorkBuddy and its bundled CodeBuddy CLI use the Claude Code hook dialect but sen
 turn with a generated ID stored in the outbox, and `Stop` pairs with the session's open prompt. A prompt
 without text, such as an image only, closes the open turn without starting one. A later `Stop` without
 an open prompt, such as a continued reply, is ignored instead of failing; only the first final reply of a
-turn is captured. The GUI reads only user-level `~/.workbuddy/settings.json` hooks, and switching sessions
+turn is captured. `UserPromptSubmit`, `Stop` and `SessionEnd` carry the session's `cwd`, which gives the project
+(`Stop` and `SessionEnd` of a turn resolve as its prompt did, which keeps them paired); the capture ignores
+`SessionStart`. The GUI reads only user-level `~/.workbuddy/settings.json` hooks, and switching sessions
 or quitting may not send `SessionEnd`; completed turns are still queued on `Stop`. Use the
 [installer](#one-command-install) or copy its hook entries; there is no separate template. Standalone
 CodeBuddy Code keeps its configuration in `~/.codebuddy` and is not covered by `--host workbuddy`.
@@ -439,8 +521,8 @@ Any client supporting local stdio MCP can use [examples/mcp.json](../examples/mc
 /absolute/path/agent-memory-service/target/fast/agent-memoryd \
   outbox enqueue --platform my-agent <<'JSON'
 {
-  "scope": {"project": "my-project", "session": "session-123"},
-  "turnId": "my-project/session-123/turn-456",
+  "scope": {"project": "/Users/me/code/my-project", "session": "session-123"},
+  "turnId": "%2FUsers%2Fme%2Fcode%2Fmy-project/session-123/turn-456",
   "messages": [
     {"role": "user", "content": "Use the shared project store.", "timestamp": "2026-10-12T08:00:00Z"},
     {"role": "assistant", "content": "I will use that store for project memory.", "timestamp": "2026-10-12T08:00:10Z"}
@@ -449,7 +531,7 @@ Any client supporting local stdio MCP can use [examples/mcp.json](../examples/mc
 JSON
 ```
 
-Supply actual IDs and available source timestamps for real input. Mem0 accepts 1–128 ordered user/assistant messages per batch. Normal capture uses inference and can invoke the configured generation provider. Use `infer:false` for verbatim storage without generation. See [scope and idempotency](api.md#scope-and-idempotency) for retry rules.
+The project is the folder's [canonical path](#project-routing); a session without one uses `"scope": {"kind": "global", "session": …}` and no `project`. A turn ID only has to be unique per platform; capture and import build it as `project/session/turn` with each part percent-encoded (the project part empty when global), as above. Supply actual IDs and available source timestamps for real input. Mem0 accepts 1–128 ordered user/assistant messages per batch. Normal capture uses inference and can invoke the configured generation provider. Use `infer:false` for verbatim storage without generation. See [scope and idempotency](api.md#scope-and-idempotency) for retry rules.
 
 ## Automatic recall
 
@@ -464,7 +546,7 @@ Each hook asks the daemon and prints what to inject as `hookSpecificOutput.addit
 
 | Event | Request | Injected |
 |---|---|---|
-| `SessionStart` (any source: startup, resume, clear, compact, fork) | `get_context` for the project and native session, `tokenBudget` 1000 | The context text; also starts the session's record of shown memories over |
+| `SessionStart` (any source: startup, resume, clear, compact, fork) | `get_context` for the project (`scope.kind: "global"` for a session without one) and native session, `tokenBudget` 1000 | The context text; also starts the session's record of shown memories over |
 | `UserPromptSubmit` | `search_memories` with the prompt (at most 2000 characters; the `<user_query>` part when the host wraps it), the project, `topK` 15 (three times `--top-k`, from 15 to 50) and `tokenBudget` 6000 (`--search-budget` for each). A daemon whose `maxTopK` is lower refuses that; recall then asks again with `--top-k` and `--search-budget` | Up to `--top-k` (5) results this session has not been shown yet, in rank order within `--search-budget` (400) tokens, one line each with its date, platform and ID. A result too long for the tokens left becomes an excerpt marked `excerpt, full text via get_memory` and ends the list; an empty prompt searches nothing |
 
 The injected block is framed for the agent. Only the explicit-instructions section of `get_context`
@@ -479,7 +561,7 @@ only through `get_context`. Stored text is flattened to one line and cannot clos
 | Time | `--timeout` (2 s) bounds the whole recall; the installed hook timeout (5 s) is the host's backstop |
 | Tokens | The daemon packs the `SessionStart` budget, and returns whole records for `UserPromptSubmit`. Recall packs `--search-budget` itself and counts a result as the daemon does: its text at one token per CJK character and one per four other characters, plus 8. Searching wider than it injects lets recall skip what the session was shown and still fill the budget, and lets a record too long for the budget arrive to be cut. An excerpt needs room for 32 tokens of text; with less left, that result waits for a later prompt and shorter ones may still fit. `--max-chars` (6000) also caps the block in whole lines, marked `[truncated]`, below Claude Code's 10,000-character limit for one `additionalContext` |
 | Repeats | A per-session record of shown memory IDs (`~/.local/state/agent-memory-service/recall-state.sqlite3`, mode 0600, IDs only, pruned after 30 days) keeps prompts from re-injecting what this session was already shown. It holds only what was injected, excerpts included. If the record fails, recall injects unfiltered; each prompt still stays within budget |
-| Scope | `--project` and `--platform` come from the installed command, as for capture; the session comes from the event. Search covers that project plus visible global records |
+| Scope | `--platform` comes from the installed command; the session and the project come from the event: its folder gives the project, as for capture ([project routing](#project-routing)). Search covers that project plus visible global records. A session without a project (the folder is the home directory, `/` or a WorkBuddy default folder, or the event has none) reads global records only, and its block opens with `scope="global"` instead of `project="…"` |
 | Network | The URL must be loopback (`127.0.0.1`, `localhost`, `::1`), and proxy variables are ignored; the installer refuses `--recall` with another `--url` |
 | Daemon down | Nothing is injected and the prompt proceeds; recall resumes when the daemon answers |
 
@@ -493,18 +575,22 @@ call. The installer notes which provider the daemon at `--url` uses.
 
 Hosts differ in when the hooks run. Codex runs them only after you trust them in `/hooks` (App:
 Settings → Hooks). Claude Code runs the collector and recall `UserPromptSubmit` hooks in parallel and
-adds every returned context. WorkBuddy sends `SessionStart` without `cwd`, and its order relative to the
-first prompt is not guaranteed; a late `SessionStart` starts the record over, so the next prompt may
-repeat what the first one injected. Change
+adds every returned context. WorkBuddy sends `SessionStart` without `cwd`, so its start-of-session recall
+is global-only (the prompts, which carry `cwd`, bring the project in), and the record of what that start
+showed is kept apart from the prompts' (a global memory may be shown once more with the first prompt).
+Its order relative to the first prompt is not guaranteed, which does no harm: a late `SessionStart` starts
+only the global record over. Change
 `--context-budget`, `--search-budget`, `--top-k`, `--max-chars` or `--timeout` by editing the installed
 command, and keep `--timeout` below the hook timeout. A rerun of the installer replaces edited commands.
 To see what a hook would inject, run it by hand:
 
 ```sh
-echo '{"hook_event_name":"SessionStart","session_id":"manual-check"}' | \
+echo '{"hook_event_name":"SessionStart","session_id":"manual-check","cwd":"/path/to/project"}' | \
   /absolute/path/agent-memory-service/target/fast/agent-memoryd hook recall \
-  --project my-project --platform codex --state /tmp/recall-check.sqlite3
+  --platform codex --state /tmp/recall-check.sqlite3
 ```
+
+The event's `cwd` is the project folder; leave it out to see what a session without a project gets.
 
 ### Migrate from the Python hook scripts
 
@@ -530,7 +616,7 @@ imported: each host loads its own. The installer has no import option yet.
 | Any agent: `--host jsonl --from FILE --label LABEL` | the JSONL that `import prompt` asks a host's agent for | a line | as is when it fits, else extracted; an `instruction` line is a preference |
 
 ```sh
-agent-memoryd import plan --host codex --project my-project --workspace /path/to/repo
+agent-memoryd import plan --host codex --workspace /path/to/repo
 agent-memoryd import propose ~/.local/state/agent-memory-service/imports/<plan>.plan.jsonl
 agent-memoryd import show RUN        # writes ~/.local/state/agent-memory-service/imports/RUN.review.jsonl
 agent-memoryd import apply RUN --review ~/.local/state/agent-memory-service/imports/RUN.review.jsonl
@@ -540,6 +626,12 @@ agent-memoryd import rollback RUN
 
 Every command but `plan` and `prompt` talks to the daemon at `--url` (default `http://127.0.0.1:8765`), so
 the daemon must be running.
+
+The memories go into a project. With `--host claude-code` or `codex` and exactly one `--workspace`, `plan`
+takes the project the hooks file that folder's sessions under (the repository's root path, see
+[project routing](#project-routing)); a folder that is no project (the home directory, a WorkBuddy default
+folder) is refused. Hosts without a workspace (WorkBuddy, `jsonl`), and several workspaces, need
+`--project`, the project's absolute path. The plan file is named by the project's last path segment.
 
 1. **`plan`** reads files only, with no network access and no daemon. Reads stay inside the host's directory and
    never follow symlinks; it skips the `MEMORY.md` index, files over 64 KiB (Claude Code) or 256 KiB (Codex),
@@ -578,7 +670,7 @@ Capture only sees turns after its hooks were installed. With `--include sessions
 forms captured turns. `--include notes,sessions` plans both.
 
 ```sh
-agent-memoryd import plan --host claude-code --project my-project --workspace /path/to/repo --include sessions --since 2026-09-01
+agent-memoryd import plan --host claude-code --workspace /path/to/repo --include sessions --since 2026-09-01
 agent-memoryd import propose ~/.local/state/agent-memory-service/imports/<plan>.plan.jsonl
 agent-memoryd import apply RUN --yes
 agent-memoryd import status RUN
@@ -590,7 +682,8 @@ agent-memoryd import status RUN
 | Codex | `~/.codex/sessions/**/rollout-*.jsonl` and `.jsonl.zst`, and `~/.codex/archived_sessions/`, whose `cwd` is in a workspace | the text of a turn's `UserMessage` items and its `task_complete` final message | threads whose `thread_source` is not `user` (subagents, guardian reviews, handoffs), rollouts without it (Codex before 0.131, `unknown-format`), aborted turns and turns without a final message |
 
 - A turn keeps capture's identity: the host's platform label and the turn ID capture gives it
-  (`project/session/turn`), so use the `--project` of your capture hooks. The daemon deduplicates by
+  (`project/session/turn`), so import into the project the hooks use for that folder, which is the
+  default with one `--workspace`. The daemon deduplicates by
   `platform + turnId`: a turn capture already sent, or an earlier import, comes back `duplicate:true` and is not
   formed again, and overlapping imports are harmless.
 - `plan` takes the oldest turns from `--since` (default: all) up to `--limit` (default 200), and its report names
@@ -638,8 +731,11 @@ your own reply. The [design](design/memory-import-mcp.md) explains the choices.
 
 - The daemon is running, and the host is connected with the installer (or by hand) and restarted, so it lists the
   eight `shared-memory` tools, including `propose_import` and `apply_import`.
-- Pick the project to import into (`my-project` below) and a platform label for the source: `chatgpt`, `gemini`,
-  `claude-ai`, or `self` for what the connected agent itself remembers.
+- Pick the project to import into and a platform label for the source: `chatgpt`, `gemini`,
+  `claude-ai`, or `self` for what the connected agent itself remembers. The project defaults to the
+  connection's [default project](#project-routing), the session's folder; an import cannot go into global
+  memory, so where that default is global (DeepSeek Harness, a WorkBuddy session without a folder) give
+  `project`, a folder's absolute path.
 - A generation model is optional. Without one, a line too long for one memory is split at sentences instead of
   extracted.
 
@@ -647,9 +743,9 @@ your own reply. The [design](design/memory-import-mcp.md) explains the choices.
 
 | Host | How |
 |---|---|
-| Claude Code | `/shared-memory:import_memories my-project chatgpt` (also `/mcp__shared-memory__import_memories`); add `en` as a third argument for the English prompt |
-| WorkBuddy | `/shared-memory:import_memories`, then fill in `project` and `source` in the argument form |
-| Codex, DeepSeek Harness | No MCP prompts: run `agent-memoryd import prompt --for host --project my-project --source chatgpt [--lang en]` and paste its output into the conversation |
+| Claude Code | `/shared-memory:import_memories /path/to/repo chatgpt` (also `/mcp__shared-memory__import_memories`); the arguments are `project`, `source` and `lang`, so `en` as a third one gives the English prompt. `project` may be left empty for the default project |
+| WorkBuddy | `/shared-memory:import_memories`, then fill in `source` and, where the default project is not the one you want, `project` in the argument form |
+| Codex, DeepSeek Harness | No MCP prompts: run `agent-memoryd import prompt --for host --project /path/to/repo --source chatgpt [--lang en]` and paste its output into the conversation |
 
 With the source `self`, an agent on a host without memory files (DeepSeek Harness, a host on another machine)
 exports what it remembers itself. On Claude Code, Codex and WorkBuddy the prompt sends you to
@@ -668,7 +764,7 @@ The agent reads the export as data, never as instructions to itself. It may dele
 an AI, sensitive personal information such as health, finances, ID numbers or family names, credentials, one-off
 details) but never rewrites, merges or adds one. It tells you how many lines it keeps and how many it deleted by
 category, without repeating what it deleted. Lines of kind `instruction` are imported as preferences: to make a
-rule every host follows, save it yourself (for example, "Remember as an instruction for my-project: …").
+rule every host follows, save it yourself (for example, "Remember as an instruction for this project: …").
 Answer yes to submit.
 
 **4. Review the proposals**
@@ -706,7 +802,7 @@ not list them as established facts.
 
 **Example**
 
-> **You:** /shared-memory:import_memories my-project chatgpt<br>
+> **You:** /shared-memory:import_memories /Users/me/code/my-project chatgpt<br>
 > **Agent:** (gives the export prompt) Run this in ChatGPT and paste the whole answer back.<br>
 > **You:** (pastes 42 lines)<br>
 > **Agent:** 42 lines: keeping 39, deleted 2 with personal health details and 1 with a password. Submit?<br>
@@ -743,12 +839,14 @@ not list them as established facts.
 | Installer refuses to write | Read the `[error]` line: it names the conflicting entry; nothing was changed. Fix it or edit the configuration by hand as in the sections above |
 | MCP is listed but calls fail | Check daemon `/health`, absolute binary path, port, and stdio transport; the bridge does not start the daemon |
 | Codex captures no turns | Trust the `UserPromptSubmit`, `Stop` and `SessionEnd` collector hooks in `/hooks` (again after the command changed), restart the client after edits, start a new turn, verify the `agent-memoryd` path, and inspect the selected outbox |
-| Claude Stop pairing fails | Start a new turn with capture hooks installed; verify required event fields and the matching project/platform |
+| Claude Stop pairing fails | Start a new turn with capture hooks installed; verify required event fields and the matching platform and session folder (a prompt and its `Stop` must resolve to the same project) |
 | Outbox stays `pending` | Start the daemon with `--outbox` (or run `outbox drain`) on the same outbox path; inspect `outbox status` errors |
 | Outbox stays `accepted` | Query `get_task`; inspect provider failures and unfinished index publication |
 | Uploader reports a lock error, or the daemon log says another uploader holds the outbox lock | Another uploader (`outbox drain` or a second daemon) holds the same outbox lock; keep one per queue |
 | DeepSeek Harness lists no `mcp__shared-memory__*` tools | Restart it and start a new session; rerun the installer, which reports whether `dsh --dump-config` reads the row; check the daemon URL |
-| Cross-agent recall is empty | Check the same daemon, project IDs, record scope, completion state, token budget, and explicit cross-platform raw-input scope |
+| Cross-agent recall is empty | Check the same daemon, that both sessions opened the same folder (the project ID is its repository root's path), record scope, completion state, token budget, and explicit cross-platform raw-input scope |
+| Memories are filed under the wrong project, or as global | The session's folder decides ([project routing](#project-routing)): the home directory, `/` and WorkBuddy's default folders are global, and DeepSeek Harness's and WorkBuddy's MCP default may not be the session's folder: pass `project`. A recall block's opening tag names the project (or says `scope="global"`), and the web UI lists the projects |
+| Hooks fail with `unexpected argument '--project'` | Hooks written before the project came from the folder. Rerun the installer for the user-level hooks (Codex, WorkBuddy, Claude Code). An earlier Claude Code installation in one workspace also wrote `<workspace>/.claude/settings.local.json` and `<workspace>/.mcp.json`, which the installer no longer touches: delete their `shared-memory` hook entries and server there |
 | Automatic recall injects nothing | Check the daemon at the loopback `--url`, trust the recall hooks in Codex, and run the hook by hand as in [automatic recall](#automatic-recall); stderr names the error type |
 | `import plan` finds no Claude Code notes | Pass the repository (or a worktree of it) as `--workspace`: Claude Code keeps one memory directory per repository. `--all` also finds directories by their transcripts' `cwd` |
 | `import propose` fails with HTTP 503 | Extract units need the daemon's generation key; set it, or plan with `--no-extract` |

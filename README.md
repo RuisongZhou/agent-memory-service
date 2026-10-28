@@ -8,8 +8,8 @@ English | [简体中文](README.zh-CN.md)
 **Shared memory for your local AI agents.** Carry project decisions, facts and explicitly saved instructions between
 Codex, Claude Code, WorkBuddy and DeepSeek Harness.
 
-Connect your clients to the same local service and use the same project ID. Each client can retrieve shared memories,
-inspect their sources and correct outdated information.
+Connect your clients to the same local service and open the same folder in each. Each client can retrieve shared
+memories, inspect their sources and correct outdated information.
 
 With capture and recall hooks enabled, a typical workflow looks like this:
 
@@ -104,33 +104,35 @@ cd agent-memory-service
 
 ### 3. Connect your client
 
-Choose a stable project ID and replace `my-project` below. Clients sharing project memories must connect to the
-**same daemon** and use the **same project ID**.
+You do not name a project when you install. Hooks and the MCP bridge take it from the folder a session is opened in
+(see [project routing](#what-the-installer-does)). Clients sharing project memories must connect to the **same daemon**
+and be opened in the **same folder**.
 
 #### Codex CLI / App
 
 ```bash
-bash scripts/install.sh --host codex --apply --project my-project --recall
+bash scripts/install.sh --host codex --apply --recall
 ```
 
 Restart Codex, then trust the `shared-memory` hooks (five with `--recall`) in `/hooks`, or **Settings → Hooks** in the
 app. Capture and recall will not run until their hooks are trusted.
 
-Codex records trust by hook content. If you rerun the installer with a different `--project` or binary path, or an
-upgrade changes the hooks, trust them again. See [Codex hooks](docs/mcp-harness.md#codex-hooks).
+Codex records trust by hook content. If you rerun the installer with a different binary path or option, or an upgrade
+changes the hooks, trust them again. See [Codex hooks](docs/mcp-harness.md#codex-hooks).
 
 #### Claude Code
 
 ```bash
-bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project --recall
+bash scripts/install.sh --host claude-code --apply --recall
 ```
 
-Restart Claude Code in that workspace and approve the `shared-memory` project MCP server. Use `/mcp` to inspect it.
+Restart Claude Code and use `/mcp` to inspect the `shared-memory` server. It is installed at user level, so it and its
+hooks apply to every project.
 
 #### WorkBuddy
 
 ```bash
-bash scripts/install.sh --host workbuddy --apply --project my-project --recall
+bash scripts/install.sh --host workbuddy --apply --recall
 ```
 
 Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memory` and enable all eight tools.
@@ -142,7 +144,8 @@ bash scripts/install.sh --host deepseek-harness --apply
 ```
 
 Restart DeepSeek Harness and start a new session. This integration provides MCP tools only; it does not accept
-`--project` or `--recall`. Specify the project when asking the agent to use memory.
+`--recall`. The bridge runs in `dsh`'s working directory, not in a session's folder, so name the project (a folder's
+absolute path) when asking the agent to use memory.
 
 #### What the installer does
 
@@ -155,15 +158,22 @@ neither works.
 The installer preserves existing unrelated MCP servers, hooks and settings. Remove `--apply` to preview the
 installation.
 
-> **Project routing:** capture and recall hooks use the project ID recorded in their installed command. Codex and
-> WorkBuddy hooks are installed at user level, so they use that ID across sessions; they do not select a project from
-> the current directory. Claude Code's default installation is scoped to the specified workspace. MCP calls specify
-> their own project scope.
+> **Project routing:** the installer names no project; hooks and the MCP bridge take it from the folder of the session
+> when they run. That folder is the working directory (for Claude Code, the folder it was started in). Inside a git
+> repository the project is the main repository's root, so subdirectories and worktrees share one project; any other
+> folder is its own project. The project ID is that absolute path, for example `/Users/me/code/my-repo`, so moving a
+> folder starts a new project. A session with no folder, or one opened in your home directory, uses **global** memories,
+> which every project also sees; so do WorkBuddy conversations in the folders it creates itself (`~/WorkBuddy/…`).
+> MCP tools use the session's project unless the call passes `project`.
+>
+> The hooks run in every session. To stop them in one project, set `"disableAllHooks": true` in its
+> `.claude/settings.local.json` (Claude Code, which turns off all its hooks there), or `[features] hooks = false` in a
+> trusted project's `.codex/config.toml` (Codex; not yet verified). WorkBuddy has no known per-project switch.
 
 **Other configurations:**
 
-- **MCP only:** for Codex, Claude Code or WorkBuddy, add `--no-capture` and omit `--recall`. The installer does not
-  require `--project` in this mode. To add hooks later, rerun with the full command.
+- **MCP only:** for Codex, Claude Code or WorkBuddy, add `--no-capture` and omit `--recall`. To add hooks later, rerun
+  with the full command.
 - **Capture without automatic recall:** omit `--recall`.
 - **No web UI:** add `--no-ui`; a web UI the service already serves stays.
 - **Existing binary:** use `--binary /absolute/path/to/agent-memoryd` to skip the build, for example with a
@@ -180,14 +190,15 @@ Full options, configuration changes, backups and uninstall instructions are in t
 
 ### 4. Try sharing a memory
 
-Connect two supported clients to the same daemon. In the first client, ask:
+Connect two supported clients to the same daemon and open the same folder in both (DeepSeek Harness: name that folder
+as the project in your request). In the first client, ask:
 
-> Use shared-memory to save this test fact for project `my-project`: "The project's test mascot is a copper fox." Use
-> `add_memories` with `infer:false` to store the text directly.
+> Use shared-memory to save this test fact: "The project's test mascot is a copper fox." Use `add_memories` with
+> `infer:false` to store the text directly.
 
 In the second client, ask:
 
-> Use shared-memory to search project `my-project` for its test mascot. Show the stored fact and inspect its source with
+> Use shared-memory to search for the project's test mascot. Show the stored fact and inspect its source with
 > `get_memory`.
 
 The second client should retrieve the fact saved by the first. This checks explicit storage, retrieval and
@@ -230,8 +241,8 @@ You can ask the agent to use memory directly:
 
 | Task | Example request |
 |---|---|
-| Resume project work | "Load shared-memory context for `my-project`, then find our previous storage decision." |
-| Save a requirement | "Remember as an instruction for `my-project`: include sources when reporting project decisions." |
+| Resume project work | "Load shared-memory context for this project, then find our previous storage decision." |
+| Save a requirement | "Remember as an instruction for this project: include sources when reporting project decisions." |
 | Check a source | "Inspect the source of that memory before relying on it." |
 | Correct a record | "Use shared-memory to correct that record: the service port is now 9000." |
 | Retract a record | "Retract this memory; it is no longer valid." |
@@ -261,7 +272,7 @@ follow it.
 other agents, and past Claude Code and Codex sessions:
 
 ```bash
-~/.local/bin/agent-memoryd import plan --host codex --project my-project --workspace /absolute/path/to/project
+~/.local/bin/agent-memoryd import plan --host codex --workspace /absolute/path/to/project   # the project is that workspace's
 ~/.local/bin/agent-memoryd import propose <plan file printed by plan>   # prints RUN; writes no memories
 ~/.local/bin/agent-memoryd import show RUN                             # writes a review file; mark accept / reject
 ~/.local/bin/agent-memoryd import apply RUN --review <review file>
@@ -273,9 +284,9 @@ See [import existing memories](docs/mcp-harness.md#import-existing-memories) for
 **From another assistant, in a conversation, over MCP.** For memories kept by ChatGPT, Gemini or Claude.ai, with
 nothing saved to a file:
 
-1. In a connected host, run `/shared-memory:import_memories my-project chatgpt` (Claude Code). On hosts without
-   MCP prompts, such as Codex, paste the output of
-   `agent-memoryd import prompt --for host --project my-project --source chatgpt` instead.
+1. In a connected host, run `/shared-memory:import_memories /absolute/path/to/project chatgpt` (Claude Code). On hosts
+   without MCP prompts, such as Codex, paste the output of
+   `agent-memoryd import prompt --for host --project /absolute/path/to/project --source chatgpt` instead.
 2. Run the export prompt the agent gives you in the other assistant, and paste its answer back.
 3. The agent drops the lines it must not import and submits the rest with `propose_import`. Nothing is written yet;
    it shows you the proposals.

@@ -311,7 +311,7 @@ def collector_argv(ctx, outbox=None, extra=()):
     outbox = outbox or ctx.outbox_arg
     if outbox:
         argv += ['--outbox', str(outbox)]
-    return argv + ['--project', ctx.project, '--platform', ctx.platform, *extra]
+    return argv + ['--platform', ctx.platform, *extra]
 
 
 def hook_command(ctx, outbox=None, extra=()):
@@ -334,7 +334,7 @@ def recall_argv(ctx, url=None, state=None):
     state = state or ctx.recall_state_arg
     if state:
         argv += ['--state', str(state)]
-    return argv + ['--project', ctx.project, '--platform', ctx.platform, '--url', url or ctx.url]
+    return argv + ['--platform', ctx.platform, '--url', url or ctx.url]
 
 
 def recall_command(ctx, url=None, state=None):
@@ -519,7 +519,6 @@ def arguments(argv=None):
                       help='restore the files of the latest (or given) installation backup')
     mode.add_argument('--uninstall', action='store_true',
                       help="remove only this project's MCP and capture entries (backed up)")
-    parser.add_argument('--project', help='stable shared project ID recorded with captured dialogue')
     parser.add_argument('--url', default='http://127.0.0.1:8765', help='daemon base URL (default: %(default)s)')
     parser.add_argument('--no-capture', action='store_true',
                         help='install (or keep) no dialogue collector')
@@ -557,8 +556,6 @@ def arguments(argv=None):
     parser.add_argument('--non-interactive', action='store_true', help='never prompt; fail on missing values')
     host.add_arguments(parser)
     args = parser.parse_args(argv)
-    if args.project is not None and (not args.project.strip() or args.project.startswith('-')):
-        parser.error('--project must be non-empty and must not start with "-"')
     if args.no_service:
         for name in ('env_file', 'key_file', 'verify_model'):
             if getattr(args, name):
@@ -569,13 +566,10 @@ def arguments(argv=None):
 def context(host, args):
     """Paths and settings for one host. host_paths may narrow ctx.state to one target."""
     home = args.home
-    if not host.CAPTURE and args.project:
-        raise InstallError(f'{host.LABEL} gets MCP tools only, without dialogue capture; '
-                           '--project only names captured dialogue, so leave it out')
     if args.recall and not host.RECALL:
         raise InstallError(f'{host.LABEL} gets MCP tools only; the installer writes no recall hooks there, '
                            'so leave out --recall')
-    ctx = types.SimpleNamespace(home=home, platform=host.PLATFORM, project=args.project,
+    ctx = types.SimpleNamespace(home=home, platform=host.PLATFORM,
                                 capture=host.CAPTURE and not args.no_capture, recall=args.recall)
     ctx.url = check_url(args.url)
     if ctx.recall and urlsplit(ctx.url).hostname not in LOOPBACK:
@@ -605,20 +599,6 @@ def context(host, args):
     return ctx
 
 
-def resolve_project(host, args, ctx):
-    if ctx.project or not (ctx.capture or ctx.recall) or not args.apply:
-        return
-    default = host.default_project(args, ctx)
-    if args.non_interactive or not sys.stdin.isatty():
-        raise InstallError('Choose the shared project ID for captured dialogue and recall: --project <id> '
-                           '(or --no-capture without --recall for MCP tools only)')
-    answer = input('Shared project ID for captured dialogue and recall'
-                   + (f' [{default}]' if default else '') + ': ').strip()
-    ctx.project = answer or default
-    if not ctx.project:
-        raise InstallError('A project ID is required for capture and recall')
-
-
 # --- flow -------------------------------------------------------------------
 
 def plan(host, args, ctx, uninstall=False):
@@ -633,17 +613,19 @@ def print_plan(host, args, ctx):
     import runtime
     runtime.print_plan(args, ctx)
     if ctx.capture:
-        print(f"[plan] capture project={ctx.project or '<required: --project ID>'} collector={ctx.binary} hook capture")
+        print(f'[plan] capture collector={ctx.binary} hook capture')
         print(f'[plan] outbox={ctx.outbox}')
     elif host.CAPTURE:
         print('[plan] capture disabled' + ('' if ctx.recall else ' (MCP tools only)'))
     else:
         print(f'[plan] MCP tools only: {host.LABEL} offers no hooks the collector can capture from')
     if ctx.recall:
-        print(f"[plan] recall project={ctx.project or '<required: --project ID>'} command={ctx.binary} hook recall")
+        print(f'[plan] recall command={ctx.binary} hook recall')
         print('[plan] recall injects get_context on SessionStart and search_memories on UserPromptSubmit')
         print('[plan] every prompt becomes a search query; with hosted retrieval models (the default provider)')
         print('       the daemon sends it to the embedding API')
+    if ctx.capture or ctx.recall:
+        print("[plan] project: the session's folder (its git repository root); a session without a folder is global")
 
 
 def recall_privacy(health):
@@ -699,11 +681,7 @@ def install(host, args):
         print(f'[uninstall] removed from {host.LABEL}. Restart it. Revert with --rollback.')
         print_shared(ctx)
         return
-    resolve_project(host, args, ctx)
     print_plan(host, args, ctx)
-    if (ctx.capture or ctx.recall) and not ctx.project:
-        print('[result] preview only; --apply needs --project ID (or --no-capture without --recall).')
-        return
     changes, expected = plan(host, args, ctx)
     for path, data, _ in changes:
         print(f"[plan] {'update' if data is not None else 'delete'} {path}")

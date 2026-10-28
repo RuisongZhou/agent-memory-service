@@ -40,10 +40,6 @@ def managed_files(args, ctx):
     return [*ctx.mcp_files, ctx.settings]
 
 
-def default_project(args, ctx):
-    return None
-
-
 def server_entry(ctx):
     return {'type': 'stdio', 'command': str(ctx.binary), 'args': core.bridge_args(ctx.url, PLATFORM),
             'timeout': TOOL_TIMEOUT_MS}
@@ -75,7 +71,7 @@ def capture_events(ctx, outbox):
     """Payloads shaped like WorkBuddy 5.8's: no prompt_id, a transcript path and cwd."""
     command = core.hook_command(ctx, outbox, HOOK_EXTRA)
     base = {'session_id': checks.SESSION, 'transcript_path': str(outbox.with_name('transcript.jsonl')),
-            'cwd': str(ctx.home)}
+            'cwd': ctx.check_project}
     events = [dict(base, hook_event_name='UserPromptSubmit', prompt=checks.USER),
               dict(base, hook_event_name='Stop', stop_hook_active=False,
                    last_assistant_message=checks.ASSISTANT),
@@ -87,11 +83,11 @@ def capture_events(ctx, outbox):
 
 
 def recall_event(ctx, name, session, prompt=None):
-    """WorkBuddy 5.8 sends SessionStart without cwd."""
+    """WorkBuddy 5.8 sends SessionStart without cwd, so the session folder is known from the first prompt on."""
     base = {'session_id': session, 'transcript_path': str(ctx.home / 'transcript.jsonl'), 'hook_event_name': name}
     if name == 'SessionStart':
         return dict(base, source='startup')
-    return dict(base, cwd=str(ctx.home), prompt=prompt)
+    return dict(base, cwd=ctx.check_project, prompt=prompt)
 
 
 def host_check(args, ctx, planned):
@@ -102,10 +98,14 @@ def post_install(args, ctx):
     lines = ['[result] installed for WorkBuddy. Restart WorkBuddy, open Connectors -> Custom connector,',
              f'         trust {SERVER} and confirm its {len(core.TOOLS)} tools are enabled.']
     if ctx.capture:
-        lines += [f'         User-level hooks file every WorkBuddy conversation under project "{ctx.project}".',
+        lines += ["         User-level hooks file every WorkBuddy conversation under the project of its folder.",
                   '         The GUI may not send SessionEnd; completed turns are still captured on Stop.']
     if ctx.recall:
-        lines += [f'         Recall hooks inject project "{ctx.project}" memory into every WorkBuddy conversation.']
-    lines += [f'[next] add the shared memory workflow for project "{ctx.project or "<id>"}" to the agent '
-              'instructions: docs/mcp-harness.md#shared-memory-workflow']
+        lines += ["         Recall hooks inject that project's memory with each prompt; at conversation start, which",
+                  '         carries no folder, they inject global memories only.']
+    if ctx.capture or ctx.recall:
+        lines += ["         A conversation without a workspace folder (WorkBuddy's own ~/WorkBuddy folders) uses global",
+                  '         memories. No per-project switch for WorkBuddy hooks is documented; --uninstall turns them off everywhere.']
+    lines += ['[next] add the shared memory workflow to the agent instructions: '
+              'docs/mcp-harness.md#shared-memory-workflow']
     return lines

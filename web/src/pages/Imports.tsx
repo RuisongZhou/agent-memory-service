@@ -7,7 +7,7 @@ import type { ImportProposal, ImportRun, ImportUnitOutcome } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { ReviewStatusBadge } from '../components/memory'
 import { Modal } from '../components/Modal'
-import { Badge, Button, Card, Field, Fields, Input, MemoryLink, Muted, Note, RefreshButton, TD, TH } from '../components/ui'
+import { Badge, Button, Card, Field, Fields, Input, MemoryLink, Muted, Note, ProjectName, RefreshButton, TD, TH } from '../components/ui'
 import {
   EVIDENCE_ROLE_LABEL,
   formatNumber,
@@ -84,7 +84,7 @@ export function ImportsPage() {
                   <tr key={r.runId} className="border-t border-zinc-100">
                     <TD>{runLink(r.runId)}</TD>
                     <TD><ReviewStatusBadge status={r.status} /></TD>
-                    <TD>{r.project}</TD>
+                    <TD><ProjectName id={r.project} /></TD>
                     <TD>{r.host}</TD>
                     <TD className="whitespace-nowrap">{formatTime(r.createdAt)}</TD>
                     <TD className="text-right tabular-nums">{formatNumber(r.counts.units)}</TD>
@@ -182,7 +182,7 @@ function RunSummary({ run, actions }: { run: ImportRun; actions: ReactNode }) {
       <div className="grid gap-4 md:grid-cols-2">
         <Fields
           rows={[
-            ['项目', run.project],
+            ['项目', <ProjectName id={run.project} />],
             ['来源', run.host],
             ['创建时间', formatTime(run.createdAt)],
             ['更新时间', formatTime(run.updatedAt)],

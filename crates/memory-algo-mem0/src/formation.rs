@@ -2,7 +2,7 @@
 //! commit together. Batch provenance is never presented as a verified per-claim quotation.
 use super::config::Mem0Config;
 use super::repo;
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use memory_domain::types::*;
 use memory_engine::app::tasks;
 use memory_engine::runtime::{engine::Engine, instance::Instance, llm::JsonContract};
@@ -113,7 +113,10 @@ pub async fn enqueue(
     c: &Caller,
     req: AddMemoriesReq,
 ) -> ApiResult<Value> {
-    let project = req.scope.project.as_deref().unwrap(); // shared API validation precedes dispatch
+    // Shared API validation precedes dispatch: a write names a project exactly when it is not global. A global
+    // request is filed under the project `""`, which no project id can be, so recall, history and dedup keyed
+    // by project find only global requests and global-visible facts.
+    let project = req.scope.project.as_deref();
     let session = req.scope.session.as_deref().unwrap();
     let messages = if let Some(messages) = req.messages.clone() {
         if messages.is_empty() || messages.len() > 128 {
@@ -193,7 +196,8 @@ pub async fn enqueue(
     tx.put(schema::INDEX_META, "mem0_sequence", json!({"value":seq}))?;
     tx.put(schema::REQUESTS,&id,json!({"requestId":id,"kind":request_kind::MEM0,"strategy":"mem0",
         "status":"queued","memoryIds":[],"createdAt":now,"updatedAt":now,
-        "platform":c.platform,"project":project,"session":session,"inputSeq":seq,
+        "platform":c.platform,"project":project.unwrap_or(""),"scopeKind":project.map_or("global", |_| "project"),
+        "session":session,"inputSeq":seq,
         "turnKeys":key.into_iter().collect::<Vec<_>>(),"turnId":req.turn_id,"importRunId":req.import_run_id,
         "inputMessages":messages,"infer":req.infer.unwrap_or(true),"sessionEnded":req.session_ended.unwrap_or(false),
         "formed":false,"searchable":false,"failures":0}))?;
@@ -273,6 +277,12 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
     let project = job["project"]
         .as_str()
         .ok_or_else(|| anyhow!("missing project"))?;
+    // Requests queued before global sessions existed carry no scopeKind; every one of them named a project.
+    let scope = match job["scopeKind"].as_str().unwrap_or("project") {
+        "global" => MemScope::global(),
+        "project" => MemScope::project(project),
+        other => bail!("unknown scopeKind {other}"),
+    };
     let platform = job["platform"]
         .as_str()
         .ok_or_else(|| anyhow!("missing platform"))?;
@@ -457,7 +467,7 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
             id: mid.clone(),
             mtype: T_FACT.into(),
             text: candidate.text,
-            scope: MemScope::project(project),
+            scope: scope.clone(),
             status: S_CURRENT.into(),
             recorded_at: now.clone(),
             stated_at: observed.into(),
