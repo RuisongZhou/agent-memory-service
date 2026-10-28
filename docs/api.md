@@ -192,7 +192,7 @@ A `retrieval_log` row is one `search_memories` or `get_context` call: `kind` (`s
 caller's `platform`, `project`, `session`, `createdAt`/`createdTs`, `returned.memories` (ids and ranks),
 `returned.tokens` and, for searches, `query` and `returned.gap` (nothing found; counted in `stats`
 `retrieval.gapSearches`). Startup fills in `kind`, `createdTs` and `gap` on searches logged before these
-fields existed; their platform, project and session stay absent.
+fields existed; their platform, project, session and `returned.tokens` stay absent.
 Embedding token usage is approximate, not provider billing. Reindex HTTP errors produce a nonzero CLI exit.
 
 ### Recalls

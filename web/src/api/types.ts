@@ -621,7 +621,8 @@ export interface Retrieval {
   query: string | null
   createdAt: string
   createdTs: number
-  returned: { memories: { id: string; rank: number }[]; tokens: number; gap?: boolean }
+  /** `tokens` is missing on searches logged before it was recorded (startup could not fill it in). */
+  returned: { memories: { id: string; rank: number }[]; tokens?: number; gap?: boolean }
   latency?: Record<string, number>
   feedback?: { used: string[]; applied: string[]; outcome: string; at: string }
 }
