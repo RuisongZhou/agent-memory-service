@@ -101,6 +101,10 @@ pub struct InstallArgs {
     /// end's index.html; the unit records its absolute path [default: no web UI]
     #[arg(long, value_name = "DIR")]
     pub ui_dir: Option<PathBuf>,
+    /// Launcher of the installer copy the web UI's platform page runs (`serve --installer`); the
+    /// unit records its absolute path [default: none, the page then shows terminal commands]
+    #[arg(long, value_name = "PATH")]
+    pub installer: Option<PathBuf>,
     /// Then load the service in your login session (reloading it when the unit changed) and wait
     /// until the daemon answers; runs launchctl or systemctl
     #[arg(long, requires = "apply")]
@@ -152,6 +156,7 @@ pub struct Serve {
     pub surreal_bin: PathBuf,
     pub outbox: Option<PathBuf>,
     pub ui_dir: Option<PathBuf>,
+    pub installer: Option<PathBuf>,
     pub port: u16,
     pub llm_concurrency: u32,
 }
@@ -180,6 +185,10 @@ impl Serve {
         if let Some(ui_dir) = &self.ui_dir {
             argv.push("--ui-dir".into());
             argv.push(unit_text(ui_dir)?);
+        }
+        if let Some(installer) = &self.installer {
+            argv.push("--installer".into());
+            argv.push(unit_text(installer)?);
         }
         Ok(argv)
     }
@@ -391,6 +400,14 @@ pub fn install(args: &InstallArgs) -> Result<Outcome> {
             }
             None => None,
         },
+        installer: match &args.installer {
+            Some(path) => {
+                let path = std::path::absolute(path)?;
+                crate::api::platforms::check_installer(&path)?;
+                Some(path)
+            }
+            None => None,
+        },
         port: args.port,
         llm_concurrency: args.llm_concurrency,
     };
@@ -574,6 +591,14 @@ pub fn status_report(at: &Target) -> Result<(Vec<String>, Option<u16>)> {
             Err(e) => format!("[status] web UI: {e}; the daemon cannot start"),
         });
     }
+    if let Some(installer) = flag_value(&argv, "--installer") {
+        report.push(
+            match crate::api::platforms::check_installer(Path::new(installer)) {
+                Ok(()) => format!("[status] installer {installer} is installed"),
+                Err(e) => format!("[status] installer: {e}; the daemon cannot start"),
+            },
+        );
+    }
     if manager == Manager::Systemd {
         report.push(format!(
             "[status] {}",
@@ -619,6 +644,7 @@ pub fn status_json(at: &Target) -> Result<serde_json::Value> {
         "surrealBin": flag("--surreal-bin"),
         "outbox": flag("--outbox"),
         "uiDir": flag("--ui-dir"),
+        "installer": flag("--installer"),
         "port": if text.is_some() { serve_port(&argv) } else { None },
         "llmConcurrency": number(flag("--llm-concurrency")),
     }))
@@ -974,13 +1000,13 @@ fn private_note(_: &Path) -> Option<String> {
 }
 
 #[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
@@ -1404,6 +1430,9 @@ mod tests {
         let data = data.to_str().unwrap();
         let ui = home.ui();
         let ui = ui.to_str().unwrap();
+        // Any executable file will do as the installer's launcher.
+        let installer = home.binary();
+        let installer = installer.to_str().unwrap();
         for (manager, m) in [("launchd", Manager::Launchd), ("systemd", Manager::Systemd)] {
             let status = |home: &Home| match home.parse(manager, &["status", "--json"]) {
                 ServiceCmd::Status { at, json: true } => status_json(&at).unwrap(),
@@ -1424,6 +1453,8 @@ mod tests {
                 "2",
                 "--ui-dir",
                 ui,
+                "--installer",
+                installer,
                 "--apply",
             ];
             home.install(manager, &options).unwrap();
@@ -1440,11 +1471,17 @@ mod tests {
             assert_eq!(json["port"], 9003);
             assert_eq!(json["llmConcurrency"], 2);
             assert_eq!(json["uiDir"], ui);
+            assert_eq!(json["installer"], installer);
+            // A launcher that is not an executable file is refused, as the daemon refuses it at startup.
+            assert!(home
+                .install(manager, &["--installer", data, "--apply"])
+                .is_err());
 
             home.install(manager, &["--apply"]).unwrap();
             let json = status(&home);
             assert_eq!(json["outbox"], serde_json::Value::Null);
             assert_eq!(json["uiDir"], serde_json::Value::Null);
+            assert_eq!(json["installer"], serde_json::Value::Null);
             assert_eq!(json["port"], 8765);
         }
         let unit = Manager::Systemd.unit_path(home.path());

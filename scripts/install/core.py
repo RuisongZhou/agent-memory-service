@@ -16,6 +16,10 @@ daemon you run yourself), verifies the exact commands it will register against a
 (checks.py), and registers the stdio MCP bridge, the dialogue collector and, with --recall, the automatic recall
 hooks in the host's own configuration. It builds nothing, asks for no key and never touches the service. Every
 entry runs `agent-memoryd`, so hosts need no Python. Self-hosted model servers are never installed or started.
+
+`status` reports, for every host, whether it is on this machine, connected and up to date. The web UI's platform
+page (docs/design/platform-connect.md) runs `status --json` and `connect --json` through the copy of this installer
+that `service --apply` installs beside the daemon (runner.py).
 """
 
 import argparse
@@ -35,7 +39,7 @@ import sys
 import tempfile
 import types
 import uuid
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -206,6 +210,20 @@ def mentions_ours(handler):
     mentioned = (any(name in command for name in (LEGACY_COLLECTOR, LEGACY_RECALL))
                  or re.search(r'agent-memoryd\S*\s+hook\b', command))
     return bool(mentioned) and not owned_handler(handler) and not owned_recall(handler)
+
+
+def installed_hooks(files):
+    """(capture, recall): whether the JSON hook settings among `files` hold our collector and our recall hooks."""
+    capture = recall = False
+    for path in files:
+        hooks = read_json(path).get('hooks') if path.suffix == '.json' else None
+        for groups in hooks.values() if isinstance(hooks, dict) else ():
+            for group in groups if isinstance(groups, list) else ():
+                for handler in group.get('hooks', ()) if isinstance(group, dict) else ():
+                    if isinstance(handler, dict):
+                        capture = capture or owned_handler(handler)
+                        recall = recall or owned_recall(handler)
+    return capture, recall
 
 
 def owned_server(entry):
@@ -460,6 +478,17 @@ def rollback(host, ctx, target):
         print(f"[rollback] restored {item['path']}")
     print(f'[rollback] undid {backup.name}. Restart {host.LABEL}.')
     print_shared()
+    return {'changes': [{'path': item['path'], 'action': 'update' if item['backup'] else 'delete'}
+                        for item in manifest['files']], 'backup': str(backup)}
+
+
+def can_rollback(state):
+    """Whether `rollback(.., 'latest')` has an installation to undo in `state`."""
+    latest = state / 'latest'
+    if not latest.is_file():
+        return False
+    backup = Path(latest.read_text(encoding='utf-8').strip())
+    return read_json(backup / 'manifest.json').get('status') == 'installed'
 
 
 # --- environment checks -----------------------------------------------------
@@ -502,9 +531,10 @@ def check_binary(binary):
 
 # --- arguments --------------------------------------------------------------
 
-COMMANDS = ('service', 'connect')
+COMMANDS = ('service', 'connect', 'status')
 USAGE = ('install.sh service [--apply | --dry-run | --uninstall] [options]\n'
-         '       install.sh connect --host HOST [--apply | --dry-run | --rollback [BACKUP] | --uninstall] [options]')
+         '       install.sh connect --host HOST [--apply | --dry-run | --rollback [BACKUP] | --uninstall] [options]\n'
+         '       install.sh status [--json] [options]')
 SERVICE_DESCRIPTION = ('Install the shared-memory daemon as a user service (LaunchAgent on macOS, systemd user '
                        'unit on Linux): binary, model key, web UI. Run it again after `git pull` to upgrade. '
                        'Preview unless --apply is given.')
@@ -512,6 +542,9 @@ SERVICE_DESCRIPTION = ('Install the shared-memory daemon as a user service (Laun
 
 CONNECT_DESCRIPTION = ('Connect one agent platform to the shared-memory daemon: its MCP bridge and hooks. '
                        'Builds nothing, asks for no key and leaves the service alone. Preview unless --apply is given.')
+STATUS_DESCRIPTION = ('Report every agent platform: whether it is on this machine, connected to the shared-memory '
+                      'daemon and up to date. Reads only.')
+JSON_HELP = 'print the result as one JSON object on stdout, the usual output in its "log" (for the web UI)'
 
 
 def load_host(host_id):
@@ -534,7 +567,8 @@ def arguments(argv=None):
             prog='install.sh', usage=USAGE, formatter_class=argparse.RawDescriptionHelpFormatter,
             description='Install the shared-memory daemon, then connect agent platforms to it.\n\n'
                         '  service   the daemon: binary, model key, web UI and user service; also the upgrade\n'
-                        f"  connect   one platform ({', '.join(HOSTS)}): its MCP bridge and hooks",
+                        f"  connect   one platform ({', '.join(HOSTS)}): its MCP bridge and hooks\n"
+                        '  status    every platform: on this machine, connected, up to date',
             epilog='Both preview unless --apply is given. See `install.sh service --help` and '
                    '`install.sh connect --host HOST --help`.')
         if command in ('-h', '--help'):
@@ -547,6 +581,8 @@ def arguments(argv=None):
                     '`install.sh connect --host HOST --apply`')
     if command == 'service':
         return command, None, service_arguments(argv[1:])
+    if command == 'status':
+        return command, None, status_arguments(argv[1:])
     return (command, *connect_arguments(argv[1:]))
 
 
@@ -629,8 +665,20 @@ def connect_arguments(argv):
     parser.add_argument('--home', type=absolute, default=Path.home(), help='home directory (for isolated installs)')
     parser.add_argument('--skip-host-check', action='store_true',
                         help="do not run the host's own CLI to parse the planned configuration")
+    parser.add_argument('--json', action='store_true', help=JSON_HELP)
     host.add_arguments(parser)
     return host, parser.parse_args(argv)
+
+
+def status_arguments(argv):
+    parser = argparse.ArgumentParser(prog='install.sh status', description=STATUS_DESCRIPTION)
+    parser.add_argument('--json', action='store_true', help=JSON_HELP)
+    parser.add_argument('--binary', type=absolute,
+                        help="the agent-memoryd entries should run (default: the installed service's); with --url, "
+                             'a daemon you run yourself')
+    parser.add_argument('--url', help="daemon base URL (default: the installed service's, on 127.0.0.1)")
+    parser.add_argument('--home', type=absolute, default=Path.home(), help='home directory (for isolated installs)')
+    return parser.parse_args(argv)
 
 
 def service_context(args):
@@ -744,27 +792,34 @@ def daemon_status(ctx):
         print('       ' + shlex.join(drain_argv(ctx)))
 
 
+def change_list(changes, expected):
+    """[{path, action}] of planned `changes`; action is create, update or delete."""
+    return [{'path': str(path),
+             'action': 'delete' if data is None else 'update' if expected[path][0] is not None else 'create'}
+            for path, data, _ in changes]
+
+
 def connect(host, args):
+    """Run `connect`; returns {changes, backup}: the files it changed (would change, in a preview) and its backup."""
     ctx = context(host, args)
     if args.rollback:
-        rollback(host, ctx, args.rollback)
-        return
+        return rollback(host, ctx, args.rollback)
     if args.uninstall:
         changes, expected = plan(host, args, ctx, uninstall=True)
         for path, _, _ in changes:
             print(f'[plan] remove {SERVER} entries from {path}')
         with installation_lock(ctx.state_root):
-            apply_changes(changes, ctx.state, expected)
+            backup = apply_changes(changes, ctx.state, expected)
         print(f'[uninstall] removed from {host.LABEL}. Restart it. Revert with --rollback.')
         print_shared()
-        return
+        return {'changes': change_list(changes, expected), 'backup': backup and str(backup)}
     print_plan(host, args, ctx)
     changes, expected = plan(host, args, ctx)
     for path, data, _ in changes:
         print(f"[plan] {'update' if data is not None else 'delete'} {path}")
     if not args.apply:
         print('[result] preview only. Rerun with --apply to verify offline and write.')
-        return
+        return {'changes': change_list(changes, expected), 'backup': None}
     import checks
     import runtime
     runtime.check_surreal(ctx)
@@ -774,10 +829,11 @@ def connect(host, args):
         checks.verify_local(host, ctx)
         if not args.skip_host_check:
             host.host_check(args, ctx, {path: data for path, data, _ in changes})
-        apply_changes(changes, ctx.state, expected)
+        backup = apply_changes(changes, ctx.state, expected)
     daemon_status(ctx)
     for line in host.post_install(args, ctx):
         print(line)
+    return {'changes': change_list(changes, expected), 'backup': backup and str(backup)}
 
 
 def connected(home):
@@ -796,9 +852,95 @@ def connected(home):
     return found
 
 
+def connected_daemon(args):
+    """(connect flags, report) of the daemon platforms connect to: the installed service's, or --binary and --url.
+    Without one the flags are None and the report says why."""
+    import runtime
+    asked = types.SimpleNamespace(binary=args.binary, url=args.url, home=args.home, outbox=None, surreal_bin=None)
+    try:
+        daemon = runtime.daemon(asked)
+    except InstallError as error:
+        return None, {'url': None, 'error': str(error)}
+    flags = ['--binary', str(daemon.binary), '--url', daemon.url, '--outbox', str(daemon.outbox)]
+    if daemon.surreal:
+        flags += ['--surreal-bin', str(daemon.surreal)]
+    return flags, {'url': daemon.url, 'error': None}
+
+
+def host_status(host_id, home, daemon):
+    """One host as `status` reports it. `daemon` holds the flags `connect` would get, or None: then whether the
+    configuration is up to date is not known."""
+    host, args = connect_arguments(['--host', host_id, '--home', str(home), '--uninstall'])
+    ctx = context(host, args)
+    files = host.managed_files(args, ctx)
+    row = {'id': host.ID, 'label': host.LABEL, 'platform': host.PLATFORM, 'capture': host.CAPTURE,
+           'recall': host.RECALL, 'files': [str(path) for path in files], 'detected': host.detect(args, ctx),
+           'connected': False, 'options': None, 'upToDate': None, 'canRollback': False, 'error': None}
+    try:
+        row['canRollback'] = can_rollback(ctx.state)
+        with redirect_stdout(io.StringIO()):  # the hosts' plan notes are for a connect run
+            removal, _ = plan(host, args, ctx, uninstall=True)
+            if removal:
+                capture, recall = installed_hooks(files)
+                row.update(connected=True, options={'capture': capture, 'recall': recall})
+            if removal and daemon is not None:
+                # What `connect --apply` with the current options would write: nothing when up to date.
+                options = [*(['--no-capture'] if host.CAPTURE and not capture else []), *(['--recall'] if recall else [])]
+                again, again_args = connect_arguments(['--host', host_id, '--home', str(home), *daemon, *options])
+                changes, _ = plan(again, again_args, context(again, again_args))
+                row['upToDate'] = not changes
+    except (InstallError, OSError, ValueError) as error:
+        row['error'] = str(error)
+    return row
+
+
+def status(args):
+    """Print every host's status; returns {service, hosts} (see host_status)."""
+    daemon, report = connected_daemon(args)
+    print(f"[status] daemon {report['url']}" if daemon else f"[note] {report['error']}")
+    hosts = [host_status(host_id, args.home, daemon) for host_id in HOSTS]
+    for row in hosts:
+        if row['error']:
+            state = 'cannot read its configuration: ' + row['error']
+        elif not row['connected']:
+            state = 'not connected'
+        else:
+            state = {True: 'connected, up to date', None: 'connected',
+                     False: 'connected; rerun `connect --apply` to update it'}[row['upToDate']]
+        found = f"found {row['detected']}" if row['detected'] else 'not found on this machine'
+        print(f"[status] {row['label']}: {state}; {found}")
+    return {'service': report, 'hosts': hosts}
+
+
+def json_run(command, host, args):
+    """Run `status` or `connect` and print {ok, ..., log, error} as one JSON object: the result, the usual output
+    as lines and the failure. Child processes write to stderr meanwhile, so stdout holds only that object."""
+    head = {} if host is None else {'host': host.ID, 'mode': 'rollback' if args.rollback else 'uninstall'
+                                    if args.uninstall else 'apply' if args.apply else 'preview',
+                                    'changes': [], 'backup': None}
+    log, result, error = io.StringIO(), {}, None
+    sys.stdout.flush()
+    saved = os.dup(1)
+    os.dup2(2, 1)
+    try:
+        with redirect_stdout(log), redirect_stderr(log):
+            try:
+                result = status(args) if command == 'status' else connect(host, args)
+            except FAILURES as failure:
+                error = failure_message(failure)
+                print(f'[error] {error}')
+    finally:
+        os.dup2(saved, 1)
+        os.close(saved)
+    print(json.dumps({'ok': error is None, **head, **result, 'log': log.getvalue().splitlines(), 'error': error},
+                     ensure_ascii=False))
+    return 0 if error is None else 1
+
+
 def service(args):
     ctx = service_context(args)
     import checks
+    import runner
     import runtime
     import ui
     if args.uninstall:
@@ -821,6 +963,7 @@ def service(args):
     plan = runtime.plan_service(args, ctx, source)
     with installation_lock(ctx.state_root):
         ui.install(args, ctx, plan)
+        runner.install(ctx, plan)
         # The checks run the installed binary: the one the service will run.
         with runtime.staged(ctx, None if args.binary else source, plan):
             checks.verify_service(ctx)
@@ -841,6 +984,13 @@ def print_shared():
     print('       To remove the service: bash scripts/install.sh service --uninstall')
 
 
+FAILURES = (InstallError, OSError, ValueError, subprocess.SubprocessError, EOFError)
+
+
+def failure_message(error):
+    return str(error) if isinstance(error, InstallError) else f'{type(error).__name__}: {error}'
+
+
 def interrupted(signum, frame):
     raise KeyboardInterrupt
 
@@ -856,11 +1006,17 @@ def main(argv=None):
             signal.signal(signum, interrupted)
     try:
         command, host, args = arguments(argv)
-        service(args) if command == 'service' else connect(host, args)
+        if getattr(args, 'json', False):
+            return json_run(command, host, args)
+        if command == 'service':
+            service(args)
+        elif command == 'status':
+            status(args)
+        else:
+            connect(host, args)
         return 0
-    except (InstallError, OSError, ValueError, subprocess.SubprocessError, EOFError) as error:
-        message = str(error) if isinstance(error, InstallError) else f'{type(error).__name__}: {error}'
-        print(f'[error] {message}', file=sys.stderr)
+    except FAILURES as error:
+        print(f'[error] {failure_message(error)}', file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print('[error] interrupted', file=sys.stderr)

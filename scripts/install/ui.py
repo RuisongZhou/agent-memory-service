@@ -128,7 +128,7 @@ def unpack(data, target):
 def place(source, target):
     """Replace `target` with a copy of `source`: copied beside it, then swapped in by renaming."""
     if target.is_symlink() or (target.exists() and not target.is_dir()):
-        raise InstallError(f'Expected a directory: {target}; remove it, or pass --no-ui')
+        raise InstallError(f'Expected a directory: {target}; remove it and rerun')
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix='.ui-', dir=target.parent))
     try:

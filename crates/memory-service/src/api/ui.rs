@@ -98,7 +98,7 @@ mod tests {
         check_dir(&dir).unwrap();
 
         let eng = engine(ServiceConfig::default());
-        let without = crate::http::router(eng.clone(), PORT, None);
+        let without = crate::http::router(eng.clone(), PORT, None, None);
         let (status, _, body) = fetch(&without, "/health").await;
         assert_eq!(status, StatusCode::OK);
         let health: Value = serde_json::from_slice(&body).unwrap();
@@ -115,7 +115,7 @@ mod tests {
             );
         }
 
-        let with = crate::http::router(eng, PORT, Some(&dir));
+        let with = crate::http::router(eng, PORT, Some(&dir), None);
         let (status, headers, _) = fetch(&with, "/ui").await;
         assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(headers[header::LOCATION], "/ui/");

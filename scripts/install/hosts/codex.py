@@ -16,6 +16,7 @@ import os
 import re
 import select
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -54,6 +55,12 @@ def host_paths(args, ctx):
 
 def managed_files(args, ctx):
     return [ctx.config_toml, ctx.hooks_json]
+
+
+def detect(args, ctx):
+    if ctx.host_home.is_dir():
+        return str(ctx.host_home)
+    return shutil.which('codex')
 
 
 def server_entry(ctx):

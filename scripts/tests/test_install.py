@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts/install'))
 import checks  # noqa: E402
 import core  # noqa: E402
+import runner  # noqa: E402
 import runtime  # noqa: E402
 import ui  # noqa: E402
 from hosts import claude_code, codex, deepseek_harness, workbuddy  # noqa: E402
@@ -664,29 +665,58 @@ def test_check_surreal_knows_the_launcher_and_the_server_binary(tmp_path, capsys
     with pytest.raises(core.InstallError, match='is not SurrealDB'):
         runtime.check_surreal(types.SimpleNamespace(surreal=surreal))
 
+def run_json(capsys, *argv):
+    """A `--json` run: its exit code and the one JSON object it printed, which must be all of stdout."""
+    code = core.main([str(a) for a in argv])
+    return code, json.loads(capsys.readouterr().out)
+
+
 def test_apply_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary, offline):
     settings = tmp_path / '.workbuddy/settings.json'
     settings.parent.mkdir()
     settings.write_text(json.dumps({'theme': 'dark', 'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'echo hi'}]}]}}))
     original = settings.read_bytes()
     argv = install_args('workbuddy', tmp_path, fake_binary, '--apply')
-    code, output = run(capsys, *argv)
-    assert code == 0 and offline == ['workbuddy'], output
-    assert 'every WorkBuddy conversation under the project of its folder' in output and 'No per-project switch' in output
+    status_argv = ['status', '--json', '--home', tmp_path, '--binary', fake_binary, '--url', UNUSED_URL]
+    workbuddy = lambda: next(h for h in run_json(capsys, *status_argv)[1]['hosts'] if h['id'] == 'workbuddy')
+    before = workbuddy()
+    assert before['detected'] == str(settings.parent) and not before['connected'] and not before['canRollback']
+    # The web UI's runs: a preview, then the write, each one JSON object naming the files.
+    code, result = run_json(capsys, *argv[:-1], '--json')
+    assert code == 0 and result['mode'] == 'preview' and result['backup'] is None and not offline, result
+    assert {(Path(c['path']).name, c['action']) for c in result['changes']} == {
+        ('settings.json', 'update'), ('mcp.json', 'create'), ('.mcp.json', 'create')}
+    code, result = run_json(capsys, *argv, '--json')
+    assert code == 0 and result['ok'] and result['mode'] == 'apply' and offline == ['workbuddy'], result
+    assert len(result['changes']) == 3 and Path(result['backup']).is_dir()
+    output = '\n'.join(result['log'])
+    assert 'Restart WorkBuddy' in output and 'every WorkBuddy conversation under the project of its folder' in output
+    assert 'No per-project switch' in output
+    assert workbuddy() == before | {
+        'connected': True, 'options': {'capture': True, 'recall': False}, 'upToDate': True, 'canRollback': True}
     installed = json.loads(settings.read_text())
     assert installed['theme'] == 'dark' and len(installed['hooks']['Stop']) == 2
     assert (tmp_path / '.workbuddy/mcp.json').is_file() and (tmp_path / '.workbuddy/.mcp.json').is_file()
     assert oct((tmp_path / '.workbuddy/mcp.json').stat().st_mode & 0o777) == '0o600'
     code, output = run(capsys, *argv)
     assert code == 0 and 'nothing written' in output
-    code, output = run(capsys, 'connect', '--host', 'workbuddy', '--home', tmp_path, '--rollback')
-    assert code == 0, output
+    # Another binary path makes the entries out of date.
+    assert run_json(capsys, *status_argv[:-4], '--binary', tmp_path / 'other/agent-memoryd', *status_argv[-2:])[1][
+        'hosts'][2]['upToDate'] is False
+    code, result = run_json(capsys, 'connect', '--host', 'workbuddy', '--home', tmp_path, '--rollback', '--json')
+    assert code == 0 and result['mode'] == 'rollback' and len(result['changes']) == 3, result
     assert settings.read_bytes() == original and not (tmp_path / '.workbuddy/mcp.json').exists()
+    assert not workbuddy()['connected'] and not workbuddy()['canRollback']
     run(capsys, *argv)
     code, output = run(capsys, 'connect', '--host', 'workbuddy', '--home', tmp_path, '--uninstall')
     assert code == 0, output
     assert json.loads(settings.read_text()) == json.loads(original)
     assert not (tmp_path / '.workbuddy/mcp.json').exists()  # it only ever held our entry
+    # A failure is the JSON object too: ok false, the reason, exit 1; status names it for that host only.
+    settings.write_text('{')
+    code, result = run_json(capsys, *argv[:-1], '--json')
+    assert code == 1 and not result['ok'] and 'Invalid JSON' in result['error'] and result['changes'] == [], result
+    assert 'Invalid JSON' in workbuddy()['error']
 
 
 def test_no_capture_installs_mcp_only_and_removes_existing_capture(tmp_path, capsys, fake_binary, offline):
@@ -1156,12 +1186,13 @@ def test_the_web_ui_is_built_downloaded_or_skipped_and_served_by_the_service(ses
     target = session / ui.UI_DIR
     argv = service_args(session, service_binary, '--apply', '--key-file', session / 'key.txt')
     served = lambda: flag(service_calls(service_binary)[-1], '--ui-dir')
+    launcher = lambda: flag(service_calls(service_binary)[-1], '--installer')
     code, output = run(capsys, *argv[:-3])  # the preview
     assert code == 0 and f'[plan] web UI={target}, downloaded from {ui.bundle_url()}' in output, output
-    # Neither npm nor a release bundle: the service starts without a web UI.
+    # Neither npm nor a release bundle: the service starts without a web UI, and so without the installer copy.
     code, output = run(capsys, *argv)
-    assert code == 0 and 'no web UI installed' in output and served() is None, output
-    assert not target.exists()
+    assert code == 0 and 'no web UI installed' in output and served() is None and launcher() is None, output
+    assert not target.exists() and not (session / runner.INSTALLER_DIR).exists()
 
     # The bundle as the release workflow packs it: web/dist's files at the top level, and their SHA-256.
     tag = ui.version()
@@ -1181,6 +1212,13 @@ def test_the_web_ui_is_built_downloaded_or_skipped_and_served_by_the_service(ses
     code, output = run(capsys, *argv)
     assert code == 0 and served() == str(target), output
     assert (target / 'index.html').read_text() == 'release' and (target / 'assets/app.js').is_file()
+    # Beside the web UI, the installer copy its platform page runs: on its own, with this Python and PATH.
+    run_path = session / runner.INSTALLER_DIR / 'run'
+    assert launcher() == str(run_path) and (run_path.parent / 'hosts/codex.py').is_file(), output
+    result = subprocess.run([run_path, 'status', '--json', '--home', session, '--binary', service_binary,
+                             '--url', UNUSED_URL], capture_output=True, text=True, env={})
+    report = json.loads(result.stdout)
+    assert result.returncode == 0 and [h['id'] for h in report['hosts']] == list(core.HOSTS), result.stderr
 
     # With npm on PATH, `make ui` builds it here and replaces the downloaded files; a failed build falls back to
     # the release bundle.
@@ -1198,7 +1236,7 @@ def test_the_web_ui_is_built_downloaded_or_skipped_and_served_by_the_service(ses
     code, output = run(capsys, *argv)
     assert code == 0 and '[build] make ui' in output and '[download]' not in output and served() == str(target), output
     assert (target / 'index.html').read_text() == 'built' and not (target / 'assets').exists()
-    assert sorted(p.name for p in target.parent.iterdir()) == ['ui']  # nothing staged is left beside it
+    assert sorted(p.name for p in target.parent.iterdir()) == ['installer', 'ui']  # nothing staged is left
     (tools / 'make').write_text('#!/bin/sh\nexit 2\n')
     code, output = run(capsys, *argv)
     assert code == 0 and 'make ui failed' in output and (target / 'index.html').read_text() == 'release', output

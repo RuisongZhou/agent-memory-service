@@ -118,6 +118,10 @@ You do not name a project when you connect. Hooks and the MCP bridge take it fro
 (see [project routing](#what-the-installer-does)). Clients sharing project memories must connect to the **same daemon**
 and be opened in the **same folder**.
 
+You can also connect from the web UI: its **接入平台** page (`http://127.0.0.1:8765/ui/#/platforms`) lists the
+platforms found on this machine, previews and writes their entries, walks you through trusting the hooks and
+restarting the platform, and confirms the first calls arrive. It runs the same installer.
+
 #### Codex CLI / App
 
 ```bash

@@ -22,7 +22,13 @@ DeepSeek Harness; its `service` command installs and starts the daemon they shar
 ```sh
 bash scripts/install.sh service --apply                     # the daemon, once per machine; also the upgrade
 bash scripts/install.sh connect --host codex --apply --recall   # one agent platform, once per platform
+bash scripts/install.sh status                              # every platform: on this machine, connected, up to date
 ```
+
+The web UI's **接入平台** page does what `status` and `connect` do, with the same installer
+([design](design/platform-connect.md)): it lists the platforms found on this machine, previews and writes a platform's
+entries, walks through trusting and restarting in the platform, and confirms its first hook and MCP calls. It can also
+uninstall and roll back. It runs the copy of the installer that `install.sh service` puts beside the web UI.
 
 A bare `install.sh`, or the earlier single form `install.sh --host X`, prints the usage and exits 2.
 
@@ -51,8 +57,10 @@ in this order:
 6. It installs the daemon as a LaunchAgent or systemd user service with
    [`agent-memoryd service install --apply --start`](deployment.md#install-the-service), with `--outbox`
    (the service always uploads the outbox the platforms capture into), `--surreal-bin` set to the SurrealDB
-   it checked and `--ui-dir` when a web UI is installed, and waits until `/health` answers. The web UI is
-   then at `http://127.0.0.1:8765/ui/`.
+   it checked and, when a web UI is installed, `--ui-dir` and `--installer`: a copy of this installer in
+   `~/.local/share/agent-memory-service/installer`, whose launcher `run` keeps the Python and the `PATH` of this run
+   (the service manager starts the daemon with neither), for the web UI's platform page. It waits until `/health`
+   answers. The web UI is then at `http://127.0.0.1:8765/ui/`.
 
 If a step before the last fails, the installer puts back the binary and the env file it changed; a new web
 UI stays, since the daemon reads its files on each request. A service that does not start leaves the binary and

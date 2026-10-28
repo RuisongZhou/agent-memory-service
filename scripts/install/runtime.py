@@ -8,9 +8,10 @@
   moved checkout (`--binary` uses a given executable as is);
 - the env file (`~/.config/agent-memory-service/.env`, mode 0600) holds the model key, which comes from
   `--key-file`, the environment or a hidden prompt, never from an argument; a file with a key is reused;
-- the web UI goes to `~/.local/share/agent-memory-service/ui` (ui.py);
+- the web UI goes to `~/.local/share/agent-memory-service/ui` (ui.py), and with it a copy of this installer
+  that its platform page runs (runner.py);
 - `agent-memoryd service install --apply --start` writes the LaunchAgent / systemd user unit and starts
-  it, with `--ui-dir` when a web UI is installed. The options of a unit it wrote earlier are kept; a unit
+  it, with `--ui-dir` and `--installer` when a web UI is installed. The options of a unit it wrote earlier are kept; a unit
   written by hand and a daemon started by hand are refused, not replaced.
 
 The binary and the env file are put back if a check fails before the service starts. `service --uninstall`
@@ -36,6 +37,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import core
+import runner
 import ui
 from core import InstallError
 
@@ -271,8 +273,8 @@ def plan_service(args, ctx, binary):
         ui_dir = None
     env_file = args.env_file or (Path(status['envFile']) if installed and status['envFile'] else ctx.home / ENV_FILE)
     plan = types.SimpleNamespace(
-        env_file=env_file, env_change=None, outbox=outbox, ui_dir=ui_dir, port=port, url=service_url(port),
-        data_dir=status['dataDir'], llm_concurrency=status['llmConcurrency'])
+        env_file=env_file, env_change=None, outbox=outbox, ui_dir=ui_dir, installer=None, port=port,
+        url=service_url(port), data_dir=status['dataDir'], llm_concurrency=status['llmConcurrency'])
     if installed and (port != status['port'] or (status['outbox'] and str(outbox) != status['outbox'])):
         print(f'[note] the service now listens on port {port} and uploads {outbox} (it was port {status["port"]}, '
               f'outbox {status["outbox"]}); platforms connected before keep the old values until you rerun '
@@ -430,7 +432,7 @@ def start_service(ctx, plan):
     argv = [str(ctx.binary), 'service', 'install', '--apply', '--start', '--home', str(ctx.home),
             '--binary', str(ctx.binary), '--surreal-bin', str(ctx.surreal), '--env-file', str(plan.env_file),
             '--port', str(plan.port), '--outbox', str(plan.outbox)]
-    for flag, value in (('--data-dir', plan.data_dir), ('--ui-dir', plan.ui_dir),
+    for flag, value in (('--data-dir', plan.data_dir), ('--ui-dir', plan.ui_dir), ('--installer', plan.installer),
                         ('--llm-concurrency', plan.llm_concurrency)):
         if value is not None:
             argv += [flag, str(value)]
@@ -498,6 +500,7 @@ def uninstall_service(ctx):
     print('[uninstall] the service is stopped and its unit removed; these stay, delete them by hand to remove everything:')
     kept = [('memory data', status['dataDir'] or ctx.home / DATA_DIR), ('env file (the model key)', status['envFile']),
             ('binary', status['binary']), ('web UI', status['uiDir']),
+            ('installer copy', ctx.home / runner.INSTALLER_DIR if (ctx.home / runner.INSTALLER_DIR).is_dir() else None),
             ('outbox', status['outbox'] or ctx.home / core.OUTBOX)]
     for name, path in kept:
         if path:

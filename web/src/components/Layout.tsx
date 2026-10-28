@@ -3,7 +3,8 @@ import { Suspense, type ReactNode } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import { api } from '../api/client'
 
-// Two groups: browsing (records, entities) and editing records, then reviewing and tracing what agents and the daemon did.
+// Two groups: browsing (records, entities) and editing records, then connecting agent platforms and reviewing and
+// tracing what they and the daemon did.
 const NAV = [
   [
     ['/', '概览'],
@@ -14,6 +15,7 @@ const NAV = [
     ['/context', '上下文预览'],
   ],
   [
+    ['/platforms', '接入平台'],
     ['/imports', '导入审核'],
     ['/consolidation', 'consolidation'],
     ['/conflicts', '冲突'],

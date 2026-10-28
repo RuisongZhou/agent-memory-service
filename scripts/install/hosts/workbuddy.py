@@ -40,6 +40,10 @@ def managed_files(args, ctx):
     return [*ctx.mcp_files, ctx.settings]
 
 
+def detect(args, ctx):
+    return str(ctx.host_home) if ctx.host_home.is_dir() else None
+
+
 def server_entry(ctx):
     return {'type': 'stdio', 'command': str(ctx.binary), 'args': core.bridge_args(ctx.url, PLATFORM),
             'timeout': TOOL_TIMEOUT_MS}

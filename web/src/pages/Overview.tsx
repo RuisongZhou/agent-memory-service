@@ -126,7 +126,7 @@ function Platforms() {
   const activity = useQuery({ queryKey: ['platform-activity'], queryFn: api.platformActivity })
   const platforms = activity.data?.platforms
   return (
-    <Card title="接入平台（近 30 天）">
+    <Card title="接入平台（近 30 天）" actions={<PageLink to="/platforms">管理接入 →</PageLink>}>
       {activity.error && <ErrorNotice error={activity.error} />}
       {platforms === undefined ? (
         <Muted>加载中…</Muted>
@@ -158,8 +158,8 @@ function Platforms() {
       )}
       <p className="mt-3 text-sm text-zinc-500">
         按调用的程序分：hook 上传抓到的对话、在会话开始和提问时自动召回；MCP 是 agent 主动调用记忆工具，不用就没有记录。“其他”是直接调用 HTTP
-        接口的，以及升级前没记下来源的调用。不含网页自己的调用。某个平台没出现或缺了一项：运行{' '}
-        <code>bash scripts/install.sh connect --host 平台 --apply</code>，再在平台里信任它的 hook 和 MCP 并重启。
+        接口的，以及升级前没记下来源的调用。不含网页自己的调用。某个平台没出现或缺了一项：在
+        <PageLink to="/platforms">接入平台</PageLink>页接入或更新它，并按步骤在平台里信任 hook 和 MCP、重启。
       </p>
     </Card>
   )

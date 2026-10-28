@@ -53,6 +53,13 @@ def managed_files(args, ctx):
     return [ctx.patch]
 
 
+def detect(args, ctx):
+    if ctx.host_home_existed:
+        return str(ctx.host_home)
+    dsh = find_dsh(args, ctx)
+    return str(dsh) if dsh else None
+
+
 def server_config(ctx):
     return {'serverName': SERVER, 'transport': 'stdio', 'command': str(ctx.binary),
             'args': core.bridge_args(ctx.url, PLATFORM), 'toolCallTimeoutMs': TOOL_TIMEOUT_MS}
