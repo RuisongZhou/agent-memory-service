@@ -309,18 +309,22 @@ async def label(root, arm, concurrency, max_calls):
                 if not pool:
                     jsonl.append(out, {'qid': q['qid'], 'pool': [], 'relevant': []})
                     return
-                if budget['calls'] >= max_calls:
-                    raise RuntimeError('label call cap reached')
-                budget['calls'] += 1
-                result = await llm.chat([{'role': 'system', 'content': LABEL_SYSTEM},
-                                         {'role': 'user', 'content': label_prompt(q, pool)}],
-                                        component='label', json_mode=True, max_tokens=256,
-                                        meta={'arm': arm, 'qid': q['qid']})
-                # The reply is the requested object or, sometimes, the bare list; indices may come quoted.
-                indices = result.json.get('relevant') if isinstance(result.json, dict) else result.json
-                if isinstance(indices, list):
-                    indices = [int(i) if isinstance(i, str) and i.isdigit() else i for i in indices]
-                if not isinstance(indices, list) or not all(isinstance(i, int) and 0 <= i < len(pool) for i in indices):
+                # A reply of the wrong shape is asked again, at most three times in all.
+                for attempt in range(3):
+                    if budget['calls'] >= max_calls:
+                        raise RuntimeError('label call cap reached')
+                    budget['calls'] += 1
+                    result = await llm.chat([{'role': 'system', 'content': LABEL_SYSTEM},
+                                             {'role': 'user', 'content': label_prompt(q, pool)}],
+                                            component='label', json_mode=True, max_tokens=256,
+                                            meta={'arm': arm, 'qid': q['qid'], 'attempt': attempt})
+                    # The reply is the requested object or, sometimes, the bare list; indices may come quoted.
+                    indices = result.json.get('relevant') if isinstance(result.json, dict) else result.json
+                    if isinstance(indices, list):
+                        indices = [int(i) if isinstance(i, str) and i.isdigit() else i for i in indices]
+                    if isinstance(indices, list) and all(isinstance(i, int) and 0 <= i < len(pool) for i in indices):
+                        break
+                else:
                     raise RuntimeError(f'bad label reply for {q["qid"]}: {result.text[:300]}')
                 jsonl.append(out, {'qid': q['qid'], 'pool': [c['id'] for c in pool],
                                    'relevant': sorted({pool[i]['id'] for i in indices})})

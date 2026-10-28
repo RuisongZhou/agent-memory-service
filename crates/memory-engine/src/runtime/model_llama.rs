@@ -70,7 +70,13 @@ impl Llama {
         let (rerank, rerank_model_id) = match rerank_url {
             Some(url) => {
                 let base = url.trim_end_matches('/').to_string();
-                let (model, rerank_dtype) = wait_ready(&client, &base).await?;
+                let (model, rerank_dtype) =
+                    wait_ready(&client, &base).await.with_context(|| {
+                        format!(
+                        "no reranker at {base}: start it (scripts/self_hosted_models.sh start), \
+                         or set \"mem0Rerank\": false to search without it"
+                    )
+                    })?;
                 let (bos, eos) = special_tokens(&client, &base).await?;
                 (
                     Some(Server { base, bos, eos }),

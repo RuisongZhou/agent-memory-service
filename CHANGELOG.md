@@ -44,3 +44,12 @@ Each entry says what to do if your checkout or data predates the change.
   `store/fulltext` index is removed.
 - **Only Mem0 is available.** Retired strategies and buffer/batch/maintenance tunables are rejected, and
   `/admin/run_jobs` and `/admin/seed` return HTTP 404. See [compatibility](docs/api.md#compatibility).
+- **Recall is selective.** The reranker is now loaded by default, and a search returns only memories whose reranker
+  score clears the reranker's floor, so a prompt with no relevant memory gets none; the SessionStart hook injects the
+  explicit instructions and a one-line index instead of the newest facts. The hosted `qwen3.7-text-rerank` and a
+  self-hosted `bge-reranker-v2-m3` have built-in floors; another rerank model needs `mem0RecallFloor`, or the daemon
+  does not start. `"mem0Rerank": false` in your configuration keeps the earlier top-k search: remove it to select.
+  A deployment without a reranker (a hosted provider with no `/reranks` route, or a self-hosted setup running only the
+  embedding server) now fails to start: set `"mem0Rerank": false`, or start the reranker.
+  Each search now makes one rerank call (about 0.2 s hosted) and no entity-embedding call. The entity projection drops
+  its TOPIC rows and rebuilds once, when the next turn is formed. See [selective recall](docs/design/selective-memory.md).

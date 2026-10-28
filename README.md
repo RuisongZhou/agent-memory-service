@@ -51,7 +51,7 @@ This is an early-stage project for **one user on one machine**, running on macOS
 Memory is stored locally, but **the default model configuration sends relevant text to hosted model providers**:
 
 - Memory formation sends submitted text to the generation model.
-- Retrieval uses an embedding model and, optionally, a reranker.
+- Retrieval uses an embedding model and a reranker, which decides what recall returns.
 - Automatic recall uses each prompt as a search query, capped at 2,000 characters.
 
 To run the service's model processing locally, configure both a local OpenAI-compatible generation endpoint (see
@@ -243,8 +243,9 @@ asynchronous writes.
 ### Automatic capture and recall
 
 With capture hooks enabled, ordinary completed turns are saved automatically. With recall enabled, the service loads
-context at session start and searches for relevant memories before each prompt. Retrieval is bounded by time and
-context budgets; a failed recall or a stopped daemon does not block the prompt. See
+your saved instructions and a one-line index of the memories at session start, and before each prompt adds only the
+memories its reranker judges relevant, or none. Retrieval is bounded by time and context budgets; a failed recall or a
+stopped daemon does not block the prompt. See
 [automatically save conversations](docs/mcp-harness.md#automatically-save-conversations) and
 [automatic recall](docs/mcp-harness.md#automatic-recall).
 

@@ -121,9 +121,10 @@ impl ModelHub {
             .context("embedding model probe failed")?;
         hub.dim = probe[0].len();
         if hub.has_reranker() {
-            hub.rerank("ok", &["ok".to_string()])
-                .await
-                .context("rerank model probe failed")?;
+            hub.rerank("ok", &["ok".to_string()]).await.context(
+                "rerank model probe failed: search selects with the reranker; fix the rerank model or URL, \
+                 or set \"mem0Rerank\": false to run without it",
+            )?;
         }
         tracing::info!(
             backend = %hub.backend,

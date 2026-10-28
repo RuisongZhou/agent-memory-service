@@ -42,6 +42,10 @@ cohort, not held-out evidence of generalization. No retrieval parameters are tun
 Offline checks: `make test-workspace build`. All compilation uses the Fast profile; these
 checks never call a paid provider or run the dataset.
 
+The daemon loads a reranker and selects search results with it by default since selective recall. The fresh-store
+and full LoCoMo protocols retrieve without one, so their daemons run with `mem0Rerank: false`; selective recall is
+evaluated by [selective_recall.py](../selective_recall.py) ([report](benchmarks/selective-memory.md)).
+
 ## Explicit full LoCoMo comparison
 
 `eval/locomo_full.py` extends the frozen small-run settings to every conversation, session and

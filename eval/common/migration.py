@@ -101,7 +101,8 @@ def _daemon(target, arm, store, *, paid, llm_url):
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
     binary = target.parent / ('current-agent-memoryd' if arm == 'current' else 'new-agent-memoryd')
-    config = {'defaultTokenBudget': 2000}
+    # These protocols retrieve without a reranker; the daemon now loads one unless told not to.
+    config = {'defaultTokenBudget': 2000, 'mem0Rerank': False}
     if arm != 'current':
         config.update(memoryStrategy='mem0', mem0MaxTokens=8192, mem0CustomInstructions=mem0_adapter.mem0_custom_instructions())
     config_path = target / 'config.json'
