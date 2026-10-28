@@ -37,8 +37,8 @@ The pure rule is [selection.rs](../../crates/memory-rules/src/selection.rs).
 **Why a reranker floor and not a score-shape gate.** The survey's strongest LLM-free gates use the shape of the score
 list (Gap@k, NQC; *Magnitude Mirage*, EMNLP 2026). They predict whether retrieval *found* an existing relevant
 document. Our question is whether *any* relevant memory exists, and on it the reranker's best score separates
-answerable from unanswerable queries far better (AUROC 0.97–0.98, against 0.85 for Gap@25 and 0.49 for a
-corpus-standardized cosine). Largest-gap truncation (Adaptive-k) cut recall too much at 20 candidates, and read-time
+answerable from unanswerable queries far better (AUROC 0.97–0.98 over the LoCoMo calibration and report queries,
+against 0.93 for the best cosine, 0.85 for Gap@25 and 0.49 for a corpus-standardized cosine). Largest-gap truncation (Adaptive-k) cut recall too much at 20 candidates, and read-time
 near-duplicate suppression (MMR) cost recall for three tokens a query; neither is used.
 
 **Floors are per reranker.** bge-reranker-v2-m3 returns a sigmoid of a logit; the hosted Qwen reranker a yes/no
@@ -86,7 +86,7 @@ inputs' provenance.
 | `mem0Rerank` | `true` (was `false`) | Loads the reranker; selective recall depends on it |
 | `mem0RecallFloor` | per reranker | Required for rerankers without a built-in floor |
 | `mem0RecallMargin` | 3.0 | Logits below the best a returned memory may be |
-| `mem0SegmentTurns` | see §5 | 1 forms every turn alone |
+| `mem0SegmentTurns` | 1 | Every turn alone; 4 or 8 save formation cost at a coverage cost (§5) |
 | `mem0SegmentTokens` | 6000 | |
 | `mem0SegmentWaitSecs` | 600 | |
 
@@ -95,8 +95,21 @@ now says `true`.
 
 ## 5. Results
 
-See the [evaluation report](../../eval/docs/benchmarks/selective-memory.md) for the protocol, every number and its
-limits.
+LoCoMo, five conversations, calibration on two and report on three, labels from an LLM over pooled candidates; the
+[evaluation report](../../eval/docs/benchmarks/selective-memory.md) has the protocol, every number and its limits.
+
+- **Recall** (bge-reranker-v2-m3, report split): questions about other conversations get memory 1.8% of the time
+  instead of always, name-swapped hard negatives 20.8%; a store's own questions are hit as often as before (0.886
+  against 0.884) with 65% fewer injected tokens and precision 0.55 instead of 0.19. Answer accuracy with the injected
+  memories is unchanged (J 0.681 against 0.665, McNemar p = 0.40) with 2.4 memories a question instead of 5. On 25
+  hand-labelled prompts from the live recall log, the hosted Qwen reranker injected nothing for the 12 that no memory
+  answers, against five memories each before, and missed 3 of 13 answerable ones (Chinese questions about English
+  memories).
+- **Formation**: per-turn formation with Recently Extracted Memories cut memories with a near duplicate from 17.4% to
+  9.9% and entity rows by 97% with no coverage loss. Segments of 4 or 8 turns cut extraction calls by 72% or 83% but lost
+  facts about the conversation's second speaker (the "assistant" role): own-question coverage fell from 94.9% to
+  88.7% or 82.0%, and with 8 turns answer accuracy fell from 0.681 to 0.533. Segments therefore stay opt-in
+  (`mem0SegmentTurns` 1 by default), decided by a rule written down before the 4-turn results.
 
 ## 6. Calibrating another reranker
 

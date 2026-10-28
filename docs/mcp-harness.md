@@ -242,9 +242,9 @@ waits for `/health`; the checks below are `connect`'s:
    Codex's events include a turn that ends without a final message, which must queue nothing.
 3. With recall (after forming the fact through the bridge when capture is off), platform-shaped
    `SessionStart` and `UserPromptSubmit` events run through the installed recall command. Each output
-   must be one JSON object of the shape Codex's hook schema allows, and both injected contexts must
-   contain the formed fact (WorkBuddy's `SessionStart` has no `cwd`, as in the real app, so its start
-   context holds global memories only and the fact appears with its prompt). A prompt in the session that
+   must be one JSON object of the shape Codex's hook schema allows. The `SessionStart` context must hold the
+   memory index and not the fact (WorkBuddy's `SessionStart` has no `cwd`, as in the real app, so it indexes
+   global memories only), and the first prompt's context must contain the formed fact. A prompt in the session that
    already saw it must inject nothing, and so must a prompt when no daemon answers.
 4. When the platform's CLI is installed, it parses a copy of the planned files in a temporary home:
    `codex mcp get` and `codex app-server` `hooks/list` (collector and recall hooks) for Codex,

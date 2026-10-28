@@ -53,3 +53,7 @@ Each entry says what to do if your checkout or data predates the change.
   embedding server) now fails to start: set `"mem0Rerank": false`, or start the reranker.
   Each search now makes one rerank call (about 0.2 s hosted) and no entity-embedding call. The entity projection drops
   its TOPIC rows and rebuilds once, when the next turn is formed. See [selective recall](docs/design/selective-memory.md).
+- **Formation can batch a session's turns.** `mem0SegmentTurns` (default 1, which keeps per-turn formation) lets one
+  extraction call take several turns: it cuts extraction calls, but loses facts about the assistant side of a
+  conversation (see [selective recall](docs/design/selective-memory.md#5-results)). Formation also shows the model the
+  facts the session already gave, which reduces duplicates without a setting.

@@ -53,6 +53,7 @@ eval/
 | `report.py` | Cohort-aware result tables and recorded usage |
 | `preliminary_summary.py` | Local usage-export aggregation and deduplication |
 | `pilot_plan.py` | Evidence-covered session/question manifest |
+| `selective_recall.py` | Selective recall and segment formation on LoCoMo: formation arms, explain searches, LLM relevance labels, offline rule replay and QA ([report](docs/benchmarks/selective-memory.md)) |
 
 These entry points have different stages: ingestion and answer/judge stages can make
 paid requests. Never use a paid experiment or the full dataset as an automatic check.

@@ -330,18 +330,19 @@ def check_recall(host, ctx, root, url, env):
     state = root / 'recall-state.sqlite3'
     context = lambda name, session, prompt=None, daemon=url: recall_context(
         host, ctx, name, session, daemon, state, env, prompt)
-    # A host event without a folder (WorkBuddy's SessionStart) is global: it must not carry the project fact,
-    # and the first prompt brings the fact in instead. The prompt repeats FACT: this checks the wiring, not
-    # retrieval quality under mock models.
+    # SessionStart injects the saved instructions and an index of the facts the session can recall, never a fact; a
+    # host event without a folder (WorkBuddy's SessionStart) is global and knows no project fact to index. The first
+    # prompt brings the fact in. The prompt repeats FACT: this checks the wiring, not retrieval quality under mock models.
     folder_at_start = 'cwd' in host.recall_event(ctx, 'SessionStart', 'recall-1')
-    if (FACT in context('SessionStart', 'recall-1')) != folder_at_start:
-        raise InstallError('recall: SessionStart context lacks the formed fact' if folder_at_start
-                           else 'recall: SessionStart context had the project fact without a session folder')
+    start = context('SessionStart', 'recall-1')
+    if FACT in start:
+        raise InstallError('recall: SessionStart context carried a fact instead of the memory index')
+    if folder_at_start and 'search_memories' not in start:
+        raise InstallError('recall: SessionStart context lacks the memory index')
     if FACT not in context('UserPromptSubmit', 'recall-2', FACT):
         raise InstallError('recall: UserPromptSubmit context lacks the formed fact')
-    if (FACT in context('UserPromptSubmit', 'recall-1', FACT)) == folder_at_start:
-        raise InstallError('recall: a prompt repeated what SessionStart already injected' if folder_at_start
-                           else 'recall: the first prompt lacks the project fact SessionStart could not know')
+    if FACT not in context('UserPromptSubmit', 'recall-1', FACT):
+        raise InstallError('recall: the first prompt lacks the formed fact')
     if context('UserPromptSubmit', 'recall-1', FACT):
         raise InstallError('recall: a prompt repeated what was already injected')
     if context('UserPromptSubmit', 'recall-3', FACT, daemon=f'http://127.0.0.1:{free_port()}'):

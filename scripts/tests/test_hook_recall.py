@@ -133,12 +133,12 @@ def test_session_start_injects_get_context_framed_and_scoped(tmp_path, daemon, r
     assert 'Loaded automatically at session start' in text and '- Cite sources.' in text
     path, headers, body = daemon.requests[0]
     assert path == '/v1/get_context'
-    assert body == {'scope': {'project': project, 'session': 's1'}, 'tokenBudget': 1000}
+    assert body == {'scope': {'project': project, 'session': 's1'}, 'tokenBudget': 1000, 'lean': True}
     assert headers['x-memory-platform'] == 'claude-code' and headers['x-memory-client'] == 'hook'
     # No folder, as in WorkBuddy's SessionStart: a global session, which reads global memories only.
     text = context(run(tmp_path, daemon.url, start()))
     assert text.startswith('<shared-memory ') and 'event="SessionStart"' in text.splitlines()[0]
-    assert daemon.requests[1][2] == {'scope': {'kind': 'global', 'session': 's1'}, 'tokenBudget': 1000}
+    assert daemon.requests[1][2] == {'scope': {'kind': 'global', 'session': 's1'}, 'tokenBudget': 1000, 'lean': True}
     daemon.replies['/v1/get_context'] = dict(CONTEXT, text='')
     assert run(tmp_path, daemon.url, start(project)) == {}  # nothing stored: inject nothing
 

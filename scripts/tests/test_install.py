@@ -272,34 +272,37 @@ def test_recall_without_capture_needs_a_loopback_daemon(tmp_path, capsys, fake_b
 
 
 @pytest.mark.parametrize('module', [claude_code, codex, workbuddy])
-def test_the_recall_check_expects_the_project_fact_at_session_start_only_where_the_event_has_a_folder(
+def test_the_recall_check_expects_an_index_at_session_start_and_the_fact_with_the_first_prompt(
         module, tmp_path, monkeypatch):
     """check_recall against a stand-in for the hook, which files a session under the folder its event names."""
     args, ctx = ctx_for(module, tmp_path)
     ctx.check_project = str(tmp_path / 'check-project')
     shown = set()
+    index = '[Memory index] 1 project facts and 0 shared ones; search_memories finds others.'
 
-    def hook(known):
+    def hook(known, start=lambda: index):
         def recall(host, ctx, name, session, url, state, env, prompt=None):
             event = host.recall_event(ctx, name, session, prompt)
-            # The fact is a project's: a global session lacks it, and a session sees each memory once.
-            if url != 'live' or not known(event) or (session in shown and name == 'UserPromptSubmit'):
+            # The fact is a project's: a global session lacks it and its index, and a session sees each memory once.
+            if url != 'live' or not known(event):
+                return ''
+            if name == 'SessionStart':
+                return start()
+            if session in shown:
                 return ''
             shown.add(session)
             return checks.FACT
         monkeypatch.setattr(checks, 'recall_context', recall)
         shown.clear()
     hook(lambda event: event.get('cwd') == ctx.check_project)
-    checks.check_recall(module, ctx, tmp_path, 'live', {})  # WorkBuddy's SessionStart has no folder: global only
+    checks.check_recall(module, ctx, tmp_path, 'live', {})  # WorkBuddy's SessionStart has no folder: no index
     assert ('cwd' in module.recall_event(ctx, 'SessionStart', 's')) == (module is not workbuddy)
-    hook(lambda event: True)  # a hook that ignores the missing folder files WorkBuddy's SessionStart under the project
-    if module is workbuddy:
-        with pytest.raises(core.InstallError, match='without a session folder'):
-            checks.check_recall(module, ctx, tmp_path, 'live', {})
-    else:
+    hook(lambda event: True, start=lambda: checks.FACT)  # a SessionStart that injects the fact itself
+    with pytest.raises(core.InstallError, match='carried a fact'):
         checks.check_recall(module, ctx, tmp_path, 'live', {})
     hook(lambda event: False)  # a hook that never knows the project injects nothing
-    with pytest.raises(core.InstallError, match='lacks the formed fact'):
+    with pytest.raises(core.InstallError,
+                       match='lacks the formed fact' if module is workbuddy else 'lacks the memory index'):
         checks.check_recall(module, ctx, tmp_path, 'live', {})
 
 

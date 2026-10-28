@@ -714,10 +714,14 @@ async def qa(root, systems, concurrency, max_calls):
                 context = '\n'.join(r['injected']) if r['injected'] else '(no memories)'
                 a = await llm.chat([{'role': 'system', 'content': prompts.render_unified(context, r['question'])}],
                                    component=f'qa-answer.{system}', max_tokens=512, meta={'qid': r['qid']})
-                j = await llm.chat([{'role': 'user', 'content': prompts.render_judge(r['question'], r['answer'], a.text)}],
-                                   component=f'qa-judge.{system}', json_mode=True, max_tokens=256, meta={'qid': r['qid']})
-                label = j.json.get('label') if isinstance(j.json, dict) else None
-                if label not in ('CORRECT', 'WRONG'):
+                # A judge reply without a valid label is asked again, at most three times in all.
+                for _ in range(3):
+                    j = await llm.chat([{'role': 'user', 'content': prompts.render_judge(r['question'], r['answer'], a.text)}],
+                                       component=f'qa-judge.{system}', json_mode=True, max_tokens=256, meta={'qid': r['qid']})
+                    label = j.json.get('label') if isinstance(j.json, dict) else None
+                    if label in ('CORRECT', 'WRONG'):
+                        break
+                else:
                     raise RuntimeError(f'invalid judge label {label!r} for {r["qid"]}')
                 jsonl.append(out, {**r, 'response': a.text, 'J': int(label == 'CORRECT')})
             await asyncio.gather(*(one(r) for r in rows if r['qid'] not in done))
