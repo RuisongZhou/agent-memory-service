@@ -1,4 +1,8 @@
-"""Claude Code: `.mcp.json` / `~/.claude.json` MCP servers and settings hooks."""
+"""Claude Code: the `~/.claude.json` MCP server and the user-level `~/.claude/settings.json` hooks.
+
+Everything is installed at user level, for every project: the hooks take the project from the session's
+folder when they run, so nothing here names one.
+"""
 
 import json
 import tempfile
@@ -16,13 +20,10 @@ DESCRIPTION = ('Register the shared-memory MCP bridge and dialogue-capture hooks
 CAPTURE = True
 RECALL = True
 EVENTS = ('UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd')
+FILE_MODE = 0o600
 
 
 def add_arguments(parser):
-    parser.add_argument('--scope', choices=('project', 'user'), default='project',
-                        help='project: <workspace>/.mcp.json and .claude/settings.local.json (default); '
-                             'user: ~/.claude.json and ~/.claude/settings.json for every project')
-    parser.add_argument('--workspace', type=core.absolute, help='project directory for --scope project')
     parser.add_argument('--claude-config-dir', type=core.absolute,
                         help='CLAUDE_CONFIG_DIR of the target Claude Code (default: <home>/.claude.json and '
                              '<home>/.claude/); the environment variable is not read')
@@ -42,33 +43,14 @@ def global_config(args, ctx):
 
 
 def host_paths(args, ctx):
-    ctx.scope = args.scope
-    ctx.global_config = global_config(args, ctx)
-    if args.scope == 'project':
-        if args.workspace is None:
-            raise InstallError('--scope project needs --workspace /absolute/path/to/project (or use --scope user)')
-        if not args.workspace.is_dir():
-            raise InstallError(f'Workspace does not exist: {args.workspace}')
-        ctx.workspace = args.workspace
-        ctx.mcp_file = args.workspace / '.mcp.json'
-        ctx.settings = args.workspace / '.claude/settings.local.json'
-        ctx.file_mode = 0o644
-        target = str(args.workspace)
-    else:
-        ctx.mcp_file = ctx.global_config
-        ctx.settings = (args.claude_config_dir or ctx.home / '.claude') / 'settings.json'
-        ctx.file_mode = 0o600
-        target = str(ctx.mcp_file)
-    # One backup history per target, so --rollback undoes this project's (or the user's) installation.
-    ctx.state = ctx.state / f'{args.scope}-{core.digest(target.encode())[:12]}'
+    ctx.mcp_file = global_config(args, ctx)
+    ctx.settings = (args.claude_config_dir or ctx.home / '.claude') / 'settings.json'
+    # One backup history per Claude Code configuration, so --rollback undoes the installation it names.
+    ctx.state = ctx.state / core.digest(str(ctx.mcp_file).encode())[:12]
 
 
 def managed_files(args, ctx):
     return [ctx.mcp_file, ctx.settings]
-
-
-def default_project(args, ctx):
-    return ctx.workspace.name if ctx.scope == 'project' else None
 
 
 def server_entry(ctx):
@@ -77,7 +59,7 @@ def server_entry(ctx):
 
 def local_servers(ctx):
     """{project path: entry} for local-scope `shared-memory` servers, which outrank project and user scope."""
-    projects = core.read_json(ctx.global_config).get('projects')
+    projects = core.read_json(ctx.mcp_file).get('projects')
     if not isinstance(projects, dict):
         return {}
     found = {}
@@ -90,15 +72,8 @@ def local_servers(ctx):
 
 def check_shadowing(ctx):
     local = local_servers(ctx)
-    if ctx.scope == 'project':
-        keys = {str(ctx.workspace), str(ctx.workspace.resolve())}
-        stale = [entry for path, entry in local.items() if path in keys and entry != server_entry(ctx)]
-        if stale:
-            raise InstallError(f'{ctx.global_config} has a local-scope {SERVER} server for {ctx.workspace}, '
-                               f'which Claude Code would use instead; run `claude mcp remove {SERVER} -s local` '
-                               'in that directory, then rerun')
-    elif local:
-        print(f'[note] {len(local)} project(s) in {ctx.global_config} have a local-scope {SERVER} server '
+    if local:
+        print(f'[note] {len(local)} project(s) in {ctx.mcp_file} have a local-scope {SERVER} server '
               'that overrides this user-scope one there')
 
 
@@ -111,19 +86,12 @@ def changes(args, ctx, uninstall):
     settings = core.merge_hooks(core.read_json(ctx.settings), events, lambda _: core.hook_handler(ctx),
                                 str(ctx.settings))
     settings = core.merge_recall_hooks(settings, ctx, uninstall, str(ctx.settings))
-    rejected = settings.get('disabledMcpjsonServers')
-    if ctx.scope == 'project' and not uninstall and rejected is not None:
-        # An earlier "no" to the project server would hide the entry written now.
-        if not isinstance(rejected, list):
-            raise InstallError(f'{ctx.settings}: disabledMcpjsonServers must be an array')
-        settings['disabledMcpjsonServers'] = [name for name in rejected if name != SERVER]
-    return [core.json_change(ctx.mcp_file, mcp, ctx.file_mode),
-            core.json_change(ctx.settings, settings, ctx.file_mode)]
+    return [core.json_change(ctx.mcp_file, mcp, FILE_MODE), core.json_change(ctx.settings, settings, FILE_MODE)]
 
 
 def capture_events(ctx, outbox):
     command = core.hook_command(ctx, outbox)
-    base = {'session_id': checks.SESSION, 'transcript_path': '', 'cwd': str(ctx.home),
+    base = {'session_id': checks.SESSION, 'transcript_path': '', 'cwd': ctx.check_project,
             'permission_mode': 'default', 'prompt_id': 'installer-prompt-1'}
     events = [dict(base, hook_event_name='UserPromptSubmit', prompt=checks.USER),
               dict(base, hook_event_name='Stop', stop_hook_active=False,
@@ -133,7 +101,7 @@ def capture_events(ctx, outbox):
 
 
 def recall_event(ctx, name, session, prompt=None):
-    base = {'session_id': session, 'transcript_path': '', 'cwd': str(ctx.home),
+    base = {'session_id': session, 'transcript_path': '', 'cwd': ctx.check_project,
             'permission_mode': 'default', 'hook_event_name': name}
     if name == 'SessionStart':
         return dict(base, source='startup', model='installer')
@@ -146,12 +114,8 @@ def host_check(args, ctx, planned):
         root = Path(temporary)
         (root / 'config').mkdir()
         (root / 'project').mkdir()
-        if ctx.scope == 'project':
-            data = planned.get(ctx.mcp_file) or ctx.mcp_file.read_bytes()
-            (root / 'project/.mcp.json').write_bytes(data)
-        else:
-            # Only our entry: the user's ~/.claude.json holds unrelated account state.
-            (root / 'config/.claude.json').write_text(json.dumps({'mcpServers': {SERVER: server_entry(ctx)}}))
+        # Only our entry: the user's ~/.claude.json holds unrelated account state.
+        (root / 'config/.claude.json').write_text(json.dumps({'mcpServers': {SERVER: server_entry(ctx)}}))
         env = dict(checks.check_env(root), CLAUDE_CONFIG_DIR=str(root / 'config'))
         result = checks.run_host_cli(['claude', 'mcp', 'get', SERVER], env, root / 'project')
     if result is None:
@@ -164,23 +128,20 @@ def host_check(args, ctx, planned):
     expected_args = ' '.join(core.bridge_args(ctx.url, PLATFORM))
     if result.returncode or fields.get('Command') != str(ctx.binary) or fields.get('Args') != expected_args:
         raise InstallError(f'claude mcp get did not read {SERVER} as written (exit {result.returncode})')
-    print(f"[check] claude CLI read the {SERVER} MCP server ({fields.get('Scope', ctx.scope)})")
+    print(f"[check] claude CLI read the {SERVER} MCP server ({fields.get('Scope', 'user')})")
 
 
 def post_install(args, ctx):
-    lines = []
-    if ctx.scope == 'project':
-        lines += [f'[result] installed for Claude Code in {ctx.workspace}.',
-                  '         Restart Claude Code there and approve the shared-memory project MCP server',
-                  '         when prompted (check /mcp). .mcp.json now holds absolute paths on this machine;',
-                  '         keep it out of shared commits, or use --scope user instead.']
-    else:
-        lines += ['[result] installed for Claude Code in every project. Restart Claude Code and check /mcp.']
+    lines = ['[result] installed for Claude Code in every project. Restart Claude Code and check /mcp.']
     if ctx.capture:
-        lines += [f'         Capture hooks file completed turns under project "{ctx.project}"; start a new turn',
-                  '         after restarting (a Stop without its captured prompt cannot be paired).']
+        lines += ["         Capture hooks file completed turns under the project of each session's folder; start a",
+                  '         new turn after restarting (a Stop without its captured prompt cannot be paired).']
     if ctx.recall:
-        lines += [f'         Recall hooks inject project "{ctx.project}" memory at session start and with each prompt.']
-    lines += [f'[next] add the shared memory workflow for project "{ctx.project or "<id>"}" to CLAUDE.md:',
-              '       docs/mcp-harness.md#shared-memory-workflow']
+        lines += ["         Recall hooks inject that project's memory at session start and with each prompt."]
+    if ctx.capture or ctx.recall:
+        lines += ['         The project is the folder Claude Code was started in (a git repository: its root); a session',
+                  '         without a folder, or in your home directory, uses global memories.',
+                  '         To stop the hooks in one project, set "disableAllHooks": true in its .claude/settings.local.json',
+                  '         (that turns off every hook there, not only these).']
+    lines += ['[next] add the shared memory workflow to CLAUDE.md: docs/mcp-harness.md#shared-memory-workflow']
     return lines

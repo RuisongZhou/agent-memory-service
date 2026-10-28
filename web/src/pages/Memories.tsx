@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import type { ListedMemory } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { StatusBadge, TypeBadge } from '../components/memory'
-import { Button, Card, Check, FacetOptions, Field, Input, Muted, RefreshButton, Select } from '../components/ui'
+import { Button, Card, Check, FacetOptions, Field, Input, Muted, RefreshButton, ScopeText, Select } from '../components/ui'
 import {
   ACTIVE_STATUSES,
   ALL_STATUSES,
@@ -23,6 +23,7 @@ import {
   formatTime,
   labelled,
   ORIGIN_LABEL,
+  projectOption,
   RECALL_FILTER_LABEL,
   SCOPE_LABEL,
   scopeText,
@@ -42,7 +43,11 @@ const columns = [
   }),
   column.accessor('type', { header: '类型', cell: (c) => <TypeBadge type={c.getValue()} /> }),
   column.accessor('status', { header: '状态', cell: (c) => <StatusBadge status={c.getValue()} /> }),
-  column.accessor((m) => scopeText(m.scope), { id: 'scope', header: '范围' }),
+  column.accessor((m) => scopeText(m.scope), {
+    id: 'scope',
+    header: '范围',
+    cell: (c) => <ScopeText scope={c.row.original.scope} />,
+  }),
   column.accessor('source.platform', { header: '写入平台' }),
   column.accessor('source.origin', { header: '来源', cell: (c) => ORIGIN_LABEL[c.getValue()] ?? c.getValue() }),
   column.accessor('recordedAt', { header: '记录时间', cell: (c) => formatTime(c.getValue()) }),
@@ -73,7 +78,7 @@ function Filters({ filters, update }: { filters: MemoryFilters; update: (set: Pa
         <Field label="项目">
           <Select value={filters.project} onChange={(e) => update({ project: e.target.value })}>
             <option value="">全部</option>
-            <FacetOptions facets={facets.data?.projects ?? []} selected={filters.project} />
+            <FacetOptions facets={facets.data?.projects ?? []} selected={filters.project} show={projectOption} />
           </Select>
         </Field>
         <Field label="范围">

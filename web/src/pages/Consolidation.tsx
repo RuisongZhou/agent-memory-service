@@ -15,8 +15,24 @@ import { DiffView } from '../components/DiffView'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { MemoryRef, ReviewStatusBadge } from '../components/memory'
 import { Modal } from '../components/Modal'
-import { Badge, Button, Card, Field, Fields, Input, MemoryLink, ModelCall, Muted, Note, RefreshButton, Select, TD, TH } from '../components/ui'
-import { formatNumber, formatPercent, formatTime } from '../lib/format'
+import {
+  Badge,
+  Button,
+  Card,
+  Field,
+  Fields,
+  Input,
+  MemoryLink,
+  ModelCall,
+  Muted,
+  Note,
+  ProjectName,
+  RefreshButton,
+  Select,
+  TD,
+  TH,
+} from '../components/ui'
+import { formatNumber, formatPercent, formatTime, projectOption } from '../lib/format'
 
 const RUN_LIMIT = 50
 const ROLLBACK_STATUSES = ['applied', 'partially_rolled_back', 'rolling_back']
@@ -92,7 +108,7 @@ export function ConsolidationPage() {
                       <Link to={`/consolidation/${r.runId}`} className="font-mono text-sky-700 hover:underline">{r.runId}</Link>
                     </TD>
                     <TD><ReviewStatusBadge status={r.status} /></TD>
-                    <TD>{r.project}</TD>
+                    <TD><ProjectName id={r.project} /></TD>
                     <TD className="whitespace-nowrap">{formatTime(r.createdAt)}</TD>
                     <TD className="text-right tabular-nums">{r.processedClusters} / {r.clusterCount}</TD>
                     <TD className="text-right tabular-nums">{r.acceptedOps} / {r.rejectedOps}</TD>
@@ -144,7 +160,7 @@ function Propose() {
           <Select value={project} onChange={(e) => setProject(e.target.value)}>
             <option value="">选择项目</option>
             {facets.data?.projects.map((p) => (
-              <option key={p.name} value={p.name}>{p.name} · {formatNumber(p.count)}</option>
+              <option key={p.name} value={p.name}>{projectOption(p.name)} · {formatNumber(p.count)}</option>
             ))}
           </Select>
         </Field>
@@ -258,7 +274,7 @@ function RunSummary({ run, actions }: { run: ConsolidationRun; actions: ReactNod
 
 function summaryRows(run: ConsolidationRunSummary): [string, ReactNode][] {
   const rows: [string, ReactNode][] = [
-    ['项目', run.project],
+    ['项目', <ProjectName id={run.project} />],
     ['创建时间', formatTime(run.createdAt)],
     ['生成模型', run.llmModel || '—'],
     ['项目事实 / 可参与', `${formatNumber(run.projectFacts)} / ${formatNumber(run.eligibleFacts)}`],

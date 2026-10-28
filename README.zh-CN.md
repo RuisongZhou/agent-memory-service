@@ -8,7 +8,7 @@
 **给本地 AI Agent 用的共享记忆。** 让项目决策、事实和明确保存的行为要求在 Codex、Claude Code、WorkBuddy 和
 DeepSeek Harness 之间延续。
 
-把各个客户端连到同一个本地服务，并使用同一个项目 ID。每个客户端都能检索共享记忆、查看来源、更正过时的信息。
+把各个客户端连到同一个本地服务，并在各个客户端里打开同一个文件夹。每个客户端都能检索共享记忆、查看来源、更正过时的信息。
 
 开启捕获和召回 hooks 后，典型的使用过程是这样的：
 
@@ -99,33 +99,33 @@ cd agent-memory-service
 
 ### 3. 接入客户端
 
-选一个稳定的项目 ID，替换下面的 `my-project`。要共享项目记忆的客户端，必须连到**同一个 daemon**，并使用**同一个
-项目 ID**。
+安装时不用指定项目：hooks 和 MCP 桥在运行时从会话所在的文件夹确定项目（见[项目路由](#安装器做了什么)）。要共享项目
+记忆的客户端，必须连到**同一个 daemon**，并打开**同一个文件夹**。
 
 #### Codex CLI / App
 
 ```bash
-bash scripts/install.sh --host codex --apply --project my-project --recall
+bash scripts/install.sh --host codex --apply --recall
 ```
 
 重启 Codex，然后在 `/hooks`（App 中为 **Settings → Hooks**）里信任 `shared-memory` 的 hooks（带 `--recall` 时共 5 个）。
 hooks 被信任之前，捕获和召回都不会运行。
 
-Codex 按 hook 的内容记录信任。如果重跑安装时换了 `--project` 或二进制路径，或者升级后 hooks 有变化，需要重新信任。
+Codex 按 hook 的内容记录信任。如果重跑安装时换了二进制路径或选项，或者升级后 hooks 有变化，需要重新信任。
 见 [Codex hooks](docs/mcp-harness.md#codex-hooks)。
 
 #### Claude Code
 
 ```bash
-bash scripts/install.sh --host claude-code --apply --project my-project --workspace /absolute/path/to/project --recall
+bash scripts/install.sh --host claude-code --apply --recall
 ```
 
-在该工作区重启 Claude Code，批准 `shared-memory` 项目 MCP server。用 `/mcp` 查看状态。
+重启 Claude Code，用 `/mcp` 查看 `shared-memory` 的状态。它装在用户级，它和它的 hooks 对所有项目生效。
 
 #### WorkBuddy
 
 ```bash
-bash scripts/install.sh --host workbuddy --apply --project my-project --recall
+bash scripts/install.sh --host workbuddy --apply --recall
 ```
 
 重启 WorkBuddy。在 **连接器 → 自定义连接器** 中信任 `shared-memory`，并启用全部 8 个工具。
@@ -136,8 +136,8 @@ bash scripts/install.sh --host workbuddy --apply --project my-project --recall
 bash scripts/install.sh --host deepseek-harness --apply
 ```
 
-重启 DeepSeek Harness 并新建会话。这个集成只提供 MCP 工具，不接受 `--project` 或 `--recall`。让 Agent 使用记忆时，
-请说明项目。
+重启 DeepSeek Harness 并新建会话。这个集成只提供 MCP 工具，不接受 `--recall`。MCP 桥运行在 `dsh` 的工作目录，不是
+会话所在的文件夹，所以让 Agent 使用记忆时，请指明项目（某个文件夹的绝对路径）。
 
 #### 安装器做了什么
 
@@ -147,13 +147,20 @@ bash scripts/install.sh --host deepseek-harness --apply
 
 安装器会保留已有的、无关的 MCP server、hooks 和设置。去掉 `--apply` 可以只预览。
 
-> **项目路由**：捕获和召回 hooks 使用安装命令里记录的项目 ID。Codex 和 WorkBuddy 的 hooks 装在用户级，所有会话都使用
-> 这个 ID，不会根据当前目录选择项目。Claude Code 默认只作用于指定的工作区。MCP 调用各自指定项目范围。
+> **项目路由**：安装器不指定项目；hooks 和 MCP 桥在运行时从会话所在的文件夹确定项目。这个文件夹是工作目录（Claude Code
+> 用它启动时所在的文件夹）。在 git 仓库里，项目是主仓库的根目录，所以子目录和 worktree 共用一个项目；其他文件夹各自是
+> 一个项目。项目 ID 是这个文件夹的绝对路径，例如 `/Users/me/code/my-repo`，所以移动文件夹后会成为新项目。没有文件夹的
+> 会话，或在用户主目录里打开的会话，使用 **global** 记忆，所有项目都能看到它；WorkBuddy 自己建的文件夹（`~/WorkBuddy/…`）
+> 里的会话也一样。MCP 工具默认使用会话的项目，调用时传 `project` 则用传入的。
+>
+> hooks 在每个会话里都会运行。要在某个项目里停用：Claude Code 在该项目的 `.claude/settings.local.json` 里写
+> `"disableAllHooks": true`（会关掉那里的全部 hooks）；Codex 在受信任项目的 `.codex/config.toml` 里写
+> `[features] hooks = false`（尚未核实）；WorkBuddy 没有已知的按项目开关。
 
 **其他配置：**
 
-- **只装 MCP**：Codex、Claude Code 或 WorkBuddy 加 `--no-capture` 并去掉 `--recall`，此时不需要 `--project`。之后想加上
-  hooks，用完整命令重新运行即可。
+- **只装 MCP**：Codex、Claude Code 或 WorkBuddy 加 `--no-capture` 并去掉 `--recall`。之后想加上 hooks，用完整命令重新
+  运行即可。
 - **只捕获、不自动召回**：去掉 `--recall`。
 - **不装网页**：加 `--no-ui`；服务原来提供的网页保留。
 - **使用已有二进制**：用 `--binary /absolute/path/to/agent-memoryd` 跳过构建，例如配合
@@ -167,14 +174,15 @@ bash scripts/install.sh --host deepseek-harness --apply
 
 ### 4. 试一下共享记忆
 
-把两个支持的客户端连到同一个 daemon。在第一个客户端里说：
+把两个支持的客户端连到同一个 daemon，并在两个客户端里打开同一个文件夹（DeepSeek Harness：在请求里指明这个文件夹作为
+项目）。在第一个客户端里说：
 
-> 用 shared-memory 给项目 `my-project` 保存这条测试事实："The project's test mascot is a copper fox." 用
-> `add_memories` 并设置 `infer:false`，直接存储原文。
+> 用 shared-memory 保存这条测试事实："The project's test mascot is a copper fox." 用 `add_memories` 并设置
+> `infer:false`，直接存储原文。
 
 在第二个客户端里说：
 
-> 用 shared-memory 在项目 `my-project` 中检索它的测试吉祥物。给出存储的事实，并用 `get_memory` 查看来源。
+> 用 shared-memory 检索项目的测试吉祥物。给出存储的事实，并用 `get_memory` 查看来源。
 
 第二个客户端应该能检索到第一个客户端保存的事实。这一步检查显式存储、检索和跨客户端可见性，可能会为嵌入或重排调用
 模型 API。
@@ -214,8 +222,8 @@ bash scripts/install.sh --host deepseek-harness --apply
 
 | 任务 | 示例 |
 |---|---|
-| 继续项目工作 | 「加载 `my-project` 的 shared-memory 上下文，然后找出我们之前的存储方案决定。」 |
-| 保存行为要求 | 「作为 `my-project` 的行为要求记住：汇报项目决策时附上来源。」 |
+| 继续项目工作 | 「加载这个项目的 shared-memory 上下文，然后找出我们之前的存储方案决定。」 |
+| 保存行为要求 | 「作为这个项目的行为要求记住：汇报项目决策时附上来源。」 |
 | 查看来源 | 「依赖这条记忆之前，先查看它的来源。」 |
 | 更正记录 | 「用 shared-memory 更正这条记录：服务端口现在是 9000。」 |
 | 撤回记录 | 「撤回这条记忆，它已经不成立了。」 |
@@ -240,7 +248,7 @@ bash scripts/install.sh --host deepseek-harness --apply
 Claude Code 和 Codex 会话：
 
 ```bash
-~/.local/bin/agent-memoryd import plan --host codex --project my-project --workspace /absolute/path/to/project
+~/.local/bin/agent-memoryd import plan --host codex --workspace /absolute/path/to/project   # 项目就是这个工作区的
 ~/.local/bin/agent-memoryd import propose <plan 打印的计划文件>   # 打印 RUN；不写记忆
 ~/.local/bin/agent-memoryd import show RUN                        # 生成评审文件，逐条标 accept / reject
 ~/.local/bin/agent-memoryd import apply RUN --review <评审文件>
@@ -251,8 +259,9 @@ Claude Code 和 Codex 会话：
 
 **通过 MCP 在对话里导入另一个助手的记忆。** 适合 ChatGPT、Gemini、Claude.ai 保存的记忆，不用存文件：
 
-1. 在已连接的宿主里运行 `/shared-memory:import_memories my-project chatgpt`（Claude Code；Codex 这类不支持 MCP 提示词
-   的宿主，把 `agent-memoryd import prompt --for host --project my-project --source chatgpt` 的输出贴进对话）。
+1. 在已连接的宿主里运行 `/shared-memory:import_memories /absolute/path/to/project chatgpt`（Claude Code；Codex 这类不支持
+   MCP 提示词的宿主，把 `agent-memoryd import prompt --for host --project /absolute/path/to/project --source chatgpt`
+   的输出贴进对话）。
 2. 把 Agent 给你的导出提示词拿到原来的助手里运行，再把它的回答贴回来。
 3. Agent 删掉不该导入的行，用 `propose_import` 提交其余的行。这时还没有写入，Agent 会把提议给你看。
 4. 回复"写入"表示同意，Agent 调用 `apply_import` 写入这次导入；要撤销，运行 `agent-memoryd import rollback RUN`。

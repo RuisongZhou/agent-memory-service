@@ -7,8 +7,8 @@ import type { StatedMemory, Uncertainty, UncertaintyStatus } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { MemoryText, StatusBadge, TypeBadge } from '../components/memory'
 import { Modal } from '../components/Modal'
-import { Badge, Button, Card, Field, Fields, Input, MemoryLink, Muted, RefreshButton, Textarea } from '../components/ui'
-import { formatNumber, formatTime, labelled, ORIGIN_LABEL, scopeText } from '../lib/format'
+import { Badge, Button, Card, Field, Fields, Input, MemoryLink, Muted, RefreshButton, ScopeText, Textarea } from '../components/ui'
+import { formatNumber, formatTime, labelled, ORIGIN_LABEL } from '../lib/format'
 
 const LIMIT = 200
 
@@ -103,7 +103,7 @@ function Question({ u }: { u: Uncertainty }) {
       title={
         <span className="flex flex-wrap items-center gap-2">
           <Badge tone={open ? 'red' : 'gray'}>{TABS.find(([s]) => s === u.status)?.[1] ?? u.status}</Badge>
-          <span className="text-sm font-normal text-zinc-600">{scopeText(u.scope)}</span>
+          <span className="text-sm font-normal text-zinc-600"><ScopeText scope={u.scope} /></span>
           <span className="font-mono text-xs font-normal text-zinc-400">{u.id}</span>
         </span>
       }

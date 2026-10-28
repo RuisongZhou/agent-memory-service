@@ -6,7 +6,7 @@ import type { MemoryType, SearchReq } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { StatusBadge, TypeBadge } from '../components/memory'
 import { Button, Card, Check, Field, Fields, Input, ModelCall, Muted, Select } from '../components/ui'
-import { ALL_PLATFORMS_LABEL, labelled, TYPE_LABEL } from '../lib/format'
+import { ALL_PLATFORMS_LABEL, labelled, projectOption, TYPE_LABEL } from '../lib/format'
 
 // Instructions are not searchable: get_context selects them, and search rejects the type.
 const SEARCH_TYPES: MemoryType[] = ['fact', 'experience', 'profile', 'skill']
@@ -54,7 +54,7 @@ export function SearchPage() {
             <Field label="项目">
               <Select value={project} onChange={(e) => setProject(e.target.value)}>
                 <option value="">全部项目（*）</option>
-                {facets.data?.projects.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                {facets.data?.projects.map((p) => <option key={p.name} value={p.name}>{projectOption(p.name)}</option>)}
               </Select>
             </Field>
             <Field label="topK" hint="留空用 daemon 默认值">

@@ -1,8 +1,8 @@
 // Small styled primitives in the shadcn manner: plain elements with Tailwind classes, owned as source.
 import type { ComponentProps, ReactNode } from 'react'
 import { Link } from 'react-router'
-import type { Facet } from '../api/types'
-import { formatNumber, labelled } from '../lib/format'
+import type { Facet, MemScope } from '../api/types'
+import { formatNumber, labelled, projectName, scopeText } from '../lib/format'
 
 const cx = (...classes: (string | false | undefined)[]) => classes.filter(Boolean).join(' ')
 
@@ -45,16 +45,18 @@ export const Select = ({ className, ...props }: ComponentProps<'select'>) => (
 )
 
 /** Facet values for a dropdown, keeping a value the URL names even when nothing has it any more. */
-export function FacetOptions({ facets, selected, labels, counts = true }: {
+export function FacetOptions({ facets, selected, labels, show, counts = true }: {
   facets: Facet[]
   selected: string
   labels?: Record<string, string>
+  /** How a value reads in the list, when its id is too long or plain for people (a project's path). */
+  show?: (name: string) => string
   /** Off when the facet's counts are of something other than what the list shows. */
   counts?: boolean
 }) {
   const listed = facets.some((f) => f.name === selected)
   const text = (name: string, count: number) =>
-    `${labels ? labelled(labels, name) : name}${counts ? ` · ${formatNumber(count)}` : ''}`
+    `${labels ? labelled(labels, name) : show ? show(name) : name}${counts ? ` · ${formatNumber(count)}` : ''}`
   return (
     <>
       {facets.map((f) => (
@@ -64,6 +66,15 @@ export function FacetOptions({ facets, selected, labels, counts = true }: {
     </>
   )
 }
+
+/** A project id as its folder's name; the full path is the tooltip. A global session has no project. */
+export const ProjectName = ({ id }: { id: string }) =>
+  id ? <span title={id}>{projectName(id)}</span> : <span className="text-zinc-400">全局</span>
+
+/** A memory's scope; a project's full path is the tooltip. */
+export const ScopeText = ({ scope }: { scope: MemScope }) => (
+  <span title={scope.kind === 'project' ? scope.project : undefined}>{scopeText(scope)}</span>
+)
 
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (

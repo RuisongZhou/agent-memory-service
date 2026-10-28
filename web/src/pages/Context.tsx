@@ -4,7 +4,7 @@ import { api, PLATFORM } from '../api/client'
 import type { GetContextReq, Memory } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { Badge, Button, Card, Check, Field, Fields, Input, MemoryLink, Muted, Pre } from '../components/ui'
-import { ALL_PLATFORMS_LABEL } from '../lib/format'
+import { ALL_PLATFORMS_LABEL, projectName } from '../lib/format'
 
 function Section({ title, empty, children, instruction }: {
   title: string
@@ -58,7 +58,7 @@ export function ContextPage() {
             <Field label="项目">
               <Input list="context-projects" value={project} onChange={(e) => setProject(e.target.value)} />
               <datalist id="context-projects">
-                {facets.data?.projects.map((p) => <option key={p.name} value={p.name} />)}
+                {facets.data?.projects.map((p) => <option key={p.name} value={p.name} label={projectName(p.name)} />)}
               </datalist>
             </Field>
             <Field label="会话">

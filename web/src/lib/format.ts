@@ -45,8 +45,23 @@ export const ALL_PLATFORMS_LABEL = '跨平台（scope.platform: "*"）：含所�
 export const labelled = (labels: Record<string, string>, value: string) =>
   labels[value] ? `${labels[value]} (${value})` : value
 
+/**
+ * A project id is the absolute path of its folder, such as `/Users/me/code/repo`: tables show its last segment and
+ * keep the whole path for a `title`. Any other id (older projects, names an MCP client chose) is shown as it is.
+ */
+export function projectName(id: string): string {
+  if (!id.startsWith('/')) return id
+  return id.split('/').filter(Boolean).pop() ?? id
+}
+
+/** A project in a dropdown: its short name, then the full path when the id is one. */
+export function projectOption(id: string): string {
+  const name = projectName(id)
+  return name === id ? id : `${name} — ${id}`
+}
+
 export function scopeText(s: MemScope): string {
-  if (s.kind === 'project') return `项目 · ${s.project}`
+  if (s.kind === 'project') return `项目 · ${projectName(s.project ?? '')}`
   if (s.kind === 'platform') return `平台 · ${s.platform}`
   return SCOPE_LABEL.global
 }

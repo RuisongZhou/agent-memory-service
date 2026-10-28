@@ -2,13 +2,12 @@
 
     ID, PLATFORM, LABEL, DESCRIPTION
     CAPTURE                            whether the host can feed the dialogue collector;
-                                       False installs MCP tools only and refuses --project
+                                       False installs MCP tools only
     RECALL                             whether the host's SessionStart / UserPromptSubmit hooks
                                        can inject recall context; False refuses --recall
     add_arguments(parser)              host flags
     host_paths(args, ctx)              set the host's configuration paths on `ctx`
     managed_files(args, ctx)           every file `changes` may write
-    default_project(args, ctx)         suggested project ID for the prompt, or None
     changes(args, ctx, uninstall)      [(path, bytes, mode) or None]: the desired state;
                                        uninstall (or ctx.capture False) drops our entries
     capture_events(ctx, outbox)        ([(command, stdin)], expected outbox jobs):
@@ -17,6 +16,9 @@
     recall_event(ctx, name, session, prompt)
                                        a host-format SessionStart / UserPromptSubmit payload
                                        for the installed recall command (RECALL hosts only)
+                                       Events carry `cwd` = ctx.check_project, the session folder
+                                       checks.verify_local sets, except where the host's own event
+                                       has none (WorkBuddy's SessionStart).
     host_check(args, ctx, planned)     let the host's own CLI parse the planned files
                                        ({path: bytes}) in a temporary home; note when absent
     post_install(args, ctx)            lines telling the user what only they can do

@@ -5,7 +5,7 @@ import { api, PLATFORM } from '../api/client'
 import type { MemorySummaries, Retrieval } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { MemoryRef } from '../components/memory'
-import { Badge, Button, Card, Check, Field, Input, Muted, RefreshButton, Select, TD, TH } from '../components/ui'
+import { Badge, Button, Card, Check, Field, Input, Muted, ProjectName, RefreshButton, Select, TD, TH } from '../components/ui'
 import {
   recallFiltersFromParams,
   recallFiltersToParams,
@@ -17,7 +17,10 @@ import { formatNumber, formatTime, labelled, RETRIEVAL_KIND_LABEL } from '../lib
 
 const RECENT_LIMIT = 10
 
-const where = (r: Retrieval) => [r.project, r.session].filter(Boolean).join(' / ') || '—'
+function Where({ r }: { r: Retrieval }) {
+  if (!r.project) return <>{r.session || '—'}</>
+  return <><ProjectName id={r.project} />{r.session && ` / ${r.session}`}</>
+}
 
 function FeedbackText({ r }: { r: Retrieval }) {
   if (!r.feedback) return <span className="text-zinc-400">无</span>
@@ -170,7 +173,7 @@ export function RecallsPage() {
                       </TD>
                       <TD>{RETRIEVAL_KIND_LABEL[r.kind] ?? r.kind}</TD>
                       <TD>{r.platform ?? <span className="text-zinc-400">未知</span>}</TD>
-                      <TD className="max-w-48 truncate">{where(r)}</TD>
+                      <TD className="max-w-48 truncate"><Where r={r} /></TD>
                       <TD className="max-w-xs truncate">
                         {r.query ?? <span className="text-zinc-400">—</span>}
                         {r.returned.gap && (
@@ -249,7 +252,7 @@ export function RecentRecalls({ id }: { id: string }) {
                   <TD className="whitespace-nowrap">{formatTime(r.createdAt)}</TD>
                   <TD>{RETRIEVAL_KIND_LABEL[r.kind] ?? r.kind}</TD>
                   <TD>{r.platform ?? <span className="text-zinc-400">未知</span>}</TD>
-                  <TD className="max-w-48 truncate">{where(r)}</TD>
+                  <TD className="max-w-48 truncate"><Where r={r} /></TD>
                   <TD className="max-w-xs truncate">{r.query ?? '—'}</TD>
                   <TD className="text-right tabular-nums">
                     {r.returned.memories.find((m) => m.id === id)?.rank ?? '—'} / {r.returned.memories.length}

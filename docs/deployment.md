@@ -7,8 +7,11 @@ model key into `~/.config/agent-memory-service/.env` and runs the daemon as a se
 agent platform:
 
 ```sh
-bash scripts/install.sh --host codex --apply --project my-project
+bash scripts/install.sh --host codex --apply
 ```
+
+The installer needs only the platform: hooks and the MCP bridge take each session's project from its folder
+([project routing](../README.md#what-the-installer-does)).
 
 The rest of this guide describes those steps for a manual or customized deployment and for operating
 the daemon. For client registration and dialogue capture by hand, continue with
@@ -150,7 +153,7 @@ with it, run the [installer](mcp-harness.md#one-command-install) from a checkout
 with it:
 
 ```sh
-bash scripts/install.sh --host codex --apply --project my-project --binary "$HOME/.local/bin/agent-memoryd"
+bash scripts/install.sh --host codex --apply --binary "$HOME/.local/bin/agent-memoryd"
 ```
 
 #### Build from source
