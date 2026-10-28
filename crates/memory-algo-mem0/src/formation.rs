@@ -277,10 +277,8 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) -> Result<()> {
     let project = job["project"]
         .as_str()
         .ok_or_else(|| anyhow!("missing project"))?;
-    let scope = match job["scopeKind"]
-        .as_str()
-        .ok_or_else(|| anyhow!("missing scopeKind"))?
-    {
+    // Requests queued before global sessions existed carry no scopeKind; every one of them named a project.
+    let scope = match job["scopeKind"].as_str().unwrap_or("project") {
         "global" => MemScope::global(),
         "project" => MemScope::project(project),
         other => bail!("unknown scopeKind {other}"),

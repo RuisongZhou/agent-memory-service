@@ -11,6 +11,7 @@ use memory_engine::runtime::indexer;
 use memory_rules::util;
 use memory_store::recalls::Recall;
 use memory_store::schema;
+use memory_store::store::Tx;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -689,6 +690,43 @@ async fn selftest() {
         .unwrap()
         .to_string();
     assert_eq!(memory(&t, &p).await.scope, MemScope::project(repo));
+    // A request queued before scope kinds existed has none; it named a project and forms project facts.
+    let queued = ingest::add_memories(
+        &stubbed,
+        &t,
+        &caller,
+        AddMemoriesReq {
+            scope: in_folder.clone(),
+            turn_id: Some("p0".into()),
+            messages: Some(vec![InMessage {
+                role: "user".into(),
+                content: "User runs tests with cargo nextest".into(),
+                timestamp: "2026-10-27T09:00:00Z".into(),
+            }]),
+            sync: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let legacy_id = queued["requestId"].as_str().unwrap();
+    let mut tx = Tx::new();
+    tx.clear_fields(schema::REQUESTS, legacy_id, &["scopeKind"])
+        .unwrap();
+    t.store.commit(tx).await.unwrap();
+    mem0_formation::process_jobs(&stubbed, &t).await.unwrap();
+    let legacy = ingest::get_task(
+        &stubbed,
+        &t,
+        GetTaskReq {
+            request_id: legacy_id.into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(legacy["status"], "completed", "{legacy}");
+    let legacy_fact = legacy["memoryIds"][0].as_str().unwrap();
+    assert_eq!(memory(&t, legacy_fact).await.scope, MemScope::project(repo));
     // The same text in another turn of either session is that session's fact again; the project's own copy is
     // another fact, since the content key names the project (`""` for global).
     assert_eq!(
@@ -813,9 +851,13 @@ async fn selftest() {
     );
     assert_eq!(
         turns(&listed(&in_folder).await.unwrap()),
-        [(json!("p1"), json!(repo)), (json!("p2"), json!(repo))]
+        [
+            (json!("p1"), json!(repo)),
+            (json!("p0"), json!(repo)),
+            (json!("p2"), json!(repo))
+        ]
     );
-    assert_eq!(turns(&listed(&everywhere).await.unwrap()).len(), 6);
+    assert_eq!(turns(&listed(&everywhere).await.unwrap()).len(), 7);
     // The recall and request logs select the global session by the project "".
     let filed = requests(json!({"kind": "mem0", "project": ""}))
         .await
