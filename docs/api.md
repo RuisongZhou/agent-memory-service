@@ -35,19 +35,34 @@ call the [import endpoints](#import-runs) as the connection's platform; the MCP 
 | Field | Meaning |
 |---|---|
 | `X-Memory-Platform` | Calling adapter; MCP sets it through `--platform`, not a model-selected identity |
-| `scope.project` | Stable shared project ID, independent of machine paths |
+| `scope.project` | The project a memory belongs to: normally the absolute path of the session's folder, such as `/Users/me/code/repo`, which the hooks and the MCP bridge choose ([project from the session folder](design/project-routing.md)). Any nonempty string other than `*` is valid |
+| `scope.kind` | `"project"` (the default) or `"global"`, a session with no project folder. `"global"` comes without `scope.project`: sending both, or any other kind, is `400 INVALID_ARGUMENT` |
 | `scope.session` | Actual native session ID; use a stable device prefix if IDs can collide |
 | `turnId` | Retry identity within the calling platform |
 
-Writes require nonempty project/session. The idempotency key is `platform + turnId`, without
-project/session. Adapters encode `project/session/nativeTurnId` component by component and retain the
-first payload and timestamps on retries. A new turn ID is a new event even if the text repeats.
+Writes require a nonempty project and session, or `kind:"global"` and a session. A write with neither a project nor
+`kind:"global"` is a 400, so a client that forgets the project cannot file facts as global by accident. The
+idempotency key is `platform + turnId`, without project/session. Adapters encode `project/session/nativeTurnId`
+component by component (the project component is empty for a global session, giving `/session/nativeTurnId`) and
+retain the first payload and timestamps on retries. A new turn ID is a new event even if the text repeats.
+
+A global session's dialogue forms global facts: formation recalls existing facts and earlier batches as for a project
+with no project facts, so only global and platform facts are its context, and the exact-text key that deduplicates
+facts names no project. An explicit instruction from a global session is global by default (`memoryScope` may name
+the caller's platform; a project scope is a 400, as the session has no current project). The write's request row
+records the project `""` and `scopeKind:"global"`, a `list_turns` entry shows `project:""`, and a global read is
+logged under the project `""`. `list_requests` and `list_retrievals` select them with `project:""`.
+Consolidation and import take a project and do not handle global facts.
 
 Global and matching project memories are visible across clients; platform-scoped records default to
-the caller's platform. Search defaults to all visible projects when project is omitted or `"*"`.
+the caller's platform. A read with `kind:"global"` sees global and platform memories only: `get_context` returns no
+project notes or facts, `search_memories` searches no project and `list_turns` lists the global sessions' turns.
+Search defaults to all visible projects when project is omitted or `"*"`, and that does not change.
 Raw input reads default to the caller's platform; explicit `scope.platform:"*"` reads across platforms.
-Use the same daemon and project to share memory. These labels route requests and do not authenticate users. A daemon
-serves one store, under its data directory.
+Use the same daemon and the same project (open the same folder) to share memory. These labels route requests and do
+not authenticate users. A daemon serves one store, under its data directory. Through the MCP bridge `scope.project`
+may be left out: it fills in the project it took from the session folder, or `kind:"global"`
+([MCP bridge](mcp-harness.md)).
 
 The daemon answers only requests addressed to `127.0.0.1`, `localhost` or `[::1]` on its own port, and refuses with
 `403 FORBIDDEN` what a browser page on another origin could send: another `Host` (DNS rebinding), an `Origin` that is

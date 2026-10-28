@@ -43,6 +43,28 @@ pub struct ReqScope {
     pub platform: Option<String>,
     #[serde(default)]
     pub session: Option<String>,
+    /// "project" (the default) | "global". `"global"` is a session with no project folder: it names no `project`,
+    /// its writes are global memories and its reads see global and platform memories only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+impl ReqScope {
+    /// Whether the request is for a session with no project folder (`kind: "global"`). Every entry point asks
+    /// this once, so `kind` is checked in one place: absent or `"project"` leaves `project` as the caller wrote
+    /// it, `"global"` must come without one.
+    pub fn is_global(&self) -> ApiResult<bool> {
+        match (self.kind.as_deref(), &self.project) {
+            (None | Some("project"), _) => Ok(false),
+            (Some("global"), None) => Ok(true),
+            (Some("global"), Some(_)) => Err(ApiError::InvalidArgument(
+                "scope.project and scope.kind \"global\" exclude each other".into(),
+            )),
+            (Some(other), _) => Err(ApiError::InvalidArgument(format!(
+                "scope.kind must be project or global, not {other:?}"
+            ))),
+        }
+    }
 }
 
 pub const ORIGIN_EXPLICIT: &str = "explicit";
