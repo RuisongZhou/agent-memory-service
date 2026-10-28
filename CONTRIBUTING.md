@@ -20,7 +20,8 @@ against its SHA-256.
 | Path | Contents |
 |---|---|
 | `crates/` | The service; [architecture](docs/architecture.md#layers-and-ownership) describes each layer |
-| `docs/` | Documentation of the current service, one topic per page; `docs/design/` holds design notes, which may describe parts not built yet |
+| `docs/` | Documentation of the current service, one topic per page, listed in [docs/README.md](docs/README.md); `docs/design/` holds the Chinese design notes behind implemented features |
+| `CHANGELOG.md` | What changed between versions, and what to do when upgrading |
 | `examples/` | Editable service configuration, MCP and capture templates, and the memory export prompts |
 | `scripts/` | Service operation and check scripts, including the installer `scripts/install.sh` |
 | `eval/` | SDK baselines, datasets, evaluation protocol, experiments and past reports |
@@ -30,6 +31,22 @@ against its SHA-256.
 The documentation describes the current Mem0 service. Earlier designs stay in the Git history, and the reports under
 `eval/` keep the version they were recorded with. Read [compatibility](docs/api.md#compatibility) before reusing an
 old data directory.
+
+## Documentation
+
+Each kind of change has one home:
+
+- The [README](README.md), and its [Chinese version](README.zh-CN.md) kept in step, is the user flow: what the project
+  does, install, connect, everyday use. Keep it short and send details to a guide.
+- `docs/*.md` is the reference, one topic per page, in the present tense. State each fact once and link to it from
+  elsewhere.
+- [CHANGELOG.md](CHANGELOG.md) records what changed and what to do when upgrading. "Now", "no longer" and "earlier
+  versions" belong there, not in the reference.
+- `docs/design/` holds the Chinese design notes. Code comments cite them by path and section number, so keep both
+  stable.
+
+The installer prints, and code comments cite, paths and anchors in `docs/`. Before renaming a file or heading there,
+search the repository for it (`git grep -n 'mcp-harness.md#'`, for example) and update every reference.
 
 ## Checks
 
@@ -65,6 +82,10 @@ archive per platform (binary, `LICENSE`, `THIRD_PARTY.md`, `.env.example`) with 
 release of the tag. Check the draft, then publish it. A manual run of the workflow builds the archives as
 artifacts without a release. Installing a downloaded binary is described in
 [deployment](docs/deployment.md#release-archive).
+
+Before tagging, give the changelog's `Unreleased` entries a heading with the version and date, and have their upgrade
+notes say whether `connect` must be rerun. For the first release, also drop the note at the top of the changelog that
+no version has been published.
 
 ## Boundaries
 
