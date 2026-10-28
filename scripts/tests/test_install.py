@@ -69,7 +69,7 @@ def run(capsys, *argv):
 def install_args(host, home, binary, *extra):
     """`connect` to a daemon of your own (--binary and --url): no service is read."""
     return ['connect', '--host', host, '--home', home, '--binary', binary, '--url', UNUSED_URL,
-            '--non-interactive', '--skip-host-check', *extra]
+            '--skip-host-check', *extra]
 
 
 def ctx_for(host, tmp_path, *extra):
@@ -1066,19 +1066,22 @@ def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys,
     assert len(list((session / core.STATE / 'env').iterdir())) == 1  # the replaced file was backed up
 
 
-def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, service_binary):
+def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, service_binary, fake_surreal):
     env = session / 'checkout/.env'
     env.parent.mkdir()
     env.write_text(f'QWEN_API_KEY={KEY}\n')
+    recorded = session / 'opt/surreal'  # a SurrealDB off PATH, which the unit records
+    recorded.parent.mkdir()
+    shutil.copy(fake_surreal, recorded)
     status = dict(NOT_INSTALLED, installed=True, managed=True, envFile=str(env), dataDir='/data/mem0', outbox=None,
-                  port=8765, llmConcurrency=2)
+                  port=8765, llmConcurrency=2, surrealBin=str(recorded))
     (service_binary.parent / 'status.json').write_text(json.dumps(status))
     installed_unit(session)
     code, output = run(capsys, *service_args(session, service_binary, '--apply'))
     assert code == 0, output
     (call,) = service_calls(service_binary)
     assert flag(call, '--env-file') == str(env) and flag(call, '--data-dir') == '/data/mem0'
-    assert flag(call, '--llm-concurrency') == '2'
+    assert flag(call, '--llm-concurrency') == '2' and flag(call, '--surreal-bin') == str(recorded)
     assert flag(call, '--outbox') == str(session / core.OUTBOX)  # a unit without an uploader gets one
     assert not (session / '.config/agent-memory-service/.env').exists()
 
@@ -1269,13 +1272,17 @@ def test_uninstall_stops_the_service_removes_the_unit_and_names_what_stays(sessi
 
 def test_connect_reads_the_binary_url_and_outbox_from_the_installed_service(session, capsys, service_binary,
                                                                             fake_surreal, offline):
-    argv = ['connect', '--host', 'workbuddy', '--home', session, '--non-interactive', '--skip-host-check', '--recall']
+    argv = ['connect', '--host', 'workbuddy', '--home', session, '--skip-host-check', '--recall']
     run_connect = lambda *extra: run(capsys, *argv, *extra)
     # Without a service, `connect` needs both --binary and --url, and otherwise names the command to run first.
     for extra in ([], ['--apply'], ['--binary', service_binary], ['--url', 'http://127.0.0.1:9000', '--apply']):
         code, output = run_connect(*extra)
         assert code == 1 and 'run `bash scripts/install.sh service --apply` first' in output, output
     assert not (session / '.workbuddy').exists() and offline == []
+    # A unit whose binary is not where `connect` looks: it says so, rather than that no service is installed.
+    installed_unit(session)
+    code, output = run_connect()
+    assert code == 1 and 'pass --binary with the agent-memoryd it runs' in output, output
     # An installed service gives the installed binary, its port and its outbox, and the SurrealDB it records.
     installed = session / runtime.BINARY
     installed.parent.mkdir(parents=True)
@@ -1308,6 +1315,11 @@ def test_connect_reads_the_binary_url_and_outbox_from_the_installed_service(sess
                 for g in groups]
     assert all(words[0] == str(installed) for words in commands)
     assert {flag(words, '--outbox') for words in commands if words[1:3] == ['hook', 'capture']} == {str(outbox)}
+    # An upgrade of the service then names the connected platform instead of asking to connect one.
+    (session / '.config/agent-memory-service').mkdir(parents=True, exist_ok=True)
+    (session / '.config/agent-memory-service/.env').write_text(f'QWEN_API_KEY={KEY}\n')
+    code, output = run(capsys, *service_args(session, installed, '--apply'))
+    assert code == 0 and '[next] connected: workbuddy.' in output, output
     assert {flag(words, '--url') for words in commands if words[1:3] == ['hook', 'recall']} == {'http://127.0.0.1:9000'}
     # A unit written by hand is not read, and the message says what to pass instead.
     (installed.parent / 'status.json').write_text(json.dumps(dict(status, managed=False)))

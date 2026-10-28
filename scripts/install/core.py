@@ -629,7 +629,6 @@ def connect_arguments(argv):
     parser.add_argument('--home', type=absolute, default=Path.home(), help='home directory (for isolated installs)')
     parser.add_argument('--skip-host-check', action='store_true',
                         help="do not run the host's own CLI to parse the planned configuration")
-    parser.add_argument('--non-interactive', action='store_true', help='never prompt (connect asks nothing)')
     host.add_arguments(parser)
     return host, parser.parse_args(argv)
 
@@ -786,11 +785,10 @@ def connected(home):
     found = []
     for host_id in HOSTS:
         host, args = connect_arguments(['--host', host_id, '--home', str(home), '--uninstall'])
-        ctx = context(host, args)
-        try:
+        try:  # a configuration that cannot be read is reported, never fatal: the service work is already done
             with redirect_stdout(io.StringIO()):  # the host's plan notes are for a connect run
-                changes, _ = plan(host, args, ctx, uninstall=True)
-        except InstallError as error:
+                changes, _ = plan(host, args, context(host, args), uninstall=True)
+        except (InstallError, OSError, ValueError) as error:
             print(f'[note] cannot tell whether {host.LABEL} is connected: {error}')
             continue
         if changes:
@@ -815,7 +813,8 @@ def service(args):
     if not args.apply:
         print('[result] preview only. Rerun with --apply to build, check, install and start the daemon service.')
         return
-    runtime.check_surreal(ctx)
+    if args.surreal_bin or not runtime.unit_path(ctx.home).exists():
+        runtime.check_surreal(ctx)  # an installed unit's own SurrealDB is checked once it is read
     runtime.check_free(ctx)
     runtime.prepare(args, ctx)  # the key prompt comes before the build, so the rest runs unattended
     source = build_binary(args)
@@ -829,6 +828,11 @@ def service(args):
                 checks.verify_model(ctx, plan.env_file)
         runtime.start_service(ctx, plan)
     runtime.report_service(plan)
+    if clients := connected(ctx.home):
+        print(f"[next] connected: {', '.join(clients)}. When an upgrade changes their entries, rerun "
+              '`bash scripts/install.sh connect --host HOST --apply` for each (rerunning is always safe)')
+    else:
+        print(f'[next] connect a platform: bash scripts/install.sh connect --host <{"|".join(HOSTS)}> --apply')
 
 
 def print_shared():

@@ -170,7 +170,7 @@ project, see [turning the hooks off per project](#turning-the-hooks-off-per-proj
 | `--binary`, `--url`, `--outbox` | Override the installed service's binary, URL and outbox; `--binary` with `--url` names a daemon you run yourself (it must have the `hook` commands) |
 | `--surreal-bin` | The SurrealDB the offline checks' temporary daemons start (default: the one the service records, else the first on PATH) |
 | `--codex-home`; `--claude-config-dir`; `--workbuddy-home`, `--mcp-target`; `--dsh-home`, `--dsh-binary` | Platform locations and, for DeepSeek Harness, the `dsh` CLI that parses the result; host environment variables such as `CODEX_HOME` or `DSH_HOME` are not read |
-| `--skip-host-check`, `--non-interactive`, `--home` | Skip the platform's own parser, accepted for scripts (`connect` never prompts), or install into another home (tests) |
+| `--skip-host-check`, `--home` | Skip the platform's own parser, or install into another home (tests). `connect` never prompts |
 | `--rollback [BACKUP]`, `--uninstall` | Restore the files of the latest (or given) backup; remove only the entries this installer wrote. Both keep the service, its binary, env file, memory data and outbox for the other platforms, and need no `--binary` or `--url` |
 
 **Uninstall everything:** `connect --host H --uninstall` for each platform you connected, then

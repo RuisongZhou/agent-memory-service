@@ -257,6 +257,10 @@ def plan_service(args, ctx, binary):
     if installed and status['port'] is None and not args.port:
         raise InstallError(f"Cannot read the port of {status['unit']}; pass --port or reinstall it with "
                            'agent-memoryd service install')
+    if installed and not args.surreal_bin:
+        # The unit's SurrealDB, like its other options: an upgrade must not switch to the one on PATH.
+        ctx.surreal = find_surreal(args, status['surrealBin'])
+        check_surreal(ctx)
     port = args.port or (status['port'] if installed else core.DEFAULT_PORT)
     outbox = args.outbox or Path(status['outbox'] if installed and status['outbox'] else ctx.outbox)
     ui_dir = status['uiDir']
@@ -295,6 +299,9 @@ def daemon(args):
         asked = args.binary or args.home / BINARY
         if asked.is_file():
             status = service_status(asked, args.home)
+        elif unit_path(args.home).exists():
+            raise InstallError(f'A service is installed ({unit_path(args.home)}), but {asked} does not exist: pass '
+                               '--binary with the agent-memoryd it runs')
         if status is None or not status['installed']:
             raise InstallError(f'No daemon service is installed in {args.home}: run `bash scripts/install.sh service '
                                '--apply` first. For a daemon you run yourself, pass --binary and --url together')
@@ -457,7 +464,6 @@ def report_service(plan):
         print(f'[check] the service uploads {plan.outbox}')
     else:
         print(f'[note] the service holds no lock on {plan.outbox} yet; captured turns stay queued until it does')
-    print(f'[next] connect a platform: bash scripts/install.sh connect --host <{"|".join(core.HOSTS)}> --apply')
 
 
 def stop_argv(manager):
