@@ -1,7 +1,7 @@
 # API and configuration
 
 This is the current Mem0 request, response and configuration reference. Use
-[deployment](deployment.md) for installation, [MCP integration](mcp-harness.md) for client setup,
+[deployment](deployment.md) for installation, [MCP and client integration](mcp-harness.md) for client setup,
 and [architecture](architecture.md) for implementation and scoring rules.
 
 ## Interfaces
@@ -403,16 +403,16 @@ process-manager templates live in [deployment](deployment.md).
 
 ## Compatibility
 
-The retrieval-model provider now defaults to `api`. An existing llama-server deployment must set
-`MEMORY_MODEL_PROVIDER=self-hosted` before restarting; otherwise the daemon uses the hosted models
-(with `QWEN_API_KEY` when no model key is set), sends stored text to the provider and re-embeds every
-store at the next start. The former `scripts/llama_models.sh` and `scripts/llama_servers.sh` are now
-`scripts/self_hosted_models.sh download` and `start|stop|status`.
+The retrieval-model provider defaults to `api`: the daemon uses the hosted models (with `QWEN_API_KEY` when no model
+key is set) and sends stored text to the provider. A llama-server deployment sets
+`MEMORY_MODEL_PROVIDER=self-hosted`; changing the provider re-embeds every store at the next start.
 
 Only Mem0 is available. Retired strategies and buffer/batch/maintenance tunables are rejected;
-`/admin/run_jobs` and the mock-only `/admin/seed` have been removed and return HTTP 404.
+`/admin/run_jobs` and the mock-only `/admin/seed` do not exist and return HTTP 404.
 
-SurrealDB is no longer compiled into the daemon: install SurrealDB 3.2 or a later 3.x
+SurrealDB is an external dependency, not compiled into the daemon: install SurrealDB 3.2 or a later 3.x
 ([install SurrealDB](deployment.md#install-surrealdb)). An existing `store/db` opens in place; its first start
 creates the datastore's root user and `store/db.password`. Without `surreal` on PATH or `--surreal-bin`, the
 daemon does not start.
+
+What changed between versions, and what to do when upgrading, is in the [changelog](../CHANGELOG.md).

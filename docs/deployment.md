@@ -12,11 +12,11 @@ bash scripts/install.sh connect --host codex --apply
 ```
 
 Run `service` again after `git pull` to upgrade. `connect` needs only the platform: hooks and the MCP bridge take
-each session's project from its folder ([project routing](../README.md#what-the-installer-does)).
+each session's project from its folder ([project routing](mcp-harness.md#project-routing)).
 
 The rest of this guide describes those steps for a manual or customized deployment and for operating
 the daemon. For client registration and dialogue capture by hand, continue with
-[MCP and harness integration](mcp-harness.md) after the daemon is ready.
+[MCP and client integration](mcp-harness.md) after the daemon is ready.
 
 ## Deployment components and strategy
 
@@ -122,11 +122,13 @@ Each published release on the
 [releases page](https://github.com/RuisongZhou/agent-memory-service/releases) carries one archive per
 platform, each with a `.sha256` checksum, plus a combined `SHA256SUMS`: `aarch64-apple-darwin` (Apple silicon), `x86_64-apple-darwin`,
 `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (glibc 2.35 or later). An archive holds
-`agent-memoryd`, the [web UI](design/web-ui.md) in `ui/`, `.env.example`, `LICENSE` and `THIRD_PARTY.md`.
+`agent-memoryd`, the [web UI](../README.md#web-ui) in `ui/`, `.env.example`, `LICENSE` and `THIRD_PARTY.md`. A version
+with no published release has no archive: [build from source](#build-from-source). The
+[changelog](../CHANGELOG.md) says whether a version has been published.
 Download, verify and install one:
 
 ```sh
-version=v0.1.0               # a published release tag
+version=vX.Y.Z               # a tag from the releases page
 target=aarch64-apple-darwin  # your platform from the list above
 name="agent-memoryd-$version-$target"
 base="https://github.com/RuisongZhou/agent-memory-service/releases/download/$version"
@@ -508,10 +510,9 @@ Within the selected data root, the store keeps its SurrealDB datastore (SurrealK
 datastore's root password at `store/db.password` (mode 0600, created with the datastore) and `store/db.lock`,
 which a running daemon holds so that a second daemon on the same data directory is refused. Only the daemon
 uses the password, to sign in to the SurrealDB server it starts; nothing else needs that server's port.
-Earlier versions kept the store under `tenants/default`, which the daemon moves to `store` when it starts, and
-an unused full-text index at `store/fulltext`, which it removes. Versions before SurrealDB became an external
-dependency ran SurrealDB 3.2 inside the daemon on the same `store/db`: it opens in place with SurrealDB 3.2 or a
-later 3.x, and its first start creates the root user and the password file. Primary inputs, memories,
+When it starts, the daemon moves a store found under `tenants/default` to `store` and removes an unused full-text
+index at `store/fulltext`. A `store/db` written by a daemon with SurrealDB 3.2 built in opens in place with
+SurrealDB 3.2 or a later 3.x, and its first start creates the root user and the password file. Primary inputs, memories,
 provenance, request receipts, and durable index work belong in the database; search indexes are rebuildable.
 The capture outbox is a separate database and also needs a retention/backup policy; `agent-memoryd outbox prune`
 applies the retention (see below).
@@ -535,6 +536,9 @@ With the terminal/script setup, stop the foreground daemon (and a standalone upl
 With the LaunchAgent setup, use `launchctl bootout` for the selected service labels and `launchctl bootstrap` to start them again. With systemd, stop the daemon and any model units using `systemctl --user stop` and start them with `systemctl --user start`. Use the process manager's logs instead of `results/llama/`, which belongs to the self-hosted helper script.
 
 ### Common problems
+
+This table covers the daemon, models and storage. For a client that is not connected, hooks, the outbox, recall or
+import, see [client troubleshooting](mcp-harness.md#troubleshooting).
 
 | Symptom | Check or action |
 |---|---|
@@ -561,6 +565,4 @@ curl -fsS http://127.0.0.1:8765/v1/get_task \
 
 The daemon enforces loopback binding. For another machine, keep this boundary and deploy an authenticated gateway or an authenticated tunnel to the local service. The daemon [refuses](api.md#scope-and-idempotency) a request whose `Host` is not its own loopback address and port, so the gateway or tunnel must send `Host: 127.0.0.1:<daemon port>`. Platform labels do not authorize access. The supplied MCP bridge and uploader have no gateway credential options; direct gateway authentication needs an adapter change. A remote stdio bridge/tunnel must also preserve transport and scope correctly. This repository does not provide a turnkey multi-user remote deployment.
 
-
-For MCP, capture and uploader failures, see [client troubleshooting](mcp-harness.md#troubleshooting).
 For offline build verification, see [CONTRIBUTING](../CONTRIBUTING.md#checks).
