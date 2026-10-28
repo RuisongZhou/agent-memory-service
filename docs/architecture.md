@@ -161,9 +161,7 @@ inferred eligibility. Unverified records remain available to semantic/BM25 retri
 mislabelled as inferred. Entity-count checks detect missing rows, not arbitrary external corruption.
 
 Shared integrity rules retain historical record compatibility: retiring a source invalidates dependent
-current views, repairs conflict references and queues index changes in the same transaction. Historical
-experiences keep their lineage. Main does not form profiles, skills or session experiences, and no read
-regenerates them. Unfinished formation work of a retired strategy is not processed; see [compatibility](api.md#compatibility).
+current views, repairs conflict references and queues index changes in the same transaction.
 
 ## Consolidation
 

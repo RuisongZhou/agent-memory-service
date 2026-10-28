@@ -27,10 +27,9 @@ against its SHA-256.
 | `results/` | Ignored service logs and check results |
 | `eval/results/` | Ignored evaluation evidence, run records and stores |
 
-The documentation describes the current Mem0 service. The earlier Mem0 + Memos implementation is kept on the
-[`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos) branch; earlier
-designs stay in the Git history, and the reports under `eval/` keep the version they were recorded with. Read
-[compatibility](docs/api.md#compatibility) before reusing an old data directory.
+The documentation describes the current Mem0 service. Earlier designs stay in the Git history, and the reports under
+`eval/` keep the version they were recorded with. Read [compatibility](docs/api.md#compatibility) before reusing an
+old data directory.
 
 ## Checks
 

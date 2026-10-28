@@ -1,9 +1,7 @@
 # Evaluation protocol
 
-Protocol of the current evaluation entry points (see [the evaluation README](../README.md)). The earlier
-dual-strategy (Memos) protocol, its clients and replay tools remain on the
-[`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos) branch; frozen
-protocols and results under `eval/results/` are preserved unchanged.
+Protocol of the current evaluation entry points (see [the evaluation README](../README.md)). Frozen protocols and
+results under `eval/results/` are preserved unchanged.
 
 The evaluation runs locally using Python runners, the Rust daemon, mem0 OSS 2.2.1 and an official Qwen
 endpoint. LoCoMo supplies data; there is no hosted benchmark platform in this workflow. Sessions are processed

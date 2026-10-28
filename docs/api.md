@@ -409,20 +409,10 @@ The retrieval-model provider now defaults to `api`. An existing llama-server dep
 store at the next start. The former `scripts/llama_models.sh` and `scripts/llama_servers.sh` are now
 `scripts/self_hosted_models.sh download` and `start|stop|status`.
 
-Only Mem0 is available on main. The previous dual-strategy implementation is preserved on
-[`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos),
-starting at `971ac13`. Retired strategies and buffer/batch/maintenance tunables are rejected;
+Only Mem0 is available. Retired strategies and buffer/batch/maintenance tunables are rejected;
 `/admin/run_jobs` and the mock-only `/admin/seed` have been removed and return HTTP 404.
 
 SurrealDB is no longer compiled into the daemon: install SurrealDB 3.2 or a later 3.x
 ([install SurrealDB](deployment.md#install-surrealdb)). An existing `store/db` opens in place; its first start
 creates the datastore's root user and `store/db.password`. Without `surreal` on PATH or `--surreal-bin`, the
 daemon does not start.
-
-Existing Mem0 stores retain their historical records. Main does not process unfinished formation
-work of a retired strategy; finish it with the matching preserved binary first. Switching branches
-does not migrate or clear a database. Historical profiles/skills and conflict records remain readable
-and repairable, but main does not generate them. Turns stored by a retired strategy stay readable but are
-no longer vector-indexed: each store drops its `turns_vec` index at its next start, and a reindex or
-embedding-model change re-embeds memories only. See [storage integrity](architecture.md#entity-projection-and-storage)
-for dependency invalidation and recovery behavior.

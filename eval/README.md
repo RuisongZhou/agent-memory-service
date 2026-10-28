@@ -6,11 +6,6 @@ vendored extraction prompt are service implementation and remain under `crates/`
 See [the evaluation protocol](docs/evaluation.md) before running an experiment.
 Commands below run from the repository root.
 
-Main runs only Mem0. The historical dual-strategy clients and replay tools, which need a Memos daemon,
-remain on the [`codex/mem0-memos`](https://github.com/RuisongZhou/agent-memory-service/tree/codex/mem0-memos)
-branch together with the legacy extraction examples and recovery scripts. Current Mem0/SDK comparison tools
-remain here. No frozen protocol, raw evidence or local result/store is rewritten by the branch split.
-
 ## Setup
 
 ```sh

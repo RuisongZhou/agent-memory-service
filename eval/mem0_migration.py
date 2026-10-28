@@ -23,7 +23,6 @@ from common.migration import daemon, export, relay, sdk_stores, service_blocks
 from common.protocol import guard
 
 # Archived protocol arm names and the frozen current binary retain their original labels.
-# Historical short-term/long-term controls live on codex/mem0-memos; keep recorded arm labels.
 ARMS = ('current', 'mem0-strategy', 'mem0-sdk')
 # The service stores of each arm, one daemon each; the SDK arm's daemon only serves embeddings.
 STORES = {'current': ['conv-26-en'], 'mem0-strategy': ['conv-26-a-en', 'conv-26-b-en'], 'mem0-sdk': []}
