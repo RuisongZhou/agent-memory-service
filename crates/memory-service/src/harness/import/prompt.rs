@@ -60,7 +60,25 @@ pub fn host_text(project: &str, source: &str, platform: Option<&str>, lang: Lang
         .replace(SELF, &self_sentence(platform, lang))
         .replace(EXPORT, text(project, lang).trim_end())
         .replace(SOURCE, source)
+        // The shell lines of the prompt: a project is a path now, and may hold spaces.
+        .replace(PROJECT_FLAG, &format!("--project {}", shell_word(project)))
         .replace(PLACEHOLDER, project)
+}
+
+/// How the prompts hand the project to a command: replaced first, quoted for the shell.
+const PROJECT_FLAG: &str = "--project {project}";
+
+/// `word` as one shell word: as it is when no shell treats a character of it specially, else in single quotes.
+fn shell_word(word: &str) -> String {
+    let plain = !word.starts_with('-')
+        && !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+=:@%,".contains(c));
+    match plain {
+        true => word.into(),
+        false => format!("'{}'", word.replace('\'', r"'\''")),
+    }
 }
 
 #[cfg(test)]
@@ -126,6 +144,16 @@ mod tests {
             let on_codex = host_text("demo-project", "self", Some("codex"), lang);
             assert!(on_codex.contains("import plan --host codex --project demo-project"));
             assert!(!prompt.contains("import plan --host codex"));
+            // A project is a folder's path: bare when plain, else one quoted shell word, in every shell line.
+            let path = host_text("/Users/me/app", "self", Some("codex"), lang);
+            assert!(path.contains("import plan --host codex --project /Users/me/app"));
+            let spaced = host_text("/Users/me/my repo/it's", "self", Some("codex"), lang);
+            assert!(
+                spaced.contains(r"--project '/Users/me/my repo/it'\''s'"),
+                "{lang:?}"
+            );
+            assert!(spaced.contains(r"--project '/Users/me/my repo/it'\''s' --from <"));
+            assert!(!spaced.contains("--project /Users/me/my repo"));
         }
     }
 }

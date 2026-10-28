@@ -15,12 +15,13 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 use super::claude::{HOST, SNIFF_BYTES};
-use super::project::{repository_root, within};
+use super::project::within;
 use super::session::{
     content_text, finish, first_cwd, read_lines, SessionAdapter, SessionDoc, SessionScan, Turn,
     MAX_TRANSCRIPT,
 };
 use super::source::{entries, timestamp, ScanContext};
+use crate::harness::project::repository_root;
 use crate::harness::{invalid, Error};
 
 pub const VIA: &str = "claude-transcript";

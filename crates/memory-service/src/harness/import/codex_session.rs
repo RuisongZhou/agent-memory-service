@@ -14,11 +14,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::codex::HOST;
-use super::project::{repository_root, within};
+use super::project::within;
 use super::session::{
     content_text, finish, read_lines, SessionAdapter, SessionDoc, SessionScan, Turn, MAX_TRANSCRIPT,
 };
 use super::source::{entries, timestamp, ScanContext};
+use crate::harness::project::repository_root;
 use crate::harness::{invalid, Error};
 
 pub const VIA: &str = "codex-rollout";

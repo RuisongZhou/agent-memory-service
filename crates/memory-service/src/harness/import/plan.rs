@@ -606,13 +606,13 @@ pub fn write(plan: &Plan, path: &Path) -> Result<(), Error> {
 }
 
 /// `<home>/.local/state/agent-memory-service/imports/<host>-<project>-<UTC stamp>.plan.jsonl`, numbered
-/// when a plan of the same second exists.
+/// when a plan of the same second exists; a project that is a path appears as its last segment.
 pub fn default_path(home: &Path, host: &str, project: &str, now: DateTime<Utc>) -> PathBuf {
     let dir = home.join(IMPORTS_DIR);
     let base = format!(
         "{}-{}-{}",
         file_part(host),
-        file_part(project),
+        file_part(crate::harness::project::name(project)),
         now.format("%Y%m%dT%H%M%SZ")
     );
     let mut path = dir.join(format!("{base}.plan.jsonl"));
@@ -1218,6 +1218,11 @@ mod tests {
         assert!(next.ends_with("claude-code-team_app_x-20261022T120000Z-2.plan.jsonl"));
         assert_eq!(file_part(".."), "_");
         assert_eq!(file_part("项目"), "__");
+        // A project that is a path (the folder of a session) is named by its last segment, not cut at 64
+        // characters of its parents.
+        let deep = format!("/Users/me/{}/my repo", "projects/".repeat(10));
+        assert!(default_path(home.path(), "codex", &deep, now)
+            .ends_with("codex-my_repo-20261022T120000Z.plan.jsonl"));
     }
 
     fn session(id: &str, started: &str, turns: Vec<Turn>) -> SessionDoc {

@@ -1,10 +1,13 @@
 //! Agent harness commands: the dialogue collector and automatic recall that agent hosts run as
 //! hooks, and the uploader that submits captured dialogue to the daemon. They keep the files,
 //! schemas and hook contracts of the Python hooks that earlier installers wrote, so an existing
-//! outbox and recall record stay usable. See docs/mcp-harness.md. `import` reads the memories a host already keeps into a reviewable plan
-//! and drives the daemon's import runs (docs/design/memory-import.md).
+//! outbox and recall record stay usable. See docs/mcp-harness.md. A hook files each session under the project
+//! its folder gives (`project`, docs/design/project-routing.md); nothing on its command line names one.
+//! `import` reads the memories a host already keeps into a reviewable plan and drives the daemon's import runs
+//! (docs/design/memory-import.md).
 pub mod import;
 pub mod outbox;
+pub mod project;
 pub mod recall;
 pub mod uploader;
 
@@ -97,9 +100,10 @@ pub async fn hook(cmd: HookCmd) -> i32 {
         HookCmd::Recall(args) => recall::run(args).await,
         HookCmd::Capture { at, turn_id_field } => adapter(|| {
             let event = stdin_json()?;
+            let project = project::Env::from_process().of_event(&at.platform, &event);
             outbox::Outbox::open(&at.outbox)?.capture_hook(
                 &event,
-                &at.project,
+                &project,
                 &at.platform,
                 turn_id_field,
             )?;
@@ -114,11 +118,8 @@ pub async fn hook(cmd: HookCmd) -> i32 {
             let wrapped = (!args.is_empty()).then(|| forward(&args, &event));
             let captured = adapter(|| {
                 let event: Value = serde_json::from_str(&event).map_err(|_| Error::Json)?;
-                outbox::Outbox::open(&at.outbox)?.capture_notify(
-                    &event,
-                    &at.project,
-                    &at.platform,
-                )?;
+                let project = project::Env::from_process().of_event(&at.platform, &event);
+                outbox::Outbox::open(&at.outbox)?.capture_notify(&event, &project, &at.platform)?;
                 Ok(0)
             });
             let forwarded = match wrapped.map(|child| child.and_then(settle)) {
@@ -649,16 +650,16 @@ mod tests {
 
     #[test]
     fn codex_notify_takes_the_event_last_and_a_wrapped_program_after_double_dash() {
-        let (at, args) = codex_notify(&["--project", "p", "{\"type\":\"x\"}"]).unwrap();
+        let (at, args) = codex_notify(&["--platform", "codex", "{\"type\":\"x\"}"]).unwrap();
         assert_eq!(
-            (at.project.as_str(), args),
-            ("p", vec!["{\"type\":\"x\"}".to_string()])
+            (at.platform.as_str(), args),
+            ("codex", vec!["{\"type\":\"x\"}".to_string()])
         );
         // The wrapped program's own options stay its own, and the event still comes last. `--tenant`, which
         // hooks of earlier installers pass, is accepted.
         let (_, args) = codex_notify(&[
-            "--project",
-            "p",
+            "--platform",
+            "codex",
             "--tenant",
             "t",
             "--",
@@ -669,7 +670,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args, ["/apps/Client", "--flag", "turn-ended", "{}"]);
-        assert!(codex_notify(&["--project", "p"]).is_err());
+        assert!(codex_notify(&["--platform", "codex"]).is_err());
     }
 
     #[derive(clap::Parser)]
@@ -725,16 +726,23 @@ mod tests {
         .to_vec()
     }
 
+    /// The event Codex appends: a turn, with the session's working directory when `cwd` is given.
+    fn turn_event_in(turn: &str, cwd: Option<&Path>) -> String {
+        let mut event = serde_json::json!({"type": "agent-turn-complete", "thread-id": "s1", "turn-id": turn,
+                           "input-messages": ["Keep the source."], "last-assistant-message": "Kept."});
+        if let Some(cwd) = cwd {
+            event["cwd"] = json!(cwd);
+        }
+        event.to_string()
+    }
+
     fn turn_event() -> String {
-        serde_json::json!({"type": "agent-turn-complete", "thread-id": "s1", "turn-id": "t1",
-                           "input-messages": ["Keep the source."], "last-assistant-message": "Kept."})
-        .to_string()
+        turn_event_in("t1", None)
     }
 
     fn notify_cmd(dir: &Path, wrapped: Vec<String>, event: String) -> HookCmd {
         let at = outbox::Target {
             outbox: dir.join("outbox.sqlite3"),
-            project: "p".into(),
             platform: "codex".into(),
             tenant: None,
         };
@@ -743,12 +751,15 @@ mod tests {
         HookCmd::CodexNotify { at, args }
     }
 
-    fn queued(dir: &Path) -> usize {
-        outbox::Outbox::open(&dir.join("outbox.sqlite3"))
+    /// The turn ids of the queued jobs.
+    fn queued(dir: &Path) -> Vec<String> {
+        let jobs = outbox::Outbox::open(&dir.join("outbox.sqlite3"))
             .unwrap()
             .status()
-            .unwrap()
-            .len()
+            .unwrap();
+        jobs.iter()
+            .map(|job| job["turn_id"].as_str().unwrap().to_string())
+            .collect()
     }
 
     #[tokio::test]
@@ -761,7 +772,16 @@ mod tests {
             std::fs::read_to_string(&record).unwrap(),
             format!("turn-ended|{}", turn_event())
         );
-        assert_eq!(queued(dir.path()), 1);
+        // No `cwd` in the event: a session without a folder, filed as global, the project part of its key empty.
+        assert_eq!(queued(dir.path()), ["/s1/t1"]);
+        // The event's `cwd` names the project: the folder, or the repository around it.
+        let repo = std::fs::canonicalize(dir.path()).unwrap().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let event = turn_event_in("t2", Some(&repo.join("src")));
+        assert_eq!(hook(notify_cmd(dir.path(), vec![], event)).await, 0);
+        let key = outbox::turn_key(repo.to_str().unwrap(), "s1", "t2");
+        assert_eq!(queued(dir.path()), ["/s1/t1".to_string(), key]);
     }
 
     #[tokio::test]
@@ -777,7 +797,7 @@ mod tests {
 
         let missing = vec![dir.path().join("gone").to_str().unwrap().to_string()];
         assert_eq!(hook(notify_cmd(dir.path(), missing, turn_event())).await, 1);
-        assert_eq!(queued(dir.path()), 1); // the turn is captured all the same
+        assert_eq!(queued(dir.path()).len(), 1); // the turn is captured all the same
 
         let failing = ["/bin/sh", "-c", "exit 3"].map(String::from).to_vec();
         assert_eq!(hook(notify_cmd(dir.path(), failing, turn_event())).await, 1);

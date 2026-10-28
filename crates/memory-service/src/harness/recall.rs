@@ -1,8 +1,9 @@
 //! Bounded automatic recall: inject shared memory into an agent through its hooks.
 //!
 //! SessionStart injects get_context; UserPromptSubmit injects search_memories results for the
-//! prompt that this session was not shown yet, packed into its own token budget. The daemon must
-//! be on loopback. A hook never blocks or fails its host: every outcome prints exactly one JSON
+//! prompt that this session was not shown yet, packed into its own token budget. Both are scoped to the
+//! session's project, which each event's folder gives (`harness::project`); a session without a project
+//! recalls global memories only. The daemon must be on loopback. A hook never blocks or fails its host: every outcome prints exactly one JSON
 //! object and exits 0 (exit 2 would block the prompt). The recall record keeps the schema of the Python
 //! hook that earlier installers wrote.
 use memory_rules::util;
@@ -16,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::project::{Env, SessionProject};
 use super::{expand, loopback_url, positive, private_file, CallError, Daemon, Error};
 
 /// Default record of shown memories, relative to the home directory.
@@ -58,9 +60,6 @@ pub struct RecallArgs {
     /// Private record of memories already shown per session
     #[arg(long, default_value_os_t = super::home().join(DEFAULT_STATE))]
     pub state: PathBuf,
-    /// Stable project id; never inferred from cwd
-    #[arg(long)]
-    pub project: String,
     #[arg(long, default_value = "codex")]
     pub platform: String,
     /// Ignored: hooks written by earlier installers pass it.
@@ -87,6 +86,8 @@ pub struct RecallArgs {
 /// Memories to record as shown in a session after the output is printed.
 #[derive(Debug, PartialEq)]
 struct Record {
+    /// The record key of the session's project (`SessionProject::key`).
+    project: String,
     session: String,
     memories: Vec<String>,
     /// SessionStart starts the session's record over.
@@ -124,6 +125,7 @@ pub async fn run(args: RecallArgs) -> ! {
         std::process::exit(0)
     }));
     let deadline = Duration::from_secs_f64(args.timeout);
+    let env = Env::from_process();
     let outcome = tokio::time::timeout(deadline, async {
         let input = tokio::task::spawn_blocking(|| {
             let mut text = String::new();
@@ -133,7 +135,7 @@ pub async fn run(args: RecallArgs) -> ! {
         .map_err(|_| "Panic")?
         .map_err(|_| "OSError")?;
         let event: Value = serde_json::from_str(&input).map_err(|_| "JSONDecodeError")?;
-        recall(&args, &event, deadline).await
+        recall(&args, &event, &env, deadline).await
     })
     .await;
     let (output, record) = match outcome {
@@ -157,10 +159,12 @@ pub async fn run(args: RecallArgs) -> ! {
     std::process::exit(0)
 }
 
-/// (hook output, memories to record after printing).
+/// (hook output, memories to record after printing). The event's project is the session's folder in `env`:
+/// a session without one (WorkBuddy's SessionStart carries no `cwd`) recalls global memories only.
 async fn recall(
     args: &RecallArgs,
     event: &Value,
+    env: &Env,
     timeout: Duration,
 ) -> Result<(Value, Option<Record>), &'static str> {
     let Value::Object(fields) = event else {
@@ -174,10 +178,11 @@ async fn recall(
         return Ok((json!({}), None));
     }
     let daemon = Daemon::new(&args.url, timeout).map_err(|e| e.kind())?;
+    let project = env.of_event(&args.platform, event);
     let (text, record) = if name == "SessionStart" {
-        session_start(args, &daemon, fields).await?
+        session_start(args, &daemon, &project, fields).await?
     } else {
-        prompt_submit(args, &daemon, fields).await?
+        prompt_submit(args, &daemon, &project, fields).await?
     };
     let Some(text) = text else {
         return Ok((json!({}), None));
@@ -197,10 +202,11 @@ fn session_id(fields: &Map<String, Value>) -> Option<String> {
 async fn session_start(
     args: &RecallArgs,
     daemon: &Daemon,
+    project: &SessionProject,
     fields: &Map<String, Value>,
 ) -> Result<(Option<String>, Option<Record>), &'static str> {
     let session = session_id(fields);
-    let mut scope = json!({"project": args.project});
+    let mut scope = project.scope();
     if let Some(session) = &session {
         scope["session"] = json!(session);
     }
@@ -211,7 +217,7 @@ async fn session_start(
         .map_err(|e| e.kind())?;
     let text = context.get("text").and_then(Value::as_str).unwrap_or("");
     let lines = splitlines(clean(text).trim());
-    let (text, kept) = wrap(args, "SessionStart", START_NOTE, &lines);
+    let (text, kept) = wrap(args, project, "SessionStart", START_NOTE, &lines);
     let (Some(text), Some(session)) = (text.clone(), session) else {
         return Ok((text, None));
     };
@@ -222,6 +228,7 @@ async fn session_start(
         vec![]
     };
     let record = Record {
+        project: project.key().to_string(),
         session,
         memories,
         reset: true,
@@ -232,6 +239,7 @@ async fn session_start(
 async fn prompt_submit(
     args: &RecallArgs,
     daemon: &Daemon,
+    project: &SessionProject,
     fields: &Map<String, Value>,
 ) -> Result<(Option<String>, Option<Record>), &'static str> {
     let mut session = session_id(fields);
@@ -243,7 +251,9 @@ async fn prompt_submit(
     if query.is_empty() {
         return Ok((None, None)); // an image-only or empty prompt has nothing to search for
     }
-    let found = search(args, daemon, &query).await.map_err(|e| e.kind())?;
+    let found = search(args, daemon, project, &query)
+        .await
+        .map_err(|e| e.kind())?;
     let mut memories: Vec<(&str, &Map<String, Value>)> = found
         .get("results")
         .and_then(Value::as_array)
@@ -254,7 +264,7 @@ async fn prompt_submit(
         .collect();
     if let Some(current) = session.clone() {
         let state = args.state.clone();
-        let key = (args.platform.clone(), args.project.clone());
+        let key = (args.platform.clone(), project.key().to_string());
         let seen = tokio::task::spawn_blocking(move || already_shown(&state, &key, &current))
             .await
             .map_err(|_| "Panic")?;
@@ -268,12 +278,13 @@ async fn prompt_submit(
         }
     }
     let (lines, mut shown): (Vec<String>, Vec<String>) = pack(args, &memories).into_iter().unzip();
-    let (text, kept) = wrap(args, "UserPromptSubmit", PROMPT_NOTE, &lines);
+    let (text, kept) = wrap(args, project, "UserPromptSubmit", PROMPT_NOTE, &lines);
     let (Some(text), Some(session)) = (text.clone(), session) else {
         return Ok((text, None));
     };
     shown.truncate(kept);
     let record = Record {
+        project: project.key().to_string(),
         session,
         memories: shown,
         reset: false,
@@ -283,13 +294,18 @@ async fn prompt_submit(
 
 /// search_memories for the prompt, asking for more than recall injects. A daemon whose maxTopK
 /// refuses that gets the plain request.
-async fn search(args: &RecallArgs, daemon: &Daemon, query: &str) -> Result<Value, CallError> {
+async fn search(
+    args: &RecallArgs,
+    daemon: &Daemon,
+    project: &SessionProject,
+    query: &str,
+) -> Result<Value, CallError> {
     let fetch = args
         .top_k
         .saturating_mul(FETCH_FACTOR)
         .clamp(MIN_FETCH, MAX_FETCH);
     let body = |top_k: usize, budget: usize| {
-        json!({"query": query, "scope": {"project": args.project},
+        json!({"query": query, "scope": project.scope(),
                "topK": top_k, "tokenBudget": budget})
     };
     let wide = body(fetch, args.search_budget.saturating_mul(fetch));
@@ -393,10 +409,20 @@ fn chars(text: &str) -> i64 {
     text.chars().count() as i64
 }
 
-/// The injected block of whole leading lines within --max-chars characters: (text, lines kept).
-fn wrap(args: &RecallArgs, event: &str, note: &str, lines: &[String]) -> (Option<String>, usize) {
-    let project = Value::from(args.project.as_str());
-    let head = format!("<{TAG} project={project} event=\"{event}\">\n{note}\n");
+/// The injected block of whole leading lines within --max-chars characters: (text, lines kept). Its opening
+/// tag names the session's project, JSON-quoted, or says `scope="global"`.
+fn wrap(
+    args: &RecallArgs,
+    project: &SessionProject,
+    event: &str,
+    note: &str,
+    lines: &[String],
+) -> (Option<String>, usize) {
+    let scope = match project {
+        SessionProject::Global => "scope=\"global\"".to_string(),
+        SessionProject::Project(id) => format!("project={}", Value::from(id.as_str())),
+    };
+    let head = format!("<{TAG} {scope} event=\"{event}\">\n{note}\n");
     let tail = format!("</{TAG}>");
     let mut room = args.max_chars as i64 - chars(&head) - chars(&tail) - chars(TRUNCATED);
     let mut kept = 0;
@@ -531,7 +557,7 @@ fn unix_now() -> f64 {
 fn remember(args: &RecallArgs, record: &Record) -> Result<(), Error> {
     let mut db = open_state(&args.state)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let key = params![TENANT, args.platform, args.project, record.session];
+    let key = params![TENANT, args.platform, record.project, record.session];
     let at = unix_now();
     if record.reset {
         tx.execute(
@@ -546,7 +572,7 @@ fn remember(args: &RecallArgs, record: &Record) -> Result<(), Error> {
             params![
                 TENANT,
                 args.platform,
-                args.project,
+                record.project,
                 record.session,
                 memory,
                 at
@@ -652,7 +678,6 @@ mod tests {
     fn args(dir: &tempfile::TempDir, url: &str) -> RecallArgs {
         RecallArgs {
             state: dir.path().join("state/recall.sqlite3"),
-            project: "proj".into(),
             platform: "claude-code".into(),
             tenant: None,
             url: url.into(),
@@ -666,7 +691,9 @@ mod tests {
 
     /// Context injected for `event` ("" for none), recording shown memories as `run` does.
     async fn inject(args: &RecallArgs, event: Value) -> String {
-        let (output, record) = recall(args, &event, Duration::from_secs(2)).await.unwrap();
+        let (output, record) = recall(args, &event, &env(), Duration::from_secs(2))
+            .await
+            .unwrap();
         if let Some(record) = record {
             remember(args, &record).unwrap();
         }
@@ -680,12 +707,29 @@ mod tests {
         specific["additionalContext"].as_str().unwrap().into()
     }
 
+    /// A home elsewhere and no project directory from the host: the folder is the event's `cwd`.
+    fn env() -> Env {
+        Env {
+            project_dir: None,
+            home: PathBuf::from("/home/test"),
+        }
+    }
+
+    /// The events of a session working in `/work/proj`, a folder outside any repository.
     fn start(session: &str) -> Value {
-        json!({"hook_event_name": "SessionStart", "session_id": session, "source": "startup"})
+        json!({"hook_event_name": "SessionStart", "session_id": session, "source": "startup",
+               "cwd": "/work/proj"})
     }
 
     fn prompt(text: &str, session: &str) -> Value {
-        json!({"hook_event_name": "UserPromptSubmit", "session_id": session, "prompt": text})
+        json!({"hook_event_name": "UserPromptSubmit", "session_id": session, "prompt": text,
+               "cwd": "/work/proj"})
+    }
+
+    /// `event` without a folder, as WorkBuddy's SessionStart is: its session has no project.
+    fn without_folder(mut event: Value) -> Value {
+        event.as_object_mut().unwrap().remove("cwd");
+        event
     }
 
     /// Memory IDs on the result lines of injected context, in order.
@@ -700,16 +744,50 @@ mod tests {
     async fn session_start_injects_get_context_framed_and_scoped() {
         let (url, requests) = daemon(json!({"results": []})).await;
         let dir = tempfile::tempdir().unwrap();
-        let text = inject(&args(&dir, &url), start("s1")).await;
-        assert!(text.starts_with("<shared-memory project=\"proj\" event=\"SessionStart\">\n"));
+        let a = args(&dir, &url);
+        let text = inject(&a, start("s1")).await;
+        assert!(text.starts_with("<shared-memory project=\"/work/proj\" event=\"SessionStart\">\n"));
         assert!(text.ends_with("</shared-memory>"));
         assert!(text.contains(START_NOTE) && text.contains("- Cite sources."));
         let (name, body) = requests.lock().unwrap()[0].clone();
         assert_eq!(name, "get_context");
         assert_eq!(
             body,
-            json!({"scope": {"project": "proj", "session": "s1"}, "tokenBudget": 1000})
+            json!({"scope": {"project": "/work/proj", "session": "s1"}, "tokenBudget": 1000})
         );
+        // A session without a folder (WorkBuddy's SessionStart) gets global context only.
+        let text = inject(&a, without_folder(start("s2"))).await;
+        assert!(text.starts_with("<shared-memory scope=\"global\" event=\"SessionStart\">\n"));
+        assert_eq!(
+            requests.lock().unwrap()[1].1,
+            json!({"scope": {"kind": "global", "session": "s2"}, "tokenBudget": 1000})
+        );
+        // Claude Code's own project directory wins over the event's `cwd`; another platform ignores it.
+        let host = Env {
+            project_dir: Some("/work/started".into()),
+            ..env()
+        };
+        assert_eq!(
+            opening(&a, &host).await,
+            r#"<shared-memory project="/work/started" event="SessionStart">"#
+        );
+        let codex = RecallArgs {
+            platform: "codex".into(),
+            ..a
+        };
+        assert_eq!(
+            opening(&codex, &host).await,
+            r#"<shared-memory project="/work/proj" event="SessionStart">"#
+        );
+    }
+
+    /// The opening tag of the context a SessionStart in `/work/proj` gets under `env`.
+    async fn opening(args: &RecallArgs, env: &Env) -> String {
+        let (output, _) = recall(args, &start("s3"), env, Duration::from_secs(2))
+            .await
+            .unwrap();
+        let text = output["hookSpecificOutput"]["additionalContext"].as_str();
+        text.unwrap().lines().next().unwrap().to_string()
     }
 
     #[tokio::test]
@@ -727,7 +805,7 @@ mod tests {
         let last = requests.lock().unwrap().last().unwrap().1.clone();
         assert_eq!(
             last,
-            json!({"query": "How do deploys work?", "scope": {"project": "proj"},
+            json!({"query": "How do deploys work?", "scope": {"project": "/work/proj"},
                                 "topK": 15, "tokenBudget": 6000})
         );
         assert_eq!(inject(&a, prompt("How do deploys work?", "s1")).await, "");
@@ -738,6 +816,12 @@ mod tests {
         assert!(inject(&a, prompt("How do deploys work?", "s1"))
             .await
             .contains("id m2"));
+        // A prompt without a folder searches global memories and keeps a record of its own, under the key "".
+        let global = inject(&a, without_folder(prompt("How do deploys work?", "s1"))).await;
+        assert!(global.starts_with("<shared-memory scope=\"global\" event=\"UserPromptSubmit\">"));
+        assert!(global.contains("id m1") && global.contains("id m2"));
+        let last = requests.lock().unwrap().last().unwrap().1.clone();
+        assert_eq!(last["scope"], json!({"kind": "global"}));
     }
 
     #[tokio::test]
@@ -889,7 +973,7 @@ mod tests {
         .unwrap();
         let a = args(&dir, &url);
         for _ in 0..2 {
-            let (output, record) = recall(&a, &prompt("q", "s1"), Duration::from_secs(2))
+            let (output, record) = recall(&a, &prompt("q", "s1"), &env(), Duration::from_secs(2))
                 .await
                 .unwrap();
             assert!(output.to_string().contains("id m1") && record.is_none());
@@ -904,13 +988,15 @@ mod tests {
             format!("http://{}", listener.local_addr().unwrap())
         };
         let a = args(&dir, &closed);
-        assert!(recall(&a, &prompt("q", "s1"), Duration::from_secs(1))
-            .await
-            .is_err());
+        assert!(
+            recall(&a, &prompt("q", "s1"), &env(), Duration::from_secs(1))
+                .await
+                .is_err()
+        );
         let (url, _) = daemon(json!([1])).await; // not an object
         let a = args(&dir, &url);
         assert_eq!(
-            recall(&a, &prompt("q", "s1"), Duration::from_secs(1))
+            recall(&a, &prompt("q", "s1"), &env(), Duration::from_secs(1))
                 .await
                 .unwrap_err(),
             "ValueError"

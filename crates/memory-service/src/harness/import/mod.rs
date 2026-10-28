@@ -111,9 +111,10 @@ pub struct PlanArgs {
     /// Where the memories are
     #[arg(long, value_enum)]
     pub host: Host,
-    /// Stable project id to import into, as used by capture and recall
+    /// Project id to import into, as capture and recall file sessions: the project's folder, as a path.
+    /// [default: the project of the single --workspace; claude-code and codex only]
     #[arg(long, value_parser = nonblank)]
-    pub project: String,
+    pub project: Option<String>,
     /// A directory of the project; repeatable, worktrees map to their repository (claude-code, codex)
     #[arg(long = "workspace", value_name = "DIR")]
     pub workspaces: Vec<PathBuf>,
@@ -490,6 +491,7 @@ mod tests {
             panic!("plan")
         };
         assert_eq!(plan.host, Host::Codex);
+        assert_eq!(plan.project.as_deref(), Some("p"));
         assert_eq!(plan.workspaces, [PathBuf::from("/a"), PathBuf::from("/b")]);
         assert_eq!((plan.recall_budget, plan.recall_top_k), (400, 5));
         assert!(!plan.all && !plan.no_extract && plan.out.is_none());
@@ -553,10 +555,16 @@ mod tests {
                 ..
             })
         ));
+        // Without --project the plan takes the project of its single workspace; `make_plan` refuses the rest.
+        let ImportCmd::Plan(plan) =
+            parse(&["plan", "--host", "codex", "--workspace", "/a"]).unwrap()
+        else {
+            panic!("plan")
+        };
+        assert_eq!(plan.project, None);
         for bad in [
             &["plan", "--host", "cursor", "--project", "p"][..],
             &["plan", "--host", "codex", "--project", " "],
-            &["plan", "--host", "codex"],
             &[
                 "plan",
                 "--host",
