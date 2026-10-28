@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use super::project::SessionProject;
 use super::{expand, invalid, now, private_file, CallError, Daemon, Error};
 
 /// Default outbox, relative to the home directory.
@@ -42,14 +43,12 @@ pub fn default_path() -> PathBuf {
     super::home().join(DEFAULT_OUTBOX)
 }
 
-/// Where a capture hook files its turns.
+/// Where a capture hook files its turns. The project is the session's, taken from each event
+/// (`harness::project`); nothing on the command line names it.
 #[derive(clap::Args, Debug, Clone)]
 pub struct Target {
     #[arg(long, default_value_os_t = default_path())]
     pub outbox: PathBuf,
-    /// Stable project id shared by harnesses; never inferred from cwd
-    #[arg(long)]
-    pub project: String,
     #[arg(long, default_value = "codex")]
     pub platform: String,
     /// Ignored: hooks written by earlier installers pass it.
@@ -104,7 +103,7 @@ pub enum Queued {
 }
 
 fn turn_body(
-    project: &str,
+    project: &SessionProject,
     session: &str,
     native_id: &str,
     user: &str,
@@ -112,10 +111,17 @@ fn turn_body(
     started: &str,
     ended: &str,
 ) -> Value {
-    json!({"scope": {"project": project, "session": session},
-           "turnId": turn_key(project, session, native_id),
+    json!({"scope": scope(project, session),
+           "turnId": turn_key(project.key(), session, native_id),
            "messages": [{"role": "user", "content": user, "timestamp": started},
                         {"role": "assistant", "content": assistant, "timestamp": ended}]})
+}
+
+/// The request scope of a session: its project, or `kind: "global"` for a session without one.
+fn scope(project: &SessionProject, session: &str) -> Value {
+    let mut scope = project.scope();
+    scope["session"] = json!(session);
+    scope
 }
 
 /// Python's `not str(value or '').strip()` for a hook's `prompt` field.
@@ -135,7 +141,10 @@ fn enqueue_in(db: &Connection, platform: &str, body: &Value) -> Result<(), Error
         return Err(invalid("expected a JSON object"));
     };
     let scope = fields.get("scope").cloned().unwrap_or_else(|| json!({}));
-    required(&scope, "project")?;
+    // A global session's scope names no project.
+    if scope.get("kind").and_then(Value::as_str) != Some("global") {
+        required(&scope, "project")?;
+    }
     required(&scope, "session")?;
     let turn_id = required(body, "turnId")?;
     let present = |key: &str| fields.get(key).is_some_and(|v| !v.is_null());
@@ -250,7 +259,7 @@ impl Outbox {
     pub fn capture_notify(
         &mut self,
         event: &Value,
-        project: &str,
+        project: &SessionProject,
         platform: &str,
     ) -> Result<(), Error> {
         let Value::Object(fields) = event else {
@@ -287,7 +296,7 @@ impl Outbox {
     pub fn capture_hook(
         &mut self,
         event: &Value,
-        project: &str,
+        project: &SessionProject,
         platform: &str,
         id_field: Option<TurnIdField>,
     ) -> Result<(), Error> {
@@ -302,7 +311,7 @@ impl Outbox {
             return Ok(());
         }
         let session = required(event, "session_id")?;
-        let key = params![TENANT, platform, project, session];
+        let key = params![TENANT, platform, project.key(), session];
         let id_field = id_field.unwrap_or(if platform == "codex" {
             TurnIdField::TurnId
         } else {
@@ -326,7 +335,8 @@ impl Outbox {
             let saved = tx
                 .query_row(
                     "SELECT 1 FROM jobs WHERE tenant=?1 AND platform=?2 AND \
-                     json_extract(body,'$.scope.project')=?3 AND json_extract(body,'$.scope.session')=?4 LIMIT 1",
+                     COALESCE(json_extract(body,'$.scope.project'),'')=?3 AND \
+                     json_extract(body,'$.scope.session')=?4 LIMIT 1",
                     key,
                     |_| Ok(()),
                 )
@@ -334,8 +344,8 @@ impl Outbox {
                 .is_some();
             if saved {
                 let marker = format!("session-end:{}", uuid::Uuid::new_v4());
-                let body = json!({"scope": {"project": project, "session": session},
-                                  "turnId": turn_key(project, session, &marker), "sessionEnded": true});
+                let body = json!({"scope": scope(project, session),
+                                  "turnId": turn_key(project.key(), session, &marker), "sessionEnded": true});
                 enqueue_in(&tx, platform, &body)?;
             }
             tx.commit()?;
@@ -358,7 +368,15 @@ impl Outbox {
                         // Replacing an unmatched prompt discards an interrupted/incomplete turn.
                         tx.execute(
                             "INSERT OR REPLACE INTO prompts VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                            params![TENANT, platform, project, session, native_id, prompt, now()],
+                            params![
+                                TENANT,
+                                platform,
+                                project.key(),
+                                session,
+                                native_id,
+                                prompt,
+                                now()
+                            ],
                         )?;
                     }
                 }
@@ -392,7 +410,7 @@ impl Outbox {
                         Some(p) => native_id = p.0.clone(),
                     }
                 }
-                let turn_id = turn_key(project, session, &native_id);
+                let turn_id = turn_key(project.key(), session, &native_id);
                 let existing = tx
                     .query_row(
                         "SELECT 1 FROM jobs WHERE tenant=?1 AND platform=?2 AND turn_id=?3",
@@ -705,6 +723,10 @@ mod tests {
         Outbox::open(&dir.path().join("outbox.sqlite3")).unwrap()
     }
 
+    fn project() -> SessionProject {
+        SessionProject::Project("project".into())
+    }
+
     fn bodies(o: &Outbox) -> Vec<Value> {
         o.jobs("pending")
             .unwrap()
@@ -748,14 +770,14 @@ mod tests {
         };
         o.capture_hook(
             &hook("UserPromptSubmit", json!({"prompt": "live prompt"})),
-            "project",
+            &project(),
             "claude-code",
             None,
         )
         .unwrap();
         o.capture_hook(
             &hook("Stop", json!({"last_assistant_message": "live reply"})),
-            "project",
+            &project(),
             "claude-code",
             None,
         )
@@ -806,7 +828,7 @@ mod tests {
         for (run, turn) in [("ir1", "t1"), ("ir1", "t2"), ("ir2", "t3")] {
             o.enqueue_import("codex", &imported(run, turn)).unwrap();
         }
-        o.capture_notify(&notify("t4", "reply"), "project", "codex")
+        o.capture_notify(&notify("t4", "reply"), &project(), "codex")
             .unwrap();
         let first = o.jobs("pending").unwrap()[0].seq;
         o.accept(first, "rq1").unwrap();
@@ -840,12 +862,12 @@ mod tests {
     fn notify_keeps_the_first_payload_across_reopening() {
         let dir = tempfile::tempdir().unwrap();
         outbox(&dir)
-            .capture_notify(&notify("t1", "I saved the decision."), "project", "codex")
+            .capture_notify(&notify("t1", "I saved the decision."), &project(), "codex")
             .unwrap();
         let original = bodies(&outbox(&dir));
         let mut reopened = outbox(&dir);
         reopened
-            .capture_notify(&notify("t1", "a changed retry"), "project", "codex")
+            .capture_notify(&notify("t1", "a changed retry"), &project(), "codex")
             .unwrap();
         let after = bodies(&reopened);
         assert_eq!(after, original);
@@ -858,7 +880,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut o = outbox(&dir);
         let mut capture = |event: Value| {
-            o.capture_hook(&event, "project", "claude-code", None)
+            o.capture_hook(&event, &project(), "claude-code", None)
                 .unwrap()
         };
         let hook = |name: &str, turn: &str, extra: Value| {
@@ -889,6 +911,37 @@ mod tests {
         assert_eq!(contents(&jobs[0]), ["completed prompt", "final reply"]);
         assert_eq!(jobs[1]["sessionEnded"], true);
         assert_eq!(jobs.len(), 2);
+        assert_eq!(
+            jobs[0]["scope"],
+            json!({"project": "project", "session": "s1"})
+        );
+        // A session without a project files its turns as global, under the key "": its prompt pairs only
+        // with its own Stop, and its SessionEnd finds its turns although their scope names no project.
+        let global = SessionProject::Global;
+        for e in [
+            hook("UserPromptSubmit", "g1", json!({"prompt": "global prompt"})),
+            hook(
+                "Stop",
+                "g1",
+                json!({"last_assistant_message": "global reply"}),
+            ),
+            hook("SessionEnd", "g1", json!({})),
+        ] {
+            o.capture_hook(&e, &global, "claude-code", None).unwrap();
+        }
+        let jobs = bodies(&o);
+        assert_eq!(jobs.len(), 4);
+        let scope = json!({"kind": "global", "session": "s1"});
+        assert_eq!((&jobs[2]["scope"], &jobs[3]["scope"]), (&scope, &scope));
+        assert_eq!(jobs[2]["turnId"], "/s1/g1");
+        assert_eq!(contents(&jobs[2]), ["global prompt", "global reply"]);
+        assert_eq!(jobs[3]["sessionEnded"], true);
+        let open = hook("UserPromptSubmit", "g2", json!({"prompt": "open"}));
+        o.capture_hook(&open, &global, "claude-code", None).unwrap();
+        let stop = hook("Stop", "g2", json!({"last_assistant_message": "reply"}));
+        assert!(o
+            .capture_hook(&stop, &project(), "claude-code", None)
+            .is_err());
     }
 
     #[test]
@@ -903,6 +956,8 @@ mod tests {
             e
         };
         for e in [
+            // WorkBuddy's SessionStart has no `cwd` and nothing to capture: it is ignored.
+            event("SessionStart", json!({"source": "startup"})),
             event(
                 "Stop",
                 json!({"last_assistant_message": "nothing open yet"}),
@@ -923,7 +978,7 @@ mod tests {
             event("Stop", json!({"last_assistant_message": "second reply"})),
             event("SessionEnd", json!({})),
         ] {
-            o.capture_hook(&e, "project", "workbuddy", Some(TurnIdField::None))
+            o.capture_hook(&e, &project(), "workbuddy", Some(TurnIdField::None))
                 .unwrap();
         }
         let jobs = bodies(&o);
@@ -940,7 +995,7 @@ mod tests {
         let error = o
             .capture_hook(
                 &event("UserPromptSubmit", json!({"prompt": "x"})),
-                "project",
+                &project(),
                 "claude-code",
                 None,
             )
@@ -984,7 +1039,7 @@ mod tests {
             ),
             event("SessionEnd", "t2", json!({"reason": "other"})),
         ] {
-            o.capture_hook(&e, "project", "codex", None).unwrap();
+            o.capture_hook(&e, &project(), "codex", None).unwrap();
         }
         let jobs = bodies(&o);
         assert_eq!(contents(&jobs[0]), ["Keep the source.", "Kept."]);
@@ -994,7 +1049,7 @@ mod tests {
         // A Stop without the field at all is still a broken event.
         let missing = o.capture_hook(
             &event("Stop", "t3", json!({"stop_hook_active": false})),
-            "project",
+            &project(),
             "codex",
             None,
         );
@@ -1010,7 +1065,7 @@ mod tests {
             json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "  "}),
             json!({"hook_event_name": "Stop", "session_id": "s1", "last_assistant_message": "reply to the image"}),
         ] {
-            o.capture_hook(&e, "project", "workbuddy", Some(TurnIdField::None))
+            o.capture_hook(&e, &project(), "workbuddy", Some(TurnIdField::None))
                 .unwrap();
         }
         assert!(o.status().unwrap().is_empty());
@@ -1038,6 +1093,11 @@ mod tests {
                 json!({"scope": {"project": "p"}, "turnId": "t", "sessionEnded": true}),
                 "session",
             ),
+            // A scope names a project or is global.
+            (
+                json!({"scope": {"session": "s"}, "turnId": "t", "sessionEnded": true}),
+                "project",
+            ),
             (json!([1]), "JSON object"),
         ] {
             let error = o.enqueue("codex", &body).unwrap_err();
@@ -1048,7 +1108,12 @@ mod tests {
             &json!({"scope": scope, "turnId": "t", "sessionEnded": true}),
         )
         .unwrap();
-        assert_eq!(o.status().unwrap().len(), 1);
+        o.enqueue(
+            "codex",
+            &json!({"scope": {"kind": "global", "session": "s"}, "turnId": "g", "sessionEnded": true}),
+        )
+        .unwrap();
+        assert_eq!(o.status().unwrap().len(), 2);
     }
 
     fn turn_ids(o: &Outbox) -> Vec<String> {
@@ -1114,7 +1179,7 @@ mod tests {
         assert_eq!(turn_ids(&o), ["queued", "forming"]);
         assert_eq!(o.backlog().unwrap(), 2);
         // A deleted seq is never reused, so an uploader's update by seq never reaches a newer job.
-        o.capture_notify(&notify("t1", "reply"), "p", "codex")
+        o.capture_notify(&notify("t1", "reply"), &project(), "codex")
             .unwrap();
         assert!(o.jobs("pending").unwrap()[1].seq > last);
     }
@@ -1195,7 +1260,7 @@ mod tests {
     async fn lost_response_resends_same_key_then_polls_without_resubmitting() {
         let dir = tempfile::tempdir().unwrap();
         let mut o = outbox(&dir);
-        o.capture_notify(&notify("t1", "I saved the decision."), "p", "codex")
+        o.capture_notify(&notify("t1", "I saved the decision."), &project(), "codex")
             .unwrap();
         let o = Arc::new(Mutex::new(o));
         let fake = Fake::new(None);
@@ -1215,7 +1280,7 @@ mod tests {
     async fn a_receipt_the_daemon_no_longer_knows_ends_the_job() {
         let dir = tempfile::tempdir().unwrap();
         let mut o = outbox(&dir);
-        o.capture_notify(&notify("t1", "reply"), "p", "codex")
+        o.capture_notify(&notify("t1", "reply"), &project(), "codex")
             .unwrap();
         let o = Arc::new(Mutex::new(o));
         let fake = Fake::new(None);
@@ -1244,7 +1309,7 @@ mod tests {
         for (code, expected) in [(400, "rejected"), (503, "pending"), (429, "pending")] {
             let dir = tempfile::tempdir().unwrap();
             let mut o = outbox(&dir);
-            o.capture_notify(&notify("t1", "reply"), "p", "codex")
+            o.capture_notify(&notify("t1", "reply"), &project(), "codex")
                 .unwrap();
             let o = Arc::new(Mutex::new(o));
             assert_eq!(drain_once(&o, &Fake::new(Some(code))).await.unwrap(), 1);

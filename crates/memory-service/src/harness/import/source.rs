@@ -25,7 +25,7 @@ pub struct ScanContext {
     pub codex_home: Option<PathBuf>,
     /// WorkBuddy's data directory (default `~/.workbuddy`).
     pub workbuddy_home: Option<PathBuf>,
-    /// The `--workspace` directories, already resolved to repository roots (`project::repository_root`).
+    /// The `--workspace` directories, already resolved to repository roots (`harness::project::repository_root`).
     pub workspaces: Vec<PathBuf>,
     /// Claude Code: every project directory whose transcripts name a workspace, not only the workspace's own.
     pub all: bool,

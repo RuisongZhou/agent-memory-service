@@ -10,12 +10,13 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use super::project::{claude_dir_name, repository_root, within};
+use super::project::{claude_dir_name, within};
 use super::session::first_cwd;
 use super::source::{
     entries, mtime, read_text, timestamp, Adapter, Policy, ScanContext, ScanOutput, Segment,
     SourceDoc,
 };
+use crate::harness::project::repository_root;
 use crate::harness::{invalid, Error};
 
 pub const HOST: &str = "claude-code";
