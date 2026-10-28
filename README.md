@@ -24,7 +24,8 @@ separately.
 ## What you can do
 
 - **Continue work across clients** with automatic capture and recall, without copying context between conversations.
-- **Check and correct memories:** trace a record to its source, add a correction or retract it.
+- **Check and correct memories:** trace a record to its source, add a correction or retract it, in the agent or in the
+  local [web UI](#web-ui).
 - **Import existing history:** from client memory files with the CLI, or from another assistant right in the
   conversation over MCP; review proposed memories before they are written, with rollback support.
 
@@ -70,8 +71,9 @@ The source installation requires:
 - Rust stable with Cargo and a C compiler toolchain
 - Python 3.11+ for the installer
 - SurrealDB 3.2 or a later 3.x release
-- Optional: Node.js 20.19+ or 22.12+ with npm, to build the web UI; without it the installer downloads the release's
-  UI
+- Optional: Node.js 20.19+ or 22.12+ with npm, to build the [web UI](#web-ui). Without npm the installer downloads the
+  UI of a published release; a version with no published release (see the [changelog](CHANGELOG.md)) has none, and the
+  service then runs without a web UI
 - A model API key; the default configuration uses Qwen MaaS for generation, embeddings and reranking
 
 Install SurrealDB with Homebrew on macOS:
@@ -105,22 +107,30 @@ cd agent-memory-service
 ### 3. Install the service, then connect your client
 
 Two commands, in this order. The **service** is the one daemon on your machine; a **client** is one agent platform
-that talks to it. Install the service once, then connect each platform you use.
+that talks to it. Install the service once, then connect each platform you use. Both commands only preview until you
+add `--apply`.
 
 ```bash
 bash scripts/install.sh service --apply
 ```
 
 It checks SurrealDB, asks for the model API key (hidden input), builds the binary, installs the web UI and starts the
-daemon as a user service. Leave out `--apply` to preview.
+daemon as a user service (a LaunchAgent on macOS, a systemd user unit on Linux). `connect`, below, builds nothing and
+asks for no key: it reads the binary, URL and outbox from the installed service and merges the platform's
+configuration, keeping your other MCP servers, hooks and settings.
 
-You do not name a project when you connect. Hooks and the MCP bridge take it from the folder a session is opened in
-(see [project routing](#what-the-installer-does)). Clients sharing project memories must connect to the **same daemon**
-and be opened in the **same folder**.
+You do not name a project when you connect. Hooks and the MCP bridge take it from the folder a session is opened in:
+inside a git repository, the repository's root; otherwise the folder itself. A session with no folder, or one opened
+in your home directory, uses **global** memories, which every project also sees. Clients sharing project memories must
+connect to the **same daemon** and be opened in the **same folder**. See
+[project routing](docs/mcp-harness.md#project-routing), and
+[turning the hooks off per project](docs/mcp-harness.md#turning-the-hooks-off-per-project) if you want a project
+without them.
 
-You can also connect from the web UI: its **接入平台** page (`http://127.0.0.1:8765/ui/#/platforms`) lists the
-platforms found on this machine, previews and writes their entries, walks you through trusting the hooks and
-restarting the platform, and confirms the first calls arrive. It runs the same installer.
+You can also connect from the [web UI](#web-ui), which is in Chinese. Its **接入平台** ("Connect platforms") page, at
+`http://127.0.0.1:8765/ui/#/platforms`, lists the platforms found on this machine, previews and writes their entries,
+walks you through trusting the hooks and restarting the platform, and confirms the first calls arrive. It runs the
+same installer.
 
 #### Codex CLI / App
 
@@ -161,50 +171,8 @@ Restart DeepSeek Harness and start a new session. This integration provides MCP 
 `--recall`. The bridge runs in `dsh`'s working directory, not in a session's folder, so name the project (a folder's
 absolute path) when asking the agent to use memory.
 
-#### What the installer does
-
-`service --apply` checks SurrealDB, prompts for the API key with hidden input on the first installation, builds the
-binary, starts it once as a temporary mock daemon to check it, and installs it as a user service (a LaunchAgent on
-macOS, a systemd user unit on Linux). The service also serves the web UI at `http://127.0.0.1:8765/ui/`: the installer
-builds it with `make ui` when npm is available, else downloads it from the matching release, and goes on without it
-when neither works.
-
-`connect --apply` builds nothing and asks for no key. It reads the binary, URL and outbox from the installed service,
-checks the commands it will register against a temporary mock daemon, and merges the platform's configuration. It
-preserves existing unrelated MCP servers, hooks and settings. Remove `--apply` from either command to preview it.
-
-> **Project routing:** the installer names no project; hooks and the MCP bridge take it from the folder of the session
-> when they run. That folder is the working directory (for Claude Code, the folder it was started in). Inside a git
-> repository the project is the main repository's root, so subdirectories and worktrees share one project; any other
-> folder is its own project. The project ID is that absolute path, for example `/Users/me/code/my-repo`, so moving a
-> folder starts a new project. A session with no folder, or one opened in your home directory, uses **global** memories,
-> which every project also sees; so do WorkBuddy conversations in the folders it creates itself (`~/WorkBuddy/…`).
-> MCP tools use the session's project unless the call passes `project`.
->
-> The hooks run in every session. To stop them in one project, set `"disableAllHooks": true` in its
-> `.claude/settings.local.json` (Claude Code, which turns off all its hooks there), or `[features] hooks = false` in a
-> trusted project's `.codex/config.toml` (Codex; not yet verified). WorkBuddy has no known per-project switch.
-
-**Other configurations:**
-
-- **MCP only:** for Codex, Claude Code or WorkBuddy, add `--no-capture` to `connect` and omit `--recall`. To add hooks
-  later, rerun `connect` with the full command.
-- **Capture without automatic recall:** omit `--recall`.
-- **No web UI:** add `--no-ui` to `service`; a web UI the service already serves stays.
-- **Existing binary:** `service --binary /absolute/path/to/agent-memoryd` skips the build, for example with a
-  [release archive](docs/deployment.md#release-archive).
-- **A daemon you run yourself:** `connect --host codex --apply --binary /absolute/path/to/agent-memoryd --url
-  http://127.0.0.1:8765` registers a platform without installing a service; start the daemon as in
-  [deployment](docs/deployment.md).
-- **Custom deployment:** to choose the data directory, port or self-hosted models, follow
-  [deployment and operations](docs/deployment.md); `service` takes `--port` and `--outbox`.
-- **Install through an agent:** an agent that can run commands can follow
-  [the installation guide](docs/mcp-harness.md#installer). Agent shells usually cannot take hidden input, so
-  provide the key yourself with `--key-file` or in a local terminal, never in chat or command arguments. Client
-  confirmation in the steps above still needs you.
-
-Full options, configuration changes, backups and uninstall instructions are in the
-[installation guide](docs/mcp-harness.md#installer).
+Other ways to install (MCP only, capture without recall, no web UI, your own binary or daemon, through an agent), every
+option, configuration changes, backups and uninstall are in the [installer reference](docs/mcp-harness.md#installer).
 
 ### 4. Try sharing a memory
 
@@ -314,6 +282,31 @@ nothing saved to a file:
 Step-by-step guide, limits and troubleshooting:
 [import from another assistant in a conversation](docs/mcp-harness.md#import-from-another-assistant-in-a-conversation).
 
+### Web UI
+
+The service also serves a local web UI at `http://127.0.0.1:8765/ui/`. Use it to browse, search, add, correct, retract
+and delete memories, to review imports, consolidation runs and conflicts, and to connect agent platforms. It has no
+sign-in of its own: like the rest of the daemon, it relies on the loopback-only boundary described under
+[Before you install](#before-you-install). If `/ui/` answers 404, the service has no web UI: install Node.js and npm
+(see the prerequisites) and rerun `bash scripts/install.sh service --apply`.
+
+**The interface text is Chinese only; there is no language switch.** The navigation, in order:
+
+| Page | In English | Use it to |
+|---|---|---|
+| 概览 | Overview | See record counts, LLM usage, pending tasks and model status, which platforms called in the last 30 days, and what needs attention |
+| 记忆列表 | Memories | Browse and filter by project, platform, type, status and origin. A record's page shows its sources, correction chain, lineage and original conversation, and lets you correct, retract or delete it |
+| 实体 | Entities | Browse the entities linked to memories for retrieval, and each entity's memories |
+| 新增 | New memory | Save a fact as written, optionally have the generation model extract facts (a model call), or save an instruction |
+| 检索调试 | Search debugging | Run a query and see ranks, scores and timings; the query goes to the embedding model, and reranking is an opt-in model call |
+| 上下文预览 | Context preview | See the text `get_context` injects for a project and session, section by section; calls no model |
+| 接入平台 | Connect platforms | Find the platforms on this machine, preview and write their configuration, trust hooks, confirm the first calls arrive, uninstall or roll back |
+| 导入审核 | Import review | Review import runs: accept or reject proposals, apply or roll back a run |
+| consolidation | Consolidation | Propose merges of duplicate or overlapping facts (one generation call per cluster), review them, apply or roll back the batch; off unless the daemon enables `consolidationEnabled` |
+| 冲突 | Conflicts | Compare conflicting records side by side and keep one, with a reason |
+| 召回记录 | Recall log | See which platform and session retrieved which memories and when, and which were used |
+| 任务 | Tasks | Follow memory-formation requests, their state and failure reasons, and the model's raw responses |
+
 ## How it works
 
 `agent-memoryd` is a Rust binary that provides the HTTP service, stdio MCP bridge, capture and recall hooks, and outbox
@@ -343,8 +336,8 @@ curl -fsS http://127.0.0.1:8765/health        # memory strategy, models and LLM 
   `journalctl --user -u agent-memory.service` on Linux.
 - **Upgrade:** after `git pull`, run `bash scripts/install.sh service --apply` once, however many clients are
   connected: it rebuilds, replaces the binary and the web UI and restarts the service. Rerun `connect` for a platform
-  only when the release notes say its hook or bridge entries changed; `connect` is idempotent, so rerunning it is
-  always safe. Keep SurrealDB on 3.x.
+  only when the [changelog](CHANGELOG.md) says its hook or bridge entries changed; `connect` is idempotent, so
+  rerunning it is always safe. Keep SurrealDB on 3.x.
 - **Outbox retention:** uploaded turns stay in the outbox; `~/.local/bin/agent-memoryd outbox prune --older-than 30d`
   deletes the finished ones captured more than 30 days ago (see [the uploader](docs/mcp-harness.md#run-and-inspect-the-uploader)).
 - **Change key or models:** edit `~/.config/agent-memory-service/.env` (see [configuration](docs/api.md#configuration)),
@@ -352,8 +345,9 @@ curl -fsS http://127.0.0.1:8765/health        # memory strategy, models and LLM 
 - **Uninstall:** run `bash scripts/install.sh connect --host HOST --uninstall` for each connected platform, then
   `bash scripts/install.sh service --uninstall`, which stops the service and removes its unit and keeps the memory
   data, env file, binary and web UI (see [install the service](docs/deployment.md#install-the-service)).
-- **Troubleshooting:** see [deployment problems](docs/deployment.md#common-problems) and
-  [client troubleshooting](docs/mcp-harness.md#troubleshooting).
+- **Troubleshooting:** the daemon does not start or answer, or a model key, provider, SurrealDB or storage problem:
+  [deployment problems](docs/deployment.md#common-problems). A client that is not connected, hooks, the outbox,
+  recall or import: [client troubleshooting](docs/mcp-harness.md#troubleshooting).
 
 Default local paths:
 
@@ -365,14 +359,17 @@ Default local paths:
 
 ## Documentation
 
+The [documentation index](docs/README.md) lists every guide by task and defines the terms used here (daemon, client,
+bridge, hook, outbox, project).
+
 | Topic | Guide |
 |---|---|
-| Deployment, service management, backup and troubleshooting | [Deployment](docs/deployment.md) |
-| Client installation, hooks and import | [MCP and client integration](docs/mcp-harness.md) |
+| Installer, connecting clients, hooks, project routing and import | [MCP and client integration](docs/mcp-harness.md) |
+| Deployment, service management, backup and troubleshooting | [Deployment and operations](docs/deployment.md) |
 | Local embedding and reranking models | [Self-hosted retrieval models](docs/self-hosted-models.md) |
 | API fields, scopes, completion states and configuration | [API reference](docs/api.md) |
 | Implementation and algorithm boundaries | [Architecture](docs/architecture.md) |
-| Memory import design | [Memory import](docs/design/memory-import.md) |
+| What changed between versions, and upgrade notes | [Changelog](CHANGELOG.md) |
 | Evaluation methods and historical results | [Evaluation](eval/README.md) |
 | Operations and check scripts | [Scripts](scripts/README.md) |
 

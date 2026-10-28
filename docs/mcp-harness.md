@@ -1,9 +1,24 @@
-# MCP and harness integration
+# MCP and client integration
 
-This is the client setup and dialogue-capture guide. The [installer](#installer)
-deploys the daemon (`install.sh service`) and connects a client (`install.sh connect`); for a manual
-setup, start the daemon using [deployment instructions](deployment.md) first. Request fields and response contracts belong to
+How to connect an agent client to the daemon: the [installer](#installer) (`install.sh service` deploys the daemon,
+`install.sh connect` connects a client), which project a session's memories go to, the configuration written for each
+client, automatic capture and recall, and importing existing memories. For a manual setup, start the daemon using
+[deployment instructions](deployment.md) first. Request fields and response contracts belong to
 [the API reference](api.md); implementation details belong to [architecture](architecture.md).
+
+| I want to… | Go to |
+|---|---|
+| Install the service and connect a client | [Installer](#installer) |
+| Connect one more platform, or check that one is connected | [`install.sh connect`](#installsh-connect); the web UI's 接入平台 page does the same |
+| Install differently: MCP only, no web UI, my own binary or daemon, through an agent | [Common installer variations](#common-installer-variations) |
+| Know which project my memories go to | [Project routing](#project-routing) |
+| Stop the hooks in one project | [Turning the hooks off per project](#turning-the-hooks-off-per-project) |
+| Register a client by hand | [Codex](#use-with-codex), [Claude Code](#use-with-claude-code), [DeepSeek Harness](#use-with-deepseek-harness) |
+| Make agents use memory consistently | [Shared memory workflow](#shared-memory-workflow) |
+| Capture conversations automatically, or inspect the uploader | [Automatically save conversations](#automatically-save-conversations) |
+| Inject memories into every prompt | [Automatic recall](#automatic-recall) |
+| Bring in what a client or another assistant remembers | [Import existing memories](#import-existing-memories), [from another assistant in a conversation](#import-from-another-assistant-in-a-conversation) |
+| Something does not work | [Troubleshooting](#troubleshooting) |
 
 The bridge is a local stdio child process that forwards tools to the HTTP daemon. It does not start
 the daemon, read chats automatically or inject context. The daemon's URL is not an HTTP MCP endpoint.
@@ -48,7 +63,8 @@ in this order:
    executable as is, such as a [release binary](deployment.md#release-archive) of the same version.
 4. It installs the [web UI](design/web-ui.md) into `~/.local/share/agent-memory-service/ui`: built with
    `make ui` when `npm` is on PATH, otherwise the UI bundle of the checkout's version, downloaded from its
-   GitHub release and checked against the release's SHA-256. When neither works it goes on without one.
+   GitHub release (a version with no published release has none) and checked against the release's SHA-256. When
+   neither works it goes on without one: install Node.js and npm and rerun `service --apply` to add it.
    A release bundle matches the code only on its release tag; elsewhere the page shows a version banner,
    so a local build comes first. `--no-ui` skips this step.
 5. It stages the binary and starts it once as a temporary mock daemon (on a temporary store with its own
@@ -72,9 +88,10 @@ already uses, and `--env-file` names another. The key goes into `QWEN_API_KEY`, 
 uses for the hosted retrieval models; it comes from `--key-file`, else the environment variable named by
 `--api-key-env` (`QWEN_API_KEY`), else the hidden prompt, and never from a command-line argument or the
 output. An env file that already has a key is reused untouched, unless `--key-file` replaces the key;
-an edited file is first copied to `~/.local/state/agent-memory-service/installations/env/`. Other
-settings, such as another generation model or [self-hosted retrieval models](self-hosted-models.md),
-are edited in that file; the service reads it at each start.
+an edited file is first copied to `~/.local/state/agent-memory-service/installations/env/`. An agent's shell usually
+cannot take the hidden prompt: provide the key yourself with `--key-file` or run `service` in a local terminal, and
+never paste it into a chat or a command argument. Other settings, such as another generation model or
+[self-hosted retrieval models](self-hosted-models.md), are edited in that file; the service reads it at each start.
 
 **Upgrade:** `git pull`, then `bash scripts/install.sh service --apply`. It rebuilds, replaces the binary
 when the build changed and the web UI, and restarts the service once, however many platforms are connected.
@@ -131,7 +148,7 @@ With `--apply`, in this order:
    do (restart the platform, trust hooks).
 
 `connect` is idempotent: rerunning it with the same options writes nothing, so it is always safe to rerun. After
-an upgrade rerun it only when the release notes say the hook or bridge entries changed.
+an upgrade rerun it only when the [changelog](../CHANGELOG.md) says the hook or bridge entries changed.
 
 Requirements: macOS or Linux (on Windows, WSL), a checkout of this repository, SurrealDB 3.2 or a later 3.x
 ([installed by you](deployment.md#install-surrealdb); `connect` too needs it: the checks run a temporary
@@ -183,6 +200,24 @@ project, see [turning the hooks off per project](#turning-the-hooks-off-per-proj
 
 **Uninstall everything:** `connect --host H --uninstall` for each platform you connected, then
 `service --uninstall`.
+
+### Common installer variations
+
+- **MCP only, no hooks:** for Codex, Claude Code or WorkBuddy, add `--no-capture` to `connect` and omit `--recall`. To
+  add hooks later, rerun `connect` with the full command.
+- **Capture without automatic recall:** omit `--recall`.
+- **No web UI:** add `--no-ui` to `service`; a web UI the service already serves stays.
+- **An existing binary:** `service --binary /absolute/path/to/agent-memoryd` skips the build, for example with a
+  [release archive](deployment.md#release-archive).
+- **A daemon you run yourself:** `connect --host codex --apply --binary /absolute/path/to/agent-memoryd --url
+  http://127.0.0.1:8765` registers a platform without installing a service; start the daemon as in
+  [deployment](deployment.md#5-start-the-shared-daemon).
+- **A different port, outbox, data directory or models:** `service` takes `--port` and `--outbox`; for the data
+  directory and [self-hosted retrieval models](self-hosted-models.md), follow
+  [deployment and operations](deployment.md).
+- **Through an agent:** an agent that can run commands can follow this section. Give it the key as
+  [`install.sh service`](#installsh-service) describes, not in the chat. The platform's own confirmation steps, such as
+  restarting it and trusting hooks, still need you.
 
 ### Installer checks
 
@@ -294,7 +329,7 @@ from its own event, so it needs nothing on its command line; `hook capture`, `ho
 is global (the connection has no project folder): a global write files global memory, a global read
 sees global and platform memories only. A `project` the agent gives is passed on unchanged, and `*` on a
 read still means every project. The bridge states its default project in its server instructions, so the
-agent knows what it omits. Reads without a `scope` now mean the default project, not every project: ask for
+agent knows what it omits. Reads without a `scope` mean the default project, not every project: ask for
 `project: "*"` to search them all. `propose_import` and the `import_memories` prompt need a project: they
 use the default, and refuse when it is global and none is given. The bridge does not use MCP roots (the
 latest specification deprecates them, and Codex, WorkBuddy and DeepSeek Harness do not support them).
@@ -487,12 +522,11 @@ from the hook input schemas embedded in Codex CLI 0.163.0 (`turn_id` is Codex's 
 [official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks).
 
 Capture leaves `notify` alone; Codex runs only one notify program, and Codex Computer Use, for example,
-uses it. Earlier installers captured turns with `notify = [<agent-memoryd>, "hook", "codex-notify", ...]`,
-wrapping a notify program already set (after `--`). A rerun of `connect`, `--no-capture` or
-`--uninstall` removes that entry and puts a wrapped program back. `agent-memoryd hook codex-notify`
-remains for such setups: it captures the `agent-turn-complete` event Codex appends as the last
-argument, and after `--` it first starts the program it wraps with the same event, waiting up to
-10 seconds for it.
+uses it. A rerun of `connect`, `--no-capture` or `--uninstall` removes the entry
+`notify = [<agent-memoryd>, "hook", "codex-notify", ...]` that an earlier installer wrote, and puts back the notify
+program it wrapped (after `--`). `agent-memoryd hook codex-notify` remains for such setups: it captures the
+`agent-turn-complete` event Codex appends as the last argument, and after `--` it first starts the program it wraps
+with the same event, waiting up to 10 seconds for it.
 
 ### Claude Code hooks
 
@@ -897,6 +931,10 @@ not list them as established facts.
 
 ## Troubleshooting
 
+This page covers a client that is not connected, hooks, the outbox, recall, projects and import. If the daemon itself
+does not start or answer, or the problem is a model key, a provider, SurrealDB or storage, see
+[deployment troubleshooting](deployment.md#common-problems).
+
 | Symptom | Check or action |
 |---|---|
 | Installer refuses to write | Read the `[error]` line: it names the conflicting entry; nothing was changed. Fix it or edit the configuration by hand as in the sections above |
@@ -917,5 +955,3 @@ not list them as established facts.
 | `import propose` reports `failed` units | The run continues without them; propose them again in a new run after fixing the cause the unit's `error` names |
 | `import plan --include sessions` skips sessions as `unknown-format` | The transcript predates the fields the import filters on (Claude Code `turnOrigin`; Codex `thread_source`, from 0.131); such sessions are never guessed at |
 | `import apply` keeps waiting on the outbox | No uploader drains it, or formation is slow: start the daemon with `--outbox` on that file or run `outbox drain`, and pass the uploader's outbox as `--outbox` |
-
-For daemon, model and storage problems, see [deployment troubleshooting](deployment.md#common-problems).

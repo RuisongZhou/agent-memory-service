@@ -22,7 +22,7 @@ DeepSeek Harness 之间延续。
 ## 能做什么
 
 - **跨客户端继续工作**：自动捕获和召回，不用在对话之间手动复制上下文。
-- **检查和更正记忆**：追溯一条记录的来源，追加更正或撤回。
+- **检查和更正记忆**：追溯一条记录的来源，追加更正或撤回；在 Agent 里或本机的[网页界面](#网页界面)里都可以。
 - **导入已有历史**：用 CLI 导入客户端的记忆文件，或者通过 MCP 直接在对话里导入另一个助手的记忆；写入前先审核提议
   的记忆，整次导入可以回滚。
 
@@ -66,7 +66,8 @@ daemon 只监听回环地址（`127.0.0.1:8765`）。项目和平台标签用于
 - Rust stable（含 Cargo）和 C 编译工具链
 - Python 3.11+，供安装器使用
 - SurrealDB 3.2 或更高的 3.x 版本
-- 可选：Node.js 20.19+ 或 22.12+ 及 npm，用来构建网页；没有时安装器下载发布版的网页
+- 可选：Node.js 20.19+ 或 22.12+ 及 npm，用来构建[网页界面](#网页界面)；没有 npm 时安装器下载已发布版本的网页，而没有已发布
+  版本的代码（见[更新日志](CHANGELOG.md)）没有可下载的网页，服务会在没有网页的情况下运行
 - 一个模型 API key；默认配置使用千问 MaaS，用于生成、嵌入和重排
 
 macOS 上用 Homebrew 安装 SurrealDB：
@@ -100,20 +101,23 @@ cd agent-memory-service
 ### 3. 安装服务，再接入客户端
 
 分两步，按顺序执行。**服务**是本机唯一的 daemon；**客户端**是连到它的一个 Agent 平台。服务只装一次，然后给你用到的每个平台
-各接入一次。
+各接入一次。两条命令不加 `--apply` 都只预览。
 
 ```bash
 bash scripts/install.sh service --apply
 ```
 
-它会检查 SurrealDB，以隐藏输入的方式询问模型 API key，构建二进制，安装网页，并把 daemon 作为用户服务启动。去掉 `--apply`
-可以只预览。
+它会检查 SurrealDB，以隐藏输入的方式询问模型 API key，构建二进制，安装网页，并把 daemon 作为用户服务启动（macOS 上是
+LaunchAgent，Linux 上是 systemd 用户单元）。下面的 `connect` 不构建、不询问密钥：它从已安装的服务读取二进制、URL 和 outbox，
+再合并平台的配置，并保留已有的、无关的 MCP server、hooks 和设置。
 
-接入时不用指定项目：hooks 和 MCP 桥在运行时从会话所在的文件夹确定项目（见[项目路由](#安装器做了什么)）。要共享项目
-记忆的客户端，必须连到**同一个 daemon**，并打开**同一个文件夹**。
+接入时不用指定项目。hooks 和 MCP 桥在运行时从会话所在的文件夹确定项目：在 git 仓库里是仓库的根目录，否则是这个文件夹本身。
+没有文件夹的会话，或在用户主目录里打开的会话，使用 **global** 记忆，所有项目也都能看到它。要共享项目记忆的客户端，必须连到
+**同一个 daemon**，并打开**同一个文件夹**。详见[项目路由](docs/mcp-harness.md#project-routing)；某个项目不想用 hooks 时，见
+[按项目关闭 hooks](docs/mcp-harness.md#turning-the-hooks-off-per-project)。
 
-也可以在网页里接入：**接入平台**页（`http://127.0.0.1:8765/ui/#/platforms`）列出本机检测到的平台，预览并写入配置，
-一步步带你在平台里信任 hook、重启，最后确认收到了第一次调用。它运行的是同一个安装器。
+也可以在[网页界面](#网页界面)里接入（界面是中文的）。**接入平台**页在 `http://127.0.0.1:8765/ui/#/platforms`，列出本机检测到的
+平台，预览并写入配置，一步步带你在平台里信任 hook、重启，最后确认收到了第一次调用。它运行的是同一个安装器。
 
 #### Codex CLI / App
 
@@ -152,42 +156,8 @@ bash scripts/install.sh connect --host deepseek-harness --apply
 重启 DeepSeek Harness 并新建会话。这个集成只提供 MCP 工具，不接受 `--recall`。MCP 桥运行在 `dsh` 的工作目录，不是
 会话所在的文件夹，所以让 Agent 使用记忆时，请指明项目（某个文件夹的绝对路径）。
 
-#### 安装器做了什么
-
-`service --apply` 会检查 SurrealDB，首次安装时以隐藏输入的方式询问 API key，构建二进制，先把它作为临时 mock daemon 启动
-做一次检查，再安装成用户服务（macOS 上是 LaunchAgent，Linux 上是 systemd 用户单元）。服务同时在
-`http://127.0.0.1:8765/ui/` 提供网页：有 npm 时安装器用 `make ui` 构建，没有时从对应版本的发布下载，两样都不行就不装网页。
-
-`connect --apply` 不构建、不询问密钥。它从已安装的服务读取二进制、URL 和 outbox，用临时 mock daemon 检查要注册的命令，
-再合并平台的配置，并保留已有的、无关的 MCP server、hooks 和设置。两条命令去掉 `--apply` 都可以只预览。
-
-> **项目路由**：安装器不指定项目；hooks 和 MCP 桥在运行时从会话所在的文件夹确定项目。这个文件夹是工作目录（Claude Code
-> 用它启动时所在的文件夹）。在 git 仓库里，项目是主仓库的根目录，所以子目录和 worktree 共用一个项目；其他文件夹各自是
-> 一个项目。项目 ID 是这个文件夹的绝对路径，例如 `/Users/me/code/my-repo`，所以移动文件夹后会成为新项目。没有文件夹的
-> 会话，或在用户主目录里打开的会话，使用 **global** 记忆，所有项目都能看到它；WorkBuddy 自己建的文件夹（`~/WorkBuddy/…`）
-> 里的会话也一样。MCP 工具默认使用会话的项目，调用时传 `project` 则用传入的。
->
-> hooks 在每个会话里都会运行。要在某个项目里停用：Claude Code 在该项目的 `.claude/settings.local.json` 里写
-> `"disableAllHooks": true`（会关掉那里的全部 hooks）；Codex 在受信任项目的 `.codex/config.toml` 里写
-> `[features] hooks = false`（尚未核实）；WorkBuddy 没有已知的按项目开关。
-
-**其他配置：**
-
-- **只装 MCP**：Codex、Claude Code 或 WorkBuddy 的 `connect` 加 `--no-capture` 并去掉 `--recall`。之后想加上 hooks，用完整
-  命令重新运行 `connect` 即可。
-- **只捕获、不自动召回**：去掉 `--recall`。
-- **不装网页**：`service` 加 `--no-ui`；服务原来提供的网页保留。
-- **使用已有二进制**：`service --binary /absolute/path/to/agent-memoryd` 跳过构建，例如配合
-  [release 包](docs/deployment.md#release-archive)。
-- **自己运行 daemon**：`connect --host codex --apply --binary /absolute/path/to/agent-memoryd --url http://127.0.0.1:8765`
-  只注册平台，不安装服务；daemon 按 [部署与运维](docs/deployment.md) 自行启动。
-- **自定义部署**：要指定数据目录、端口或自托管模型，按 [部署与运维](docs/deployment.md) 操作；`service` 支持 `--port`
-  和 `--outbox`。
-- **让 Agent 帮你安装**：能执行命令的 Agent 可以按 [安装说明](docs/mcp-harness.md#installer) 操作。Agent 的
-  shell 通常无法隐藏输入，密钥请你自己用 `--key-file` 或在本地终端提供，不要放进聊天或命令参数。上面各客户端里的确认
-  步骤仍需你本人完成。
-
-全部选项、配置变更、备份和卸载见 [安装说明](docs/mcp-harness.md#installer)。
+其他安装方式（只装 MCP、只捕获不召回、不装网页、使用已有的二进制或自己运行的 daemon、让 Agent 帮你安装）、全部选项、配置变更、
+备份和卸载，见[安装器参考](docs/mcp-harness.md#installer)。
 
 ### 4. 试一下共享记忆
 
@@ -286,6 +256,30 @@ Claude Code 和 Codex 会话：
 详细步骤、限制和常见问题见
 [在对话里导入另一个助手的记忆](docs/mcp-harness.md#import-from-another-assistant-in-a-conversation)。
 
+### 网页界面
+
+服务还在 `http://127.0.0.1:8765/ui/` 提供一个本机网页，可以浏览、检索、新增、更正、撤回和删除记忆，审核导入、consolidation 和
+冲突，以及接入 Agent 平台。网页没有自己的登录，和 daemon 的其余部分一样依赖只监听回环地址这一边界（见
+[安装之前](#安装之前)）。如果 `/ui/` 返回 404，说明服务没有网页：安装 Node.js 和 npm（见前置依赖），再运行一次
+`bash scripts/install.sh service --apply`。
+
+**界面文字目前只有中文，没有语言切换。** 导航按顺序是：
+
+| 页面 | 用来做什么 |
+|---|---|
+| 概览 | 看各类记录数、LLM 用量、待处理任务和模型状态，近 30 天有哪些平台调用过，以及哪些事项需要处理 |
+| 记忆列表 | 按项目、平台、类型、状态和来源筛选浏览。单条记录的页面显示来源、更正链、谱系和原始对话，并可更正、撤回或删除 |
+| 实体 | 浏览检索关联到记忆的实体，以及每个实体对应的记忆 |
+| 新增 | 原样保存一条事实，可选让生成模型抽取事实（会调用模型），或保存一条行为要求 |
+| 检索调试 | 输入查询，查看排序、分数和耗时；查询会发给嵌入模型，重排需要你主动勾选，也会调用模型 |
+| 上下文预览 | 按部分查看 `get_context` 会为某个项目和会话注入的文本，不调用模型 |
+| 接入平台 | 找出本机上的平台，预览并写入配置，信任 hooks，确认收到第一次调用，也可卸载或回滚 |
+| 导入审核 | 审核导入运行：接受或拒绝提议，应用或回滚一次导入 |
+| consolidation | 提出对重复或重叠事实的合并（每个簇一次生成调用），审核后整批应用或回滚；daemon 开启 `consolidationEnabled` 后才可用 |
+| 冲突 | 并排比较有冲突的记录，选择保留哪条并填理由 |
+| 召回记录 | 查看哪个平台、哪个会话、什么时候取回了哪些记忆，以及哪些被用上 |
+| 任务 | 跟踪记忆形成的请求、状态和失败原因，以及模型的原始响应 |
+
 ## 工作原理
 
 `agent-memoryd` 是一个 Rust 二进制，提供 HTTP 服务、stdio MCP 桥、捕获和召回 hooks，以及 outbox 上传器。
@@ -311,13 +305,15 @@ curl -fsS http://127.0.0.1:8765/health        # 记忆策略、模型和 LLM 用
 - **日志**：macOS 在 `~/Library/Logs/agent-memory-service/daemon.stderr.log`；Linux 用
   `journalctl --user -u agent-memory.service`。
 - **升级**：`git pull` 后运行一次 `bash scripts/install.sh service --apply`，不论接了几个客户端：它会重新构建、替换二进制和
-  网页，并重启服务。只有发布说明提到某个平台的 hook 或 MCP 桥条目有变化时，才需要对它重跑 `connect`；`connect` 是幂等的，
-  随时重跑都安全。SurrealDB 保持在 3.x。
+  网页，并重启服务。只有[更新日志](CHANGELOG.md)提到某个平台的 hook 或 MCP 桥条目有变化时，才需要对它重跑 `connect`；
+  `connect` 是幂等的，随时重跑都安全。SurrealDB 保持在 3.x。
 - **更换密钥或模型**：编辑 `~/.config/agent-memory-service/.env`（见 [配置](docs/api.md#configuration)），然后重启服务。
 - **卸载**：对每个已接入的平台运行 `bash scripts/install.sh connect --host HOST --uninstall`，然后运行
   `bash scripts/install.sh service --uninstall`：它会停止服务并删除服务单元，保留记忆数据、env 文件、二进制和网页
   （见 [安装服务](docs/deployment.md#install-the-service)）。
-- **排查**：见 [部署问题](docs/deployment.md#common-problems) 和 [客户端排查](docs/mcp-harness.md#troubleshooting)。
+- **排查**：daemon 起不来或没有响应，或模型密钥、模型服务、SurrealDB、存储的问题，见
+  [部署问题](docs/deployment.md#common-problems)；客户端没接上、hooks、outbox、召回和导入的问题，见
+  [客户端排查](docs/mcp-harness.md#troubleshooting)。
 
 默认的本地路径：
 
@@ -329,16 +325,17 @@ curl -fsS http://127.0.0.1:8765/health        # 记忆策略、模型和 LLM 用
 
 ## 文档
 
-除本文件和 `docs/design/` 下的设计文档外，文档目前都是英文。
+除本文件和 `docs/design/` 下的设计文档外，文档目前都是英文。[文档索引](docs/README.md)按任务列出每份文档，并解释文中用到的
+术语（daemon、客户端、桥、hook、outbox、项目）。
 
 | 主题 | 文档 |
 |---|---|
+| 安装器、接入客户端、hooks、项目路由与导入 | [MCP 与客户端集成](docs/mcp-harness.md) |
 | 部署、服务管理、备份与排查 | [部署与运维](docs/deployment.md) |
-| 客户端安装、hooks 与导入 | [MCP 与客户端集成](docs/mcp-harness.md) |
 | 本地嵌入和重排模型 | [自托管检索模型](docs/self-hosted-models.md) |
 | API 字段、作用域、完成状态与配置 | [API 参考](docs/api.md) |
 | 实现与算法边界 | [架构](docs/architecture.md) |
-| 记忆导入设计 | [记忆导入](docs/design/memory-import.md) |
+| 版本之间的变化与升级说明 | [更新日志](CHANGELOG.md) |
 | 评测方法与历史结果 | [评测](eval/README.md) |
 | 运维与检查脚本 | [脚本清单](scripts/README.md) |
 
