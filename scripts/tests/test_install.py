@@ -678,7 +678,8 @@ def test_apply_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary, offli
     original = settings.read_bytes()
     argv = install_args('workbuddy', tmp_path, fake_binary, '--apply')
     status_argv = ['status', '--json', '--home', tmp_path, '--binary', fake_binary, '--url', UNUSED_URL]
-    workbuddy = lambda: next(h for h in run_json(capsys, *status_argv)[1]['hosts'] if h['id'] == 'workbuddy')
+    host = lambda report: next(h for h in report['hosts'] if h['id'] == 'workbuddy')
+    workbuddy = lambda: host(run_json(capsys, *status_argv)[1])
     before = workbuddy()
     assert before['detected'] == str(settings.parent) and not before['connected'] and not before['canRollback']
     # The web UI's runs: a preview, then the write, each one JSON object naming the files.
@@ -701,8 +702,8 @@ def test_apply_rerun_rollback_and_uninstall(tmp_path, capsys, fake_binary, offli
     code, output = run(capsys, *argv)
     assert code == 0 and 'nothing written' in output
     # Another binary path makes the entries out of date.
-    assert run_json(capsys, *status_argv[:-4], '--binary', tmp_path / 'other/agent-memoryd', *status_argv[-2:])[1][
-        'hosts'][2]['upToDate'] is False
+    moved = run_json(capsys, *status_argv[:-4], '--binary', tmp_path / 'other/agent-memoryd', *status_argv[-2:])[1]
+    assert host(moved)['upToDate'] is False
     code, result = run_json(capsys, 'connect', '--host', 'workbuddy', '--home', tmp_path, '--rollback', '--json')
     assert code == 0 and result['mode'] == 'rollback' and len(result['changes']) == 3, result
     assert settings.read_bytes() == original and not (tmp_path / '.workbuddy/mcp.json').exists()
