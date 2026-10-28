@@ -116,8 +116,8 @@ LaunchAgent，Linux 上是 systemd 用户单元）。下面的 `connect` 不构�
 **同一个 daemon**，并打开**同一个文件夹**。详见[项目路由](docs/mcp-harness.md#project-routing)；某个项目不想用 hooks 时，见
 [按项目关闭 hooks](docs/mcp-harness.md#turning-the-hooks-off-per-project)。
 
-也可以在网页里接入：**接入平台**页（`http://127.0.0.1:8765/ui/#/platforms`；[网页界面](#网页界面)只有中文）列出本机检测到的平台，
-预览并写入配置，一步步带你在平台里信任 hook、重启，最后确认收到了第一次调用。它运行的是同一个安装器。
+也可以在[网页界面](#网页界面)里接入（界面是中文的）。**接入平台**页在 `http://127.0.0.1:8765/ui/#/platforms`，列出本机检测到的
+平台，预览并写入配置，一步步带你在平台里信任 hook、重启，最后确认收到了第一次调用。它运行的是同一个安装器。
 
 #### Codex CLI / App
 

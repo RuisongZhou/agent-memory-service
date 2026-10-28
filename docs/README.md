@@ -39,7 +39,7 @@ There are three pages, by where the problem is:
 |---|---|
 | Daemon | `agent-memoryd serve`: the one process per machine that holds the store and answers HTTP on `127.0.0.1:8765`. |
 | Service | The daemon installed as a user service (a LaunchAgent on macOS, a systemd user unit on Linux) by `install.sh service`. |
-| Client, platform | An agent product connected to the daemon: Codex, Claude Code, WorkBuddy or DeepSeek Harness. A request also carries a *platform* label, one per client. The older text and code also say *host* or *harness*; `mcp-harness.md` keeps its file name. |
+| Client, platform | An agent product connected to the daemon: Codex, Claude Code, WorkBuddy or DeepSeek Harness. A request also carries a *platform* label, one per client. The installer and `import` name a client with `--host`; *harness* survives only in the file name `mcp-harness.md` and in the name DeepSeek Harness. |
 | MCP bridge | `agent-memoryd mcp`: a stdio child process the client starts, which forwards the eight `shared-memory` tools to the daemon. The daemon has no HTTP MCP endpoint. |
 | Hook | A command a client runs on a conversation event. `agent-memoryd hook capture` saves turns and `agent-memoryd hook recall` injects memories. |
 | Turn | One user prompt and the assistant's final reply, the unit that capture saves. |
