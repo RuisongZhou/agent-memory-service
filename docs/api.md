@@ -134,9 +134,17 @@ Raw model responses, including failures and repair attempts, are available throu
 `recentTurns` and `uncertainties` compatibility arrays. Instructions are selected through `get_context`.
 `topK` and `tokenBudget` must be positive; `topK` cannot exceed `maxTopK`. Search makes no generation call.
 
-Optional reranking runs after hybrid topK selection. `score` remains the hybrid score and `rerankScore`
-is added when available. Request `rerank:true` cannot connect a reranker omitted at startup (`mem0Rerank:false`); absence or failure
-keeps hybrid ordering. `touch:false` avoids access-time updates; retrieval logging still occurs.
+With a reranker loaded (the default), search is **selective**: it reranks the top 20 of the semantic pool by
+cosine and keyword score, and returns only memories whose reranker score clears the reranker's floor and lies
+within `mem0RecallMargin` logits of the best one. When none clears the floor, `results` is empty and `gap` is
+true: no memory is relevant enough to return. Results are in reranker order; `score` remains the hybrid score
+and `rerankScore` is added. `selection` reports `{floor, margin, reranked, top, admitted}` (the highest reranker
+score and how many cleared), and the recall log keeps it. A reranker failure fails the search (`MODEL_UNAVAILABLE`)
+rather than return unvetted memories. Without a reranker (`mem0Rerank:false`, `--no-reranker`) or with
+`rerank:false` on the request, search returns Mem0's hybrid topK with its entity boost, as before; `rerank:true`
+cannot connect a reranker omitted at startup. `touch:false` avoids access-time updates; retrieval logging still
+occurs. The evaluation-only `explain:true` adds `explain`: every pool candidate's cosine, keyword, entity, fused
+and reranker scores and the query's cosine over the visible memories.
 
 `includeEvidence:true` on search exposes `sourceBatch`, with `level:"batch"` and
 `verifiedClaimSpan:false`: complete source input is not a verified quote for every inferred claim.
@@ -146,7 +154,9 @@ event and ingestion times are distinct. Existing verified historical evidence re
 
 `get_context` accepts `{"scope":{"project":"my-project","session":"session-123"},"tokenBudget":1500}`.
 It returns text plus `instructions`, `profile`, `projectNotes`, `projectFacts`, `facts`, `skills`,
-`tokensUsed` and `retrievalId`. Only explicitly stored instructions are behavior requirements; other
+`tokensUsed` and `retrievalId`. With `lean:true`, which the SessionStart hook sends, it returns the explicit
+instructions and a one-line index of the facts the scope can recall (`index: {projectFacts, sharedFacts}`) and
+no fact sections: per-prompt recall adds the facts relevant to each prompt. Only explicitly stored instructions are behavior requirements; other
 sections are historical reference. A fact line in `text` ends with the day the fact holds from (`（2026-11-06 起 ·
 codex）`, `(since … · codex)`) or, for a fact without an effective date such as an inferred one, the day it was
 said (`（2026-10-25 提到 · codex）`, `(stated …)`), then the platform. Reads do not close sessions, generate memory or await unrelated writes.
@@ -380,7 +390,12 @@ read from JSON.
 |---|---|---|
 | `mem0Threshold` | 0.1 | Semantic threshold before hybrid fusion; range 0–1 |
 | `mem0TopK` | 20 | Default search result count, bounded by `maxTopK` |
-| `mem0Rerank` | false | Connect/use the optional reranker |
+| `mem0Rerank` | true | Connect the reranker and select search results with it (selective recall) |
+| `mem0RecallFloor` | per reranker | Lowest reranker score a returned memory has; unset takes the built-in floor of `bge-reranker-v2-m3` (0.30, any quantization) or `qwen3.7-text-rerank` (0.72). Another reranker needs it set: startup fails otherwise. Range 0–1, exclusive |
+| `mem0RecallMargin` | 3.0 | Largest distance, in logits, of a returned memory's reranker score from the best one's |
+| `mem0SegmentTurns` | 1 | Queued turns of one conversation formed by one extraction call, 1–32; 1 forms every turn alone |
+| `mem0SegmentTokens` | 6000 | Estimated message tokens that fill a segment before `mem0SegmentTurns` |
+| `mem0SegmentWaitSecs` | 600 | Seconds a segment's oldest turn waits for more before it is formed; a session's end marker, a caller waiting for the result (`sync`) or `wait_idle` forms it at once |
 | `mem0MaxTokens` | 2000 | Formation output-token limit |
 | `mem0CustomInstructions` | empty | Additional formation guidance |
 | `maxTopK` | 50 | Maximum request topK |

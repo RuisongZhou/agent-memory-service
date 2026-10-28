@@ -10,6 +10,15 @@ optional `natural` or `compromise`. It does not claim equivalence with every SDK
 The service keeps its own SurrealDB storage, scopes, durable jobs, strict validation and provenance.
 Copied code and prompts retain their [licenses and notices](../THIRD_PARTY.md).
 
+Four deliberate departures from the SDK keep recall selective and formation lean ([design](design/selective-memory.md),
+[evaluation](../eval/docs/benchmarks/selective-memory.md)):
+
+- **Selective recall.** With a reranker loaded (the default), search returns only memories whose reranker score
+  clears the reranker's floor, and nothing when none does. The SDK always returns its topK.
+- **Segments.** `mem0SegmentTurns` lets one extraction call take several queued turns of a session.
+- **Recently Extracted Memories.** The prompt section the SDK leaves empty holds the session's latest facts.
+- **Named entities only.** The entity projection drops TOPIC word runs.
+
 Pinned upstream references are the [memory implementation](https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem0-ts/src/oss/src/memory/index.ts),
 [prompt](https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem0-ts/src/oss/src/prompts/index.ts),
 [entity extraction](https://github.com/mem0ai/mem0/blob/ts-v3.3.1/mem0-ts/src/oss/src/utils/entity_extraction.ts),
@@ -39,10 +48,16 @@ strategy.
    (the import rules), validates scope (a project, or `kind:"global"` for a session with no project folder) and routes explicit instructions to their synchronous path. Mem0 validates message roles, timestamp order and input shape.
 2. Under the ingest lock, formation checks the platform/turn idempotency key and commits the complete
    input, sequence number and `queued` request. Asynchronous acknowledgement confirms this commit.
-3. One ordered worker takes the formation lock. It prepares prior messages and retrieves
+3. One ordered worker takes the formation lock and forms **segments**: a session's queued requests, in input order,
+   up to `mem0SegmentTurns` of them (default 1, every turn alone) or `mem0SegmentTokens` of messages. A segment
+   short of that waits until the session's end marker arrives, its oldest turn has waited `mem0SegmentWaitSecs`, a
+   caller waits for one of its requests (`sync`, the pure rule in [segments](../crates/memory-rules/src/segments.rs))
+   or `wait_idle` drains the queue. Raw `infer:false` text never waits. A segment that may not form yet, or that
+   failed, holds back its session's later ones. For a segment, formation prepares prior messages and retrieves
    up to ten visible existing facts using **pure vector recall**, not the public hybrid search path. Visible means
    global facts, the caller platform's facts and the request's project's facts; a global request has no project.
-4. The prompt combines the vendored additive template, historical messages, existing facts with
+4. The prompt combines the vendored additive template, historical messages, the facts the session's latest
+   formed requests produced (up to 20, as Recently Extracted Memories), existing facts with
    temporary IDs, full new messages, observation/current dates and optional custom instructions.
    The `zh` mode adds an instruction to match the new messages' language and script.
 5. Generation returns a `memory` array. Strict local validation checks sequential string IDs, nonempty
@@ -52,7 +67,8 @@ strategy.
    separates projects, global facts, and raw and inferred writes. Duplicate text reuses an active
    memory and extends batch provenance. This is exact content deduplication, not semantic deduplication.
 7. New fact vectors are embedded in a batch. Primary memories, vectors, source batches, history,
-   index tasks and the `indexing` checkpoint commit atomically.
+   index tasks and the `indexing` checkpoint commit atomically. A fact formed by a segment names every request and
+   turn of the segment as its sources, and every request of the segment lists the segment's facts.
 8. Entity projection is reconciled, vectors are published to the query cache and the request becomes
    `completed` with `formed:true` and `searchable:true`. Interrupted publication resumes from saved
    vectors and projection state without repeating the extraction call.
@@ -96,15 +112,25 @@ the input's timestamp rather than replacing a historical event date with today's
 2. Recall a semantic candidate pool of `max(4 × topK, 60)` using exact search or HNSW.
 3. Compute BM25 over the complete visible document corpus, not just semantic candidates. The built-in
    fallback uses stop-word/simple-stem processing, k1=1.5, b=0.75 and query-length-dependent normalization.
-4. Reconcile entity projection before scoring. Use the first eight query entities before deduplication,
-   up to 500 entity matches per query entity, and a cosine threshold of 0.5. Each memory takes its
-   strongest entity contribution; heavily linked entities receive a smaller boost.
-5. Apply the semantic threshold, fuse scores, sort and select topK. Keyword/entity scores do not add
-   memories absent from the semantic candidate pool.
-6. Optionally rerank these topK records. Preserve the hybrid `score`, add `rerankScore` when available,
-   and keep hybrid ordering if the optional reranker is absent or fails.
-7. Reread authoritative primary records, filter retired or out-of-scope candidates and pack complete
+4. **Selective recall** (a reranker is loaded and the request does not turn reranking off): apply the semantic
+   threshold, fuse semantic and keyword scores, and rerank the top 20 in one call. Return the memories whose
+   reranker score clears the floor and lies within `mem0RecallMargin` logits of the best, in reranker order
+   ([selection](../crates/memory-rules/src/selection.rs)); none clears the floor, nothing is returned. A reranker
+   failure fails the search. The entity boost takes no part, so search makes no entity embedding call.
+5. **Mem0 top-k** otherwise: reconcile the entity projection before scoring. Use the first eight non-TOPIC query
+   entities before deduplication, up to 500 entity matches per query entity, and a cosine threshold of 0.5. Each
+   memory takes its strongest entity contribution; heavily linked entities receive a smaller boost. Apply the
+   semantic threshold, fuse scores, sort and select topK. Keyword/entity scores do not add memories absent from
+   the semantic candidate pool.
+6. Reread authoritative primary records, filter retired or out-of-scope candidates and pack complete
    records into the token budget. Retrieval never calls the generation model.
+
+The reranker's floor is per model, because rerankers do not share a score scale: the same 0.3 that lets a
+bge-reranker-v2-m3 search inject on 1.8% of unrelated questions lets the hosted Qwen reranker inject on 41%.
+The built-in floors (bge-reranker-v2-m3 0.30, qwen3.7-text-rerank 0.72) were chosen on a LoCoMo calibration split,
+as the floor with the best hit rate whose false-injection rate stays within 10%; startup fails for another
+reranker unless `mem0RecallFloor` is set. The SessionStart hook asks `get_context` for its lean form, explicit
+instructions and a one-line index of the facts, so no fact enters a session that no prompt asked for.
 
 ```text
 entityBoost = similarity × 0.5 / (1 + 0.001 × (linkedCount - 1)²)
@@ -113,8 +139,9 @@ score = min((semantic + normalizedBM25 + entityBoost)
 ```
 
 `hasBM25` and `hasEntity` describe whether each complete score map is nonempty, not whether a single
-candidate has a match. Entity cosine uses f64 accumulation at the 0.5/0.95 boundaries; public scores
-retain the service's f32 representation. No thresholds are selected from benchmark scores.
+candidate has a match (selective recall fuses without the entity map). Entity cosine uses f64 accumulation at the
+0.5/0.95 boundaries; public scores retain the service's f32 representation. The Mem0 thresholds are not selected
+from benchmark scores; the selective-recall floors are, on a calibration split kept apart from the reported one.
 
 ## Entity projection and storage
 
@@ -127,7 +154,9 @@ retain the service's f32 representation. No thresholds are selected from benchma
 | `mem0_entity_state` | Rules/model versions, primary fingerprint and inferred eligibility |
 | `mem0_entity_inputs` | Reusable per-fact entity extraction results |
 
-Entity extraction copies/adapts the built-in PROPER, QUOTED, TOPIC and IDENTIFIER rules. Canonicalization
+Entity extraction copies/adapts the built-in PROPER, QUOTED, TOPIC and IDENTIFIER rules; the projection keeps
+PROPER, QUOTED and IDENTIFIER rows only. TOPIC rows, lowercase word runs, were most of the rows (80% of a live
+store's), each embedded at write time. Canonicalization
 first matches normalized text exactly, then existing visible entities at cosine ≥0.95. Newly proposed
 entities in one batch do not semantically merge with each other. Formation position preserves batch
 order; older records without it use stable ID order, which cannot recover lost original ordering.
@@ -362,6 +391,8 @@ records `error` and resumes.
 | How are inputs admitted and instructions routed? | [app/ingest.rs](../crates/memory-engine/src/app/ingest.rs) |
 | How are inputs queued, extracted and published? | [formation.rs](../crates/memory-algo-mem0/src/formation.rs), [runtime.rs](../crates/memory-algo-mem0/src/runtime.rs) |
 | Where are candidate and hybrid scoring rules? | [retrieval.rs](../crates/memory-algo-mem0/src/retrieval.rs), [mem0_hybrid.rs](../crates/memory-rules/src/mem0_hybrid.rs) |
+| Which reranked memories does a search return? | [selection.rs](../crates/memory-rules/src/selection.rs), floors settled in [Mem0 config](../crates/memory-algo-mem0/src/config.rs) |
+| Which queued turns does one formation call take? | [segments.rs](../crates/memory-rules/src/segments.rs), [formation.rs](../crates/memory-algo-mem0/src/formation.rs) |
 | How does entity recovery work? | [entities.rs](../crates/memory-algo-mem0/src/entities.rs), [repo.rs](../crates/memory-algo-mem0/src/repo.rs) |
 | How is bootstrap context assembled? | [context.rs](../crates/memory-engine/src/retrieval/context.rs) |
 | Where do transaction integrity and revision checks live? | [memory-store](../crates/memory-store/src/), [domain integrity](../crates/memory-domain/src/integrity.rs) |

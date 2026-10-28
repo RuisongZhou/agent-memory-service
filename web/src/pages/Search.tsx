@@ -23,7 +23,7 @@ export function SearchPage() {
   const [topK, setTopK] = useState('')
   const [tokenBudget, setTokenBudget] = useState('')
   const [types, setTypes] = useState<MemoryType[]>(['fact'])
-  const [rerank, setRerank] = useState(false)
+  const [rerank, setRerank] = useState(true)
   // A search embeds the query at the model backend, so it runs only on submit and is never refetched.
   const search = useMutation({ mutationFn: (req: SearchReq) => api.search(req) })
 
@@ -35,7 +35,7 @@ export function SearchPage() {
       ...(topK && { topK: Number(topK) }),
       ...(tokenBudget && { tokenBudget: Number(tokenBudget) }),
       types,
-      // Sent either way: left out, the daemon's `mem0Rerank` setting decides, which may call the reranker.
+      // Sent either way: on, the reranker selects what is returned, as for the hooks; off keeps Mem0's top-k.
       rerank,
     })
   }
@@ -86,7 +86,7 @@ export function SearchPage() {
               onChange={(e) => setRerank(e.target.checked)}
               label={
                 <>
-                  重排（rerank: true） <ModelCall>调用重排模型</ModelCall>
+                  选择性召回（rerank: true）：重排后低于阈值的不返回 <ModelCall>调用重排模型</ModelCall>
                 </>
               }
             />
@@ -108,6 +108,12 @@ export function SearchPage() {
             rows={[
               ['用掉的 token', res.tokensUsed],
               ['无结果（gap）', res.gap ? '是' : '否'],
+              [
+                '选择性召回',
+                res.selection
+                  ? `返回 ${res.selection.admitted}/${res.selection.reranked} · 最高分 ${score(res.selection.top ?? undefined)} · 阈值 ${res.selection.floor.toFixed(2)}`
+                  : '未启用（Mem0 top-k）',
+              ],
               [
                 '耗时',
                 `嵌入 ${ms(res.latencyMs.embed)} · 召回 ${ms(res.latencyMs.recall)} · 重排 ${ms(res.latencyMs.rerank)} · 组装 ${ms(res.latencyMs.assemble)} · 合计 ${ms(res.latencyMs.total)}`,

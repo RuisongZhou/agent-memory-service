@@ -224,12 +224,23 @@ export interface SearchLatency {
   total: number
 }
 
+/** How selective recall chose: the reranker floor and margin, how many it reranked, the best score, how many cleared. */
+export interface SearchSelection {
+  floor: number
+  margin: number
+  reranked: number
+  top: number | null
+  admitted: number
+}
+
 export interface SearchRes {
   retrievalId: string
   results: SearchHit[]
   gap: boolean
   tokensUsed: number
   latencyMs: SearchLatency
+  /** Null when the search kept Mem0's top-k (no reranker, or `rerank: false`). */
+  selection: SearchSelection | null
 }
 
 export interface GetContextReq {

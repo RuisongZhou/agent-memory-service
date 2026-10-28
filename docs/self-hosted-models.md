@@ -18,8 +18,9 @@ ship weights or supervise model processes; you set them up and point the daemon 
 
 Each server hosts one model; the daemon reads the model name and GGUF file type from `/v1/models` and
 tags stored vectors with them, so changing either re-embeds stored memories at the next start. Inputs are
-truncated to 512 tokens and rerank logits are mapped to 0–1. The reranker is only contacted when
-`mem0Rerank` is enabled. Keep both servers on loopback or a trusted network; they have no authentication.
+truncated to 512 tokens and rerank logits are mapped to 0–1. The reranker selects what search returns (selective
+recall, on by default; `mem0Rerank:false` turns it off) with the built-in floor of `bge-reranker-v2-m3`; another
+rerank model needs `mem0RecallFloor`. Keep both servers on loopback or a trusted network; they have no authentication.
 
 The tested pair is [BGE-M3](https://huggingface.co/BAAI/bge-m3) for embeddings and
 [BGE-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3) for reranking, both as Q8_0 GGUF.

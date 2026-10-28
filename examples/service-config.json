@@ -2,7 +2,7 @@
   "defaultTokenBudget": 2000,
   "memoryStrategy": "mem0",
   "mem0Threshold": 0.1,
-  "mem0Rerank": false,
+  "mem0Rerank": true,
   "mem0MaxTokens": 2000,
   "mem0TopK": 20
 }
