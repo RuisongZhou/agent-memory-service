@@ -1,11 +1,10 @@
-//! 接入层 — MCP stdio shim: forwards each call of the six memory tools to
-//! the daemon's HTTP API (`POST {url}/v1/{name}`) with `X-Memory-Platform: <platform>` and
-//! `X-Memory-Client: mcp` — the platform is a property of the connection, never of the arguments (2.2). The
-//! project is a property of the connection too, by default: the folder the bridge was started in
-//! (`harness::project`, docs/design/project-routing.md), filled into a call that gives none. An import a person drives in the conversation
-//! (docs/design/memory-import-mcp.md) is the shim's own: the prompt `import_memories` and the tools
-//! `propose_import` and `apply_import`, which plan an export page and call the daemon's admin import
-//! endpoints as the connection's platform.
+//! 接入层 — MCP stdio shim: forwards each call of the six memory tools to the daemon's HTTP API (`POST
+//! {url}/v1/{name}`) with `X-Memory-Platform: <platform>` and `X-Memory-Client: mcp` — the platform is a property of
+//! the connection, never of the arguments (2.2). The project is a property of the connection too, by default: the
+//! folder the bridge was started in (`harness::project`, docs/design/project-routing.md), filled into a call that
+//! gives none. An import a person drives in the conversation (docs/design/memory-import-mcp.md) is the shim's own:
+//! the prompt `import_memories` and the tools `propose_import` and `apply_import`, which plan an export page and
+//! call the daemon's admin import endpoints as the connection's platform.
 use rmcp::{
     handler::server::ServerHandler,
     model::*,
