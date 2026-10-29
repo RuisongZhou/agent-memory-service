@@ -34,6 +34,27 @@ pub fn format_new_messages<'a>(messages: impl IntoIterator<Item = (&'a str, &'a 
         .join("\n")
 }
 
+/// A segment's turns as one New Messages section: each turn's messages after a `[Turn i of n]` line. A single turn
+/// keeps the per-turn form unchanged.
+pub fn format_turns(turns: &[Vec<(&str, &str)>]) -> String {
+    if let [turn] = turns {
+        return format_new_messages(turn.iter().copied());
+    }
+    turns
+        .iter()
+        .enumerate()
+        .map(|(i, turn)| {
+            format!(
+                "[Turn {} of {}]\n{}",
+                i + 1,
+                turns.len(),
+                format_new_messages(turn.iter().copied())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Format the most recent ten messages in chronological order. Input must already be
 /// filtered to eligible conversation batches and ordered oldest first. Unicode scalar
 /// truncation follows Node SDK's 300 UTF-16-unit limit, keeping complete scalars when
@@ -88,6 +109,18 @@ mod tests {
             "user: oldest-in-window\nuser: 4\nuser: 5\nuser: 6\nuser: 7\nuser: 8\nuser: 9\nassistant: 10\n");
         // Current input is parsed in full even when textual content is empty.
         assert_eq!(format_new_messages([("user", "")]), "user: ");
+        // A segment numbers its turns; one turn reads as it does when formed alone.
+        assert_eq!(
+            format_turns(&[vec![("user", "a"), ("assistant", "b")]]),
+            "user: a\nassistant: b"
+        );
+        assert_eq!(
+            format_turns(&[
+                vec![("user", "a"), ("assistant", "b")],
+                vec![("assistant", "c")]
+            ]),
+            "[Turn 1 of 2]\nuser: a\nassistant: b\n[Turn 2 of 2]\nassistant: c"
+        );
     }
 
     #[test]

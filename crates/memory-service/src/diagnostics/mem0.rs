@@ -849,8 +849,10 @@ async fn selftest() {
         "completed"
     );
     assert_eq!(batched.llm.usage_snapshot()["calls"], 2);
-    // The drained turn's prompt shows the facts the session already gave, as the prompt's deduplication reference.
-    let prompts = t
+    // The segment's prompt numbers its turns and asks for what each would give alone. The drained turn, formed alone,
+    // reads as per-turn formation does and shows the facts the session already gave, as the prompt's deduplication
+    // reference.
+    let rows = t
         .store
         .select(
             "SELECT request FROM llm_responses WHERE stage = 'Mem0-add'",
@@ -858,11 +860,26 @@ async fn selftest() {
         )
         .await
         .unwrap();
-    let last = prompts
+    let prompts: Vec<&str> = rows
         .iter()
         .filter_map(|row| row["request"]["messages"][1]["content"].as_str())
-        .find(|prompt| prompt.contains("user: User keeps note s4"))
+        .collect();
+    let together = prompts
+        .iter()
+        .find(|prompt| prompt.contains("## New Messages\n[Turn 1 of 3]"))
         .unwrap();
+    assert!(
+        together.contains(
+            "[Turn 1 of 3]\nuser: User keeps note s1\n[Turn 2 of 3]\nuser: User keeps note s2\n\
+             [Turn 3 of 3]\nuser: User keeps note s3\n\n## Observation Date"
+        ) && together.contains("## Turns\nNew Messages hold 3 turns"),
+        "{together}"
+    );
+    let last = prompts
+        .iter()
+        .find(|prompt| prompt.contains("## New Messages\nuser: User keeps note s4\n\n"))
+        .unwrap();
+    assert!(!last.contains("## Turns"), "{last}");
     assert!(
         last.contains(
             "## Recently Extracted Memories\n[\"User keeps note s1\",\"User keeps note s2\",\"User keeps note s3\"]"

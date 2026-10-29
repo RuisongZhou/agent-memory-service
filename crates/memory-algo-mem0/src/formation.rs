@@ -305,6 +305,18 @@ fn queued_view(job: &Value, now: i64) -> Result<Queued<'_>> {
     })
 }
 
+/// Service adaptation for a segment of several turns: one request asked for what each turn would give alone. Given
+/// several turns at once, the model passed over most of what the assistant-role speaker said about themselves.
+fn turns_note(turns: usize) -> String {
+    format!(
+        "## Turns\nNew Messages hold {turns} turns of this conversation, marked in order and sent in one request \
+         instead of one request per turn. Extract from each turn the memories you would extract if that turn alone \
+         were New Messages, with the turns before it as context. Read every message of every turn: do not pass over \
+         one because another turn holds more. Drop only a memory that repeats another memory of this output. In \
+         either role, what a named speaker tells about their own life is a memory about that speaker."
+    )
+}
+
 /// Form one segment: the queued requests of one conversation, in input order, with one extraction call.
 async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, jobs: &[&Value]) -> Result<()> {
     let started = Instant::now();
@@ -331,12 +343,12 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, jobs: &[&Value]) -> Result<(
         .as_str()
         .ok_or_else(|| anyhow!("missing platform"))?;
 
-    let mut messages: Vec<InMessage> = Vec::new();
-    for j in jobs {
-        messages.extend(serde_json::from_value::<Vec<InMessage>>(
-            j["inputMessages"].clone(),
-        )?);
-    }
+    // One message list per request, in input order; a session's end marker has none.
+    let turns = jobs
+        .iter()
+        .map(|j| serde_json::from_value::<Vec<InMessage>>(j["inputMessages"].clone()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let messages: Vec<&InMessage> = turns.iter().flatten().collect();
     let inferred = job["infer"]
         .as_bool()
         .ok_or_else(|| anyhow!("missing infer"))?;
@@ -405,6 +417,15 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, jobs: &[&Value]) -> Result<(
                 .iter()
                 .map(|m| (m.role.as_str(), m.content.as_str())),
         );
+        let spoken: Vec<Vec<(&str, &str)>> = turns
+            .iter()
+            .filter(|turn| !turn.is_empty())
+            .map(|turn| {
+                turn.iter()
+                    .map(|m| (m.role.as_str(), m.content.as_str()))
+                    .collect()
+            })
+            .collect();
         // Match the Node SDK prompt builder's sections and string message representation.
         // Node SDK 3.3.1 uses JSON.stringify: compact JSON, with id before text.
         let old_json = format!(
@@ -422,7 +443,10 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, jobs: &[&Value]) -> Result<(
                 serde_json::to_string(&recent)?
             ),
             format!("## Existing Memories\n{old_json}"),
-            format!("## New Messages\n{query}"),
+            format!(
+                "## New Messages\n{}",
+                memory_rules::mem0::format_turns(&spoken)
+            ),
             // Service adaptation: preserve the actual timestamp of historical inputs;
             // Node SDK's default observation date is today's UTC date.
             format!("## Observation Date\n{}", &observed[..10]),
@@ -437,6 +461,9 @@ async fn form(eng: &Arc<Engine>, t: &Arc<Instance>, jobs: &[&Value]) -> Result<(
         }
         if eng.cfg.prompt_variant == "zh" {
             sections.push("## Language Requirement\nRespond in the same language and script as the new messages.".into());
+        }
+        if spoken.len() > 1 {
+            sections.push(turns_note(spoken.len()));
         }
         sections.push("# Output:".into());
         let input = sections.join("\n\n");
