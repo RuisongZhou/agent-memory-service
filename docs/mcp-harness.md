@@ -510,6 +510,12 @@ installer does, replacing the binary path:
 | `Stop` | Pairs that prompt with `last_assistant_message` and queues a completed turn; a turn that ended without a final message (`null`) queues nothing |
 | `SessionEnd` | Clears incomplete input and queues a close marker for a captured session |
 
+The Codex app also runs the hooks in the threads it opens for its own requests: thread titles, suggested next
+messages, ambient suggestions and safety reviews. Those threads are ephemeral and keep no transcript, so their events
+carry `transcript_path: null` (verified on Codex 0.165.0). The collector ignores every event that carries it: nothing
+of such a thread is stored or queued, and formation never sees it. A thread a person runs ephemeral, such as
+`codex exec --ephemeral`, is not captured either.
+
 Codex runs a hook only after you trust it: review and trust the three collector hooks with `/hooks`
 (App: Settings → Hooks). `/hooks` lists a hook under its `statusMessage`; the installer names the
 collector hooks `shared-memory capture` and the [recall hooks](#automatic-recall) `shared-memory recall`,
@@ -526,7 +532,8 @@ uses it. A rerun of `connect`, `--no-capture` or `--uninstall` removes the entry
 `notify = [<agent-memoryd>, "hook", "codex-notify", ...]` that an earlier installer wrote, and puts back the notify
 program it wrapped (after `--`). `agent-memoryd hook codex-notify` remains for such setups: it captures the
 `agent-turn-complete` event Codex appends as the last argument, and after `--` it first starts the program it wraps
-with the same event, waiting up to 10 seconds for it.
+with the same event, waiting up to 10 seconds for it. That event names no transcript, so `codex-notify` cannot tell
+the app's own threads apart.
 
 ### Claude Code hooks
 
@@ -538,6 +545,11 @@ Merge the `hooks` object from [examples/claude-code.settings.json](../examples/c
 | `Stop` | Pairs the matching prompt with `last_assistant_message` and queues a completed turn |
 | `StopFailure` | Discards the matching incomplete prompt |
 | `SessionEnd` | Clears incomplete input and queues a close marker for a captured session |
+
+Claude Code also sends prompts it writes itself through `UserPromptSubmit`: background-task notifications, other
+sessions' messages and the desktop app's events. The collector recognizes them by their wrapper, as
+[recall](#automatic-recall) does, and stores such a prompt without its text: like any prompt it ends the open turn,
+and its `Stop` queues nothing. A [session import](#import-past-sessions) leaves them out too.
 
 Restart the client and start a new turn after installing hooks; a `Stop` from a turn whose prompt was not captured cannot be paired. Required fields come from the [official Claude Code hooks contract](https://code.claude.com/docs/en/hooks). Older clients missing them must be upgraded or integrated through a wrapper; the adapter reports missing fields rather than guessing private transcript formats.
 
@@ -673,8 +685,9 @@ call. `connect` notes which provider the daemon at its URL uses.
 Hosts differ in when the hooks run. Codex runs them only after you trust them in `/hooks` (App:
 Settings → Hooks), and also in the threads it opens for its own requests (thread titles, suggested
 messages, reviews); those threads keep no transcript, their events carry
-`transcript_path: null`, and recall gives them nothing at either event. So does a thread a client runs
-ephemeral for a person (`codex exec --ephemeral`, for one). Claude Code runs the collector
+`transcript_path: null`, and recall gives them nothing at either event; capture stores none of their
+turns either ([Codex hooks](#codex-hooks)). The same holds for a thread a client runs ephemeral for a person
+(`codex exec --ephemeral`, for one). Claude Code runs the collector
 and recall `UserPromptSubmit` hooks in parallel and adds every returned context. WorkBuddy sends `SessionStart` without `cwd`, so its start-of-session recall
 is global-only (the prompts, which carry `cwd`, bring the project in), and the record of what that start
 showed is kept apart from the prompts' (a global memory may be shown once more with the first prompt).

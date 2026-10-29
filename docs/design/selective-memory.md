@@ -101,6 +101,10 @@ memories, so the floors stay as they are. The only gate that lost nothing, skipp
 - **Named entities only.** The projection keeps PROPER, QUOTED and IDENTIFIER rows. TOPIC rows (lowercase word runs)
   were most rows, each embedded at write time, and the only consumer of their scores, the entity boost, is no longer
   on the selective read path. Changing the rule version rebuilds existing projections.
+- **Only turns a person asked.** Capture queues none of the prompts recall recognizes as a host's own (§2), so
+  formation never sees them. It ignores every event of a Codex thread without a transcript, and stores a prompt in
+  one of Claude Code's wrappers without its text, which ends the open turn and leaves its Stop nothing to queue.
+  Session import already keeps only `turnOrigin: human` and `thread_source: user` turns.
 
 **Not done, by evidence.** Write-time semantic deduplication: an LLM judge found that a third of the later facts in
 pairs at cosine ≥ 0.95 add a detail (a changed date, a reason), so dropping them by similarity loses information.
@@ -159,5 +163,3 @@ false-injection ceiling you accept, then check it on the report split and on you
 - Usage feedback: count whether an injected memory was used in the agent's next reply and fold it into SessionStart's
   index and consolidation's order (ACE's helpful/harmful counters, MemoryOS's heat).
 - Scheduled consolidation ("sleep time"), within the existing per-run limits, now that formation adds fewer facts.
-- Capture still queues the Codex app's ephemeral requests as turns, and formation extracts facts from them; the same
-  `transcript_path: null` check would keep them out of the store.

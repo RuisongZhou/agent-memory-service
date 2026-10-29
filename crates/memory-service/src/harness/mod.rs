@@ -2,7 +2,8 @@
 //! hooks, and the uploader that submits captured dialogue to the daemon. They keep the files,
 //! schemas and hook contracts of the Python hooks that earlier installers wrote, so an existing
 //! outbox and recall record stay usable. See docs/mcp-harness.md. A hook files each session under the project
-//! its folder gives (`project`, docs/design/project-routing.md); nothing on its command line names one.
+//! its folder gives (`project`, docs/design/project-routing.md); nothing on its command line names one. Both hooks
+//! skip what a host sends on its own ([`codex_app_request`], [`host_event`]).
 //! `import` reads the memories a host already keeps into a reviewable plan and drives the daemon's import runs
 //! (docs/design/memory-import.md).
 pub mod import;
@@ -13,10 +14,12 @@ pub mod uploader;
 
 use clap::Subcommand;
 use memory_domain::types::ClientKind;
-use serde_json::{json, Value};
+use regex::Regex;
+use serde_json::{json, Map, Value};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 /// Daemon response bytes read before giving up.
@@ -25,6 +28,13 @@ const MAX_RESPONSE: usize = 1 << 20;
 const MAX_ADMIN_RESPONSE: usize = 32 << 20;
 /// Bytes of a refused admin call read for the daemon's `message`.
 const MAX_ERROR_BODY: usize = 64 << 10;
+/// Claude Code's background-task notifications and the desktop app's session and CI events.
+static HOST_EVENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^<(task-notification|side-sessions-event|ci-monitor-event)\b")
+        .expect("valid pattern")
+});
+/// How far into a prompt another Claude Code session's message may start, after its one-line preamble.
+const PEER_MESSAGE_WITHIN: usize = 200;
 
 #[derive(Subcommand, Debug)]
 pub enum HookCmd {
@@ -231,6 +241,23 @@ fn stdin_json() -> Result<Value, Error> {
     let mut text = String::new();
     std::io::stdin().read_to_string(&mut text)?;
     serde_json::from_str(&text).map_err(|_| Error::Json)
+}
+
+/// The Codex app runs its own requests (thread titles, suggested messages, reviews) in ephemeral threads, whose
+/// events carry `transcript_path: null`; a thread a person works in has a transcript.
+pub fn codex_app_request(platform: &str, fields: &Map<String, Value>) -> bool {
+    platform == "codex" && fields.get("transcript_path") == Some(&Value::Null)
+}
+
+/// A prompt the host wrote as an event: a background task's notification, another session's message, an app event.
+/// `text` is the prompt as [`recall::query_text`] reads it, without the host's reminders.
+pub fn host_event(text: &str) -> bool {
+    HOST_EVENT.is_match(text)
+        || text
+            .char_indices()
+            .nth(PEER_MESSAGE_WITHIN)
+            .map_or(text, |(at, _)| &text[..at])
+            .contains("<agent-message")
 }
 
 fn positive_seconds(value: &str) -> Result<f64, String> {
