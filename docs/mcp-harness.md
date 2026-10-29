@@ -532,7 +532,8 @@ uses it. A rerun of `connect`, `--no-capture` or `--uninstall` removes the entry
 `notify = [<agent-memoryd>, "hook", "codex-notify", ...]` that an earlier installer wrote, and puts back the notify
 program it wrapped (after `--`). `agent-memoryd hook codex-notify` remains for such setups: it captures the
 `agent-turn-complete` event Codex appends as the last argument, and after `--` it first starts the program it wraps
-with the same event, waiting up to 10 seconds for it.
+with the same event, waiting up to 10 seconds for it. That event names no transcript, so `codex-notify` cannot tell
+the app's own threads apart.
 
 ### Claude Code hooks
 
