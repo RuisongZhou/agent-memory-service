@@ -58,5 +58,6 @@ Each entry says what to do if your checkout or data predates the change.
   made 71% fewer extraction calls and covered as many questions as forming every turn alone (see
   [selective recall](docs/design/selective-memory.md#5-results)). A turn's facts become searchable when its segment
   forms: after four turns, at the session's end marker, when a caller waits for the result (`sync`), or once the
-  oldest turn has waited `mem0SegmentWaitSecs` (600 s). Set `"mem0SegmentTurns": 1` to form every turn alone.
-  Formation also shows the model the facts the session already gave, which reduces duplicates without a setting.
+  oldest turn has waited `mem0SegmentWaitSecs` (600 s), and each of its facts names every turn of the segment as its
+  source. Set `"mem0SegmentTurns": 1` to form every turn alone. Formation also shows the model the facts the session
+  already gave, which reduces duplicates without a setting.
