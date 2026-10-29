@@ -3,9 +3,11 @@
 //! SessionStart injects get_context; UserPromptSubmit injects search_memories results for the
 //! prompt that this session was not shown yet, packed into its own token budget. Both are scoped to the
 //! session's project, which each event's folder gives (`harness::project`); a session without a project
-//! recalls global memories only. The daemon must be on loopback. A hook never blocks or fails its host: every outcome prints exactly one JSON
-//! object and exits 0 (exit 2 would block the prompt). The recall record keeps the schema of the Python
-//! hook that earlier installers wrote.
+//! recalls global memories only. Prompts a host writes itself get nothing and search nothing: Claude Code's
+//! background-task notifications, other sessions' messages and app events, and the Codex app's own requests, which
+//! run in threads without a transcript. The daemon must be on loopback. A hook never blocks or fails its host: every
+//! outcome prints exactly one JSON object and exits 0 (exit 2 would block the prompt). The recall record keeps the
+//! schema of the Python hook that earlier installers wrote.
 use memory_rules::util;
 use regex::Regex;
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -53,6 +55,16 @@ static CLOSING_TAG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)</\s*shared-memory").expect("valid pattern"));
 static USER_QUERY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<user_query>(.*?)</user_query>").expect("valid pattern"));
+static REMINDER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)<system-reminder\b[^>]*>.*?</system-reminder\s*>").expect("valid pattern")
+});
+/// Claude Code's background-task notifications and the desktop app's session and CI events.
+static HOST_EVENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^<(task-notification|side-sessions-event|ci-monitor-event)\b")
+        .expect("valid pattern")
+});
+/// How far into a prompt another Claude Code session's message may start, after its one-line preamble.
+const PEER_MESSAGE_WITHIN: usize = 200;
 static PRINTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(clap::Args, Debug, Clone)]
@@ -174,7 +186,7 @@ async fn recall(
         .get("hook_event_name")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !matches!(name, "SessionStart" | "UserPromptSubmit") {
+    if !matches!(name, "SessionStart" | "UserPromptSubmit") || codex_app_request(args, fields) {
         return Ok((json!({}), None));
     }
     let daemon = Daemon::new(&args.url, timeout).map_err(|e| e.kind())?;
@@ -189,6 +201,22 @@ async fn recall(
     };
     let output = json!({"hookSpecificOutput": {"hookEventName": name, "additionalContext": text}});
     Ok((output, record))
+}
+
+/// The Codex app runs its own requests (thread titles, suggested messages, reviews) in ephemeral threads, whose
+/// events carry `transcript_path: null`; a thread a person works in has a transcript.
+fn codex_app_request(args: &RecallArgs, fields: &Map<String, Value>) -> bool {
+    args.platform == "codex" && fields.get("transcript_path") == Some(&Value::Null)
+}
+
+/// A prompt the host wrote as an event: a background task's notification, another session's message, an app event.
+fn host_event(query: &str) -> bool {
+    HOST_EVENT.is_match(query)
+        || query
+            .char_indices()
+            .nth(PEER_MESSAGE_WITHIN)
+            .map_or(query, |(at, _)| &query[..at])
+            .contains("<agent-message")
 }
 
 fn session_id(fields: &Map<String, Value>) -> Option<String> {
@@ -249,8 +277,8 @@ async fn prompt_submit(
         .and_then(Value::as_str)
         .map(query_text)
         .unwrap_or_default();
-    if query.is_empty() {
-        return Ok((None, None)); // an image-only or empty prompt has nothing to search for
+    if query.is_empty() || host_event(&query) {
+        return Ok((None, None)); // an image-only or empty prompt, or a host's event: nothing a person asked
     }
     let found = search(args, daemon, project, &query)
         .await
@@ -373,12 +401,12 @@ fn clean(text: &str) -> String {
         .into_owned()
 }
 
-/// Some hosts (WorkBuddy) put their own reminders in the prompt and mark the user's words.
+/// Hosts put their own reminders in the prompt; some (WorkBuddy) also mark the user's words.
 pub fn query_text(prompt: &str) -> String {
-    let words = USER_QUERY
-        .captures(prompt)
-        .and_then(|c| c.get(1))
-        .map_or(prompt, |m| m.as_str());
+    let words = match USER_QUERY.captures(prompt).and_then(|c| c.get(1)) {
+        Some(words) => words.as_str().into(),
+        None => REMINDER.replace_all(prompt, ""),
+    };
     words.trim().chars().take(MAX_QUERY).collect()
 }
 
@@ -906,15 +934,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prompt_query_drops_host_reminders_and_empty_prompts_search_nothing() {
+    async fn prompt_query_drops_host_text_and_host_prompts_search_nothing() {
         let (url, requests) = daemon(json!({"results": []})).await;
         let dir = tempfile::tempdir().unwrap();
         let a = args(&dir, &url);
+        let last_query = || requests.lock().unwrap().last().unwrap().1["query"].clone();
         inject(&a, prompt("<system-reminder>host text</system-reminder>\n<user_query> Which gate? </user_query>", "s1")).await;
-        assert_eq!(
-            requests.lock().unwrap().last().unwrap().1["query"],
-            "Which gate?"
-        );
+        assert_eq!(last_query(), "Which gate?");
+        inject(&a, prompt("<system-reminder>\nhost text\n</system-reminder>\nWhich gate?<system-reminder>more</system-reminder>", "s1")).await;
+        assert_eq!(last_query(), "Which gate?");
+        // A message that merely mentions an event is still a person's prompt.
+        inject(&a, prompt("Why did <task-notification> fail?", "s1")).await;
+        assert_eq!(last_query(), "Why did <task-notification> fail?");
         inject(&a, prompt(&"é".repeat(5000), "s2")).await;
         let query = requests.lock().unwrap().last().unwrap().1["query"]
             .as_str()
@@ -935,7 +966,35 @@ mod tests {
             inject(&a, json!({"hook_event_name": "Stop", "session_id": "s1"})).await,
             ""
         );
+        // Prompts the host writes: a background task's notification, another session's message, app events.
+        for text in [
+            "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>",
+            "Another Claude session sent a message: <agent-message from=\"s9\">Done.</agent-message>",
+            "<system-reminder>host text</system-reminder>\n<side-sessions-event>a session finished</side-sessions-event>",
+            "<ci-monitor-event>checks passed</ci-monitor-event>",
+        ] {
+            assert_eq!(inject(&a, prompt(text, "s1")).await, "");
+        }
+        // The Codex app's own requests run in threads without a transcript; a person's thread has one.
+        let codex = RecallArgs {
+            platform: "codex".into(),
+            ..args(&dir, &url)
+        };
+        let ephemeral = |mut event: Value| {
+            event["transcript_path"] = Value::Null;
+            event
+        };
+        assert_eq!(
+            inject(&codex, ephemeral(prompt("Generate a title", "c1"))).await,
+            ""
+        );
+        assert_eq!(inject(&codex, ephemeral(start("c1"))).await, "");
         assert_eq!(requests.lock().unwrap().len(), before);
+        let mut typed = prompt("Which gate?", "c2");
+        typed["transcript_path"] = json!("/home/test/.codex/sessions/rollout.jsonl");
+        inject(&codex, typed).await;
+        inject(&a, ephemeral(prompt("Which gate?", "s3"))).await; // other hosts: no such marker
+        assert_eq!(requests.lock().unwrap().len(), before + 2);
     }
 
     #[tokio::test]
