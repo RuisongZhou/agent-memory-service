@@ -223,11 +223,11 @@ def form_one(root, conv, arm, binary, config, llm_url):
     print(f'{arm} {cid}: formed', flush=True)
 
 
-def form(root, data, arm, config_overrides, max_attempts):
+def form(root, data, arm, config_overrides, max_attempts, cids):
     """Conversations form concurrently, each in its own daemon; turns within one stay in order."""
     from concurrent.futures import ThreadPoolExecutor
     binary, config = arm_spec(root, arm, config_overrides)
-    convs = [c for c in data if c['sample_id'] in CALIBRATION + REPORT]
+    convs = [c for c in data if c['sample_id'] in cids]
     with relay(root, arm, max_attempts=max_attempts) as llm_url, ThreadPoolExecutor(len(convs)) as pool:
         for future in [pool.submit(form_one, root, c, arm, binary, config, llm_url) for c in convs]:
             future.result()
@@ -750,6 +750,8 @@ def main():
     parser.add_argument('--hosted-scores', action='store_true', help='also replay rules with the hosted models')
     parser.add_argument('--arm', default='turn')
     parser.add_argument('--config', default='{}', help='JSON daemon configuration overrides for a new arm')
+    parser.add_argument('--convs', default=','.join(CALIBRATION + REPORT),
+                        help='form: comma-separated conversations, such as the calibration split first')
     parser.add_argument('--max-attempts', type=int, default=2500, help='formation provider attempt cap per arm')
     parser.add_argument('--max-label-calls', type=int, default=2500)
     parser.add_argument('--concurrency', type=int, default=8)
@@ -760,7 +762,7 @@ def main():
         protocol = prepare(args.root, data)
         print(json.dumps({k: protocol[k] for k in ('calibration', 'report', 'turns')}, indent=2))
     elif args.stage == 'form':
-        form(args.root, data, args.arm, json.loads(args.config), args.max_attempts)
+        form(args.root, data, args.arm, json.loads(args.config), args.max_attempts, args.convs.split(','))
     elif args.stage == 'search':
         search(args.root, args.arm)
     elif args.stage == 'hosted':
