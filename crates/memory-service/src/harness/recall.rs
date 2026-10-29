@@ -20,7 +20,10 @@ use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::project::{Env, SessionProject};
-use super::{expand, loopback_url, positive, private_file, CallError, Daemon, Error};
+use super::{
+    codex_app_request, expand, host_event, loopback_url, positive, private_file, CallError, Daemon,
+    Error,
+};
 
 /// Default record of shown memories, relative to the home directory.
 pub const DEFAULT_STATE: &str = ".local/state/agent-memory-service/recall-state.sqlite3";
@@ -58,13 +61,6 @@ static USER_QUERY: LazyLock<Regex> =
 static REMINDER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)<system-reminder\b[^>]*>.*?</system-reminder\s*>").expect("valid pattern")
 });
-/// Claude Code's background-task notifications and the desktop app's session and CI events.
-static HOST_EVENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^<(task-notification|side-sessions-event|ci-monitor-event)\b")
-        .expect("valid pattern")
-});
-/// How far into a prompt another Claude Code session's message may start, after its one-line preamble.
-const PEER_MESSAGE_WITHIN: usize = 200;
 static PRINTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(clap::Args, Debug, Clone)]
@@ -186,7 +182,9 @@ async fn recall(
         .get("hook_event_name")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !matches!(name, "SessionStart" | "UserPromptSubmit") || codex_app_request(args, fields) {
+    if !matches!(name, "SessionStart" | "UserPromptSubmit")
+        || codex_app_request(&args.platform, fields)
+    {
         return Ok((json!({}), None));
     }
     let daemon = Daemon::new(&args.url, timeout).map_err(|e| e.kind())?;
@@ -201,22 +199,6 @@ async fn recall(
     };
     let output = json!({"hookSpecificOutput": {"hookEventName": name, "additionalContext": text}});
     Ok((output, record))
-}
-
-/// The Codex app runs its own requests (thread titles, suggested messages, reviews) in ephemeral threads, whose
-/// events carry `transcript_path: null`; a thread a person works in has a transcript.
-fn codex_app_request(args: &RecallArgs, fields: &Map<String, Value>) -> bool {
-    args.platform == "codex" && fields.get("transcript_path") == Some(&Value::Null)
-}
-
-/// A prompt the host wrote as an event: a background task's notification, another session's message, an app event.
-fn host_event(query: &str) -> bool {
-    HOST_EVENT.is_match(query)
-        || query
-            .char_indices()
-            .nth(PEER_MESSAGE_WITHIN)
-            .map_or(query, |(at, _)| &query[..at])
-            .contains("<agent-message")
 }
 
 fn session_id(fields: &Map<String, Value>) -> Option<String> {

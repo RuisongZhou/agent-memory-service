@@ -1,7 +1,9 @@
 //! Local dialogue outbox. Hooks only capture into it; an uploader submits jobs in order and
 //! polls their receipts. Capture uses documented Codex notify / Claude Code hook fields, never private
 //! transcript formats; `agent-memoryd import apply` queues past session turns read from those under the
-//! same turn keys (`enqueue_import`). The SQLite schema is the one the Python collector of earlier installers wrote.
+//! same turn keys (`enqueue_import`). Like the import, capture queues only turns a person asked: it ignores the
+//! Codex app's own threads, and keeps a prompt Claude Code wrote as an event without its text, so that its Stop
+//! queues nothing. The SQLite schema is the one the Python collector of earlier installers wrote.
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Map, Value};
 use std::fs::File;
@@ -11,7 +13,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use super::project::SessionProject;
-use super::{expand, invalid, now, private_file, CallError, Daemon, Error};
+use super::recall::query_text;
+use super::{
+    codex_app_request, expand, host_event, invalid, now, private_file, CallError, Daemon, Error,
+};
 
 /// Default outbox, relative to the home directory.
 pub const DEFAULT_OUTBOX: &str = ".local/share/agent-memory-service/harness-outbox.sqlite3";
@@ -307,7 +312,8 @@ impl Outbox {
             .get("hook_event_name")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if !HOOK_EVENTS.contains(&name) {
+        // None of the Codex app's own threads is captured, at any event.
+        if !HOOK_EVENTS.contains(&name) || codex_app_request(platform, fields) {
             return Ok(());
         }
         let session = required(event, "session_id")?;
@@ -364,6 +370,13 @@ impl Outbox {
                     forget(&tx)?;
                 } else {
                     let prompt = required(event, "prompt")?;
+                    // A prompt the host wrote as an event is stored without its text: like any prompt it ends the
+                    // open turn, and its Stop queues nothing.
+                    let prompt = if host_event(&query_text(prompt)) {
+                        ""
+                    } else {
+                        prompt
+                    };
                     if pending.as_ref().is_none_or(|p| p.0 != native_id) {
                         // Replacing an unmatched prompt discards an interrupted/incomplete turn.
                         tx.execute(
@@ -427,6 +440,10 @@ impl Outbox {
                         "Stop has no matching UserPromptSubmit; start a new turn after installing hooks",
                     ));
                 };
+                if user.is_empty() {
+                    forget(&tx)?; // the reply to a host's event
+                    return Ok(tx.commit()?);
+                }
                 let assistant = required(event, "last_assistant_message")?;
                 let body = turn_body(
                     project,
@@ -906,11 +923,29 @@ mod tests {
             "p2",
             json!({"last_assistant_message": "final reply"}),
         ));
+        // Prompts Claude Code writes as events queue nothing, and their Stop is no error; a prompt that only
+        // mentions a wrapper is a person's.
+        for (turn, prompt) in [
+            ("p3", "<system-reminder>host text</system-reminder>\n<task-notification>\n<status>completed</status>\n</task-notification>"),
+            ("p4", "Another Claude session sent a message: <agent-message from=\"s9\">Done.</agent-message>"),
+            ("p5", "Why did <task-notification> fail?"),
+        ] {
+            capture(hook("UserPromptSubmit", turn, json!({"prompt": prompt})));
+            capture(hook(
+                "Stop",
+                turn,
+                json!({"last_assistant_message": "noted"}),
+            ));
+        }
         capture(hook("SessionEnd", "p2", json!({})));
         let jobs = bodies(&o);
         assert_eq!(contents(&jobs[0]), ["completed prompt", "final reply"]);
-        assert_eq!(jobs[1]["sessionEnded"], true);
-        assert_eq!(jobs.len(), 2);
+        assert_eq!(
+            contents(&jobs[1]),
+            ["Why did <task-notification> fail?", "noted"]
+        );
+        assert_eq!(jobs[2]["sessionEnded"], true);
+        assert_eq!(jobs.len(), 3);
         assert_eq!(
             jobs[0]["scope"],
             json!({"project": "project", "session": "s1"})
@@ -930,12 +965,12 @@ mod tests {
             o.capture_hook(&e, &global, "claude-code", None).unwrap();
         }
         let jobs = bodies(&o);
-        assert_eq!(jobs.len(), 4);
+        assert_eq!(jobs.len(), 5);
         let scope = json!({"kind": "global", "session": "s1"});
-        assert_eq!((&jobs[2]["scope"], &jobs[3]["scope"]), (&scope, &scope));
-        assert_eq!(jobs[2]["turnId"], "/s1/g1");
-        assert_eq!(contents(&jobs[2]), ["global prompt", "global reply"]);
-        assert_eq!(jobs[3]["sessionEnded"], true);
+        assert_eq!((&jobs[3]["scope"], &jobs[4]["scope"]), (&scope, &scope));
+        assert_eq!(jobs[3]["turnId"], "/s1/g1");
+        assert_eq!(contents(&jobs[3]), ["global prompt", "global reply"]);
+        assert_eq!(jobs[4]["sessionEnded"], true);
         let open = hook("UserPromptSubmit", "g2", json!({"prompt": "open"}));
         o.capture_hook(&open, &global, "claude-code", None).unwrap();
         let stop = hook("Stop", "g2", json!({"last_assistant_message": "reply"}));
@@ -1009,8 +1044,8 @@ mod tests {
         let mut o = outbox(&dir);
         let event = |name: &str, turn: &str, extra: Value| {
             let mut e = json!({"hook_event_name": name, "session_id": "s1", "turn_id": turn,
-                               "transcript_path": null, "cwd": "/w", "model": "m",
-                               "permission_mode": "default"});
+                               "transcript_path": "/home/test/.codex/sessions/rollout.jsonl", "cwd": "/w",
+                               "model": "m", "permission_mode": "default"});
             e.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
@@ -1046,6 +1081,29 @@ mod tests {
         assert_eq!(jobs[0]["turnId"], "project/s1/t2");
         assert_eq!(jobs[1]["sessionEnded"], true);
         assert_eq!(jobs.len(), 2);
+        // The Codex app's own requests run in threads without a transcript. None of their events is captured,
+        // so here, under a session with a queued turn, none opens a turn, pairs or closes the session again.
+        for mut e in [
+            event(
+                "UserPromptSubmit",
+                "a1",
+                json!({"prompt": "Generate a title"}),
+            ),
+            event(
+                "Stop",
+                "a1",
+                json!({"stop_hook_active": false, "last_assistant_message": "A title"}),
+            ),
+            event("SessionEnd", "a1", json!({"reason": "other"})),
+        ] {
+            e["transcript_path"] = Value::Null;
+            o.capture_hook(&e, &project(), "codex", None).unwrap();
+        }
+        assert_eq!(bodies(&o), jobs);
+        let open: i64 =
+            o.db.query_row("SELECT count(*) FROM prompts", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(open, 0);
         // A Stop without the field at all is still a broken event.
         let missing = o.capture_hook(
             &event("Stop", "t3", json!({"stop_hook_active": false})),
@@ -1057,13 +1115,17 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_without_text_never_pairs_its_reply_with_an_older_prompt() {
+    fn a_prompt_without_a_persons_text_never_pairs_its_reply_with_an_older_prompt() {
         let dir = tempfile::tempdir().unwrap();
         let mut o = outbox(&dir);
         for e in [
             json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "a turn that failed without Stop"}),
             json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "  "}),
             json!({"hook_event_name": "Stop", "session_id": "s1", "last_assistant_message": "reply to the image"}),
+            // A prompt the host wrote ends the open turn too, and queues nothing itself.
+            json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "another turn that failed"}),
+            json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "<task-notification>done</task-notification>"}),
+            json!({"hook_event_name": "Stop", "session_id": "s1", "last_assistant_message": "reply to the notification"}),
         ] {
             o.capture_hook(&e, &project(), "workbuddy", Some(TurnIdField::None))
                 .unwrap();

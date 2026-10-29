@@ -281,15 +281,21 @@ def changes(args, ctx, uninstall):
             core.json_change(ctx.hooks_json, hooks, 0o600)]
 
 
+def transcript(ctx):
+    """The transcript a thread a person works in has; the hooks skip the app's own threads, which have none."""
+    return str(ctx.host_home / 'sessions' / 'rollout-installer.jsonl')
+
+
 def capture_events(ctx, outbox):
-    """Every field Codex 0.163's user-prompt-submit, stop and session-end input schemas require.
+    """Every field Codex 0.163's user-prompt-submit, stop and session-end input schemas require, as a thread a person
+    works in sends them.
 
     The first turn ends without a final message (a null `last_assistant_message`) and queues
     nothing; the second is queued, then closed by SessionEnd.
     """
     command = core.hook_command(ctx, outbox)
-    base = {'session_id': checks.SESSION, 'transcript_path': None, 'cwd': ctx.check_project, 'model': 'installer',
-            'permission_mode': 'default'}
+    base = {'session_id': checks.SESSION, 'transcript_path': transcript(ctx), 'cwd': ctx.check_project,
+            'model': 'installer', 'permission_mode': 'default'}
     prompt = lambda turn, text: dict(base, hook_event_name='UserPromptSubmit', turn_id=turn, prompt=text)
     stop = lambda turn, reply: dict(base, hook_event_name='Stop', turn_id=turn, stop_hook_active=False,
                                     last_assistant_message=reply)
@@ -301,10 +307,9 @@ def capture_events(ctx, outbox):
 
 def recall_event(ctx, name, session, prompt=None):
     """Every field Codex 0.163's session-start / user-prompt-submit input schemas require, as a thread a person works
-    in sends them: with a transcript (recall gives nothing to the app's own threads, which have none)."""
-    base = {'hook_event_name': name, 'session_id': session,
-            'transcript_path': str(ctx.host_home / 'sessions' / 'rollout-installer.jsonl'), 'cwd': ctx.check_project,
-            'model': 'installer', 'permission_mode': 'default'}
+    in sends them."""
+    base = {'hook_event_name': name, 'session_id': session, 'transcript_path': transcript(ctx),
+            'cwd': ctx.check_project, 'model': 'installer', 'permission_mode': 'default'}
     if name == 'SessionStart':
         return dict(base, source='startup')
     return dict(base, turn_id='installer-recall', prompt=prompt)

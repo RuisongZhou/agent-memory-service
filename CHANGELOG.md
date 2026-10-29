@@ -53,11 +53,14 @@ Each entry says what to do if your checkout or data predates the change.
   embedding server) now fails to start: set `"mem0Rerank": false`, or start the reranker.
   Each search now makes one rerank call (about 0.2 s hosted) and no entity-embedding call. The entity projection drops
   its TOPIC rows and rebuilds once, when the next turn is formed. See [selective recall](docs/design/selective-memory.md).
-- **Recall skips prompts no person typed.** The recall hooks inject nothing, and search nothing, for prompts a host
-  writes itself: the Codex app's own requests (thread titles, suggested messages, reviews), which run in threads
-  without a transcript, and Claude Code's background-task notifications, other sessions' messages and app events. The search query also drops `<system-reminder>` blocks. Nothing to rerun: `install.sh service --apply`
-  replaces the binary the hooks run. See
-  [selective recall](docs/design/selective-memory.md#2-read-path-selective-recall).
+- **Recall and capture skip prompts no person typed.** The recall hooks inject nothing, and search nothing, for
+  prompts a host writes itself: the Codex app's own requests (thread titles, suggested messages, reviews), which run
+  in threads without a transcript, and Claude Code's background-task notifications, other sessions' messages and app
+  events. The collector queues no turn for them, so formation no longer extracts facts from them. The search query
+  also drops `<system-reminder>` blocks. Nothing to rerun: `install.sh service --apply` replaces the binary the hooks
+  run. Turns captured from such prompts earlier stay formed: delete their facts in the [web UI](README.md#web-ui) if
+  you do not want them. See [selective recall](docs/design/selective-memory.md#2-read-path-selective-recall) and
+  [Codex hooks](docs/mcp-harness.md#codex-hooks).
 - **Formation can batch a session's turns.** `mem0SegmentTurns` (default 1, which keeps per-turn formation) lets one
   extraction call take several turns: it cuts extraction calls, but loses facts about the assistant side of a
   conversation (see [selective recall](docs/design/selective-memory.md#5-results)). Formation also shows the model the
