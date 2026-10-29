@@ -698,7 +698,8 @@ async fn selftest() {
         .unwrap()
         .to_string();
     assert_eq!(memory(&t, &p).await.scope, MemScope::project(repo));
-    // A request queued before scope kinds existed has none; it named a project and forms project facts.
+    // A request queued before scope kinds existed has none; it named a project and forms project facts. Alone in its
+    // session's segment it waits for more turns, so a drain forms it.
     let queued = ingest::add_memories(
         &stubbed,
         &t,
@@ -722,7 +723,7 @@ async fn selftest() {
     tx.clear_fields(schema::REQUESTS, legacy_id, &["scopeKind"])
         .unwrap();
     t.store.commit(tx).await.unwrap();
-    mem0_formation::process_jobs(&stubbed, &t).await.unwrap();
+    mem0_formation::wait_idle(&stubbed, &t).await.unwrap();
     let legacy = ingest::get_task(
         &stubbed,
         &t,
@@ -773,22 +774,16 @@ async fn selftest() {
     assert_eq!(history("").await.unwrap().len(), 2);
     assert!(history(repo).await.unwrap().is_empty());
 
-    // Segments: with three turns to a segment, a session's queued turns form in one extraction call whose facts
-    // name every request and turn; a turn short of a segment waits for a drain.
-    let batched = stub_engine(
-        ServiceConfig {
-            mem0_segment_turns: 3,
-            ..Default::default()
-        },
-        &generation_stub().await,
-    );
+    // Segments: by default four queued turns of a session form in one extraction call whose facts name every request
+    // and turn; a turn short of a segment waits for a drain.
+    let batched = stub_engine(ServiceConfig::default(), &generation_stub().await);
     let segment = ReqScope {
         project: Some("/segments".into()),
         session: Some("ss".into()),
         ..Default::default()
     };
     let mut segment_requests = Vec::new();
-    for turn in ["s1", "s2", "s3", "s4"] {
+    for turn in ["s1", "s2", "s3", "s4", "s5"] {
         let queued = ingest::add_memories(
             &batched,
             &t,
@@ -822,19 +817,19 @@ async fn selftest() {
     let first = task(&segment_requests[0]).await.unwrap();
     assert_eq!(first["status"], "completed", "{first}");
     assert_eq!(
-        task(&segment_requests[2]).await.unwrap()["memoryIds"],
+        task(&segment_requests[3]).await.unwrap()["memoryIds"],
         first["memoryIds"]
     );
     assert_eq!(
-        task(&segment_requests[3]).await.unwrap()["status"],
+        task(&segment_requests[4]).await.unwrap()["status"],
         "queued"
     );
     assert_eq!(batched.llm.usage_snapshot()["calls"], 1);
     let facts: Vec<String> = serde_json::from_value(first["memoryIds"].clone()).unwrap();
-    assert_eq!(facts.len(), 3);
+    assert_eq!(facts.len(), 4);
     assert_eq!(
         memory(&t, &facts[0]).await.source.turn_ids,
-        ["s1", "s2", "s3"]
+        ["s1", "s2", "s3", "s4"]
     );
     let sources = t
         .store
@@ -842,10 +837,10 @@ async fn selftest() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(sources["inputRequestIds"], json!(segment_requests[..3]));
+    assert_eq!(sources["inputRequestIds"], json!(segment_requests[..4]));
     mem0_formation::wait_idle(&batched, &t).await.unwrap();
     assert_eq!(
-        task(&segment_requests[3]).await.unwrap()["status"],
+        task(&segment_requests[4]).await.unwrap()["status"],
         "completed"
     );
     assert_eq!(batched.llm.usage_snapshot()["calls"], 2);
@@ -866,23 +861,25 @@ async fn selftest() {
         .collect();
     let together = prompts
         .iter()
-        .find(|prompt| prompt.contains("## New Messages\n[Turn 1 of 3]"))
+        .find(|prompt| prompt.contains("## New Messages\n[Turn 1 of 4]"))
         .unwrap();
     assert!(
         together.contains(
-            "[Turn 1 of 3]\nuser: User keeps note s1\n[Turn 2 of 3]\nuser: User keeps note s2\n\
-             [Turn 3 of 3]\nuser: User keeps note s3\n\n## Observation Date"
-        ) && together.contains("## Turns\nNew Messages hold 3 turns"),
+            "[Turn 1 of 4]\nuser: User keeps note s1\n[Turn 2 of 4]\nuser: User keeps note s2\n\
+             [Turn 3 of 4]\nuser: User keeps note s3\n[Turn 4 of 4]\nuser: User keeps note s4\n\n\
+             ## Observation Date"
+        ) && together.contains("## Turns\nNew Messages hold 4 turns"),
         "{together}"
     );
     let last = prompts
         .iter()
-        .find(|prompt| prompt.contains("## New Messages\nuser: User keeps note s4\n\n"))
+        .find(|prompt| prompt.contains("## New Messages\nuser: User keeps note s5\n\n"))
         .unwrap();
     assert!(!last.contains("## Turns"), "{last}");
     assert!(
         last.contains(
-            "## Recently Extracted Memories\n[\"User keeps note s1\",\"User keeps note s2\",\"User keeps note s3\"]"
+            "## Recently Extracted Memories\n[\"User keeps note s1\",\"User keeps note s2\",\"User keeps note s3\",\
+             \"User keeps note s4\"]"
         ),
         "{last}"
     );
@@ -1076,8 +1073,8 @@ async fn selftest() {
             (json!("p2"), json!(repo))
         ]
     );
-    // Seven turns of these sessions, four of the segment session and three of the selective-recall one.
-    assert_eq!(turns(&listed(&everywhere).await.unwrap()).len(), 14);
+    // Seven turns of these sessions, five of the segment session and three of the selective-recall one.
+    assert_eq!(turns(&listed(&everywhere).await.unwrap()).len(), 15);
     // The recall and request logs select the global session by the project "".
     let filed = requests(json!({"kind": "mem0", "project": ""}))
         .await

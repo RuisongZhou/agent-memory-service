@@ -15,7 +15,7 @@ Four deliberate departures from the SDK keep recall selective and formation lean
 
 - **Selective recall.** With a reranker loaded (the default), search returns only memories whose reranker score
   clears the reranker's floor, and nothing when none does. The SDK always returns its topK.
-- **Segments.** `mem0SegmentTurns` lets one extraction call take several queued turns of a session.
+- **Segments.** One extraction call takes up to `mem0SegmentTurns` (4) queued turns of a session, marked turn by turn.
 - **Recently Extracted Memories.** The prompt section the SDK leaves empty holds the session's latest facts.
 - **Named entities only.** The entity projection drops TOPIC word runs.
 
@@ -49,7 +49,7 @@ strategy.
 2. Under the ingest lock, formation checks the platform/turn idempotency key and commits the complete
    input, sequence number and `queued` request. Asynchronous acknowledgement confirms this commit.
 3. One ordered worker takes the formation lock and forms **segments**: a session's queued requests, in input order,
-   up to `mem0SegmentTurns` of them (default 1, every turn alone) or `mem0SegmentTokens` of messages. A segment
+   up to `mem0SegmentTurns` of them (default 4; 1 forms every turn alone) or `mem0SegmentTokens` of messages. A segment
    short of that waits until the session's end marker arrives, its oldest turn has waited `mem0SegmentWaitSecs`, a
    caller waits for one of its requests (`sync`, the pure rule in [segments](../crates/memory-rules/src/segments.rs))
    or `wait_idle` drains the queue. Raw `infer:false` text never waits. A segment that may not form yet, or that
@@ -59,7 +59,9 @@ strategy.
 4. The prompt combines the vendored additive template, historical messages, the facts the session's latest
    formed requests produced (up to 20, as Recently Extracted Memories), existing facts with
    temporary IDs, full new messages, observation/current dates and optional custom instructions.
-   The `zh` mode adds an instruction to match the new messages' language and script.
+   The `zh` mode adds an instruction to match the new messages' language and script. A segment of several turns
+   marks each turn in the new messages and adds a Turns note: extract from each turn what it would give alone, and
+   count what a named speaker says about their own life in either role. A single turn's prompt is unchanged.
 5. Generation returns a `memory` array. Strict local validation checks sequential string IDs, nonempty
    text, attribution and links to supplied existing IDs. Malformed output receives bounded repair;
    raw provider responses are persisted before parsing. The service assigns database IDs and scope: the request's project, or global for a `kind:"global"` request.

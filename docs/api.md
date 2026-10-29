@@ -393,7 +393,7 @@ read from JSON.
 | `mem0Rerank` | true | Connect the reranker and select search results with it (selective recall) |
 | `mem0RecallFloor` | per reranker | Lowest reranker score a returned memory has; unset takes the built-in floor of `bge-reranker-v2-m3` (0.30, any quantization) or `qwen3.7-text-rerank` (0.72). Another reranker needs it set: startup fails otherwise. Range 0–1, exclusive |
 | `mem0RecallMargin` | 3.0 | Largest distance, in logits, of a returned memory's reranker score from the best one's |
-| `mem0SegmentTurns` | 1 | Queued turns of one conversation formed by one extraction call, 1–32; 1 forms every turn alone |
+| `mem0SegmentTurns` | 4 | Queued turns of one conversation formed by one extraction call, 1–32; 1 forms every turn alone |
 | `mem0SegmentTokens` | 6000 | Estimated message tokens that fill a segment before `mem0SegmentTurns` |
 | `mem0SegmentWaitSecs` | 600 | Seconds a segment's oldest turn waits for more before it is formed; a session's end marker, a caller waiting for the result (`sync`) or `wait_idle` forms it at once |
 | `mem0MaxTokens` | 2000 | Formation output-token limit |

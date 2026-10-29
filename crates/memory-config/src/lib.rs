@@ -258,7 +258,7 @@ fn default_mem0_recall_margin() -> f32 {
 }
 
 fn default_mem0_segment_turns() -> usize {
-    1
+    4
 }
 
 fn default_mem0_segment_tokens() -> usize {

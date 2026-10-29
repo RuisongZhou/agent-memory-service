@@ -60,13 +60,20 @@ still gets every section.
 
 ## 3. Write path: lean formation
 
-- **Segments.** One extraction call can take several queued turns of a session ([segments.rs](../../crates/memory-rules/src/segments.rs)):
-  up to `mem0SegmentTurns`, or fewer once their messages reach `mem0SegmentTokens`. A segment short of that is formed
+- **Segments.** One extraction call takes several queued turns of a session
+  ([segments.rs](../../crates/memory-rules/src/segments.rs)): up to `mem0SegmentTurns` (4 by default), or fewer once
+  their messages reach `mem0SegmentTokens`. A segment short of that is formed
   when the session's end marker arrives, when its oldest turn has waited `mem0SegmentWaitSecs`, when a caller waits
   for one of its requests (`sync`), or by `wait_idle`. A segment that cannot form yet, or failed, holds back its
   session's later segments, so a turn is never formed with context missing an earlier one. Facts name every request
   and turn of their segment. This is LightMem's and LycheeMemory's segment-level extraction and LangMem's debounce,
   without their compression models.
+- **Turns in one prompt.** A segment of several turns lists its new messages under `[Turn i of n]` lines and adds a
+  Turns note at the end of the prompt: extract from each turn what it would give alone, read every message of every
+  turn, and count what a named speaker says about their own life in either role (the vendored prompt's multi-speaker
+  rule, restated where a long input dilutes it). Given four turns as one run of messages, the model had passed over
+  most of what the assistant-role speaker said about themselves; with the markers and the note, 4-turn segments
+  covered as many LoCoMo questions as per-turn formation (§5). A single turn's prompt is unchanged byte for byte.
 - **Recently Extracted Memories.** The vendored prompt asks for the facts already extracted in this session as its
   primary deduplication reference; the SDK sends an empty list. Formation now sends the current facts of the
   session's latest formed requests (up to 20).
@@ -86,7 +93,7 @@ inputs' provenance.
 | `mem0Rerank` | `true` (was `false`) | Loads the reranker; selective recall depends on it |
 | `mem0RecallFloor` | per reranker | Required for rerankers without a built-in floor |
 | `mem0RecallMargin` | 3.0 | Logits below the best a returned memory may be |
-| `mem0SegmentTurns` | 1 | Every turn alone; 4 or 8 save formation cost at a coverage cost (§5) |
+| `mem0SegmentTurns` | 4 (was 1) | Turns one extraction call forms; 1 forms every turn alone (§5) |
 | `mem0SegmentTokens` | 6000 | |
 | `mem0SegmentWaitSecs` | 600 | |
 
@@ -106,10 +113,16 @@ LoCoMo, five conversations, calibration on two and report on three, labels from 
   answers, against five memories each before, and missed 3 of 13 answerable ones (Chinese questions about English
   memories).
 - **Formation**: per-turn formation with Recently Extracted Memories cut memories with a near duplicate from 17.4% to
-  9.9% and entity rows by 97% with no coverage loss. Segments of 4 or 8 turns cut extraction calls by 72% or 83% but lost
-  facts about the conversation's second speaker (the "assistant" role): own-question coverage fell from 94.9% to
-  88.7% or 82.0%, and with 8 turns answer accuracy fell from 0.681 to 0.533. Segments therefore stay opt-in
-  (`mem0SegmentTurns` 1 by default), decided by a rule written down before the 4-turn results.
+  9.9% and entity rows by 97% with no coverage loss. Segments of 4 or 8 turns, given as one run of messages, cut
+  extraction calls by 72% or 83% but lost facts about the conversation's second speaker (the "assistant" role):
+  own-question coverage fell from 94.9% to 88.7% or 82.0%, and answer accuracy fell significantly. Most of the loss
+  came from the evaluation's custom instructions, whose rule "extract memories only from user messages" fits Mem0's
+  harness (it forms each LoCoMo conversation once per speaker) but not this one (once, the first speaker as user):
+  per-turn formation extracts the second speaker's facts anyway, four turns at once mostly do not. With turn
+  markers and the Turns note, 4-turn segments covered 96.2% of the report split's questions (per turn 94.9%) and
+  answered with J 0.707 (0.673, McNemar p = 0.085) at 29% of the extraction calls and 36% of the cost, so
+  `mem0SegmentTurns` now defaults to 4, by a rule written down before the measurement. Eight-turn segments were not
+  measured again.
 
 ## 6. Calibrating another reranker
 
