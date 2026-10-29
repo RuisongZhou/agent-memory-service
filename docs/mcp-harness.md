@@ -673,7 +673,8 @@ call. `connect` notes which provider the daemon at its URL uses.
 Hosts differ in when the hooks run. Codex runs them only after you trust them in `/hooks` (App:
 Settings → Hooks), and also in the threads it opens for its own requests (thread titles, suggested
 messages, reviews); those threads keep no transcript, their events carry
-`transcript_path: null`, and recall gives them nothing at either event. Claude Code runs the collector
+`transcript_path: null`, and recall gives them nothing at either event. So does a thread a client runs
+ephemeral for a person (`codex exec --ephemeral`, for one). Claude Code runs the collector
 and recall `UserPromptSubmit` hooks in parallel and adds every returned context. WorkBuddy sends `SessionStart` without `cwd`, so its start-of-session recall
 is global-only (the prompts, which carry `cwd`, bring the project in), and the record of what that start
 showed is kept apart from the prompts' (a global memory may be shown once more with the first prompt).
