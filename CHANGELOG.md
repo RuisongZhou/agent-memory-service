@@ -53,6 +53,11 @@ Each entry says what to do if your checkout or data predates the change.
   embedding server) now fails to start: set `"mem0Rerank": false`, or start the reranker.
   Each search now makes one rerank call (about 0.2 s hosted) and no entity-embedding call. The entity projection drops
   its TOPIC rows and rebuilds once, when the next turn is formed. See [selective recall](docs/design/selective-memory.md).
+- **Recall skips prompts no person typed.** The recall hooks inject nothing, and search nothing, for prompts a host
+  writes itself: the Codex app's own requests (thread titles, suggested messages, reviews), which run in threads
+  without a transcript, and Claude Code's background-task notifications, other sessions' messages and app events. The search query also drops `<system-reminder>` blocks. Nothing to rerun: `install.sh service --apply`
+  replaces the binary the hooks run. See
+  [selective recall](docs/design/selective-memory.md#2-read-path-selective-recall).
 - **Formation batches a session's turns.** `mem0SegmentTurns` now defaults to 4: one extraction call forms up to four
   queued turns of a session, and its prompt marks each turn and asks for what each would give alone. On LoCoMo this
   made 71% fewer extraction calls and covered as many questions as forming every turn alone (see

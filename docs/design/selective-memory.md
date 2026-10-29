@@ -58,6 +58,27 @@ with the entity boost, unchanged, and the daemon logs a warning at startup.
 Claude Code's auto memory (an index loaded at start, topics on demand). An agent that calls `get_context` itself
 still gets every section.
 
+**Prompts no person typed.** Hosts send their own prompts through UserPromptSubmit: the Codex app its thread
+titles, suggested next messages, ambient suggestions, safety reviews and memory agents; Claude Code its background-task
+notifications, other sessions' messages and desktop-app events. The hook recognizes them and neither searches nor
+records anything, so they also stop reaching the hosted embedding and rerank APIs. Claude Code's are recognized by
+their wrapper: `<task-notification>`, `<side-sessions-event>` or `<ci-monitor-event>` at the start, or
+`<agent-message` in the first 200 characters. The Codex app runs its titles, suggestions and reviews in ephemeral
+threads, whose events (SessionStart and UserPromptSubmit) carry `transcript_path: null`; a thread a person works in
+has a transcript (verified on Codex 0.165.0). Its memory agents' prompts left no transcript either, so they are
+presumably ephemeral too; that was not checked separately. On the coding-session prompts of the evaluation, this recognized all 30 such prompts, 16
+of which had been injected, and none of the 191 typed ones. The search query also drops `<system-reminder>` blocks, as
+the evaluation's queries did. Claude Code's `!` bash-mode input never reaches the hook.
+
+**No cheap gate for typed prompts.** Within one project the floor separates topic rather than need (the best score's
+AUROC for "needs a memory" is 0.58 there, 0.98 across conversations). On the 177 typed prompts that reach the hook,
+selective recall with the session record injects into 23 of the 80 that need no memory and makes a needed memory
+available for 40 of 97. Twenty-five gates on signals that cost no model call (the prompt's form, its position in the
+session, the memories the session was already shown, the shape of the score list) were replayed against a rule written
+before any was scored; none removed at least 5 points of false injection while losing at most 2.5 points of needed
+memories, so the floors stay as they are. The only gate that lost nothing, skipping short commands, removed 2 of the
+23.
+
 ## 3. Write path: lean formation
 
 - **Segments.** One extraction call takes several queued turns of a session
@@ -138,3 +159,5 @@ false-injection ceiling you accept, then check it on the report split and on you
 - Usage feedback: count whether an injected memory was used in the agent's next reply and fold it into SessionStart's
   index and consolidation's order (ACE's helpful/harmful counters, MemoryOS's heat).
 - Scheduled consolidation ("sleep time"), within the existing per-run limits, now that formation adds fewer facts.
+- Capture still queues the Codex app's ephemeral requests as turns, and formation extracts facts from them; the same
+  `transcript_path: null` check would keep them out of the store.

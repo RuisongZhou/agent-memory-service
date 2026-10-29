@@ -644,7 +644,7 @@ Each hook asks the daemon and prints what to inject as `hookSpecificOutput.addit
 | Event | Request | Injected |
 |---|---|---|
 | `SessionStart` (any source: startup, resume, clear, compact, fork) | `get_context` for the project (`scope.kind: "global"` for a session without one) and native session, `tokenBudget` 1000, `lean: true` | The explicit instructions and a one-line index of the facts the session can recall, no facts; also starts the session's record of shown memories over |
-| `UserPromptSubmit` | `search_memories` with the prompt (at most 2000 characters; the `<user_query>` part when the host wraps it), the project, `topK` 15 (three times `--top-k`, from 15 to 50) and `tokenBudget` 6000 (`--search-budget` for each). A daemon whose `maxTopK` is lower refuses that; recall then asks again with `--top-k` and `--search-budget` | Up to `--top-k` (5) results this session has not been shown yet, in rank order within `--search-budget` (400) tokens, one line each with its date, platform and ID. With a reranker (the default), the daemon returns only memories that clear its floor ([selective recall](design/selective-memory.md)), so a prompt no memory is relevant to gets nothing. A result too long for the tokens left becomes an excerpt marked `excerpt, full text via get_memory` and ends the list; an empty prompt searches nothing |
+| `UserPromptSubmit` | `search_memories` with the prompt (at most 2000 characters; the `<user_query>` part when the host wraps it), the project, `topK` 15 (three times `--top-k`, from 15 to 50) and `tokenBudget` 6000 (`--search-budget` for each). A daemon whose `maxTopK` is lower refuses that; recall then asks again with `--top-k` and `--search-budget` | Up to `--top-k` (5) results this session has not been shown yet, in rank order within `--search-budget` (400) tokens, one line each with its date, platform and ID. With a reranker (the default), the daemon returns only memories that clear its floor ([selective recall](design/selective-memory.md)), so a prompt no memory is relevant to gets nothing. A result too long for the tokens left becomes an excerpt marked `excerpt, full text via get_memory` and ends the list. An empty prompt searches nothing, and so does a prompt the host wrote itself: a Claude Code task notification, another session's message or an app event. `<system-reminder>` blocks are left out of the query |
 
 The injected block is framed for the agent. Only the explicit-instructions section of `get_context`
 holds behavior requirements, subject to current instructions. All other sections and every search result
@@ -671,8 +671,11 @@ and to the rerank API together with up to 20 candidate memories (unless `mem0Rer
 call. `connect` notes which provider the daemon at its URL uses.
 
 Hosts differ in when the hooks run. Codex runs them only after you trust them in `/hooks` (App:
-Settings → Hooks). Claude Code runs the collector and recall `UserPromptSubmit` hooks in parallel and
-adds every returned context. WorkBuddy sends `SessionStart` without `cwd`, so its start-of-session recall
+Settings → Hooks), and also in the threads it opens for its own requests (thread titles, suggested
+messages, reviews); those threads keep no transcript, their events carry
+`transcript_path: null`, and recall gives them nothing at either event. So does a thread a client runs
+ephemeral for a person (`codex exec --ephemeral`, for one). Claude Code runs the collector
+and recall `UserPromptSubmit` hooks in parallel and adds every returned context. WorkBuddy sends `SessionStart` without `cwd`, so its start-of-session recall
 is global-only (the prompts, which carry `cwd`, bring the project in), and the record of what that start
 showed is kept apart from the prompts' (a global memory may be shown once more with the first prompt).
 Its order relative to the first prompt is not guaranteed, which does no harm: a late `SessionStart` starts
