@@ -1,7 +1,7 @@
 # Selective recall and lean formation
 
-> Status: implemented on branch `claude/selective-memory`. Evidence and the survey behind it, in Chinese:
-> [evaluation report](../../eval/docs/benchmarks/selective-memory.md). Date: 2026-10-29.
+> Status: implemented; the default since 2026-10-29, and branch `mem0` keeps the code from before it. Evidence and
+> the survey behind it, in Chinese: [evaluation report](../../eval/docs/benchmarks/selective-memory.md).
 
 ## 1. Problem
 
@@ -38,8 +38,9 @@ The pure rule is [selection.rs](../../crates/memory-rules/src/selection.rs).
 list (Gap@k, NQC; *Magnitude Mirage*, EMNLP 2026). They predict whether retrieval *found* an existing relevant
 document. Our question is whether *any* relevant memory exists, and on it the reranker's best score separates
 answerable from unanswerable queries far better (AUROC 0.97–0.98 over the LoCoMo calibration and report queries,
-against 0.93 for the best cosine, 0.85 for Gap@25 and 0.49 for a corpus-standardized cosine). Largest-gap truncation (Adaptive-k) cut recall too much at 20 candidates, and read-time
-near-duplicate suppression (MMR) cost recall for three tokens a query; neither is used.
+against 0.93 for the best cosine, 0.85 for Gap@25 and 0.49 for a corpus-standardized cosine). Largest-gap truncation
+(Adaptive-k) cut recall too much at 20 candidates, and read-time near-duplicate suppression (MMR) cost recall for three
+tokens a query; neither is used.
 
 **Floors are per reranker.** bge-reranker-v2-m3 returns a sigmoid of a logit; the hosted Qwen reranker a yes/no
 softmax. Both lie in 0..1 but not on one scale: a floor of 0.3 injects for 1.8% of unrelated questions with bge and
@@ -66,9 +67,10 @@ their wrapper: `<task-notification>`, `<side-sessions-event>` or `<ci-monitor-ev
 `<agent-message` in the first 200 characters. The Codex app runs its titles, suggestions and reviews in ephemeral
 threads, whose events (SessionStart and UserPromptSubmit) carry `transcript_path: null`; a thread a person works in
 has a transcript (verified on Codex 0.165.0). Its memory agents' prompts left no transcript either, so they are
-presumably ephemeral too; that was not checked separately. On the coding-session prompts of the evaluation, this recognized all 30 such prompts, 16
-of which had been injected, and none of the 191 typed ones. The search query also drops `<system-reminder>` blocks, as
-the evaluation's queries did. Claude Code's `!` bash-mode input never reaches the hook.
+presumably ephemeral too; that was not checked separately. On the coding-session prompts of the evaluation, this
+recognized all 30 such prompts, 16 of which had been injected, and none of the 191 typed ones. The search query also
+drops `<system-reminder>` blocks, as the evaluation's queries did. Claude Code's `!` bash-mode input never reaches the
+hook.
 
 **No cheap gate for typed prompts.** Within one project the floor separates topic rather than need (the best score's
 AUROC for "needs a memory" is 0.58 there, 0.98 across conversations). On the 177 typed prompts that reach the hook,
@@ -158,8 +160,14 @@ false-injection ceiling you accept, then check it on the report split and on you
 
 ## 7. Next
 
-- Topic-boundary segmentation (embedding similarity between a turn and its segment), and admission rules for coding
-  sessions (no plans, tool output or rejected options as facts), each needing coding transcripts to evaluate.
+- Segments on coding sessions: 4-turn segments were measured on LoCoMo only, where both speakers are people. Then
+  topic-boundary segmentation (embedding similarity between a turn and its segment).
+- Admission rules for coding sessions: an instruction to keep only what later sessions need (no plans, tool output or
+  rejected options) cut facts by a third on 50 turns and raised the share with lasting value from 45% to 78%, but lost
+  13% of the lasting facts beyond run-to-run noise (report §9). It could ship as an optional `mem0CustomInstructions`
+  example.
+- Facts in the conversation's language: 80% of the facts formed from local sessions are English while 84% of their
+  prompts are Chinese (report §9); with bge-reranker-v2-m3 that costs Chinese prompts recall.
 - Usage feedback: count whether an injected memory was used in the agent's next reply and fold it into SessionStart's
   index and consolidation's order (ACE's helpful/harmful counters, MemoryOS's heat).
 - Scheduled consolidation ("sleep time"), within the existing per-run limits, now that formation adds fewer facts.

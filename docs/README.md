@@ -44,7 +44,7 @@ There are three pages, by where the problem is:
 | Hook | A command a client runs on a conversation event. `agent-memoryd hook capture` saves turns and `agent-memoryd hook recall` injects memories. |
 | Turn | One user prompt and the assistant's final reply, the unit that capture saves. |
 | Outbox | The local SQLite queue of captured turns until the uploader, the daemon started with `--outbox`, has submitted them. |
-| Capture, recall | Capture saves completed turns automatically. Recall injects relevant memories into the conversation at session start and before each prompt. |
+| Capture, recall | Capture saves completed turns automatically. Recall loads your instructions and a one-line index of the memories at session start, and before each prompt adds the memories the reranker judges relevant, or none. |
 | Memory formation | The daemon's processing of submitted text: it keeps the original input and has the generation model extract facts. |
 | Fact, instruction | A fact is historical reference material and may be outdated. An instruction is an explicitly saved behavior requirement (`memoryType: "instruction"`), returned separately by `get_context` and subject to current instructions. |
 | Project | The folder a session works in: inside a git repository, the repository's root. Its absolute path is the project ID. See [project routing](mcp-harness.md#project-routing). |
@@ -56,12 +56,13 @@ There are three pages, by where the problem is:
 
 ## Languages
 
-The README has a [Chinese version](../README.zh-CN.md). The web UI's text and the design notes in `design/` are Chinese;
-everything else is English.
+The README has a [Chinese version](../README.zh-CN.md). The web UI's text, the design notes in `design/` other than
+[selective-memory.md](design/selective-memory.md), and that note's
+[evaluation report](../eval/docs/benchmarks/selective-memory.md) are Chinese; everything else is English.
 
 ## Design notes
 
-`design/` holds the Chinese notes behind features that are implemented: the research, the choices and their reasons.
+`design/` holds the notes behind features that are implemented: the research, the choices and their reasons.
 Each opens with a status line. Code comments cite their sections, so their file names and section numbers stay stable.
 The guides above, and the code, describe the behavior.
 
@@ -72,3 +73,4 @@ The guides above, and the code, describe the behavior.
 | [project-routing.md](design/project-routing.md) | Deriving a session's project from its folder |
 | [platform-connect.md](design/platform-connect.md) | Connecting platforms from the web UI |
 | [web-ui.md](design/web-ui.md) | The web UI: features, back-end interfaces, security premise, hosting |
+| [selective-memory.md](design/selective-memory.md) | Selective recall, batched formation and skipping prompts no person typed (in English) |

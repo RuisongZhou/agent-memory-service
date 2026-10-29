@@ -52,7 +52,8 @@ Each entry says what to do if your checkout or data predates the change.
   A deployment without a reranker (a hosted provider with no `/reranks` route, or a self-hosted setup running only the
   embedding server) now fails to start: set `"mem0Rerank": false`, or start the reranker.
   Each search now makes one rerank call (about 0.2 s hosted) and no entity-embedding call. The entity projection drops
-  its TOPIC rows and rebuilds once, when the next turn is formed. See [selective recall](docs/design/selective-memory.md).
+  its TOPIC rows and rebuilds once, the first time it is used after the upgrade. See
+  [selective recall](docs/design/selective-memory.md).
 - **Recall and capture skip prompts no person typed.** The recall hooks inject nothing, and search nothing, for
   prompts a host writes itself: the Codex app's own requests (thread titles, suggested messages, reviews), which run
   in threads without a transcript, and Claude Code's background-task notifications, other sessions' messages and app

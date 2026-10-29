@@ -152,14 +152,14 @@ Use `get_memory` for record history and evidence; its `memory` and `history` rec
 when the supporting text was said (empty when unknown). Unknown effective dates remain empty; observation,
 event and ingestion times are distinct. Existing verified historical evidence remains readable.
 
-`get_context` accepts `{"scope":{"project":"my-project","session":"session-123"},"tokenBudget":1500}`.
-It returns text plus `instructions`, `profile`, `projectNotes`, `projectFacts`, `facts`, `skills`,
-`tokensUsed` and `retrievalId`. With `lean:true`, which the SessionStart hook sends, it returns the explicit
-instructions and a one-line index of the facts the scope can recall (`index: {projectFacts, sharedFacts}`) and
-no fact sections: per-prompt recall adds the facts relevant to each prompt. Only explicitly stored instructions are behavior requirements; other
-sections are historical reference. A fact line in `text` ends with the day the fact holds from (`（2026-11-06 起 ·
-codex）`, `(since … · codex)`) or, for a fact without an effective date such as an inferred one, the day it was
-said (`（2026-10-25 提到 · codex）`, `(stated …)`), then the platform. Reads do not close sessions, generate memory or await unrelated writes.
+`get_context` accepts `{"scope":{"project":"my-project","session":"session-123"},"tokenBudget":1500}`. It returns text
+plus `instructions`, `profile`, `projectNotes`, `projectFacts`, `facts`, `skills`, `tokensUsed` and `retrievalId`.
+With `lean:true`, which the SessionStart hook sends, it returns the explicit instructions and a one-line index of the
+facts the scope can recall (`index: {projectFacts, sharedFacts}`) and no fact sections: per-prompt recall adds the
+facts relevant to each prompt. Only explicitly stored instructions are behavior requirements; other sections are
+historical reference. A fact line in `text` ends with the day the fact holds from (`（2026-11-06 起 · codex）`, `(since …
+· codex)`) or, for a fact without an effective date such as an inferred one, the day it was said (`（2026-10-25 提到 ·
+codex）`, `(stated …)`), then the platform. Reads do not close sessions, generate memory or await unrelated writes.
 
 `list_turns` returns ordered complete batches containing `requestId`, `messages`, `complete:true` and
 `extractState`, even when formation failed. `since` is an inclusive RFC3339 cutoff against the final

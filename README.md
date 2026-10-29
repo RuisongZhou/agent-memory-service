@@ -299,7 +299,7 @@ sign-in of its own: like the rest of the daemon, it relies on the loopback-only 
 | 记忆列表 | Memories | Browse and filter by project, platform, type, status and origin. A record's page shows its sources, correction chain, lineage and original conversation, and lets you correct, retract or delete it |
 | 实体 | Entities | Browse the entities linked to memories for retrieval, and each entity's memories |
 | 新增 | New memory | Save a fact as written, optionally have the generation model extract facts (a model call), or save an instruction |
-| 检索调试 | Search debugging | Run a query and see ranks, scores and timings; the query goes to the embedding model, and reranking is an opt-in model call |
+| 检索调试 | Search debugging | Run a query and see ranks, scores, timings and which memories clear the reranker's floor; the query goes to the embedding model and, unless you switch reranking off, the reranker |
 | 上下文预览 | Context preview | See the text `get_context` injects for a project and session, section by section; calls no model |
 | 接入平台 | Connect platforms | Find the platforms on this machine, preview and write their configuration, trust hooks, confirm the first calls arrive, uninstall or roll back |
 | 导入审核 | Import review | Review import runs: accept or reject proposals, apply or roll back a run |
