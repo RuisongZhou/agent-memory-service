@@ -7,7 +7,7 @@ import type { ImportProposal, ImportRun, ImportUnitOutcome } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { ReviewStatusBadge } from '../components/memory'
 import { Modal } from '../components/Modal'
-import { Badge, Button, Card, Field, Fields, Input, MemoryLink, Muted, Note, ProjectName, RefreshButton, TD, TH } from '../components/ui'
+import { Badge, Button, Card, Field, Fields, Input, Loading, MemoryLink, Muted, Note, ProjectName, RefreshButton, TD, TH } from '../components/ui'
 import {
   EVIDENCE_ROLE_LABEL,
   formatNumber,
@@ -22,7 +22,7 @@ const RUN_LIMIT = 50
 const ROLLBACK_STATUSES = ['applied', 'partially_rolled_back', 'rolling_back']
 
 const runLink = (runId: string) => (
-  <Link to={`/imports/${runId}`} className="font-mono text-sm text-sky-700 hover:underline">{runId}</Link>
+  <Link to={`/imports/${runId}`} className="font-mono text-sm text-brand-700 hover:underline">{runId}</Link>
 )
 
 // ---------------------------------------------------------------- run list
@@ -59,7 +59,7 @@ export function ImportsPage() {
         actions={<RefreshButton busy={runs.isFetching} onClick={() => runs.refetch()} />}
       >
         {runs.isPending ? (
-          <Muted>加载中…</Muted>
+          <Loading />
         ) : !runs.data?.runs.length ? (
           <Muted>没有导入运行。</Muted>
         ) : (
@@ -116,7 +116,7 @@ function ImportRunDetail({ runId }: { runId: string }) {
   const [rejected, setRejected] = useState<ReadonlySet<string>>(new Set())
 
   if (query.error) return <ErrorNotice error={query.error} />
-  if (!query.data) return <Muted>加载中…</Muted>
+  if (!query.data) return <Loading />
   const { run, proposals } = query.data
   const reviewing = run.status === 'proposed'
   const items = proposals.filter((p) => p.itemKind !== SESSION_TURN)
@@ -376,7 +376,7 @@ function DecisionButton({ active, danger, onClick, children }: {
   onClick: () => void
   children: ReactNode
 }) {
-  const on = danger ? 'bg-red-600 text-white' : 'bg-zinc-900 text-white'
+  const on = danger ? 'bg-red-600 text-white' : 'bg-emerald-600 text-white'
   return (
     <button
       type="button"
@@ -406,7 +406,7 @@ function SessionTurns({ turns }: { turns: ImportProposal[] }) {
                   </span>
                 )}
                 {applied.requestId && (
-                  <Link to={`/tasks/${applied.requestId}`} className="font-mono text-sky-700 hover:underline">
+                  <Link to={`/tasks/${applied.requestId}`} className="font-mono text-brand-700 hover:underline">
                     {applied.requestId}
                   </Link>
                 )}

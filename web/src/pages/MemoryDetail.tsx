@@ -8,7 +8,7 @@ import { DiffView } from '../components/DiffView'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { MemoryText, StatusBadge, TypeBadge } from '../components/memory'
 import { Modal } from '../components/Modal'
-import { Badge, Button, Card, Field, Fields, Input, MemoryLink, Muted, Pre, ProjectName, ScopeText, Textarea } from '../components/ui'
+import { Badge, Button, Card, Field, Fields, Input, Loading, MemoryLink, Muted, Pre, ProjectName, ScopeText, Textarea } from '../components/ui'
 import {
   byteLength,
   EVIDENCE_ROLE_LABEL,
@@ -46,7 +46,7 @@ function MemoryDetail({ id }: { id: string }) {
 
   if (deleted) return <DeleteResult result={deleted} />
   if (query.error) return <ErrorNotice error={query.error} />
-  if (!query.data) return <Muted>加载中…</Muted>
+  if (!query.data) return <Loading />
   const { memory: m, history, evidence, sourceBatch } = query.data
 
   return (
@@ -62,9 +62,7 @@ function MemoryDetail({ id }: { id: string }) {
         actions={<Actions memory={m} onDeleted={setDeleted} />}
       >
         <MemoryText memory={m} />
-        <div className="mt-4">
-          <Fields rows={recordFields(m)} />
-        </div>
+        <RecordFields memory={m} />
       </Card>
       <MemoryEntities id={m.id} />
       {history.length > 1 && <History history={history} viewing={m.id} />}
@@ -72,6 +70,20 @@ function MemoryDetail({ id }: { id: string }) {
       <Provenance evidence={evidence} sourceBatch={sourceBatch} />
       {m.source.turnIds.length > 0 && <Turns turnIds={m.source.turnIds} />}
       <RecentRecalls id={m.id} />
+    </div>
+  )
+}
+
+/** Where the record came from and when, side by side on a wide screen; its links and extras below. */
+function RecordFields({ memory }: { memory: StatedMemory }) {
+  const rows = recordFields(memory)
+  return (
+    <div className="mt-5 space-y-2 border-t border-zinc-100 pt-5">
+      <div className="grid gap-x-10 gap-y-2 md:grid-cols-2">
+        <Fields rows={rows.slice(0, 4)} />
+        <Fields rows={rows.slice(4, 8)} />
+      </div>
+      <Fields rows={rows.slice(8)} />
     </div>
   )
 }
@@ -228,7 +240,7 @@ function Actions({ memory, onDeleted }: { memory: StatedMemory; onDeleted: (resu
     <div className="flex gap-2">
       <Button variant="secondary" onClick={() => setOpen('correct')}>更正</Button>
       <Button variant="secondary" onClick={() => setOpen('retract')}>撤回</Button>
-      <Button variant="danger" onClick={() => setOpen('delete')}>删除</Button>
+      <Button variant="dangerOutline" onClick={() => setOpen('delete')}>删除</Button>
       <CorrectDialog memory={memory} {...dialog('correct')} />
       <RetractDialog memory={memory} {...dialog('retract')} />
       <DeleteDialog memory={memory} onDeleted={onDeleted} {...dialog('delete')} />
@@ -376,7 +388,7 @@ function DeleteDialog({ memory, open, onOpenChange, onDeleted }: DialogProps & {
 
 function DeleteResult({ result }: { result: DeleteMemoryRes }) {
   return (
-    <Card title="已删除" actions={<Link to="/memories" className="text-sm text-sky-700 hover:underline">返回列表</Link>}>
+    <Card title="已删除" actions={<Link to="/memories" className="text-sm text-brand-700 hover:underline">返回列表</Link>}>
       <Fields
         rows={[
           ['删除的记录', <span className="font-mono">{result.deleted}</span>],

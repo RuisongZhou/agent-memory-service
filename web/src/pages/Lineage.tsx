@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import type { LineageNode } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { StatusBadge, TypeBadge } from '../components/memory'
-import { Badge, Card, MemoryLink, Muted, Note, RefreshButton, Select } from '../components/ui'
+import { Badge, Card, Loading, MemoryLink, Muted, Note, RefreshButton, Select } from '../components/ui'
 import { formatNumber, formatTime, labelled, ORIGIN_LABEL } from '../lib/format'
 import { DEFAULT_DEPTH, edgeLines, MAX_DEPTH, timeline } from '../lib/lineage'
 
@@ -46,7 +46,7 @@ export function Lineage({ id }: { id: string }) {
       </p>
       {lineage.error && <ErrorNotice error={lineage.error} />}
       {!data ? (
-        !lineage.error && <Muted>加载中…</Muted>
+        !lineage.error && <Loading />
       ) : (
         <div className="space-y-3">
           {data.truncated && (

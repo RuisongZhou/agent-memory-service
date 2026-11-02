@@ -4,7 +4,7 @@ import { api, PLATFORM } from '../api/client'
 import { useRefresh } from '../api/refresh'
 import type { AddMemoriesReq, MemScope, ScopeKind, Task } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
-import { Button, Card, Check, Field, Fields, Input, MemoryLink, ModelCall, Muted, Textarea } from '../components/ui'
+import { Button, Card, Check, Field, Fields, Input, MemoryLink, ModelCall, Muted, RadioCards, Textarea } from '../components/ui'
 import { SCOPE_KINDS } from '../lib/filters'
 import { byteLength, charLength, labelled, projectName, SCOPE_LABEL } from '../lib/format'
 
@@ -75,24 +75,17 @@ export function NewMemoryPage() {
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
-      <Card title="新增记忆">
-        <div className="space-y-4">
-          <div className="flex gap-4">
-            <Check
-              type="radio"
-              name="kind"
-              label="事实：历史信息，检索时作为参考"
-              checked={kind === 'fact'}
-              onChange={() => setKind('fact')}
-            />
-            <Check
-              type="radio"
-              name="kind"
-              label="指令：行为要求，注入上下文时 agent 应当遵循"
-              checked={kind === 'instruction'}
-              onChange={() => setKind('instruction')}
-            />
-          </div>
+      <Card>
+        <div className="space-y-5">
+          <RadioCards
+            name="kind"
+            value={kind}
+            onChange={setKind}
+            options={[
+              { value: 'fact', title: '事实', description: '历史信息，检索时作为参考' },
+              { value: 'instruction', title: '指令', description: '行为要求，注入上下文时 agent 应当遵循' },
+            ]}
+          />
           <Field
             label="内容"
             hint={

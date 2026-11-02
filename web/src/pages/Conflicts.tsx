@@ -7,7 +7,23 @@ import type { StatedMemory, Uncertainty, UncertaintyStatus } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { MemoryText, StatusBadge, TypeBadge } from '../components/memory'
 import { Modal } from '../components/Modal'
-import { Badge, Button, Card, Field, Fields, Input, MemoryLink, Muted, RefreshButton, ScopeText, Textarea } from '../components/ui'
+import {
+  Badge,
+  Button,
+  Card,
+  cx,
+  Empty,
+  Field,
+  Fields,
+  Input,
+  Loading,
+  MemoryLink,
+  Muted,
+  RefreshButton,
+  ScopeText,
+  Tabs,
+  Textarea,
+} from '../components/ui'
 import { formatNumber, formatTime, labelled, ORIGIN_LABEL } from '../lib/format'
 
 const LIMIT = 200
@@ -46,20 +62,7 @@ export function ConflictsPage() {
     <div className="space-y-4">
       <Card>
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <div role="tablist" className="inline-flex overflow-hidden rounded-md border border-zinc-300">
-            {TABS.map(([s, label]) => (
-              <button
-                key={s}
-                type="button"
-                role="tab"
-                aria-selected={s === status}
-                onClick={() => go({ status: s })}
-                className={`px-3 py-1.5 text-sm ${s === status ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <Tabs value={status} onChange={(s) => go({ status: s })} tabs={TABS} />
           <form key={project} onSubmit={filter} className="flex flex-wrap items-end gap-2">
             <Field label="项目">
               <Input name="project" defaultValue={project} placeholder="全部项目，回车筛选" />
@@ -74,11 +77,9 @@ export function ConflictsPage() {
       </Card>
       {list.error && <ErrorNotice error={list.error} />}
       {list.isPending ? (
-        <Muted>加载中…</Muted>
+        <Loading />
       ) : rows.length === 0 ? (
-        <Card>
-          <Muted>没有{TABS.find(([s]) => s === status)?.[1]}的冲突。</Muted>
-        </Card>
+        <Empty>没有{TABS.find(([s]) => s === status)?.[1]}的冲突。</Empty>
       ) : (
         <>
           <Muted>
@@ -144,7 +145,7 @@ function Question({ u }: { u: Uncertainty }) {
               [
                 '撤回者',
                 u.withdrawnBy ? (
-                  <Link to={`/consolidation/${u.withdrawnBy}`} className="font-mono text-sky-700 hover:underline">
+                  <Link to={`/consolidation/${u.withdrawnBy}`} className="font-mono text-brand-700 hover:underline">
                     {u.withdrawnBy}
                   </Link>
                 ) : (
@@ -193,9 +194,15 @@ function Member({ id, memory, kept, choose }: {
       </div>
     )
   }
+  // A member that can be kept is one big choice: clicking anywhere on it selects it.
+  const Box = choose ? 'label' : 'div'
   return (
-    <div
-      className={`rounded-md border p-3 ${choose?.chosen || kept ? 'border-emerald-400 ring-1 ring-emerald-400' : 'border-zinc-200'}`}
+    <Box
+      className={cx(
+        'block rounded-lg border p-3 transition-colors',
+        choose && 'cursor-pointer hover:border-brand-200',
+        choose?.chosen || kept ? 'border-emerald-400 bg-emerald-50/30 ring-1 ring-emerald-400' : 'border-zinc-200',
+      )}
     >
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <MemoryLink id={id} />
@@ -216,12 +223,18 @@ function Member({ id, memory, kept, choose }: {
         />
       </div>
       {choose && (
-        <label className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium">
-          <input type="radio" name={choose.name} checked={choose.chosen} onChange={choose.set} className="size-4 accent-zinc-800" />
-          保留这条
-        </label>
+        <span className="mt-3 flex items-center gap-2 border-t border-zinc-100 pt-3 text-sm font-medium">
+          <input
+            type="radio"
+            name={choose.name}
+            checked={choose.chosen}
+            onChange={choose.set}
+            className="size-4 accent-emerald-600"
+          />
+          {choose.chosen ? <span className="text-emerald-700">保留这条</span> : '保留这条'}
+        </span>
       )}
-    </div>
+    </Box>
   )
 }
 

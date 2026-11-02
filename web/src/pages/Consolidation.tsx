@@ -22,6 +22,7 @@ import {
   Field,
   Fields,
   Input,
+  Loading,
   MemoryLink,
   ModelCall,
   Muted,
@@ -82,7 +83,7 @@ export function ConsolidationPage() {
           <Button type="submit" variant="secondary">筛选</Button>
         </form>
         {runs.isPending ? (
-          <Muted>加载中…</Muted>
+          <Loading />
         ) : !runs.data?.runs.length ? (
           <Muted>没有 consolidation 运行。</Muted>
         ) : (
@@ -105,7 +106,7 @@ export function ConsolidationPage() {
                 {runs.data.runs.map((r) => (
                   <tr key={r.runId} className="border-t border-zinc-100">
                     <TD>
-                      <Link to={`/consolidation/${r.runId}`} className="font-mono text-sky-700 hover:underline">{r.runId}</Link>
+                      <Link to={`/consolidation/${r.runId}`} className="font-mono text-brand-700 hover:underline">{r.runId}</Link>
                     </TD>
                     <TD><ReviewStatusBadge status={r.status} /></TD>
                     <TD><ProjectName id={r.project} /></TD>
@@ -187,7 +188,7 @@ function ConsolidationRunDetail({ runId }: { runId: string }) {
   const stats = useQuery({ queryKey: ['stats'], queryFn: api.stats })
 
   if (query.error) return <ErrorNotice error={query.error} />
-  if (!query.data) return <Muted>加载中…</Muted>
+  if (!query.data) return <Loading />
   const { run, proposals, memories } = query.data
   const enabled = stats.data?.features.consolidation
 
@@ -310,7 +311,7 @@ function ProposalItem({ p, memories }: { p: ConsolidationProposal; memories: Mem
         {p.applied?.uncertaintyId && (
           <p className="text-zinc-600">
             冲突问题 <span className="font-mono">{p.applied.uncertaintyId}</span>（
-            <Link to="/conflicts" className="text-sky-700 hover:underline">去冲突页</Link>）
+            <Link to="/conflicts" className="text-brand-700 hover:underline">去冲突页</Link>）
           </p>
         )}
       </div>

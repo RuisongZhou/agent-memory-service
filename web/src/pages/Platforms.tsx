@@ -592,15 +592,13 @@ export function PlatformsPage() {
 
   return (
     <div className="space-y-5">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-zinc-900">接入平台</h1>
-          <p className="mt-1 max-w-2xl text-sm text-zinc-600">
-            把 agent 平台接到共享记忆：网页写入它的 MCP 服务和 hook，你在平台里信任并重启，最后在这里确认调用到了。
-          </p>
-        </div>
+      {/* The layout names the page; what the page is for and its refresh lead it. */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-2xl text-sm text-zinc-600">
+          网页写入平台的 MCP 服务和 hook，你在平台里信任并重启，最后在这里确认调用到了。
+        </p>
         <RefreshButton busy={platforms.isFetching || activity.isFetching} onClick={refresh} />
-      </header>
+      </div>
 
       {missingInstaller ? (
         <NoInstaller />
