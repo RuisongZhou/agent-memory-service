@@ -5,7 +5,7 @@ import { api, PLATFORM } from '../api/client'
 import type { MemorySummaries, Retrieval } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { MemoryRef } from '../components/memory'
-import { Badge, Button, Card, Check, Field, Input, Muted, ProjectName, RefreshButton, Select, TD, TH } from '../components/ui'
+import { Badge, Button, Card, Check, Field, Input, Loading, Muted, ProjectName, RefreshButton, Select, TD, TH } from '../components/ui'
 import {
   recallFiltersFromParams,
   recallFiltersToParams,
@@ -141,7 +141,7 @@ export function RecallsPage() {
           每一行是一次 <code>search_memories</code> 或 <code>get_context</code> 调用，按时间从新到旧。点一行看它按名次返回了哪些记忆。
         </p>
         {list.isPending ? (
-          <Muted>加载中…</Muted>
+          <Loading />
         ) : rows.length === 0 ? (
           <Muted>没有符合条件的召回记录。</Muted>
         ) : (
@@ -234,7 +234,7 @@ export function RecentRecalls({ id }: { id: string }) {
     >
       {recalls.error && <ErrorNotice error={recalls.error} />}
       {recalls.isPending ? (
-        <Muted>加载中…</Muted>
+        <Loading />
       ) : rows.length === 0 ? (
         <Muted>{span ?? '近 30 天'}没有被网页以外的调用召回。</Muted>
       ) : (

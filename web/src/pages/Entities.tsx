@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { useMemo, type FormEvent } from 'react'
+import { useMemo } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { api, ApiError } from '../api/client'
 import { ErrorNotice } from '../components/ErrorNotice'
@@ -10,7 +10,8 @@ import {
   FacetOptions,
   Field,
   Fields,
-  Input,
+  LiveSearch,
+  Loading,
   Muted,
   RefreshButton,
   ScopeText,
@@ -39,13 +40,9 @@ function Filters({ filters, types, update }: {
   update: (set: Partial<EntityFilters>) => void
 }) {
   const facets = useQuery({ queryKey: ['facets'], queryFn: api.facets })
-  const searchText = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    update({ text: String(new FormData(e.currentTarget).get('text')) })
-  }
   return (
     <Card>
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid items-start gap-3 sm:grid-cols-3">
         <Field label="项目">
           <Select value={filters.project} onChange={(e) => update({ project: e.target.value })}>
             <option value="">全部</option>
@@ -64,11 +61,9 @@ function Filters({ filters, types, update }: {
             <FacetOptions facets={types} selected={filters.entityType} />
           </Select>
         </Field>
-        <form key={filters.text} onSubmit={searchText}>
-          <Field label="文本包含">
-            <Input name="text" defaultValue={filters.text} placeholder="回车筛选" />
-          </Field>
-        </form>
+        <Field label="文本包含">
+          <LiveSearch value={filters.text} onCommit={(text) => update({ text })} placeholder="搜索实体名称" />
+        </Field>
       </div>
     </Card>
   )
@@ -103,7 +98,7 @@ export function EntitiesPage() {
           {first && <ProjectionNote updatedAt={first.projectionUpdatedAt} />}
         </div>
         {list.isPending ? (
-          <Muted>加载中…</Muted>
+          <Loading />
         ) : rows.length === 0 ? (
           <Muted>没有符合条件的实体。</Muted>
         ) : (
@@ -161,13 +156,13 @@ export function EntityPage() {
         {query.error instanceof ApiError && query.error.status === 404 && (
           <Muted>
             这个实体已不在投影里：投影重算时，实体可能被合并或移除。
-            <Link to="/entities" className="ml-1 text-sky-700 hover:underline">返回实体列表</Link>
+            <Link to="/entities" className="ml-1 text-brand-700 hover:underline">返回实体列表</Link>
           </Muted>
         )}
       </div>
     )
   }
-  if (!query.data) return <Muted>加载中…</Muted>
+  if (!query.data) return <Loading />
   const { entity, memories, projectionUpdatedAt } = query.data
   const gone = entity.memoryCount - memories.length
 
@@ -238,7 +233,7 @@ export function MemoryEntities({ id }: { id: string }) {
   return (
     <Card title="实体" actions={<RefreshButton busy={query.isFetching} onClick={() => query.refetch()} />}>
       {query.error && <ErrorNotice error={query.error} />}
-      {query.isPending && !query.error && <Muted>加载中…</Muted>}
+      {query.isPending && !query.error && <Loading />}
       {data && (
         <div className="space-y-2">
           {data.entities.length === 0 ? (

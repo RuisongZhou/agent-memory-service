@@ -2,8 +2,57 @@
 
 @theme {
   --font-sans: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* The accent of links, focus rings, the active nav item and primary actions. */
+  --color-brand-50: var(--color-indigo-50);
+  --color-brand-100: var(--color-indigo-100);
+  --color-brand-200: var(--color-indigo-200);
+  --color-brand-500: var(--color-indigo-500);
+  --color-brand-600: var(--color-indigo-600);
+  --color-brand-700: var(--color-indigo-700);
+
+  --animate-fade-in: fade-in 150ms ease-out;
+  --animate-dialog-in: dialog-in 150ms ease-out;
+  --animate-drawer-in: drawer-in 200ms ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+@keyframes dialog-in {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.97); }
+}
+@keyframes drawer-in {
+  from { transform: translateX(-100%); }
+}
+
+html {
+  color-scheme: light;
+  scrollbar-gutter: stable;
 }
 
 body {
   @apply bg-zinc-50 text-zinc-900 antialiased;
+}
+
+/* Native selects keep their behaviour and accessibility; only the arrow is redrawn to match the inputs. */
+select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2371717a'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z' clip-rule='evenodd'/%3E%3C/svg%3E");
+  background-position: right 0.5rem center;
+  background-repeat: no-repeat;
+  background-size: 1rem;
+}
+
+/* Inline code in prose; blocks (`Pre`) style themselves. */
+:not(pre) > code {
+  @apply rounded bg-zinc-100 px-1 py-0.5 font-mono text-[0.85em] text-zinc-800;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

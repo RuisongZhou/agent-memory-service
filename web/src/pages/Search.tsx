@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import type { MemoryType, SearchReq } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { StatusBadge, TypeBadge } from '../components/memory'
-import { Button, Card, Check, Field, Fields, Input, ModelCall, Muted, Select } from '../components/ui'
+import { Button, Card, Check, Chip, Field, Fields, Input, ModelCall, Muted, Select, TD, TH } from '../components/ui'
 import { ALL_PLATFORMS_LABEL, labelled, projectOption, TYPE_LABEL } from '../lib/format'
 
 // Instructions are not searchable: get_context selects them, and search rejects the type.
@@ -13,6 +13,18 @@ const SEARCH_TYPES: MemoryType[] = ['fact', 'experience', 'profile', 'skill']
 
 const ms = (n: number) => `${n.toFixed(1)} ms`
 const score = (n: number | undefined) => (n === undefined ? '—' : n.toFixed(4))
+
+/** A score with a bar for its size, so a ranking can be read at a glance; the bar spans 0–1. */
+const Score = ({ value }: { value: number | undefined }) => (
+  <span className="inline-flex items-center justify-end gap-2 tabular-nums">
+    {value !== undefined && (
+      <span className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-zinc-100 sm:block">
+        <span className="block h-full rounded-full bg-brand-500" style={{ width: `${Math.max(0, Math.min(1, value)) * 100}%` }} />
+      </span>
+    )}
+    {score(value)}
+  </span>
+)
 
 export function SearchPage() {
   const facets = useQuery({ queryKey: ['facets'], queryFn: api.facets })
@@ -45,10 +57,15 @@ export function SearchPage() {
   const res = search.data
   return (
     <div className="space-y-4">
-      <Card title="检索调试">
+      <Card>
         <form onSubmit={submit} className="space-y-3">
           <Field label="查询">
-            <Input value={query} onChange={(e) => setQuery(e.target.value)} />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="输入一句 agent 可能会问的话，回车检索"
+              autoFocus
+            />
           </Field>
           <div className="grid gap-3 sm:grid-cols-3">
             <Field label="项目">
@@ -64,12 +81,12 @@ export function SearchPage() {
               <Input type="number" min={1} step={1} value={tokenBudget} onChange={(e) => setTokenBudget(e.target.value)} />
             </Field>
           </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <span className="text-sm font-medium text-zinc-700">类型</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 text-sm font-medium text-zinc-700">类型</span>
             {SEARCH_TYPES.map((t) => {
               const on = types.includes(t)
               return (
-                <Check
+                <Chip
                   key={t}
                   label={labelled(TYPE_LABEL, t)}
                   checked={on}
@@ -125,26 +142,26 @@ export function SearchPage() {
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-zinc-500">
-                    <th className="px-2 py-1.5 font-normal">名次</th>
-                    <th className="px-2 py-1.5 font-normal">内容</th>
-                    <th className="px-2 py-1.5 font-normal">类型</th>
-                    <th className="px-2 py-1.5 font-normal">状态</th>
-                    <th className="px-2 py-1.5 text-right font-normal">score</th>
-                    <th className="px-2 py-1.5 text-right font-normal">rerankScore</th>
+                  <tr>
+                    <TH>名次</TH>
+                    <TH>内容</TH>
+                    <TH>类型</TH>
+                    <TH>状态</TH>
+                    <TH className="text-right">score</TH>
+                    <TH className="text-right">rerankScore</TH>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-zinc-100">
                   {res.results.map((hit, i) => (
-                    <tr key={hit.memory.id} className="border-t border-zinc-100 align-top">
-                      <td className="px-2 py-1.5 tabular-nums">{i + 1}</td>
-                      <td className="px-2 py-1.5">
-                        <Link to={`/memories/${hit.memory.id}`} className="hover:underline">{hit.memory.text}</Link>
-                      </td>
-                      <td className="px-2 py-1.5"><TypeBadge type={hit.memory.type} /></td>
-                      <td className="px-2 py-1.5"><StatusBadge status={hit.memory.status} /></td>
-                      <td className="px-2 py-1.5 text-right tabular-nums">{score(hit.score)}</td>
-                      <td className="px-2 py-1.5 text-right tabular-nums">{score(hit.rerankScore)}</td>
+                    <tr key={hit.memory.id} className="hover:bg-zinc-50">
+                      <TD className="text-zinc-500 tabular-nums">{i + 1}</TD>
+                      <TD>
+                        <Link to={`/memories/${hit.memory.id}`} className="hover:text-brand-700 hover:underline">{hit.memory.text}</Link>
+                      </TD>
+                      <TD><TypeBadge type={hit.memory.type} /></TD>
+                      <TD><StatusBadge status={hit.memory.status} /></TD>
+                      <TD className="text-right"><Score value={hit.score} /></TD>
+                      <TD className="text-right"><Score value={hit.rerankScore} /></TD>
                     </tr>
                   ))}
                 </tbody>

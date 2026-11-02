@@ -10,15 +10,18 @@ import {
   Button,
   Card,
   Check,
+  Chip,
   Field,
   Fields,
   Input,
+  Loading,
   MemoryLink,
   Muted,
   Pre,
   ProjectName,
   RefreshButton,
   Select,
+  Tabs,
   TD,
   TH,
 } from '../components/ui'
@@ -47,28 +50,20 @@ const ids = (list: string[]) =>
     '—'
   )
 
-const Tab = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) => (
-  <button
-    type="button"
-    role="tab"
-    aria-selected={active}
-    onClick={onClick}
-    className={`px-3 py-1.5 text-sm ${active ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-700 hover:bg-zinc-50'}`}
-  >
-    {children}
-  </button>
-)
-
 export function TasksPage() {
   const [params, setParams] = useSearchParams()
   const filters = taskFiltersFromParams(params)
   const update = (set: Partial<TaskFilters>) => setParams(taskFiltersToParams({ ...filters, ...set }), { replace: true })
   return (
     <div className="space-y-4">
-      <div role="tablist" className="inline-flex overflow-hidden rounded-md border border-zinc-300">
-        <Tab active={filters.tab === 'requests'} onClick={() => update({ tab: 'requests' })}>写入请求</Tab>
-        <Tab active={filters.tab === 'responses'} onClick={() => update({ tab: 'responses' })}>模型调用</Tab>
-      </div>
+      <Tabs
+        value={filters.tab}
+        onChange={(tab) => update({ tab })}
+        tabs={[
+          ['requests', '写入请求'],
+          ['responses', '模型调用'],
+        ]}
+      />
       {filters.tab === 'requests' ? (
         <Requests filters={filters} update={update} />
       ) : (
@@ -121,22 +116,22 @@ function Requests({ filters, update }: TabProps) {
           </Field>
           <Button type="submit" variant="secondary">筛选</Button>
         </form>
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-          <span className="text-sm font-medium text-zinc-700">状态</span>
+        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs font-medium text-zinc-500">状态</span>
           {TASK_STATUSES.map((s) => {
             const on = filters.statuses.includes(s)
             return (
-              <Check
+              <Chip
                 key={s}
-                label={labelled(TASK_STATUS_LABEL, s)}
+                label={TASK_STATUS_LABEL[s]}
                 checked={on}
                 disabled={on && filters.statuses.length === 1}
                 onChange={(e) => toggle(s, e.target.checked)}
               />
             )
           })}
-          <Button variant="secondary" onClick={() => update({ statuses: TASK_STATUSES })}>全部</Button>
-          <Button variant="secondary" onClick={() => update({ statuses: ['failed'] })}>只看失败</Button>
+          <Button variant="ghost" size="sm" onClick={() => update({ statuses: TASK_STATUSES })}>全部</Button>
+          <Button variant="ghost" size="sm" onClick={() => update({ statuses: ['failed'] })}>只看失败</Button>
         </div>
       </Card>
       {list.error && <ErrorNotice error={list.error} />}
@@ -145,7 +140,7 @@ function Requests({ filters, update }: TabProps) {
         actions={<RefreshButton busy={list.isFetching} onClick={() => list.refetch()} />}
       >
         {list.isPending ? (
-          <Muted>加载中…</Muted>
+          <Loading />
         ) : rows.length === 0 ? (
           <Muted>没有符合条件的请求。</Muted>
         ) : (
@@ -169,7 +164,7 @@ function Requests({ filters, update }: TabProps) {
                 {rows.map((r) => (
                   <tr key={r.id} className="border-t border-zinc-100">
                     <TD>
-                      <Link to={`/tasks/${r.requestId}`} className="font-mono text-sky-700 hover:underline">{r.requestId}</Link>
+                      <Link to={`/tasks/${r.requestId}`} className="font-mono text-brand-700 hover:underline">{r.requestId}</Link>
                     </TD>
                     <TD className="whitespace-nowrap">{formatTime(r.createdAt)}</TD>
                     <TD className="whitespace-nowrap">{REQUEST_KIND_LABEL[r.kind] ?? r.kind}</TD>
@@ -239,7 +234,7 @@ function Responses({ filters, update }: TabProps) {
       >
         <p className="mb-3 text-sm text-zinc-500">每一行是一次生成模型请求（含重试），记录原样的请求和响应。点一行展开。</p>
         {list.isPending ? (
-          <Muted>加载中…</Muted>
+          <Loading />
         ) : rows.length === 0 ? (
           <Muted>没有符合条件的模型调用。</Muted>
         ) : (
@@ -347,7 +342,7 @@ export function RequestPage() {
   const { requestId } = useParams() as { requestId: string }
   const query = useQuery({ queryKey: ['requests', 'one', requestId], queryFn: () => api.getRequest(requestId) })
   if (query.error) return <ErrorNotice error={query.error} />
-  if (!query.data) return <Muted>加载中…</Muted>
+  if (!query.data) return <Loading />
   return <RequestView detail={query.data} refresh={<RefreshButton busy={query.isFetching} onClick={() => query.refetch()} />} />
 }
 
@@ -366,7 +361,7 @@ function RequestView({ detail, refresh }: { detail: RequestDetail; refresh: Reac
   if (r.importRunId) {
     rows.push([
       '导入运行',
-      <Link to={`/imports/${r.importRunId}`} className="font-mono text-sky-700 hover:underline">{r.importRunId}</Link>,
+      <Link to={`/imports/${r.importRunId}`} className="font-mono text-brand-700 hover:underline">{r.importRunId}</Link>,
     ])
   }
   if (r.infer !== undefined) rows.push(['推断（infer）', r.infer ? '是' : '否'])

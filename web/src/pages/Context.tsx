@@ -52,7 +52,7 @@ export function ContextPage() {
   const res = preview.data
   return (
     <div className="space-y-4">
-      <Card title="上下文预览">
+      <Card>
         <form onSubmit={submit} className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-3">
             <Field label="项目">

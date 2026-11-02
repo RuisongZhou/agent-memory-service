@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { lazy, StrictMode, type ComponentType } from 'react'
 import { createRoot } from 'react-dom/client'
-import { HashRouter, Route, Routes } from 'react-router'
+import { HashRouter, Link, Route, Routes } from 'react-router'
 import { Layout } from './components/Layout'
+import { Empty } from './components/ui'
 import './index.css'
 import { OverviewPage } from './pages/Overview'
 
@@ -55,7 +56,12 @@ createRoot(document.getElementById('root')!).render(
             <Route path="recalls" element={<RecallsPage />} />
             <Route path="tasks" element={<TasksPage />} />
             <Route path="tasks/:requestId" element={<RequestPage />} />
-            <Route path="*" element={<p className="text-sm text-zinc-500">没有这个页面。</p>} />
+            <Route
+              path="*"
+              element={
+                <Empty action={<Link to="/" className="text-brand-700 hover:underline">回到概览</Link>}>没有这个页面。</Empty>
+              }
+            />
           </Route>
         </Routes>
       </HashRouter>
