@@ -1,6 +1,7 @@
 //! Shared retrieval entry points and record/context components.
 //! Algorithm-specific recall and ranking live under `algorithms`.
 pub mod context;
+pub mod fs;
 pub mod records;
 pub mod visibility;
 
@@ -18,5 +19,6 @@ pub async fn get_context(
     let start = std::time::Instant::now();
     context::assemble_context(eng, t, c, req, start).await
 }
+pub use fs::{memory_ls, memory_read};
 pub use records::get_memory;
 pub use visibility::{Lvl, Vis};

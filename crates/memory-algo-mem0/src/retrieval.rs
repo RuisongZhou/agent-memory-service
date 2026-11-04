@@ -296,7 +296,9 @@ pub async fn search(
             continue;
         }
         used += cost;
-        let mut item = json!({"memory":m.public(), "score":score, "slot":results.len()});
+        // The record's place in the memory tree, for `memory_read` of its provenance and dialogue.
+        let mut item = json!({"memory":m.public(), "uri":memory_domain::fs::memory_uri(&m), "score":score,
+            "slot":results.len()});
         if let Some(score) = rerank_scores.get(&m.id) {
             item["rerankScore"] = json!(score);
         }

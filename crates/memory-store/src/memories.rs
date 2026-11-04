@@ -12,6 +12,8 @@ use memory_rules::util;
 pub struct MemoryFilter {
     pub project: Option<String>,
     pub scope_kind: Option<String>,
+    /// `scope.platform` of a platform-scoped record (the memory tree's platform directories).
+    pub scope_platform: Option<String>,
     pub source_platform: Option<String>,
     pub types: Option<Vec<String>>,
     pub statuses: Option<Vec<String>>,
@@ -37,6 +39,11 @@ impl MemoryFilter {
                 "scope.kind = $kind",
                 "kind",
                 self.scope_kind.as_ref().map(|v| json!(v)),
+            ),
+            (
+                "scope.platform = $scope_platform",
+                "scope_platform",
+                self.scope_platform.as_ref().map(|v| json!(v)),
             ),
             (
                 "source.platform = $platform",
@@ -222,6 +229,19 @@ impl Store {
             origins: by_name(res.next()),
             total: count(res.next()),
         })
+    }
+
+    /// Platform-scoped records counted by `scope.platform`, every status included.
+    pub async fn scope_platforms(&self) -> Result<BTreeMap<String, i64>> {
+        Ok(self
+            .select(
+                "SELECT scope.platform AS name, count() AS n FROM memories WHERE scope.kind = 'platform' GROUP BY name",
+                vec![],
+            )
+            .await?
+            .iter()
+            .filter_map(|r| Some((r["name"].as_str()?.to_string(), r["n"].as_i64()?)))
+            .collect())
     }
 
     /// Approximate nearest memories by cosine similarity: `(memory id, score)`, best first.

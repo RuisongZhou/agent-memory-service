@@ -145,7 +145,7 @@ bash scripts/install.sh connect --host claude-code --apply --recall
 bash scripts/install.sh connect --host workbuddy --apply --recall
 ```
 
-重启 WorkBuddy。在 **连接器 → 自定义连接器** 中信任 `shared-memory`，并启用全部 8 个工具。
+重启 WorkBuddy。在 **连接器 → 自定义连接器** 中信任 `shared-memory`，并启用全部 10 个工具。
 
 #### DeepSeek Harness
 
@@ -189,7 +189,7 @@ bash scripts/install.sh connect --host deepseek-harness --apply
 
 ### MCP 工具
 
-安装并重启客户端后，Agent 会看到 8 个 `shared-memory` 工具：
+安装并重启客户端后，Agent 会看到 10 个 `shared-memory` 工具：
 
 | 工具 | 用途 |
 |---|---|
@@ -198,6 +198,8 @@ bash scripts/install.sh connect --host deepseek-harness --apply
 | `get_context` | 组装项目和会话上下文，包括已保存的行为要求 |
 | `list_turns` | 列出提交过的原始对话 |
 | `get_memory` | 读取单条记忆及其历史和来源 |
+| `memory_ls` | 浏览记忆树 |
+| `memory_read` | 按摘要、概览、详情三层读取单条记忆、轮次或目录，包括其由来的对话 |
 | `correct_memory` | 追加更正，或撤回一条记忆 |
 | `propose_import` | 把另一个助手的记忆导出提交成导入提议，不写记忆 |
 | `apply_import` | 你在对话里同意后，写入提议的导入 |
@@ -270,6 +272,7 @@ Claude Code 和 Codex 会话：
 |---|---|
 | 概览 | 看各类记录数、LLM 用量、待处理任务和模型状态，近 30 天有哪些平台调用过，以及哪些事项需要处理 |
 | 记忆列表 | 按项目、平台、类型、状态和来源筛选浏览。单条记录的页面显示来源、更正链、谱系和原始对话，并可更正、撤回或删除 |
+| 记忆树 | 按虚拟文件系统树浏览 `mem://` 下的记忆、会话与原始对话，支持摘要、概览、详情三层读取 |
 | 实体 | 浏览检索关联到记忆的实体，以及每个实体对应的记忆 |
 | 新增 | 原样保存一条事实，可选让生成模型抽取事实（会调用模型），或保存一条行为要求 |
 | 检索调试 | 输入查询，查看排序、分数、耗时，以及哪些记忆达到了重排阈值；查询会发给嵌入模型，默认也发给重排模型（可以关掉） |

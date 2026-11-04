@@ -84,6 +84,42 @@ pub fn is_cjk(c: char) -> bool {
         0x3000..=0x303F | 0xFF00..=0xFFEF | 0x3040..=0x30FF | 0xAC00..=0xD7AF)
 }
 
+/// Python's `quote(part, safe='')`: keep ASCII letters, digits, `-`, `_`, `.` and `~`, encode every other byte as
+/// uppercase `%XX`. The dialogue outbox quotes turn-key components this way, import its unit keys, and memory URIs
+/// their path segments, so a `/` inside a project id or session can never pass for a separator.
+pub fn quote(part: &str) -> String {
+    let mut out = String::with_capacity(part.len());
+    for byte in part.bytes() {
+        if byte.is_ascii_alphanumeric() || b"_.-~".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The inverse of [`quote`]: `None` for a malformed `%` escape or bytes that are not UTF-8.
+pub fn unquote(part: &str) -> Option<String> {
+    let bytes = part.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            // Exactly two hex digits: `from_str_radix` alone also takes a sign (`%+F`).
+            let hex = part
+                .get(i + 1..i + 3)
+                .filter(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()))?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 /// Truncate to at most `max` bytes on a char boundary.
 pub fn truncate_bytes(s: &str, max: usize) -> &str {
     if s.len() <= max {
@@ -122,5 +158,16 @@ mod tests {
         assert_eq!(est_tokens("abcde"), 2);
         assert_eq!(date_of("2026-10-08T23:30:00+08:00"), "2026-10-08");
         assert!(!is_valid_date("2026-02-30"));
+    }
+
+    #[test]
+    fn quoting_round_trips_and_rejects_malformed_escapes() {
+        for part in ["/Users/me/my repo/项目", "a%b", "~", "", "s:1#2?"] {
+            assert_eq!(unquote(&quote(part)).as_deref(), Some(part), "{part}");
+        }
+        assert_eq!(quote("/a b"), "%2Fa%20b");
+        for bad in ["%", "%2", "%zz", "%+F", "%FF"] {
+            assert_eq!(unquote(bad), None, "{bad}");
+        }
     }
 }

@@ -27,6 +27,7 @@ const RecallsPage = page(() => import('./pages/Recalls'), 'RecallsPage')
 const RequestPage = page(() => import('./pages/Tasks'), 'RequestPage')
 const SearchPage = page(() => import('./pages/Search'), 'SearchPage')
 const TasksPage = page(() => import('./pages/Tasks'), 'TasksPage')
+const TreePage = page(() => import('./pages/Tree'), 'TreePage')
 
 // Reads refresh only when asked. Calls that reach a model (search, context, writes) run only on submit.
 const queryClient = new QueryClient({
@@ -42,6 +43,7 @@ createRoot(document.getElementById('root')!).render(
             <Route index element={<OverviewPage />} />
             <Route path="memories" element={<MemoriesPage />} />
             <Route path="memories/:id" element={<MemoryPage />} />
+            <Route path="tree" element={<TreePage />} />
             <Route path="entities" element={<EntitiesPage />} />
             <Route path="entities/:id" element={<EntityPage />} />
             <Route path="new" element={<NewMemoryPage />} />

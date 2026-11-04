@@ -157,6 +157,15 @@ export function SearchPage() {
                       <TD className="text-zinc-500 tabular-nums">{i + 1}</TD>
                       <TD>
                         <Link to={`/memories/${hit.memory.id}`} className="hover:text-brand-700 hover:underline">{hit.memory.text}</Link>
+                        {hit.uri && (
+                          <Link
+                            to={`/tree?uri=${encodeURIComponent(hit.uri)}`}
+                            title={hit.uri}
+                            className="ml-2 text-xs whitespace-nowrap text-zinc-500 hover:text-brand-700 hover:underline"
+                          >
+                            出处与原始对话
+                          </Link>
+                        )}
                       </TD>
                       <TD><TypeBadge type={hit.memory.type} /></TD>
                       <TD><StatusBadge status={hit.memory.status} /></TD>

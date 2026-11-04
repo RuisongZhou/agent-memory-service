@@ -2,7 +2,7 @@
 //! costs as search packing charges them, and the limits follow from the automatic-recall budget, so a unit that
 //! fits can always be injected beside another record. None of them is picked from pilot or benchmark scores.
 use super::markdown;
-use crate::util::est_tokens;
+use crate::util::{est_tokens, quote};
 
 /// Tokens the daemon adds to every record when packing search results (`retrieval.rs`: est_tokens(text) + 8).
 pub const RECORD_OVERHEAD: usize = 8;
@@ -256,19 +256,6 @@ pub fn unit_key(host: &str, native_id: &str, locator: &str) -> String {
 /// project folder (`scope.kind: "global"`) is empty, so its keys start with `/`.
 pub fn turn_key(project: &str, session: &str, native_id: &str) -> String {
     [project, session, native_id].map(quote).join("/")
-}
-
-/// Python's `quote(part, safe='')`, as the dialogue outbox quotes turn keys.
-fn quote(part: &str) -> String {
-    let mut out = String::with_capacity(part.len());
-    for byte in part.bytes() {
-        if byte.is_ascii_alphanumeric() || b"_.-~".contains(&byte) {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
 }
 
 #[cfg(test)]
