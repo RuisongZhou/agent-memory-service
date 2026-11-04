@@ -135,6 +135,8 @@ pub async fn call(eng: &Arc<Engine>, c: &Caller, name: &str, body: Value) -> Api
         "get_context" => retrieval::get_context(eng, &t, c, parse(body)?).await,
         "list_turns" => eng.list_turns(&t, c, parse(body)?).await,
         "get_memory" => retrieval::get_memory(eng, &t, parse(body)?).await,
+        "memory_ls" => retrieval::memory_ls(eng, &t, c, parse(body)?).await,
+        "memory_read" => retrieval::memory_read(eng, &t, c, parse(body)?).await,
         "correct_memory" => management::correct_memory(eng, &t, c, parse(body)?).await,
         "delete_memory" => management::delete_memory(eng, &t, parse(body)?).await,
         "feedback" => management::feedback(eng, &t, parse(body)?).await,

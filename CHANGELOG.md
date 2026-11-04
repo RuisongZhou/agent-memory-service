@@ -18,6 +18,17 @@ names; `connect` is idempotent, so rerunning it is always safe.
 
 Each entry says what to do if your checkout or data predates the change.
 
+- **A memory tree exposes records and dialogue turns as a virtual filesystem.** Two new read-only MCP tools and HTTP
+  endpoints, `memory_ls` and `memory_read`, allow agents to browse memories hierarchically under `mem://` and inspect
+  the dialogue a fact was formed from at level 2. Search results now carry a `uri` placing each record in the tree.
+  The web UI also provides a **记忆树** ("Memory tree") page (`#/tree`) to browse the tree with tabs for the three
+  levels, and both search results and the memory detail page link directly into it.
+  Upgrade with `bash scripts/install.sh service --apply`, which rebuilds the binary (which also serves as the MCP
+  bridge), installs the web UI and restarts the service. Then restart or reload each connected client so it discovers the
+  new tools. In WorkBuddy, open **Connectors → Custom connector** and enable the two new tools (`memory_ls` and
+  `memory_read`). No data migration is required. The installer's offline check (`connect --apply`) now expects the
+  bridge to expose exactly ten tools. See [memory tree](docs/design/memory-fs.md) and [API reference](docs/api.md#memory-tree).
+
 - **The web UI recovers open tabs when page files are replaced or unreachable.** Switching pages in an existing tab after
   the UI was rebuilt (`make ui`), reinstalled (`install.sh service --apply`) or while the daemon restarted previously
   resulted in a blank window because newly required chunk files could not be fetched. Routed pages are now wrapped in an
@@ -25,6 +36,7 @@ Each entry says what to do if your checkout or data predates the change.
   once the service answers (capped to at most once per 30 seconds via `sessionStorage` to avoid reload loops). When
   upgrading, refresh tabs left open from before the upgrade once so they load the new error boundary and reload logic;
   after that, open tabs recover on their own. See [hosting](docs/design/web-ui.md#71-托管方式).
+
 - **The project comes from the session's folder.** No command names a project, and a read that gives no `scope` uses the
   session's project instead of every project: pass `project: "*"` to search them all. Hooks written by earlier
   installers pass `--project` and fail with `unexpected argument '--project'`: rerun `connect` for each platform. An

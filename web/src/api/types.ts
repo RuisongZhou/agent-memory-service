@@ -210,6 +210,8 @@ export interface SearchReq {
 
 export interface SearchHit {
   memory: Memory
+  /** The record's place in the memory tree; null when its scope or type has none. */
+  uri?: string | null
   /** Hybrid score; reranking adds `rerankScore` and reorders. */
   score: number
   slot: number
@@ -901,4 +903,79 @@ export interface EntityRes extends Projected {
 export interface MemoryEntitiesRes extends Projected {
   /** By text. */
   entities: Entity[]
+}
+
+/** One entry of a memory tree directory (`memory_ls`, docs/api.md#memory-tree); which fields it has depends on what it is. */
+export interface TreeEntry {
+  name: string
+  uri: string
+  kind: 'dir' | 'file'
+  /** A project directory: its full id, its records (every status) and its visible turns. */
+  project?: string
+  records?: number
+  turns?: number
+  /** A type directory's listed records, or a space's number of sessions. */
+  count?: number
+  /** A session: its first and latest turn. */
+  firstAt?: string
+  lastAt?: string
+  /** A record. */
+  type?: MemoryType
+  status?: string
+  abstract?: string
+  clipped?: boolean
+  effectiveAt?: string
+  statedAt?: string
+  recordedAt?: string
+  platform?: string
+  /** A turn: `status` is its formation's. */
+  turnId?: string | null
+  createdAt?: string
+  messageCount?: number
+  memoryIds?: string[]
+  abstractOf?: 'formedMemories' | 'firstMessage'
+}
+
+export interface MemoryLsReq {
+  uri: string
+  cursor?: string
+  limit?: number
+  allPlatforms?: boolean
+}
+
+export interface MemoryLsRes {
+  uri: string
+  entries: TreeEntry[]
+  nextCursor: string | null
+  total: number
+}
+
+/** 0 abstract, 1 overview, 2 detail (files only). */
+export type TreeLevel = 0 | 1 | 2
+
+export interface MemoryReadReq {
+  uri: string
+  level?: TreeLevel
+  /** Character offset: the previous page's `nextOffset`. */
+  offset?: number
+  tokenBudget?: number
+  allPlatforms?: boolean
+}
+
+export interface TreeLink {
+  /** `supersedes`, `supersededBy`, a relation, `source`, `formed` or `session`. */
+  rel: string
+  uri: string
+}
+
+export interface MemoryReadRes {
+  uri: string
+  kind: 'dir' | 'file'
+  level: TreeLevel
+  content: string
+  offset: number
+  nextOffset: number | null
+  totalChars: number
+  tokensUsed: number
+  links: TreeLink[]
 }

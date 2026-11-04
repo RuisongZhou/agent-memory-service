@@ -228,7 +228,7 @@ temporary store and stops it when the checks end. `service` first starts the bin
 waits for `/health`; the checks below are `connect`'s:
 
 1. The bridge, started exactly as configured, completes the MCP handshake, lists the
-   [eight tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
+   [ten tools](api.md#interfaces) and answers `get_context` from a temporary mock-retrieval daemon.
    A separate bridge process answers the 2026-07-28 `server/discover` version probe at once with
    `-32022` and the 2025-era versions it serves, so clients that probe first (DeepSeek Harness) fall back
    to `initialize`. The bridge, collector and uploader keep your proxy variables; they bypass proxies for
@@ -379,7 +379,7 @@ args = ["mcp", "--url", "http://127.0.0.1:8765", "--platform", "codex"]
 tool_timeout_sec = 180
 ```
 
-Use either registration method for this server and preserve existing settings. Local Codex clients share MCP configuration on the same host; project configuration requires a trusted project. Restart/reload the client after changing its configuration, inspect `/mcp` in the CLI, and confirm the eight tools in the [API reference](api.md#interfaces) are available. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+Use either registration method for this server and preserve existing settings. Local Codex clients share MCP configuration on the same host; project configuration requires a trusted project. Restart/reload the client after changing its configuration, inspect `/mcp` in the CLI, and confirm the ten tools in the [API reference](api.md#interfaces) are available. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
 Leave `cwd` out of the server entry: Codex then starts the bridge in the session's working directory, which is its [default project](#project-routing).
 
@@ -416,7 +416,7 @@ Add the [shared memory workflow](#shared-memory-workflow) to the target project'
 
 ## Use with DeepSeek Harness
 
-DeepSeek Harness (`dsh` and the Desktop app) gets the eight tools, named `mcp__shared-memory__<tool>`,
+DeepSeek Harness (`dsh` and the Desktop app) gets the ten tools, named `mcp__shared-memory__<tool>`,
 and no automatic capture: its Claude Code and Codex hook bridges pass no transcript and no final reply
 and send no `SessionEnd`, so the collector would have nothing to save. Ask the agent to save with
 `add_memories`, and put the [shared memory workflow](#shared-memory-workflow) in its instructions.
@@ -476,6 +476,8 @@ shared-memory context was already loaded automatically.
 Search for relevant past decisions before repeating investigation; inspect sources
 with get_memory when a decision depends on them. Use list_turns for original input,
 optionally filtered by turnIds within the requested token budget.
+Browse records and dialogue under mem://~/ with memory_ls and memory_read; read
+level 2 when you need the complete dialogue a fact was formed from.
 When the user explicitly asks to remember a fact, use add_memories with text.
 For an explicit behavior requirement, use memoryType:"instruction" with text.
 Use correct_memory to correct or retract an earlier record.
@@ -484,7 +486,7 @@ contains explicitly saved behavior requirements, subject to current instructions
 If the dialogue collector is installed, let it save ordinary completed turns.
 ```
 
-The [API reference](api.md#interfaces) lists the eight MCP tools and the HTTP-only interfaces.
+The [API reference](api.md#interfaces) lists the ten MCP tools and the HTTP-only interfaces.
 With [automatic recall](#automatic-recall) installed, the session-start `get_context` and a search per
 prompt happen without the agent; the remaining steps still apply.
 
@@ -843,7 +845,7 @@ your own reply. The [design](design/memory-import-mcp.md) explains the choices.
 **Before you start**
 
 - The daemon is running, and the host is connected with `install.sh connect` (or by hand) and restarted, so it lists the
-  eight `shared-memory` tools, including `propose_import` and `apply_import`.
+  ten `shared-memory` tools, including `propose_import` and `apply_import`.
 - Pick the project to import into and a platform label for the source: `chatgpt`, `gemini`,
   `claude-ai`, or `self` for what the connected agent itself remembers. The project defaults to the
   connection's [default project](#project-routing), the session's folder; an import cannot go into global

@@ -34,6 +34,10 @@ import type {
   ListUncertaintiesReq,
   ListUncertaintiesRes,
   MemoryEntitiesRes,
+  MemoryLsReq,
+  MemoryLsRes,
+  MemoryReadReq,
+  MemoryReadRes,
   PlatformActivityRes,
   PlatformsRes,
   RequestDetail,
@@ -140,4 +144,8 @@ export const api = {
   listEntities: (req: ListEntitiesReq) => post<ListEntitiesRes>('/admin/list_entities', req),
   entity: (id: string) => post<EntityRes>('/admin/entity', { id }),
   memoryEntities: (id: string) => post<MemoryEntitiesRes>('/admin/memory_entities', { id }),
+
+  /** The memory tree agents browse: read-only, no model call, not counted as a recall. */
+  memoryLs: (req: MemoryLsReq) => post<MemoryLsRes>('/v1/memory_ls', req),
+  memoryRead: (req: MemoryReadReq) => post<MemoryReadRes>('/v1/memory_read', req),
 }

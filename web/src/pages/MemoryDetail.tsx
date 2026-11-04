@@ -17,6 +17,7 @@ import {
   ORIGIN_LABEL,
   RELATION_LABEL,
 } from '../lib/format'
+import { memoryUri } from '../lib/tree'
 import { MemoryEntities } from './Entities'
 import { Lineage } from './Lineage'
 import { RecentRecalls } from './Recalls'
@@ -232,12 +233,21 @@ type Dialog = 'correct' | 'retract' | 'delete' | null
 
 function Actions({ memory, onDeleted }: { memory: StatedMemory; onDeleted: (result: DeleteMemoryRes) => void }) {
   const [open, setOpen] = useState<Dialog>(null)
+  const treeUri = memoryUri(memory)
   const dialog = (name: Exclude<Dialog, null>) => ({
     open: open === name,
     onOpenChange: (on: boolean) => setOpen(on ? name : null),
   })
   return (
     <div className="flex gap-2">
+      {treeUri && (
+        <Link
+          to={`/tree?uri=${encodeURIComponent(treeUri)}`}
+          className="inline-flex h-8 items-center rounded-md px-3 text-sm font-medium text-brand-700 hover:bg-brand-50"
+        >
+          在记忆树中查看
+        </Link>
+      )}
       <Button variant="secondary" onClick={() => setOpen('correct')}>更正</Button>
       <Button variant="secondary" onClick={() => setOpen('retract')}>撤回</Button>
       <Button variant="dangerOutline" onClick={() => setOpen('delete')}>删除</Button>

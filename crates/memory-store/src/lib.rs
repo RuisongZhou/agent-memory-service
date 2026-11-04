@@ -8,6 +8,7 @@ pub mod logs;
 pub mod memories;
 pub mod recalls;
 pub mod schema;
+pub mod sessions;
 pub mod store;
 pub mod surreal;
 pub mod tables;
