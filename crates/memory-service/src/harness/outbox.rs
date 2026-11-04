@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
     request_id TEXT, error TEXT, created_at TEXT NOT NULL,
     UNIQUE (tenant, platform, turn_id)
-);";
+);
+CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status, seq);";
 /// Finished statuses `prune` deletes; `failed` only on request, since those rows are the evidence for debugging.
 const PRUNED: [&str; 3] = ["completed", "rejected", "cancelled"];
 /// Rows `prune` deletes per write transaction: each holds the write lock briefly, well inside a hook's busy timeout.
@@ -539,9 +540,10 @@ impl Outbox {
         Ok(())
     }
 
+    /// A job still forming is polled every pass; an unchanged row is not rewritten (and synced) each time.
     fn set_status(&self, seq: i64, status: &str, error: Option<&str>) -> Result<(), Error> {
         self.db.execute(
-            "UPDATE jobs SET status=?1,error=?2 WHERE seq=?3",
+            "UPDATE jobs SET status=?1,error=?2 WHERE seq=?3 AND (status IS NOT ?1 OR error IS NOT ?2)",
             params![status, error, seq],
         )?;
         Ok(())

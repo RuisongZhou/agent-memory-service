@@ -17,6 +17,9 @@ pub struct Queued<'a> {
     pub age_secs: i64,
     /// A failed request waiting for its retry time; its segment is not formed before then.
     pub retry_pending: bool,
+    /// A turn of a failed segment of several: retried in a segment of its own, so that one turn the model cannot
+    /// take (too long, refused by a content check) fails alone instead of taking the turns formed with it along.
+    pub alone: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,6 +52,12 @@ pub fn segments(queue: &[Queued], limits: Limits, flush: Flush) -> Vec<(Vec<usiz
     let mut open: Vec<((&str, &str, &str), usize)> = Vec::new();
     for (i, q) in queue.iter().enumerate() {
         if !q.infer {
+            out.push((vec![i], true));
+            continue;
+        }
+        if q.alone {
+            // It was ready once, when its segment failed; turns after it start another segment.
+            open.retain(|(c, _)| *c != q.conversation);
             out.push((vec![i], true));
             continue;
         }
@@ -132,6 +141,7 @@ mod tests {
             tokens,
             age_secs,
             retry_pending: false,
+            alone: false,
         }
     }
 
@@ -213,5 +223,29 @@ mod tests {
         assert!(segments(&queue, single, Flush::Ready)
             .iter()
             .all(|(m, r)| m.len() == 1 && *r));
+        // The turns of a failed segment are retried one by one, still in order: the turns after them wait for theirs.
+        let mut queue = [
+            turn("a", "s1", 10, 30),
+            turn("c", "s1", 10, 20),
+            turn("d", "s1", 10, 10),
+        ];
+        queue[0].alone = true;
+        queue[1].alone = true;
+        queue[1].retry_pending = true;
+        assert_eq!(
+            ids_of(&queue, Flush::Ready),
+            vec![
+                ("a".to_string(), true),
+                ("c".to_string(), false),
+                ("d".to_string(), false),
+            ]
+        );
+    }
+
+    fn ids_of(queue: &[Queued], flush: Flush) -> Vec<(String, bool)> {
+        segments(queue, LIMITS, flush)
+            .into_iter()
+            .map(|(m, r)| (m.iter().map(|&i| queue[i].id).collect::<String>(), r))
+            .collect()
     }
 }

@@ -322,7 +322,10 @@ fn main() -> anyhow::Result<()> {
                 if no_reranker {
                     cfg.use_reranker = false;
                 }
-                let launch = settings::Launch::new(env_file.as_deref(), env_keys)?;
+                let launch = settings::Launch {
+                    recall_floor: cfg.mem0_recall_floor,
+                    ..settings::Launch::new(env_file.as_deref(), env_keys)?
+                };
                 // The settings the web UI saves: when they do not start, the previous ones are put back.
                 let (llm, models) = match async {
                     memory_service::algorithms::validate(&cfg)?;

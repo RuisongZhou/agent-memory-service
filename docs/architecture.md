@@ -53,7 +53,8 @@ strategy.
    short of that waits until the session's end marker arrives, its oldest turn has waited `mem0SegmentWaitSecs`, a
    caller waits for one of its requests (`sync`, the pure rule in [segments](../crates/memory-rules/src/segments.rs))
    or `wait_idle` drains the queue. Raw `infer:false` text never waits. A segment that may not form yet, or that
-   failed, holds back its session's later ones. For a segment, formation prepares prior messages and retrieves
+   failed, holds back its session's later ones; the turns of a failed segment of several are retried one at a time,
+   so a turn the model cannot take fails alone. For a segment, formation prepares prior messages and retrieves
    up to ten visible existing facts using **pure vector recall**, not the public hybrid search path. Visible means
    global facts, the caller platform's facts and the request's project's facts; a global request has no project.
 4. The prompt combines the vendored additive template, historical messages, the facts the session's latest

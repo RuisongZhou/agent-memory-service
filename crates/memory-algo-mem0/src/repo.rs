@@ -17,13 +17,18 @@ pub struct InputFilter<'a> {
     pub turn_ids: Option<Vec<String>>,
 }
 
-/// The request id already created for the turn with record key `key`.
-pub async fn request_id_for_turn_key(t: &Instance, key: &str) -> Result<Option<String>> {
+/// The request id already created for `turn_id` of `platform` (the turn whose `turnKeys` entry is
+/// `turn_rid(platform, turn_id)`), by an index lookup: it runs for every new turn, under the ingest lock.
+pub async fn request_id_for_turn(
+    t: &Instance,
+    platform: &str,
+    turn_id: &str,
+) -> Result<Option<String>> {
     let existing = t
         .store
         .select(
-            "SELECT requestId FROM requests WHERE turnKeys CONTAINS $key LIMIT 1",
-            vec![("key", json!(key))],
+            "SELECT requestId FROM requests WHERE platform = $platform AND turnId = $turn LIMIT 1",
+            vec![("platform", json!(platform)), ("turn", json!(turn_id))],
         )
         .await?;
     Ok(existing

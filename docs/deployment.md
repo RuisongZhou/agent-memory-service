@@ -234,8 +234,8 @@ do not start, the previous file is put back (see [model settings](design/model-s
 self-hosted models in one step.
 
 Switching provider or embedding model on an existing data directory re-embeds its memories at the next
-start. The hosted default and BGE-M3 both use 1024 dimensions; for a model with another dimension, start
-with a new data directory.
+start, including for a model of another dimension: the old vectors are dropped first, and a memory is found by
+vector search again once it is re-embedded.
 
 ### 5. Start the shared daemon
 

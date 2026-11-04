@@ -292,6 +292,15 @@ async fn project(
     } else {
         Vec::new()
     };
+    // The rows of each (scope, normalized text) in order, kept as rows are added: the exact match takes the first
+    // of them with the same scope, without a scan of every row for every entity (quadratic in the projection).
+    let mut exact: HashMap<(String, String), Vec<usize>> = HashMap::new();
+    for (i, row) in records.iter().enumerate() {
+        exact
+            .entry((scope_key(&row.scope), normalize(&row.text)))
+            .or_default()
+            .push(i);
+    }
     let mut batch = String::new();
     let mut prior_batch_count = records.len();
     for (key, (entity, scope, links, current_batch)) in desired {
@@ -300,9 +309,9 @@ async fn project(
             batch = current_batch;
         }
         let vector = vectors.remove(&key).expect("entity vector planned");
-        let matching = records
-            .iter()
-            .position(|row| row.scope == scope && normalize(&row.text) == key.1)
+        let matching = exact
+            .get(&key)
+            .and_then(|rows| rows.iter().copied().find(|&i| records[i].scope == scope))
             .or_else(|| {
                 records[..prior_batch_count]
                     .iter()
@@ -323,6 +332,7 @@ async fn project(
                 .get(&key)
                 .map(|row| row.mid.clone())
                 .unwrap_or_else(|| util::new_id("ent"));
+            exact.entry(key.clone()).or_default().push(records.len());
             records.push(EntityRow {
                 mid,
                 scope,

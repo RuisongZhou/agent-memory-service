@@ -6,7 +6,6 @@ use std::sync::Arc;
 use super::must_get;
 use crate::app::consolidation::write_patch;
 use crate::runtime::engine::Engine;
-use crate::runtime::indexer;
 use crate::runtime::instance::Instance;
 use memory_domain::consolidation::apply::{is_merge, release_inputs};
 use memory_domain::types::*;
@@ -188,8 +187,11 @@ async fn delete_one(
     }
     tx.index_task(schema::MEMORIES, &id, "delete")?;
     t.store.commit(tx).await?;
-    // 5.2: the vector index entry is dropped before returning
-    indexer::drain(eng, t).await?;
+    // 5.2: the vector index entry is dropped before returning: the stored one went with the record, and the cached
+    // one goes here. The rest of the queue (the inputs this restored, say) is the index worker's: draining it here,
+    // under the formation lock, waited on every pending embedding and failed the delete halfway when one failed.
+    t.vecs.write().await.memories.remove(&id);
+    t.wake_indexer();
     Ok(json!({
         "deleted": id,
         "restoredInputs": restored,
