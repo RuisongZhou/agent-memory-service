@@ -96,7 +96,7 @@ daemon 新。副本和 daemon 每次一起更新。
    - Codex：完全退出并重新打开（CLI 和桌面版共用 `~/.codex`）；输入 `/hooks`（桌面版：设置 → Hooks），信任
      "shared-memory capture"（和打开召回时的 "shared-memory recall"）；输入 `/mcp` 确认 `shared-memory` 已连接。
    - Claude Code：重启；用 `/hooks` 确认 shared-memory 的 hook 已加载；`/mcp` 确认已连接。
-   - WorkBuddy：重启；打开 连接器 → 自定义连接器，信任 `shared-memory`，确认 7 个工具都已启用。
+   - WorkBuddy：重启；打开 连接器 → 自定义连接器，信任 `shared-memory`，确认 10 个工具都已启用。
    - DeepSeek Harness：重启并新开会话；确认出现 `mcp__shared-memory__*` 工具。
 5. **验证**：提示"在 Codex 里开一个新会话，说一句话"，每 3 秒读一次 `platform_activity`，逐项显示写入之后有没有
    收到：对话抓取、自动召回（打开时）、MCP 工具（可选，agent 用到记忆工具时才有）。收到就打勾；两分钟还没收到，

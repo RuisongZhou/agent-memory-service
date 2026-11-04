@@ -24,6 +24,10 @@ const PATHS = {
   chevronLeft: 'm15 6-6 6 6 6',
   spinner: 'M12 3a9 9 0 1 0 9 9',
   filter: 'M3 5h18l-7 8v6l-4 2v-8L3 5Z',
+  folder: 'M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-12Z',
+  file: 'M6 3h8l4 4v14H6V3Zm8 0v4h4M9 12h6M9 16h6',
+  message: 'M4 5h16v11H9l-5 4V5Zm4 5h8M8 13h5',
+  tree: 'M5 4v16M5 8h5M5 15h5M12 5h7v6h-7zM12 12h7v6h-7z',
 } as const
 
 export type IconName = keyof typeof PATHS

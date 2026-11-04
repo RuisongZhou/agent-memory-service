@@ -91,7 +91,7 @@ export function trustSteps(host: PlatformHost, options: ConnectOptions): Step[] 
         { title: '重启 WorkBuddy', detail: '完全退出后重新打开。' },
         {
           title: '信任连接器',
-          detail: '打开 连接器 → 自定义连接器，信任 shared-memory，并确认它的 7 个工具都已启用。',
+          detail: '打开 连接器 → 自定义连接器，信任 shared-memory，并确认它的 10 个工具都已启用。',
         },
       ]
     case 'deepseek-harness':

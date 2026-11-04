@@ -16,6 +16,7 @@ export const NAV: { title: string; items: NavItem[] }[] = [
     items: [
       { to: '/', label: '概览', icon: 'home' },
       { to: '/memories', label: '记忆列表', icon: 'list' },
+      { to: '/tree', label: '记忆树', icon: 'tree' },
       { to: '/entities', label: '实体', icon: 'tag' },
       { to: '/new', label: '新增记忆', icon: 'plus' },
     ],
@@ -53,6 +54,7 @@ export interface PageMeta {
 const PAGES: Record<string, PageMeta> = {
   '/': { title: '概览', description: '服务状态、待处理事项和记忆的整体分布' },
   '/memories': { title: '记忆列表', description: '按项目、平台、类型和状态筛选记忆' },
+  '/tree': { title: '记忆树', description: '按项目、类型和会话浏览记忆，从摘要一路读到原始对话' },
   '/entities': { title: '实体', description: '从记忆中抽取的人、工具和概念' },
   '/new': { title: '新增记忆', description: '手动写入一条事实或指令' },
   '/search': { title: '检索调试', description: '查看一次检索的排序、分数和耗时' },

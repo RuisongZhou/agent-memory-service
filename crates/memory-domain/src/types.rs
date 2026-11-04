@@ -508,6 +508,38 @@ pub struct MemoryLineageReq {
     pub depth: Option<usize>,
 }
 
+/// `POST /v1/memory_ls`: the entries of one directory of the memory tree (`fs`, docs/design/memory-fs.md).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryLsReq {
+    pub uri: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// 1-200; default 50.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Platform directories and turns of other platforms than the caller's, as `scope.platform: "*"` reads them.
+    #[serde(default)]
+    pub all_platforms: Option<bool>,
+}
+
+/// `POST /v1/memory_read`: one file or directory of the memory tree at one layer, a page at a time.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryReadReq {
+    pub uri: String,
+    /// 0 abstract, 1 overview (the default), 2 detail.
+    #[serde(default)]
+    pub level: Option<u8>,
+    /// Character offset into the rendered text: the previous page's `nextOffset`.
+    #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub token_budget: Option<usize>,
+    #[serde(default)]
+    pub all_platforms: Option<bool>,
+}
+
 /// `POST /admin/list_entities`: one page of the algorithm's entities, most linked first. Every filter is optional.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]

@@ -136,6 +136,7 @@ pub async fn list_memories(t: &Arc<Instance>, req: ListMemoriesReq) -> ApiResult
     let filter = MemoryFilter {
         project: req.project,
         scope_kind: req.scope_kind,
+        scope_platform: None,
         source_platform: req.source_platform,
         types: req.types,
         statuses: Some(req.statuses.unwrap_or_else(active_statuses)),

@@ -159,7 +159,7 @@ hooks apply to every project.
 bash scripts/install.sh connect --host workbuddy --apply --recall
 ```
 
-Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memory` and enable all eight tools.
+Restart WorkBuddy. Under **Connectors → Custom connector**, trust `shared-memory` and enable all ten tools.
 
 #### DeepSeek Harness
 
@@ -207,7 +207,7 @@ requesting an MCP call. Inspect the client's hook output or injected context whe
 
 ### MCP tools
 
-After installation and a client restart, the agent sees eight `shared-memory` tools:
+After installation and a client restart, the agent sees ten `shared-memory` tools:
 
 | Tool | Purpose |
 |---|---|
@@ -216,6 +216,8 @@ After installation and a client restart, the agent sees eight `shared-memory` to
 | `get_context` | Assemble project and session context, including saved instructions |
 | `list_turns` | List submitted raw conversation turns |
 | `get_memory` | Read one memory with its history and sources |
+| `memory_ls` | Browse the memory tree |
+| `memory_read` | Read a memory, turn or directory at abstract, overview or detail level, including the dialogue it came from |
 | `correct_memory` | Add a correction or retract a memory |
 | `propose_import` | Submit another assistant's memory export as import proposals; writes nothing |
 | `apply_import` | Write a proposed import after you agree in the conversation |
@@ -297,6 +299,7 @@ sign-in of its own: like the rest of the daemon, it relies on the loopback-only 
 |---|---|---|
 | 概览 | Overview | See record counts, LLM usage, pending tasks and model status, which platforms called in the last 30 days, and what needs attention |
 | 记忆列表 | Memories | Browse and filter by project, platform, type, status and origin. A record's page shows its sources, correction chain, lineage and original conversation, and lets you correct, retract or delete it |
+| 记忆树 | Memory tree | Browse memories, sessions and original dialogue in a virtual filesystem tree under `mem://`; read records at abstract, overview or detail level |
 | 实体 | Entities | Browse the entities linked to memories for retrieval, and each entity's memories |
 | 新增 | New memory | Save a fact as written, optionally have the generation model extract facts (a model call), or save an instruction |
 | 检索调试 | Search debugging | Run a query and see ranks, scores, timings and which memories clear the reranker's floor; the query goes to the embedding model and, unless you switch reranking off, the reranker |

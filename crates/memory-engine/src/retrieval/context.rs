@@ -51,7 +51,7 @@ fn day(ts: &str) -> String {
 }
 
 /// Since when the fact holds; an inferred fact has no effective date, so the day it was said instead.
-fn fact_line(m: &MemoryRec, en: bool) -> String {
+pub(crate) fn fact_line(m: &MemoryRec, en: bool) -> String {
     let (eff, stated) = (day(&m.effective_at), day(&m.stated_at));
     let (text, platform) = (&m.text, &m.source.platform);
     match (en, eff.is_empty(), stated.is_empty()) {

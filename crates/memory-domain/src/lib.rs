@@ -1,6 +1,7 @@
-//! Pure memory records, API types and errors, integrity, consolidation and import planning; no I/O.
+//! Pure memory records, API types and errors, memory URIs, integrity, consolidation and import planning; no I/O.
 pub mod consolidation;
 pub mod entities;
+pub mod fs;
 pub mod import;
 pub mod integrity;
 pub mod lineage;
