@@ -163,8 +163,11 @@ function PageHeader() {
   useEffect(() => {
     document.title = meta ? `${meta.title} · 记忆管理` : '记忆管理'
   }, [meta])
-  // A new page starts at its top, as it would on a site with real page loads.
-  useEffect(() => window.scrollTo(0, 0), [pathname])
+  // A new page starts at its top, as it would on a site with real page loads. The block body matters: Chrome's
+  // scrollTo returns a Promise, which React would take as the effect's cleanup and fail on, unmounting the app.
+  useEffect(() => {
+    window.scrollTo(0, 0)
+  }, [pathname])
 
   if (!meta) return null
   return (
