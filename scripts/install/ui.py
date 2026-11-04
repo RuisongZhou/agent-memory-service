@@ -1,6 +1,7 @@
 """The web UI the daemon service serves under /ui/ (docs/design/web-ui.md §7.3).
 
-`install.sh service` builds the front end with `make ui` when npm is on PATH. Without npm, or when that build
+`install.sh service` builds the front end with `make ui` when npm is on PATH (a web/dist newer than its
+sources needs no new build). Without npm, or when that build
 fails, it downloads the UI bundle of this checkout's version from the GitHub release and checks it
 against the release's SHA-256. When neither works it goes on without a web UI. The files go to
 ~/.local/share/agent-memory-service/ui, beside the memory data, and `service install --ui-dir` records
@@ -28,6 +29,8 @@ from core import InstallError
 
 UI_DIR = Path('.local/share/agent-memory-service/ui')  # relative to home
 BUILD = core.ROOT / 'web/dist'  # what `make ui` writes
+# What it reads, in web/ beside it (src: every file and folder in it).
+SOURCES = ('package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html', 'src')
 RELEASES = 'https://github.com/RuisongZhou/agent-memory-service/releases/download'
 DOWNLOAD_TIMEOUT = 60  # seconds per file
 
@@ -74,9 +77,12 @@ def install(args, ctx, plan):
 
 
 def built():
-    """web/dist from `make ui` when npm is on PATH, else None."""
+    """web/dist from `make ui` when npm is on PATH, else None. A web/dist newer than its sources is used as is."""
     if not shutil.which('npm'):
         return None
+    if current():
+        print(f'[build] {BUILD} is newer than its sources; make ui skipped')
+        return BUILD
     print('[build] make ui')
     try:
         subprocess.run(['make', 'ui'], cwd=core.ROOT, check=True)
@@ -85,6 +91,17 @@ def built():
         print(f'[note] make ui failed ({reason}); trying the release UI bundle')
         return None
     return BUILD
+
+
+def current():
+    """Whether web/dist/index.html is newer than every file and folder `make ui` (`npm ci`, then tsc and vite)
+    builds it from: the package files, the TypeScript and Vite configuration, index.html and web/src."""
+    index = BUILD / 'index.html'
+    if not index.is_file():
+        return False
+    stamp, web = index.stat().st_mtime_ns, BUILD.parent
+    sources = [web / name for name in SOURCES] + list((web / 'src').rglob('*'))
+    return all(path.stat().st_mtime_ns < stamp for path in sources)
 
 
 def downloaded(work):

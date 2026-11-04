@@ -23,12 +23,13 @@ import models  # noqa: E402
 
 FAKE_LLAMA = textwrap.dedent('''\
     #!{python}
-    """llama-server stand-in: --version, or serve /health on --port."""
-    import sys
+    """llama-server stand-in: --version, or serve /health on --port; it takes a moment to exit."""
+    import os, signal, sys, time
     from http.server import BaseHTTPRequestHandler, HTTPServer
     if '--version' in sys.argv:
         print('version: 9999 (stand-in)')
         sys.exit(0)
+    signal.signal(signal.SIGTERM, lambda *a: (time.sleep(0.5), os._exit(0)))
     port = int(sys.argv[sys.argv.index('--port') + 1])
     open(sys.argv[sys.argv.index('-m') + 1], 'rb').close()
     class H(BaseHTTPRequestHandler):
@@ -38,11 +39,12 @@ FAKE_LLAMA = textwrap.dedent('''\
     HTTPServer(('127.0.0.1', port), H).serve_forever()
 ''')
 
-# Starts and stops what a unit names; records each call. launchctl: bootstrap/bootout/print. systemctl --user:
-# daemon-reload/enable/restart/is-active, reading ExecStart from FAKE_UNITS.
+# Starts and stops what a unit names; records each call. launchctl: bootstrap/bootout/print; like launchd, bootout
+# returns while the job still exits, and bootstrap fails meanwhile. systemctl --user: daemon-reload/enable/restart/
+# is-active, reading ExecStart from FAKE_UNITS.
 FAKE_MANAGER = textwrap.dedent('''\
     #!{python}
-    import os, plistlib, shlex, signal, subprocess, sys
+    import os, plistlib, shlex, signal, subprocess, sys, time
     run = os.environ['FAKE_RUN']
     args = [a for a in sys.argv[1:] if a not in ('--user', '--quiet')]
     open(os.path.join(run, 'calls'), 'a').write(os.path.basename(sys.argv[0]) + ' ' + ' '.join(args) + '\\n')
@@ -50,16 +52,19 @@ FAKE_MANAGER = textwrap.dedent('''\
     def alive(label):
         try: os.kill(int(open(pidfile(label)).read()), 0); return True
         except (OSError, ValueError): return False
-    def stop(label):
+    def stop(label, wait=False):
         if alive(label): os.kill(int(open(pidfile(label)).read()), signal.SIGTERM)
+        while wait and alive(label): time.sleep(0.05)
     def start(label, argv):
-        stop(label)
+        stop(label, wait=True)
         p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
         open(pidfile(label), 'w').write(str(p.pid))
     cmd = args[0]
     if cmd == 'bootstrap':
-        plist = plistlib.load(open(args[2], 'rb')); start(plist['Label'], plist['ProgramArguments'])
+        plist = plistlib.load(open(args[2], 'rb'))
+        if alive(plist['Label']): print('Bootstrap failed: 5: Input/output error', file=sys.stderr); sys.exit(5)
+        start(plist['Label'], plist['ProgramArguments'])
     elif cmd == 'bootout': label = args[1].split('/')[-1]; code = 0 if alive(label) else 3; stop(label); sys.exit(code)
     elif cmd == 'print': sys.exit(0 if alive(args[1].split('/')[-1]) else 113)
     elif cmd == 'restart':
@@ -172,6 +177,11 @@ def test_apply_downloads_checks_and_starts_both_models_and_a_rerun_changes_nothi
     assert len(setup['weights'].requests) == requests
     new_calls = setup['calls'].read_text()[len(calls):]
     assert all(c.split()[1] in ('print', 'is-active') for c in new_calls.splitlines()), new_calls
+
+    # A changed unit replaces the running servers; launchd's old jobs are waited out before the new ones load.
+    code, out = run_models(capsys, setup, '--apply', '--json', '--gpu-layers', '7')
+    assert code == 0 and json.loads(out)['ok'], out
+    assert all(models.healthy(m) for m in setup['models'])
 
 
 def test_a_download_resumes_and_a_wrong_digest_is_deleted(capsys, setup):

@@ -21,6 +21,9 @@ pub struct Launch {
     pub from_file: Vec<&'static str>,
     /// The command line, program name first.
     pub argv: Vec<OsString>,
+    /// `mem0RecallFloor` as configured, before the connected reranker settled it: a settings test settles it again
+    /// for the reranker it tries, as the restart will.
+    pub recall_floor: Option<f32>,
 }
 
 impl Launch {
@@ -29,6 +32,7 @@ impl Launch {
             env_file: env_file.map(std::path::absolute).transpose()?,
             from_file,
             argv: std::env::args_os().collect(),
+            recall_floor: None,
         })
     }
 

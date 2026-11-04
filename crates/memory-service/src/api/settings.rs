@@ -390,15 +390,26 @@ async fn probe(ctx: &Ctx, plan: &Plan) -> Value {
         )
         .await
         {
-            Ok(Ok(hub)) => json!({
-                "ok": true,
-                "backend": hub.backend,
-                "embedModel": hub.embed_model_id,
-                "rerankModel": hub.rerank_model_id,
-                "dim": hub.dim,
-                // Stored vectors carry the model and dimension; another one re-embeds every memory at the start.
-                "reembed": hub.embed_model_id != eng.models.embed_model_id || hub.dim != eng.models.dim,
-            }),
+            Ok(Ok(hub)) => {
+                // The recall floor as the restart settles it, from the configured value: a reranker without a
+                // built-in floor fails here, not after the restart.
+                let mut cfg = ServiceConfig {
+                    mem0_recall_floor: ctx.launch.recall_floor,
+                    ..plan.cfg.clone()
+                };
+                match crate::algorithms::settle_models(&mut cfg, &hub) {
+                    Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
+                    Ok(()) => json!({
+                        "ok": true,
+                        "backend": hub.backend,
+                        "embedModel": hub.embed_model_id,
+                        "rerankModel": hub.rerank_model_id,
+                        "dim": hub.dim,
+                        // Stored vectors carry the model and dimension; another one re-embeds every memory at the start.
+                        "reembed": hub.embed_model_id != eng.models.embed_model_id || hub.dim != eng.models.dim,
+                    }),
+                }
+            }
             Ok(Err(e)) => json!({"ok": false, "error": format!("{e:#}")}),
             Err(_) => json!({"ok": false, "error": format!(
                 "the retrieval models did not answer within {} s", RETRIEVAL_WAIT.as_secs())}),
@@ -595,6 +606,7 @@ mod tests {
             argv: ["agent-memoryd", "serve", "--llm-model", "qwen-pinned"]
                 .map(OsString::from)
                 .to_vec(),
+            ..Default::default()
         };
         let app = crate::http::router(eng, PORT, None, None, Some(launch));
         let (status, shown) = post(&app, "/admin/model_settings", json!({})).await;

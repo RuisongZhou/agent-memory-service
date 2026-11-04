@@ -53,7 +53,8 @@ strategy.
    short of that waits until the session's end marker arrives, its oldest turn has waited `mem0SegmentWaitSecs`, a
    caller waits for one of its requests (`sync`, the pure rule in [segments](../crates/memory-rules/src/segments.rs))
    or `wait_idle` drains the queue. Raw `infer:false` text never waits. A segment that may not form yet, or that
-   failed, holds back its session's later ones. For a segment, formation prepares prior messages and retrieves
+   failed, holds back its session's later ones; the turns of a failed segment of several are retried one at a time,
+   so a turn the model cannot take fails alone. For a segment, formation prepares prior messages and retrieves
    up to ten visible existing facts using **pure vector recall**, not the public hybrid search path. Visible means
    global facts, the caller platform's facts and the request's project's facts; a global request has no project.
 4. The prompt combines the vendored additive template, historical messages, the facts the session's latest
@@ -350,7 +351,8 @@ plans an export file, under the connection's platform, and applies the run after
    [memory-rules](../crates/memory-rules/src/import/validate.rs): its `evidence` must quote the unit, its numbers and
    named entities must occur in the unit or its metadata, and it must fit the cap; a failing item is stored as
    `rejected` with the reason. Proposals are rows of the shared `proposals` table with `kind: "import"`; nothing
-   is written to `memories`, and no lock is held during model calls.
+   is written to `memories`. Propose calls are serialised by a lock of their own, held across their model calls;
+   nothing else waits on it.
 3. **Apply**, under the formation lock, one proposal per transaction. A declined proposal is `dropped`. An accepted
    fact becomes a `fact` with origin `imported`, project scope, the source's `statedAt`, `ingestionMode:
    imported`, `detail.import` provenance and an `evidence` row; the indexer embeds it. A current imported fact of

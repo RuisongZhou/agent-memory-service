@@ -747,13 +747,16 @@ async fn read_record(
             .source_requests(t, &m.id)
             .await?
             .unwrap_or_default();
-        let mut turns = Vec::new();
-        for id in ids {
-            if let Some(turn) = stored_turn(t, &id).await? {
-                turns.push(turn);
-            }
-        }
-        turns
+        // One read for all of them: a fact restated in many turns names every one, on every page of every level.
+        let mut found: HashMap<String, StoredTurn> = t
+            .store
+            .get_docs(schema::REQUESTS, &ids)
+            .await?
+            .into_iter()
+            .filter_map(StoredTurn::of)
+            .map(|turn| (turn.request_id.clone(), turn))
+            .collect();
+        ids.iter().filter_map(|id| found.remove(id)).collect()
     };
     links.extend(sources.iter().filter_map(|s| link("source", Some(s.uri()))));
     if level == Level::Abstract {

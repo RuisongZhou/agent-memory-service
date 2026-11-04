@@ -63,8 +63,12 @@ pub struct SessionOptions {
 #[serde(rename_all = "camelCase")]
 pub struct SessionsSummary {
     pub sessions: usize,
+    /// Transcripts last written before `since`, not read: none of their turns is counted.
+    #[serde(default)]
+    pub unread: usize,
     pub since: Option<String>,
     pub limit: usize,
+    /// A person's turns before `since` in the transcripts read.
     pub before_since: usize,
     pub over_limit: usize,
     /// Turns a forked or resumed session repeats from the session it continues.
@@ -222,6 +226,7 @@ pub fn build(scan: ScanOutput, opts: &PlanOptions) -> Result<Plan, Error> {
         Some(options) => {
             let mut summary = SessionsSummary {
                 sessions: scan.sessions.len(),
+                unread: scan.unread_sessions,
                 since: options.since.clone(),
                 limit: options.limit,
                 ..SessionsSummary::default()
@@ -461,9 +466,9 @@ fn source(doc: &SourceDoc, segment: &Segment, home: &Path, redactor: &mut Redact
 }
 
 /// The units of the session turns (design §6.10, §6.14): every turn a person asked, oldest first from
-/// `--since`, at most `--limit`, with lines for the turns of that window the adapters skipped. A turn found in
-/// two sessions (a forked or resumed session repeats the turns it continues) belongs to the session that
-/// started first, as capture filed it there.
+/// `--since` (the adapters dropped the earlier ones), at most `--limit`, with lines for the turns of that window
+/// the adapters skipped. A turn found in two sessions (a forked or resumed session repeats the turns it
+/// continues) belongs to the session that started first, as capture filed it there.
 fn session_units(
     sessions: &[SessionDoc],
     opts: &PlanOptions,
@@ -499,10 +504,7 @@ fn session_units(
             }
         }
     }
-    let since = options.since.as_deref().unwrap_or("");
-    let before = eligible.len();
-    eligible.retain(|(key, ..)| key.0.as_str() >= since);
-    summary.before_since = before - eligible.len();
+    summary.before_since = sessions.iter().map(|doc| doc.before_since).sum();
     eligible.sort_by(|a, b| a.0.cmp(&b.0));
     if eligible.len() > options.limit {
         summary.over_limit = eligible.len() - options.limit;
@@ -510,9 +512,7 @@ fn session_units(
         eligible.truncate(options.limit);
     }
     let until = summary.next_since.clone();
-    skipped.retain(|(key, ..)| {
-        key.0.as_str() >= since && until.as_ref().is_none_or(|until| key.0 < *until)
-    });
+    skipped.retain(|(key, ..)| until.as_ref().is_none_or(|until| key.0 < *until));
     let mut all: Vec<_> = eligible.into_iter().chain(skipped).collect();
     all.sort_by(|a, b| a.0.cmp(&b.0));
     all.into_iter()
@@ -774,7 +774,7 @@ mod tests {
                 path: "~/MEMORY.md".into(),
                 reason: "derived".into(),
             }],
-            sessions: vec![],
+            ..ScanOutput::default()
         }
     }
 
@@ -1236,6 +1236,7 @@ mod tests {
             file_hash: content_hash(id),
             started_at: started.into(),
             turns,
+            before_since: 0,
             extra: json!({"version": "2.1.306", "unset": null}),
         }
     }
@@ -1251,7 +1252,13 @@ mod tests {
         }
     }
 
-    fn with_sessions(sessions: Vec<SessionDoc>, since: Option<&str>, limit: usize) -> Plan {
+    /// A plan of `sessions` as the adapters read them, which did not open `unread` more.
+    fn with_sessions(
+        sessions: Vec<SessionDoc>,
+        unread: usize,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Plan {
         let mut opts = options(false);
         opts.host = "claude-code".into();
         opts.sessions = Some(SessionOptions {
@@ -1260,6 +1267,7 @@ mod tests {
         });
         let scan = ScanOutput {
             sessions,
+            unread_sessions: unread,
             ..ScanOutput::default()
         };
         build(scan, &opts).unwrap()
@@ -1289,13 +1297,13 @@ mod tests {
                     turn("t3", &at("04:00"), None),
                 ],
             ),
-            session(
-                "s0",
-                "2025-12-31T22:00:00Z",
-                vec![turn("t0", "2025-12-31T23:00:00Z", None)],
-            ),
+            // The adapter dropped the turn asked before --since, and did not open two older transcripts.
+            SessionDoc {
+                before_since: 1,
+                ..session("s0", "2025-12-31T22:00:00Z", vec![])
+            },
         ];
-        let plan = with_sessions(sessions, Some("2026-01-01T00:00:00Z"), 3);
+        let plan = with_sessions(sessions, 2, Some("2026-01-01T00:00:00Z"), 3);
         let got: Vec<(&str, &str, &str)> = plan
             .units
             .iter()
@@ -1324,6 +1332,7 @@ mod tests {
             plan.summary.sessions,
             Some(SessionsSummary {
                 sessions: 3,
+                unread: 2,
                 since: Some("2026-01-01T00:00:00Z".into()),
                 limit: 3,
                 before_since: 1,
@@ -1376,6 +1385,7 @@ mod tests {
                 &at("01:00"),
                 vec![turn("t1", &at("01:00"), None)],
             )],
+            0,
             None,
             200,
         );
@@ -1394,6 +1404,7 @@ mod tests {
         keyed.prompt = format!("Store this:\n{}\nMIIfake\n{}", pem("BEGIN"), pem("END"));
         let plan = with_sessions(
             vec![session("s1", "2026-01-01T01:00:00Z", vec![leaky, keyed])],
+            0,
             None,
             200,
         );

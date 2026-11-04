@@ -108,9 +108,11 @@ is the default. It is rejected for fact writes. An optional turn ID makes instru
 `importRunId` names the [import run](#import-runs) a past session turn belongs to. Only
 `agent-memoryd import apply` sets it, through the dialogue outbox; the MCP bridge drops it. The daemon accepts it
 only on an asynchronous message batch that is a turn the run applied (same platform, project, session, `turnId`
-and messages, compared after redaction) while the run is `applying` or `applied`, and refuses it otherwise (`INVALID_ARGUMENT`, or
-`NOT_FOUND` for an unknown run). The turn is then deduplicated like any other by `platform + turnId`; a request it
-creates records the run's ID.
+and messages, compared after redaction), or on the run's end marker of a session it applied a turn of
+(`sessionEnded: true` without messages, `turnId` `project/session/session-end:import:<runId>` quoted as a turn key),
+while the run is `applying` or `applied`, and refuses it otherwise (`INVALID_ARGUMENT`, or
+`NOT_FOUND` for an unknown run). The turn or marker is then deduplicated like any other by `platform + turnId`; a
+request it creates records the run's ID.
 
 ## Tasks and completion
 
@@ -368,7 +370,7 @@ field. They are not gated by a configuration flag and are not MCP tools themselv
 | `POST /admin/import_propose` | `{project, host, runId?, finish, limits: {recallBudget, recallTopK}, planHash?, reconsider?, units: [...]}`, at most 64 units | `{run, proposals, units}` of this batch |
 | `POST /admin/import_run` | `{runId}` | `{run, proposals}` |
 | `POST /admin/import_runs` | `{project?, limit?}` (1–200, default 20) | `{runs}`, newest first |
-| `POST /admin/import_apply` | `{runId, decisions: {proposalId: "accept" \| "reject"}, confirmedVia?: "chat"}` | `{run, proposals}` |
+| `POST /admin/import_apply` | `{runId, decisions: {proposalId: "accept" \| "reject" \| "source-changed"}, confirmedVia?: "chat"}` | `{run, proposals}` |
 | `POST /admin/import_rollback` | `{runId}` | `{run, proposals}` |
 
 A unit is `{unit, host, mode, text, pieces?, statedAt, kindHint?, headingPath, fileHash, unitHash, source,
@@ -383,7 +385,8 @@ and then one assistant message with RFC3339 times in order, and `turnId` must be
 `project/session/nativeId`. It is registered without a model call as a row of the run's proposals with
 `itemKind:"session-turn"` and the `turn`, at most once per `turnId`. `import_apply` marks it `applied` with
 `applied:{"queued":true}` and writes nothing: the client queues it into the dialogue outbox with `importRunId`
-(see [Writes](#writes)), and when it is submitted the row gains `applied.requestId` and `applied.duplicate`
+(see [Writes](#writes)), followed after a session's last turn by that session's end marker, and when it is
+submitted the row gains `applied.requestId` and `applied.duplicate`
 (whether the daemon already had the turn). `import_rollback` closes the run to further turns, then retires each
 fact formed only from the run's own requests (`superseded`, marked `importRollback`); a turn the daemon had before,
 or never received, needs nothing, and one still forming stays `applied` with `rollbackSkipReason` until another
@@ -392,16 +395,19 @@ rollback. Run counts keep session turns apart from proposals: `sessionTurns`, `t
 | Status | Values |
 |---|---|
 | Run | `proposing` → `proposed` → `applying` → `applied` → `rolling_back` → `rolled_back` or `partially_rolled_back` |
-| Proposal | `proposed` or `rejected` (with `rejectReason`); then `dropped`, `applied` or `skipped` (with `skipReason`); then `rolled_back`, or still `applied` with `rollbackSkipReason` |
+| Proposal | `proposed` or `rejected` (with `rejectReason`); then `dropped` (`decision` `reject`, or `source-changed` with `skipReason`), `applied` or `skipped` (with `skipReason`); then `rolled_back`, or still `applied` with `rollbackSkipReason` |
 | Unit outcome | `new`, `changed`, `unchanged`, `reconsidered` or `failed` (with `error`; the run continues); a changed unit lists the current records its earlier import left in `previousRecords` |
 
 Each proposal carries `itemKind` (`fact`, `preference` or `reference`; each is written as an imported fact, and
 import never writes an instruction), `scopeHint`, `evidence`, `duplicateOf` (accepting it links the unit to that
 record), `supersedes` (the record the unit's earlier import wrote that this one replaces) and up to three
 `similar` memories. `import_apply` takes each proposal's decision from `decisions` and accepts a proposal it does
-not name; `confirmedVia: "chat"` (sent by `apply_import`) is kept on the run, so runs a person confirmed only in a
-conversation can be found. `reconsider` proposes again the units whose last import applied nothing
-although their text is unchanged. Errors are `INVALID_ARGUMENT` (400) for validation, a bad `runId` or a run in the
+not name. `source-changed`, which the CLI sends for a proposal whose source file changed or vanished after
+propose, drops it like `reject`, but no one declined it: its unit gets no `declined` ledger row, so the next plan
+of the current text proposes the unit again. `confirmedVia: "chat"` (sent by `apply_import`) is kept on the run,
+so runs a person confirmed only in a conversation can be found. `reconsider` proposes again the units whose last
+import applied nothing (declined or rejected) although their text is unchanged. `import_propose` takes one batch
+at a time, so a run's pages may arrive together. Errors are `INVALID_ARGUMENT` (400) for validation, a bad `runId` or a run in the
 wrong status, `NOT_FOUND` (404), `MODEL_UNAVAILABLE` (503) for extract units without a generation key, and
 `INTERNAL` (500) during apply or rollback, which is recorded on `run.error`; repeating the call resumes.
 

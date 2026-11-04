@@ -2,8 +2,11 @@
 //! Transcripts are private formats, so an adapter keeps a turn only when the host's own provenance fields say a
 //! person asked it (Claude Code `turnOrigin: human`, Codex `thread_source: user`); a session without those fields
 //! is `unknown-format`, never guessed at. A turn is the prompt and the final reply, without the blocks hosts and
-//! this service inject. Reads never follow symbolic links and stop at a size cap; nothing here talks to the
-//! network or the daemon.
+//! this service inject. With `--since`, a transcript last written before it is not opened and the turns asked
+//! before it are dropped as they are read, so planning batch after batch reads only what changed since. Reads
+//! never follow symbolic links and stop at a size cap; nothing here talks to the network or the daemon.
+use chrono::{DateTime, Utc};
+use memory_rules::util::fmt_ts;
 use regex::Regex;
 use serde_json::Value;
 use std::fs::File;
@@ -57,7 +60,10 @@ pub struct SessionDoc {
     pub file_hash: String,
     /// RFC3339 UTC time the session started; a turn found in two sessions is the earlier one's.
     pub started_at: String,
+    /// The turns asked from `--since` on.
     pub turns: Vec<Turn>,
+    /// Turns a person asked before `--since`, dropped as they were read.
+    pub before_since: usize,
     /// Provenance merged into each unit's `source`: the host version and the like.
     pub extra: Value,
 }
@@ -66,6 +72,8 @@ pub struct SessionDoc {
 pub struct SessionScan {
     pub sessions: Vec<SessionDoc>,
     pub issues: Vec<Issue>,
+    /// Transcripts last written before `--since`, not read.
+    pub unread: usize,
 }
 
 impl SessionScan {
@@ -81,6 +89,26 @@ impl SessionScan {
 /// never an error; an error means the scan cannot run (no host directory, no workspaces).
 pub trait SessionAdapter {
     fn scan_sessions(&self, ctx: &ScanContext) -> Result<SessionScan, Error>;
+}
+
+/// Whether the regular file `path` was last written before `since` (RFC3339 UTC, whole seconds). A transcript is
+/// only appended to, each record after the time it states, so such a file holds no turn from `since` on.
+pub fn written_before(path: &Path, since: &str) -> bool {
+    std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.is_file())
+        .and_then(|meta| meta.modified().ok())
+        .is_some_and(|modified| fmt_ts(&DateTime::<Utc>::from(modified)).as_str() < since)
+}
+
+/// Keep `turn` in `turns` unless it was asked before `since`; a person's turn dropped so counts in `before`.
+pub fn keep(turns: &mut Vec<Turn>, before: &mut usize, since: Option<&str>, turn: Turn) {
+    match since {
+        Some(since) if turn.prompt_at.as_str() < since => {
+            *before += usize::from(turn.skip.is_none())
+        }
+        _ => turns.push(turn),
+    }
 }
 
 /// `text` without injected blocks, trimmed.

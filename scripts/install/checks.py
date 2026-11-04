@@ -41,7 +41,7 @@ USER = 'Remember for this project: keep the source of every decision.'
 ASSISTANT = 'Noted; decisions will keep their sources.'
 FACT = 'Installer check: project decisions keep their sources.'
 SESSION = 'installer-check'
-CHECK_FOLDER = 'check-project'  # under the installer's state directory
+CHECK_FOLDER = 'check-project'  # in the checks' temporary home
 # Synthetic dialogue for --verify-model, in the language of the default (zh) formation prompt; it only
 # ever reaches a temporary store and the configured model provider.
 MODEL_USER = '请记住：Boreal 项目的内部代号是 Nacre-731。'
@@ -286,11 +286,12 @@ def wait_uploaded(ctx, outbox, env, expected):
     raise InstallError(f'captured turns did not complete: {statuses}')
 
 
-def check_folder(ctx):
-    """The session folder of the synthetic events: a folder of its own, which is not a git repository, so its
-    canonical path is its project. Never the home directory, which hooks file as global memories."""
-    folder = ctx.state_root / CHECK_FOLDER
-    folder.mkdir(parents=True, exist_ok=True)
+def check_folder(home):
+    """The session folder of the synthetic events: a folder of its own in the hooks' temporary `home`, which is
+    not a git repository, so its canonical path is its project. Never the home directory, which hooks file as
+    global memories; and never a folder under the real one, which a dotfiles repository there would claim."""
+    folder = home / CHECK_FOLDER
+    folder.mkdir()
     return str(folder.resolve())
 
 
@@ -350,10 +351,10 @@ def check_recall(host, ctx, root, url, env):
 
 
 def verify_local(host, ctx):
-    ctx.check_project = check_folder(ctx)
     with tempfile.TemporaryDirectory(prefix='agent-memory-install-') as temporary:
         root = Path(temporary)
         env = check_env(root)
+        ctx.check_project = check_folder(root)
         outbox = root / 'outbox.sqlite3' if ctx.capture else None
         with (generation_stub() as (generation, calls),
               mock_daemon(ctx.binary, ctx.surreal, root, generation, outbox) as url):

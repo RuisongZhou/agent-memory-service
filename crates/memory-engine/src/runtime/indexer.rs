@@ -170,8 +170,8 @@ pub async fn process_batch(eng: &Arc<Engine>, t: &Arc<Instance>, limit: usize) -
 
 /// Embeddings of `texts` in order. A text the model refuses would fail every batch it is in, again on each pass:
 /// after a [`Refused`] batch each text is embedded alone, and a refused one gets its refusal instead. A refused
-/// configuration (key, model, endpoint) refuses every text and the probe too; then the batch fails, and its
-/// tasks stay for a later pass.
+/// configuration (key, model, endpoint) refuses the probe too; then the batch fails before any text is sent
+/// alone (a revoked key costs two calls a pass, not one per text), and its tasks stay for a later pass.
 async fn embed_each_refusal_apart(
     eng: &Engine,
     texts: &[String],
@@ -181,6 +181,9 @@ async fn embed_each_refusal_apart(
         Err(e) if e.is::<Refused>() => e,
         Err(e) => return Err(e),
     };
+    if !eng.models.accepts_probe().await {
+        return Err(refused);
+    }
     let mut out = Vec::with_capacity(texts.len());
     for text in texts {
         match eng.models.embed_one(text).await {
@@ -188,9 +191,6 @@ async fn embed_each_refusal_apart(
             Err(e) if e.is::<Refused>() => out.push(Err(e.to_string())),
             Err(e) => return Err(e),
         }
-    }
-    if out.iter().all(|v| v.is_err()) && !eng.models.accepts_probe().await {
-        return Err(refused);
     }
     Ok(out)
 }
@@ -226,18 +226,19 @@ mod tests {
     use memory_config::ServiceConfig;
     use memory_store::store::to_doc;
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// An OpenAI-compatible embeddings API on a loopback port. It refuses, as a provider's content check does,
-    /// every batch with a text containing `REFUSED`, and every batch at all while `refuse_all` is set, as for a
-    /// revoked key.
-    async fn embedding_stub(refuse_all: Arc<AtomicBool>) -> String {
+    /// An OpenAI-compatible embeddings API on a loopback port, counting its calls. It refuses, as a provider's
+    /// content check does, every batch with a text containing `REFUSED`, and every batch at all while `refuse_all`
+    /// is set, as for a revoked key.
+    async fn embedding_stub(refuse_all: Arc<AtomicBool>, calls: Arc<AtomicUsize>) -> String {
         use axum::http::StatusCode;
         use axum::routing::post;
         use axum::{Json, Router};
         let app = Router::new().route(
             "/embeddings",
             post(move |Json(body): Json<Value>| async move {
+                calls.fetch_add(1, Ordering::SeqCst);
                 let input: Vec<String> = serde_json::from_value(body["input"].clone()).unwrap();
                 if refuse_all.load(Ordering::SeqCst) || input.iter().any(|t| t.contains("REFUSED"))
                 {
@@ -289,8 +290,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_text_the_embedding_model_refuses_does_not_hold_back_the_others() {
         let refuse_all = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
         let cfg = ServiceConfig {
-            embed_url: Some(embedding_stub(refuse_all.clone()).await),
+            embed_url: Some(embedding_stub(refuse_all.clone(), calls.clone()).await),
             ..Default::default()
         };
         let models = ModelHub::connect(&cfg, "test-key", false).await.unwrap();
@@ -313,16 +315,26 @@ mod tests {
         facts(&t, &[("bad2", "REFUSED again.")]).await;
         drain(&eng, &t).await.unwrap();
         assert_eq!(pending(&t).await.unwrap(), 0);
-        // A refused configuration refuses every text and the probe: the task stays for a later pass.
+        // A refused configuration refuses the batch and the probe, and no text is sent alone: the tasks stay for
+        // a later pass.
         refuse_all.store(true, Ordering::SeqCst);
-        facts(&t, &[("ok3", "Logs are kept for 30 days.")]).await;
+        facts(
+            &t,
+            &[
+                ("ok3", "Logs are kept for 30 days."),
+                ("ok4", "Backups run nightly."),
+            ],
+        )
+        .await;
+        calls.store(0, Ordering::SeqCst);
         let failed = drain(&eng, &t).await.unwrap_err();
         assert!(failed.is::<Refused>(), "{failed}");
-        assert_eq!(pending(&t).await.unwrap(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(pending(&t).await.unwrap(), 2);
         refuse_all.store(false, Ordering::SeqCst);
         drain(&eng, &t).await.unwrap();
         assert_eq!(pending(&t).await.unwrap(), 0);
-        assert_eq!(cached(&t).await, ["ok1", "ok2", "ok3"]);
+        assert_eq!(cached(&t).await, ["ok1", "ok2", "ok3", "ok4"]);
         drop(t);
         let _ = std::fs::remove_dir_all(dir);
     }

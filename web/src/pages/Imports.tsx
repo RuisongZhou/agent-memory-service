@@ -16,10 +16,9 @@ import {
   labelled,
   UNIT_OUTCOME_LABEL,
 } from '../lib/format'
-import { importDecisions, pendingSessionTurns, SESSION_TURN } from '../lib/review'
+import { importDecisions, pendingSessionTurns, runActions, SESSION_TURN } from '../lib/review'
 
 const RUN_LIMIT = 50
-const ROLLBACK_STATUSES = ['applied', 'partially_rolled_back', 'rolling_back']
 
 const runLink = (runId: string) => (
   <Link to={`/imports/${runId}`} className="font-mono text-sm text-brand-700 hover:underline">{runId}</Link>
@@ -118,7 +117,9 @@ function ImportRunDetail({ runId }: { runId: string }) {
   if (query.error) return <ErrorNotice error={query.error} />
   if (!query.data) return <Loading />
   const { run, proposals } = query.data
-  const reviewing = run.status === 'proposed'
+  const can = runActions(run)
+  // Resuming an interrupted apply decides the proposals it has not reached, so they stay open for review.
+  const reviewing = can.apply
   const items = proposals.filter((p) => p.itemKind !== SESSION_TURN)
   const turns = proposals.filter((p) => p.itemKind === SESSION_TURN)
   const decide = (id: string, reject: boolean) =>
@@ -137,7 +138,7 @@ function ImportRunDetail({ runId }: { runId: string }) {
           <div className="flex flex-wrap gap-2">
             <RefreshButton busy={query.isFetching} onClick={() => query.refetch()} />
             {reviewing && <ApplyAction run={run} proposals={proposals} rejected={rejected} />}
-            {ROLLBACK_STATUSES.includes(run.status) && <RollbackAction run={run} proposals={proposals} />}
+            {can.rollback && <RollbackAction run={run} proposals={proposals} />}
           </div>
         }
       />
@@ -442,23 +443,24 @@ function ApplyAction({ run, proposals, rejected }: {
   const decisions = importDecisions(proposals, rejected)
   const values = Object.values(decisions)
   const accepted = values.filter((d) => d === 'accept').length
+  // Applying an interrupted run again picks up the proposals it has not reached.
+  const verb = run.status === 'applying' ? '继续应用' : '应用'
   const apply = useMutation({
     mutationFn: () => api.importApply({ runId: run.runId, decisions }),
-    onSuccess: () => {
-      refresh()
-      setOpen(false)
-    },
+    // Also after a failure: an apply that stopped partway leaves the run `applying` with the error.
+    onSettled: () => refresh(),
+    onSuccess: () => setOpen(false),
   })
   const blocked = pendingSessionTurns(proposals) > 0
   return (
     <>
       <Button disabled={blocked} title={blocked ? '有未应用的会话轮次，见下方说明' : undefined} onClick={() => setOpen(true)}>
-        应用…
+        {verb}…
       </Button>
       <Modal
         open={open}
         onOpenChange={setOpen}
-        title="应用导入"
+        title={`${verb}导入`}
         description={`接受 ${accepted} 条，拒绝 ${values.length - accepted} 条。`}
       >
         <div className="space-y-3 text-sm">
@@ -473,7 +475,7 @@ function ApplyAction({ run, proposals, rejected }: {
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setOpen(false)}>取消</Button>
             <Button disabled={apply.isPending} onClick={() => apply.mutate()}>
-              {apply.isPending ? '应用中…' : `确认应用（接受 ${accepted} 条）`}
+              {apply.isPending ? '应用中…' : `确认${verb}（接受 ${accepted} 条）`}
             </Button>
           </div>
         </div>
@@ -489,10 +491,9 @@ function RollbackAction({ run, proposals }: { run: ImportRun; proposals: ImportP
   const turns = applied.filter((p) => p.itemKind === SESSION_TURN).length
   const rollback = useMutation({
     mutationFn: () => api.importRollback(run.runId),
-    onSuccess: () => {
-      refresh()
-      setOpen(false)
-    },
+    // Also after a failure: a rollback that stopped partway leaves the run `rolling_back` with the error.
+    onSettled: () => refresh(),
+    onSuccess: () => setOpen(false),
   })
   return (
     <>

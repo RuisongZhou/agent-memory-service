@@ -1098,6 +1098,17 @@ def test_apply_writes_a_private_env_file_and_starts_the_service(session, capsys,
     assert code == 0 and runtime.env_value(env.read_text(), 'QWEN_API_KEY') == 'offline-test-key-2', output
     assert service_calls(service_binary)[-1][-1] == '--restart'  # the running daemon must read the new key
     assert len(list((session / core.STATE / 'env').iterdir())) == 1  # the replaced file was backed up
+    # A new release at the same --binary path restarts the service, also on the rerun after a start that failed;
+    # once it started, the same binary does not.
+    with service_binary.open('a') as stream:
+        stream.write('# the next release\n')
+    (service_binary.parent / 'exit').write_text('1')
+    code, output = run(capsys, *argv[:-2])
+    assert code == 1 and service_calls(service_binary)[-1][-1] == '--restart', output
+    (service_binary.parent / 'exit').unlink()
+    for restart in (True, False):
+        code, output = run(capsys, *argv[:-2])
+        assert code == 0 and (service_calls(service_binary)[-1][-1] == '--restart') == restart, output
 
 
 def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, service_binary, fake_surreal):
@@ -1118,6 +1129,10 @@ def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, se
     assert flag(call, '--llm-concurrency') == '2' and flag(call, '--surreal-bin') == str(recorded)
     assert flag(call, '--outbox') == str(session / core.OUTBOX)  # a unit without an uploader gets one
     assert not (session / '.config/agent-memory-service/.env').exists()
+    recorded.unlink()  # moved away: the SurrealDB on PATH takes its place, with a note
+    code, output = run(capsys, *service_args(session, service_binary, '--apply'))
+    assert code == 0 and flag(service_calls(service_binary)[-1], '--surreal-bin') == str(fake_surreal), output
+    assert f'runs SurrealDB {recorded}, which is gone; using {fake_surreal} from PATH' in output
 
     # The port and outbox the unit has stay without a flag; a flag changes them and says that platforms
     # connected earlier keep the old ones.
@@ -1139,7 +1154,7 @@ def test_an_installed_service_keeps_its_env_file_and_options(session, capsys, se
     (service_binary.parent / 'status.json').write_text(json.dumps(status))
     code, output = run(capsys, *service_args(session, service_binary, '--apply'))
     assert code == 1 and 'older than this checkout (service status --json has no uiDir)' in output, output
-    assert len(service_calls(service_binary)) == 3
+    assert len(service_calls(service_binary)) == 4
 
 
 def test_a_hand_made_unit_and_a_daemon_started_by_hand_are_refused(session, capsys, service_binary, monkeypatch):
@@ -1224,10 +1239,16 @@ def test_the_web_ui_is_built_downloaded_or_skipped_and_served_by_the_service(ses
     report = json.loads(result.stdout)
     assert result.returncode == 0 and [h['id'] for h in report['hosts']] == list(core.HOSTS), result.stderr
 
-    # With npm on PATH, `make ui` builds it here and replaces the downloaded files; a failed build falls back to
-    # the release bundle.
+    # With npm on PATH, `make ui` builds it here and replaces the downloaded files; a rerun with no source newer
+    # than the build reuses it, and a failed build falls back to the release bundle.
     build = session / 'web/dist'
     monkeypatch.setattr(ui, 'BUILD', build)
+    sources = [build.parent / name for name in ui.SOURCES if name != 'src'] + [build.parent / 'src/pages/App.tsx']
+    for source in sources:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text('')
+    for source in [*sources, build.parent / 'src', build.parent / 'src/pages']:
+        os.utime(source, ns=(0, 0))  # long before any build
     tools = session / 'tools'
     tools.mkdir()
     (tools / 'npm').write_text('#!/bin/sh\n')
@@ -1241,6 +1262,11 @@ def test_the_web_ui_is_built_downloaded_or_skipped_and_served_by_the_service(ses
     assert code == 0 and '[build] make ui' in output and '[download]' not in output and served() == str(target), output
     assert (target / 'index.html').read_text() == 'built' and not (target / 'assets').exists()
     assert sorted(p.name for p in target.parent.iterdir()) == ['installer', 'ui']  # nothing staged is left
+    code, output = run(capsys, *argv)
+    assert code == 0 and 'make ui skipped' in output and '[build] make ui' not in output, output
+    assert (target / 'index.html').read_text() == 'built' and served() == str(target)
+    later = (build / 'index.html').stat().st_mtime_ns + 10 ** 9
+    os.utime(sources[-1], ns=(later, later))  # an edited source
     (tools / 'make').write_text('#!/bin/sh\nexit 2\n')
     code, output = run(capsys, *argv)
     assert code == 0 and 'make ui failed' in output and (target / 'index.html').read_text() == 'release', output
@@ -1408,6 +1434,7 @@ def test_rollback_and_uninstall_keep_the_shared_runtime(tmp_path, capsys, fake_b
                          + [('workbuddy', ['--no-capture', '--recall'])])
 def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     capture = core.load_host(host).CAPTURE
+    (tmp_path / '.git').mkdir()  # a home that is a dotfiles repository: the check folder is still its own project
     # CLAUDE_PROJECT_DIR is what a Claude Code session exports; the checks must not let it pick their project.
     environment = {'PATH': '/usr/bin:/bin', 'PYTHON': sys.executable, 'HOME': str(Path.home()),
                    'CLAUDE_PROJECT_DIR': str(tmp_path)}
@@ -1422,8 +1449,8 @@ def test_end_to_end_install_with_the_offline_mock_daemon(tmp_path, host, flags):
     assert check.endswith(' passed')
     assert not (tmp_path / core.OUTBOX).exists()  # verification used a temporary outbox
     assert not (tmp_path / core.RECALL_STATE).exists()  # and a temporary recall record
-    # The check's memories lived in its temporary daemon; only its empty session folder stays.
-    assert list((tmp_path / core.STATE / checks.CHECK_FOLDER).iterdir()) == []
+    # The check's memories and its session folder lived in its temporary directory; neither stays.
+    assert not (tmp_path / core.STATE / checks.CHECK_FOLDER).exists()
     if host == core.HOSTS[0]:  # once: the built binary also answers what `service` and `connect` read from it
         status = runtime.service_status(BINARY, tmp_path)  # every key plan_service and daemon read
         assert status['installed'] is False and status['port'] is None

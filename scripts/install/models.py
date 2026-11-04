@@ -39,6 +39,7 @@ HOST = '127.0.0.1'
 SOURCES = {'huggingface': 'https://huggingface.co', 'hf-mirror': 'https://hf-mirror.com'}
 BREW_PREFIXES = ('/opt/homebrew/bin', '/usr/local/bin')
 READY_WAIT = 180  # seconds for both servers to load their model
+UNLOAD_WAIT = 10  # seconds for launchd to unload a server's old job
 CHUNK = 1 << 20
 DESCRIPTION = ('Install the self-hosted retrieval models: llama.cpp\'s llama-server, the BGE-M3 and bge-reranker-v2-m3 '
                'weights, and a user service for each on 127.0.0.1:8081 and :8082. Preview unless --apply is given.')
@@ -357,6 +358,16 @@ def is_loaded(model):
                           stderr=subprocess.DEVNULL).returncode == 0
 
 
+def wait_unloaded(model):
+    """Wait until launchd has unloaded the job: bootstrapping while the old one still exits fails with
+    `Bootstrap failed: 5: Input/output error`."""
+    deadline = time.monotonic() + UNLOAD_WAIT
+    while is_loaded(model):
+        if time.monotonic() > deadline:
+            raise core.InstallError(f'launchd did not unload {label(model)} within {UNLOAD_WAIT} s')
+        time.sleep(0.2)
+
+
 def install_services(args, llama, weights, progress):
     progress.step('services', state='running')
     (args.home / LOG_DIR).mkdir(parents=True, exist_ok=True)
@@ -375,7 +386,9 @@ def install_services(args, llama, weights, progress):
                 print('[models] ' + ' '.join(argv))
                 sys.stdout.flush()
                 result = command(argv)
-                if result.returncode and argv[1] != 'bootout':
+                if argv[1] == 'bootout':
+                    wait_unloaded(model)
+                elif result.returncode:
                     raise core.InstallError(f'`{" ".join(argv)}` failed (exit {result.returncode})')
         progress.step('services', detail=f'{label(model)}: {path}')
     progress.step('services', state='done', detail=', '.join(label(m) for m in MODELS))

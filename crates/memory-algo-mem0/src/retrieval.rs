@@ -10,7 +10,7 @@ use memory_rules::util;
 use memory_store::schema;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
     time::Instant,
 };
@@ -418,6 +418,43 @@ async fn explain(
     Ok(json!({"visible":all.len(),"cosineMean":mean,"cosineStd":std,"candidates":candidates}))
 }
 
+/// The keyword corpus: the type, scope and lemmatized text of every current or conflicting memory, by id. Each
+/// search scores every visible one of them; reading and lemmatizing them all again on every search cost more than
+/// the rest of a search at a few tens of thousands of memories. It follows the memories table through the store's
+/// revision journal, re-reading only the records that changed, and loads afresh when the journal cannot tell.
+#[derive(Default)]
+struct KeywordCorpus(tokio::sync::Mutex<Option<Corpus>>);
+
+struct Corpus {
+    revision: u64,
+    docs: BTreeMap<String, KeywordDoc>,
+}
+
+struct KeywordDoc {
+    mtype: String,
+    scope: MemScope,
+    text: String,
+}
+
+/// A record of the corpus, if it is current or conflicting.
+fn keyword_doc(m: MemoryRec) -> Option<(String, KeywordDoc)> {
+    if !matches!(m.status.as_str(), S_CURRENT | S_CONFLICT) {
+        return None;
+    }
+    let normalized = memory_rules::mem0_hybrid::lemmatize(&m.text);
+    let text = if normalized.is_empty() {
+        m.text
+    } else {
+        normalized
+    };
+    let doc = KeywordDoc {
+        mtype: m.mtype,
+        scope: m.scope,
+        text,
+    };
+    Some((m.id, doc))
+}
+
 /// Default SQLite SDK keyword search scans every filtered record. Its corpus
 /// statistics must not be restricted to the semantic over-fetch pool.
 async fn keyword_documents(
@@ -426,37 +463,62 @@ async fn keyword_documents(
     platform: &str,
     types: &[String],
 ) -> Result<Vec<(String, String)>> {
-    let meta = t.store.active_memory_meta().await?;
-    let mut ids = Vec::new();
-    for row in meta.iter() {
-        let scope: MemScope = serde_json::from_value(row["scope"].clone())?;
-        if visible(&scope, project, platform)
-            && matches!(row["status"].as_str(), Some(S_CURRENT | S_CONFLICT))
-            && types.iter().any(|kind| row["type"] == kind.as_str())
-        {
-            if let Some(id) = row["mid"].as_str() {
-                ids.push(id.to_owned());
+    let state = t.algorithm_state::<KeywordCorpus>();
+    let mut corpus = state.0.lock().await;
+    // Read first: a write committed meanwhile is read again on the next search, never missed.
+    let revision = t.store.memory_revision();
+    let changes = corpus.as_ref().and_then(|c| {
+        t.store
+            .document_changes_since(c.revision, &[schema::MEMORIES])
+    });
+    // Taken out while it is brought up to date: a read that fails leaves no corpus, and the next search loads one.
+    let updated = match (corpus.take(), changes) {
+        (Some(mut c), Some(mut changes)) => {
+            let ids: Vec<String> = changes
+                .remove(schema::MEMORIES)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            for id in &ids {
+                c.docs.remove(id);
             }
+            c.docs.extend(
+                t.store
+                    .get_memories(&ids)
+                    .await?
+                    .into_iter()
+                    .filter_map(keyword_doc),
+            );
+            c.revision = revision;
+            c
         }
-    }
-    ids.sort();
-    let records = t.store.get_memories(&ids).await?;
-    Ok(records
-        .into_iter()
-        .filter(|m| {
-            matches!(m.status.as_str(), S_CURRENT | S_CONFLICT)
-                && visible(&m.scope, project, platform)
+        _ => Corpus {
+            revision,
+            docs: t
+                .store
+                .find_memories(
+                    "status IN [$current, $conflict]",
+                    vec![
+                        ("current", json!(S_CURRENT)),
+                        ("conflict", json!(S_CONFLICT)),
+                    ],
+                )
+                .await?
+                .into_iter()
+                .filter_map(keyword_doc)
+                .collect(),
+        },
+    };
+    let documents = updated
+        .docs
+        .iter()
+        .filter(|(_, d)| {
+            visible(&d.scope, project, platform) && types.iter().any(|kind| *kind == d.mtype)
         })
-        .map(|m| {
-            let normalized = memory_rules::mem0_hybrid::lemmatize(&m.text);
-            let text = if normalized.is_empty() {
-                m.text
-            } else {
-                normalized
-            };
-            (m.id, text)
-        })
-        .collect())
+        .map(|(id, d)| (id.clone(), d.text.clone()))
+        .collect();
+    *corpus = Some(updated);
+    Ok(documents)
 }
 
 fn visible(scope: &MemScope, project: &str, platform: &str) -> bool {
@@ -547,4 +609,73 @@ pub async fn list_inputs(
             "complete":true,"extractState":row["status"]}));
     }
     Ok(json!({"turns":turns,"tokensUsed":used}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memory_config::ServiceConfig;
+    use memory_engine::runtime::{llm::Llm, models::ModelHub};
+    use memory_store::store::{to_doc, Tx};
+
+    #[tokio::test]
+    async fn the_keyword_corpus_follows_every_write_to_memories() -> Result<()> {
+        let eng = Engine::new(
+            ServiceConfig::default(),
+            Llm::new("http://127.0.0.1:1", "", "disabled", 1, 1)?,
+            ModelHub::mock(),
+            Arc::new(crate::Mem0),
+        );
+        let root = std::env::temp_dir().join(util::new_id("mem0_keyword_test"));
+        let t = Arc::new(
+            Instance::open(&root, &eng.cfg.surreal_bin, eng.models.dim, crate::SCHEMA).await?,
+        );
+        let fact = |id: &str, text: &str, project: &str| MemoryRec {
+            id: id.into(),
+            mtype: T_FACT.into(),
+            text: text.into(),
+            scope: MemScope::project(project),
+            status: S_CURRENT.into(),
+            ..Default::default()
+        };
+        let put = |m: MemoryRec| {
+            let t = t.clone();
+            async move {
+                t.store
+                    .put_doc(schema::MEMORIES, &m.id.clone(), &to_doc(&m)?)
+                    .await
+            }
+        };
+        let corpus = || async {
+            let docs = keyword_documents(&t, "a", "test", &[T_FACT.to_string()]).await?;
+            anyhow::Ok(docs.into_iter().map(|(id, _)| id).collect::<Vec<_>>())
+        };
+        put(fact("m1", "Deploys run on Fridays", "a")).await?;
+        put(fact("m2", "CI runs on Buildkite", "a")).await?;
+        put(fact("m3", "The b project uses Rust", "b")).await?;
+        assert_eq!(corpus().await?, ["m1", "m2"]);
+        // Texts are lemmatized once, when read.
+        let docs = keyword_documents(&t, "a", "test", &[T_FACT.to_string()]).await?;
+        assert_eq!(
+            docs[0].1,
+            memory_rules::mem0_hybrid::lemmatize("Deploys run on Fridays")
+        );
+        // A new record, a retired one and a deleted one are read again, the others are kept.
+        put(fact("m4", "Logs are kept for 30 days", "a")).await?;
+        t.store
+            .merge_doc(schema::MEMORIES, "m1", json!({"status": S_SUPERSEDED}))
+            .await?;
+        let mut tx = Tx::new();
+        tx.delete(schema::MEMORIES, "m2")?;
+        t.store.commit(tx).await?;
+        assert_eq!(corpus().await?, ["m4"]);
+        t.store
+            .merge_doc(schema::MEMORIES, "m1", json!({"status": S_CURRENT}))
+            .await?;
+        assert_eq!(corpus().await?, ["m1", "m4"]);
+        t.store.shutdown().await;
+        drop(t);
+        let _ = std::fs::remove_dir_all(root);
+        Ok(())
+    }
 }

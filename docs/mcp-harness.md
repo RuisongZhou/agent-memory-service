@@ -63,7 +63,8 @@ in this order:
    installed commands survive `cargo clean` or a moved checkout. `--binary PATH` uses an existing
    executable as is, such as a [release binary](deployment.md#release-archive) of the same version.
 4. It installs the [web UI](design/web-ui.md) into `~/.local/share/agent-memory-service/ui`: built with
-   `make ui` when `npm` is on PATH, otherwise the UI bundle of the checkout's version, downloaded from its
+   `make ui` when `npm` is on PATH (skipped while `web/dist` is newer than every source of the build), otherwise
+   the UI bundle of the checkout's version, downloaded from its
    GitHub release (a version with no published release has none) and checked against the release's SHA-256. When
    neither works it goes on without one: install Node.js and npm and rerun `service --apply` to add it.
    A release bundle matches the code only on its release tag; elsewhere the page shows a version banner,
@@ -769,8 +770,9 @@ folder) is refused. Hosts without a workspace (WorkBuddy, `jsonl`), and several 
    changed unit left: they stay current unless a proposal replaces them; retract one with the MCP tool
    `correct_memory` (no text). `apply --yes` accepts every proposal instead; a duplicate is linked to the
    existing record of the same text, not written again.
-4. **`apply`** first rereads every source (`--home` as for `propose`) and declines the proposals of files changed
-   since propose. It writes accepted proposals as facts with origin `imported`, whatever their item kind. They
+4. **`apply`** first rereads every source (`--home` as for `propose`; `show --home` carries it into the command it
+   suggests) and drops the proposals of files changed since propose as `source-changed`: no one declined them, so
+   the next plan and propose offer those units again. It writes accepted proposals as facts with origin `imported`, whatever their item kind. They
    are reference material: `get_context` does not list them, while search and automatic recall find them. Import
    never writes an instruction; save a rule you want every host to follow yourself, for example with
    `add_memories` and `memoryType:"instruction"`. A proposal whose text is already a current imported fact links

@@ -51,6 +51,7 @@ INSTALL_SURREAL = ('install SurrealDB 3.x: `brew install surrealdb/tap/surreal` 
                    '`curl -sSf https://install.surrealdb.com | sh` (docs/deployment.md#install-surrealdb)')
 SERVICE_TIMEOUT = 240  # seconds; `--start` waits up to 60 s for the daemon and 10 s for launchd
 DATA_DIR = Path('.local/share/agent-memory-service/mem0')  # relative to home; the service's default store
+STARTED = 'service-binary.sha256'  # in the installer's state directory: the binary the service last started
 LAUNCHD_LABEL = 'local.agent-memory-daemon'
 SYSTEMD_UNIT = 'agent-memory.service'
 # The `service status --json` settings plan_service and daemon read; an older binary lacks some.
@@ -74,10 +75,15 @@ def unit_path(home):
 
 def find_surreal(args, recorded=None):
     """The `surreal` the daemon starts for its store: --surreal-bin, else the one the installed service
-    `recorded`, else the first on PATH; None when missing."""
-    if args.surreal_bin or recorded:
-        return args.surreal_bin or Path(recorded)
+    `recorded` while it exists, else the first on PATH; None when missing."""
+    if args.surreal_bin:
+        return args.surreal_bin
+    if recorded and Path(recorded).exists():
+        return Path(recorded)
     found = shutil.which('surreal')
+    if recorded:
+        print(f'[note] the installed service runs SurrealDB {recorded}, which is gone; '
+              + (f'using {found} from PATH' if found else 'there is none on PATH either'))
     return core.absolute(found) if found else None
 
 
@@ -92,11 +98,11 @@ def check_surreal(ctx):
     version = surreal_version(ctx.surreal, 'db', 'version') or surreal_version(ctx.surreal, 'version')
     if not version:
         raise InstallError(f'{ctx.surreal} is not SurrealDB (`surreal db version` and `surreal version` failed); '
-                           f'{INSTALL_SURREAL}')
+                           f'{INSTALL_SURREAL}, or pass --surreal-bin PATH')
     oldest, newer = SURREAL_VERSIONS
     if not oldest <= (int(version.group(1)), int(version.group(2))) < newer:
         raise InstallError(f'{ctx.surreal} is SurrealDB {version.group(0)}; the daemon needs SurrealDB 3.2 or a later '
-                           f'3.x: {INSTALL_SURREAL}')
+                           f'3.x: {INSTALL_SURREAL}, or pass --surreal-bin PATH')
     print(f'[check] SurrealDB {version.group(0)} at {ctx.surreal}')
 
 
@@ -260,7 +266,8 @@ def plan_service(args, ctx, binary):
         raise InstallError(f"Cannot read the port of {status['unit']}; pass --port or reinstall it with "
                            'agent-memoryd service install')
     if installed and not args.surreal_bin:
-        # The unit's SurrealDB, like its other options: an upgrade must not switch to the one on PATH.
+        # The unit's SurrealDB, like its other options: an upgrade must not switch to the one on PATH while it
+        # still exists.
         ctx.surreal = find_surreal(args, status['surrealBin'])
         check_surreal(ctx)
     port = args.port or (status['port'] if installed else core.DEFAULT_PORT)
@@ -436,8 +443,11 @@ def start_service(ctx, plan):
                         ('--llm-concurrency', plan.llm_concurrency)):
         if value is not None:
             argv += [flag, str(value)]
-    if ctx.binary_changed or plan.env_change is not None:
-        # The unit can stay the same while the binary it runs or the key it reads changed.
+    started = ctx.state_root / STARTED
+    binary = file_digest(ctx.binary)
+    if ctx.binary_changed or plan.env_change is not None or read_file(started).strip() != binary:
+        # The unit can stay the same while the binary it runs or the key it reads changed: also a --binary
+        # replaced in place, or a binary an interrupted run installed before it restarted the service.
         argv.append('--restart')
     print('[service] ' + shlex.join(argv))
     sys.stdout.flush()
@@ -448,6 +458,7 @@ def start_service(ctx, plan):
     if result.returncode:
         raise InstallError(f'The daemon service did not start (see above). The binary and the env file are in '
                            f'place; fix the cause, for example the key in {plan.env_file}, then rerun')
+    core.atomic_write(started, (binary + '\n').encode(), 0o600)
 
 
 def report_service(plan):

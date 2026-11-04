@@ -18,7 +18,7 @@ use memory_domain::import::apply::{self as plan, EVIDENCE_ROLE};
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportRun, ImportRunReq, UnitOutcome, ACCEPT, APPLIED,
     CONFIRMED_CHAT, DROPPED, MODE_SESSION_TURN, PROPOSED, REJECT, RUN_APPLIED, RUN_APPLYING,
-    RUN_PROPOSED, SKIPPED, UNIT_CHANGED, UNIT_NEW, UNIT_RECONSIDERED,
+    RUN_PROPOSED, SKIPPED, SOURCE_CHANGED, UNIT_CHANGED, UNIT_NEW, UNIT_RECONSIDERED,
 };
 use memory_domain::types::*;
 use memory_rules::import::units;
@@ -50,6 +50,25 @@ fn ledger_moved(row: Option<&LedgerRow>, seen: &UnitOutcome, run_id: &str) -> Op
         ),
         None => "the unit's import was rolled back after this run was proposed".into(),
     })
+}
+
+/// The units of `run` that a person (or validation) declined if nothing of them was applied: every note unit it
+/// proposed (new, changed or reconsidered) except those whose proposals were dropped because their source changed,
+/// which no one declined: they keep the row they had, so the next plan of the current text proposes them again.
+fn declinable<'a>(run: &'a ImportRun, proposals: &[ImportProposal]) -> Vec<&'a UnitOutcome> {
+    let changed: HashSet<usize> = proposals
+        .iter()
+        .filter(|p| p.decision.as_deref() == Some(SOURCE_CHANGED))
+        .map(|p| p.cluster)
+        .collect();
+    run.units
+        .iter()
+        .filter(|u| {
+            u.mode != MODE_SESSION_TURN
+                && [UNIT_NEW, UNIT_CHANGED, UNIT_RECONSIDERED].contains(&u.outcome.as_str())
+                && !changed.contains(&u.index)
+        })
+        .collect()
 }
 
 enum Accepted {
@@ -170,12 +189,13 @@ async fn accept(
 }
 
 /// Apply a `proposed` run (or resume an interrupted apply). Each `proposed` proposal takes its review
-/// decision, or `accept` without one: `reject` drops it; `accept` rechecks the unit's ledger row (another
-/// run imported the unit since: `skipped`) and the project's current records (same text: the unit is linked
-/// to that record), and otherwise writes the record, its evidence and index task. Either way the record the
+/// decision, or `accept` without one: `reject` and `source-changed` drop it; `accept` rechecks the unit's ledger
+/// row (another run imported the unit since: `skipped`) and the project's current records (same text: the unit is
+/// linked to that record), and otherwise writes the record, its evidence and index task. Either way the record the
 /// unit's earlier import was (`supersedes`) is retired while no other unit holds it, and the unit's ledger row
 /// and the proposal's bookkeeping commit in the same transaction. A unit whose proposals were all declined
-/// gets a `declined` row, so proposing the same text again finds it unchanged unless `reconsider` is asked.
+/// gets a `declined` row, so proposing the same text again finds it unchanged unless `reconsider` is asked; a unit
+/// dropped because its source changed gets none (`declinable`).
 pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
     let id = req.run_id.as_str();
     load_run(t, id).await?;
@@ -185,9 +205,9 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
         .map(|p| p.proposal_id)
         .collect();
     for (pid, decision) in &req.decisions {
-        if decision != ACCEPT && decision != REJECT {
+        if ![ACCEPT, REJECT, SOURCE_CHANGED].contains(&decision.as_str()) {
             return Err(invalid(format!(
-                "the decision for {pid} must be accept or reject, not {decision:?}"
+                "the decision for {pid} must be accept, reject or source-changed, not {decision:?}"
             )));
         }
         if !ids.contains(pid) {
@@ -230,6 +250,9 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
         let mut tx = Tx::new();
         let bookkeeping = if decision == REJECT {
             json!({"status": DROPPED, "decision": REJECT})
+        } else if decision == SOURCE_CHANGED {
+            json!({"status": DROPPED, "decision": SOURCE_CHANGED,
+                "skipReason": "its source file changed or vanished after propose"})
         } else if is_session_turn(&p) {
             // Queued for the client to put into the dialogue outbox; formation writes its facts.
             json!({"status": APPLIED, "decision": ACCEPT, "applied": {"queued": true},
@@ -251,12 +274,10 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
         }
     }
     // Units of which nothing was applied are recorded as declined, keeping their earlier records.
+    let proposals = run_proposals(t, id).await?;
     let mut tx = Tx::new();
     let now = util::now_str();
-    for unit in run.units.iter().filter(|u| {
-        u.mode != MODE_SESSION_TURN
-            && [UNIT_NEW, UNIT_CHANGED, UNIT_RECONSIDERED].contains(&u.outcome.as_str())
-    }) {
+    for unit in declinable(&run, &proposals) {
         let lid = ledger_id(&run.project, &unit.unit);
         let row = match ledger(t, &lid).await {
             Ok(row) => row,
@@ -276,7 +297,6 @@ pub async fn apply(t: &Arc<Instance>, req: ImportRunReq) -> ApiResult<Value> {
     if let Err(e) = t.store.commit(tx).await {
         return Err(interrupted(t, id, e).await);
     }
-    let proposals = run_proposals(t, id).await?;
     let mut counts = run.counts.clone();
     counts.applied = count(&proposals, APPLIED);
     counts.dropped = count(&proposals, DROPPED);
@@ -315,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn a_unit_moves_when_another_run_imports_it_after_propose() {
+    fn moved_units_are_skipped_and_only_units_a_person_could_decline_get_declined_rows() {
         // Unchanged since propose, or already this run's own row.
         assert_eq!(
             ledger_moved(
@@ -340,5 +360,41 @@ mod tests {
         assert!(ledger_moved(None, &seen(Some("ir1"), Some("h1")), "ir2")
             .unwrap()
             .contains("rolled back"));
+
+        let unit = |index: usize, mode: &str, outcome: &str| UnitOutcome {
+            unit: format!("codex:t#{index}"),
+            index,
+            mode: mode.into(),
+            outcome: outcome.into(),
+            ..Default::default()
+        };
+        let run = ImportRun {
+            units: vec![
+                unit(0, "verbatim", UNIT_NEW),
+                unit(1, "extract", UNIT_CHANGED),
+                unit(2, "verbatim", UNIT_RECONSIDERED),
+                unit(3, "verbatim", "unchanged"),
+                unit(4, "extract", "failed"),
+                unit(5, MODE_SESSION_TURN, UNIT_NEW),
+            ],
+            ..Default::default()
+        };
+        let dropped = |cluster: usize, decision: &str| ImportProposal {
+            cluster,
+            status: DROPPED.into(),
+            decision: Some(decision.into()),
+            ..Default::default()
+        };
+        // Unit 1's file changed after propose: its proposals were dropped, but no one declined them.
+        let proposals = [
+            dropped(0, REJECT),
+            dropped(1, SOURCE_CHANGED),
+            dropped(1, SOURCE_CHANGED),
+        ];
+        let units: Vec<usize> = declinable(&run, &proposals)
+            .iter()
+            .map(|u| u.index)
+            .collect();
+        assert_eq!(units, [0, 2]);
     }
 }

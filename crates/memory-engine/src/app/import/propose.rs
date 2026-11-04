@@ -3,7 +3,8 @@
 //! a model call; an extract unit costs one generation call (`extract`), cached by project, unit text, prompt and
 //! model, and every item it returns is checked by the pure provenance rules of
 //! `memory_rules::import::validate`. A session turn becomes one row without a model call (`turns::register`). The
-//! run and its proposal rows commit together; no lock is held during model calls and no memory record is written.
+//! run and its proposal rows commit together, and no memory record is written. Batches are proposed one at a time
+//! (`ProposeLock`), but no lock formation, apply or rollback takes is held during model calls.
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -32,6 +33,13 @@ use memory_store::store::{hashed_id, Tx};
 /// Existing memories shown to the extraction model, and to the reviewer next to each proposal.
 const EXTRACTION_CONTEXT: usize = 10;
 const SIMILAR: usize = 3;
+
+/// Serialises the `propose` calls of one store, which keeps it among its typed state (`Instance::algorithm_state`).
+/// A batch numbers its units from the run's count and writes the run back whole, so two batches of one run at once
+/// (the MCP bridge does not serialise a conversation's pages) would number theirs alike and the later write would
+/// lose the other's unit outcomes. Batches wait for each other's model calls; nothing else takes this lock.
+#[derive(Default)]
+struct ProposeLock(tokio::sync::Mutex<()>);
 
 /// The extraction cache row of a unit: everything the extraction input is made of except the existing
 /// memories, which change with every import (the project, which extracted texts name, the unit text and its
@@ -530,6 +538,8 @@ pub async fn propose(
             "generation model API key not configured".into(),
         ));
     }
+    let lock = t.algorithm_state::<ProposeLock>();
+    let _serial = lock.0.lock().await;
     let now = util::now_str();
     let created = req.run_id.is_none();
     let mut run = match req.run_id.as_deref() {

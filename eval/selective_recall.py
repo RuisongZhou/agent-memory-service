@@ -668,14 +668,18 @@ def served(root, arm, binary):
 
 
 def qa_contexts(root, system):
-    """(arm, rows) for `system`: each report-split own question, and each swap question no memory answers, with the
-    memories the hook would inject for it."""
+    """(name, rows) for `system`: the name of its qa files (a selective system's carries the digest of the binary
+    that served its memories, as its served file does), and each report-split own question, and each swap question
+    no memory answers, with the memories the hook would inject for it."""
     arm, how = system.split(':')
+    name = system.replace(':', '-')
     texts = {}
     for cid in REPORT:
         texts.update({m['id']: m for m in json.loads((root / arm / cid / 'corpus.json').read_text())['memories']})
     if how == 'selective':
-        picked = served(root, arm, REPO / 'target/fast/agent-memoryd')
+        binary = REPO / 'target/fast/agent-memoryd'
+        name += f'-{sha(binary)[:12]}'
+        picked = served(root, arm, binary)
     rows = []
     for row in rows_of(root, arm, REPORT):
         if row['kind'] == 'cross' or (row['kind'] == 'swap' and row['relevant']):
@@ -688,7 +692,7 @@ def qa_contexts(root, system):
         injected = [texts[c['id']]['text'] for c, _ in hook_pack(ordered)]
         rows.append({'qid': row['qid'], 'kind': row['kind'], 'category': row['category'], 'question': row['question'],
                      'answer': row['answer'] if row['kind'] == 'own' else ABSTAIN, 'injected': injected})
-    return arm, rows
+    return name, rows
 
 
 def util_tokens(text):
@@ -703,8 +707,8 @@ async def qa(root, systems, concurrency, max_calls):
     calls = {'n': 0}
     try:
         for system in systems:
-            arm, rows = qa_contexts(root, system)
-            out = root / f'qa-{system.replace(":", "-")}.jsonl'
+            name, rows = qa_contexts(root, system)
+            out = root / f'qa-{name}.jsonl'
             done = {r['qid'] for r in jsonl.read(out)}
 
             async def one(r):
@@ -733,7 +737,7 @@ async def qa(root, systems, concurrency, max_calls):
                 if sel:
                     summary[key] = {'n': len(sel), 'J': sum(r['J'] for r in sel) / len(sel),
                                     'memories': sum(len(r['injected']) for r in sel) / len(sel)}
-            write_json(root / f'qa-{system.replace(":", "-")}.summary.json', summary)
+            write_json(root / f'qa-{name}.summary.json', summary)
             print(system, json.dumps({k: {m: round(v, 3) for m, v in s.items()} for k, s in summary.items()}), flush=True)
     finally:
         await llm.aclose()

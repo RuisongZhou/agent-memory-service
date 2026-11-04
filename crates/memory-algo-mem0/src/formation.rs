@@ -173,8 +173,8 @@ pub async fn enqueue(
         .turn_id
         .as_ref()
         .map(|id| store::turn_rid(&c.platform, id));
-    if let Some(key) = &key {
-        if let Some(id) = repo::request_id_for_turn_key(t, key).await? {
+    if let Some(turn_id) = &req.turn_id {
+        if let Some(id) = repo::request_id_for_turn(t, &c.platform, turn_id).await? {
             drop(guard);
             let mut out = if req.sync.unwrap_or(req.text.is_some()) {
                 wait(eng, t, &id).await?
@@ -271,7 +271,9 @@ async fn process_until(eng: &Arc<Engine>, t: &Arc<Instance>, flush: Flush<'_>) -
                         job["requestId"].as_str().unwrap_or_default(),
                         json!({"status":if failures>=5 {"failed"} else {"queued"},
                     "failures":failures,"error":format!("{error:#}"),"updatedAt":util::now_str(),
-                    "retryAtTs":util::now().timestamp()+(1_i64 << failures.min(6))}),
+                    "retryAtTs":util::now().timestamp()+(1_i64 << failures.min(6)),
+                    // One turn the model cannot take would fail the turns formed with it as well.
+                    "formAlone":jobs.len() > 1 || job["formAlone"] == true}),
                     )
                     .await?;
             }
@@ -302,6 +304,7 @@ fn queued_view(job: &Value, now: i64) -> Result<Queued<'_>> {
             .sum(),
         age_secs: now - util::ts_secs(field("createdAt")?),
         retry_pending: job["retryAtTs"].as_i64().unwrap_or(0) > now,
+        alone: job["formAlone"].as_bool().unwrap_or(false),
     })
 }
 
@@ -660,12 +663,11 @@ async fn publish_committed(eng: &Arc<Engine>, t: &Arc<Instance>, job: &Value) ->
         .ok_or_else(|| anyhow!("missing requestId"))?;
     let ids: Vec<String> = serde_json::from_value(job["memoryIds"].clone())?;
     for mid in ids {
-        let vector = t
-            .store
-            .memory_embedding(&mid)
-            .await?
-            .ok_or_else(|| anyhow!("committed vector missing"))?;
-        t.vecs.write().await.memories.insert(mid, Arc::new(vector));
+        // A record deleted or retired since it was formed, or waiting to be embedded again after a model change, has
+        // no stored vector: it has none to publish, and failing here would hold back every later job for good.
+        if let Some(vector) = t.store.memory_embedding(&mid).await? {
+            t.vecs.write().await.memories.insert(mid, Arc::new(vector));
+        }
     }
     super::entities::reconcile_locked(eng, t).await?;
     t.store.merge_doc(schema::REQUESTS,id,json!({"status":"completed","searchable":true,"error":null,"updatedAt":util::now_str()})).await

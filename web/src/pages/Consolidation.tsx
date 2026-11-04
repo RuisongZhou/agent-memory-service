@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useIsMutating, useMutation, useQuery } from '@tanstack/react-query'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { api } from '../api/client'
@@ -34,9 +34,9 @@ import {
   TH,
 } from '../components/ui'
 import { formatNumber, formatPercent, formatTime, projectOption } from '../lib/format'
+import { runActions } from '../lib/review'
 
 const RUN_LIMIT = 50
-const ROLLBACK_STATUSES = ['applied', 'partially_rolled_back', 'rolling_back']
 
 const OPS: { op: ConsolidationOp['op']; label: string; effect: string }[] = [
   { op: 'merge', label: '合并（merge）', effect: '写一条新的合并事实，输入变为已取代' },
@@ -138,17 +138,18 @@ function Propose() {
   const [project, setProject] = useState('')
   const navigate = useNavigate()
   const refresh = useRefresh()
+  // A run takes minutes and outlives this page: the shared key keeps the button busy after leaving and coming
+  // back, so a second paid run cannot start, and only a mounted form navigates to the new run.
   const propose = useMutation({
-    mutationFn: () => api.consolidate(project),
-    onSuccess: (res) => {
-      refresh()
-      navigate(`/consolidation/${res.run.runId}`)
-    },
+    mutationKey: ['consolidate'],
+    mutationFn: api.consolidate,
+    onSuccess: () => refresh(),
   })
+  const proposing = useIsMutating({ mutationKey: ['consolidate'] }) > 0
   const blocked = proposeBlocked(stats.data)
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    propose.mutate()
+    propose.mutate(project, { onSuccess: (res) => navigate(`/consolidation/${res.run.runId}`) })
   }
   return (
     <Card title="发起提议">
@@ -165,8 +166,8 @@ function Propose() {
             ))}
           </Select>
         </Field>
-        <Button type="submit" disabled={!!blocked || !project || propose.isPending}>
-          {propose.isPending ? '提议中…' : '发起提议'}
+        <Button type="submit" disabled={!!blocked || !project || proposing}>
+          {proposing ? '提议中…' : '发起提议'}
         </Button>
         <ModelCall>会调用生成模型：每个簇一次</ModelCall>
       </form>
@@ -191,6 +192,7 @@ function ConsolidationRunDetail({ runId }: { runId: string }) {
   if (!query.data) return <Loading />
   const { run, proposals, memories } = query.data
   const enabled = stats.data?.features.consolidation
+  const can = runActions(run)
 
   return (
     <div className="space-y-4">
@@ -199,12 +201,12 @@ function ConsolidationRunDetail({ runId }: { runId: string }) {
         actions={
           <div className="flex flex-wrap gap-2">
             <RefreshButton busy={query.isFetching} onClick={() => query.refetch()} />
-            {run.status === 'proposed' && <ApplyAction run={run} proposals={proposals} enabled={enabled} />}
-            {ROLLBACK_STATUSES.includes(run.status) && <RollbackAction run={run} proposals={proposals} />}
+            {can.apply && <ApplyAction run={run} proposals={proposals} enabled={enabled} />}
+            {can.rollback && <RollbackAction run={run} proposals={proposals} />}
           </div>
         }
       />
-      {run.status === 'proposed' && enabled === false && (
+      {can.apply && enabled === false && (
         <Note>daemon 没有开启 consolidation（consolidationEnabled），不能应用。回滚不受这个开关限制。</Note>
       )}
       {OPS.map(({ op, label }) => {
@@ -375,12 +377,13 @@ function ApplyAction({ run, proposals, enabled }: {
   const [open, setOpen] = useState(false)
   const refresh = useRefresh()
   const pending = proposals.filter((p) => p.status === 'proposed')
+  // Applying an interrupted run again picks up the ops it has not reached.
+  const verb = run.status === 'applying' ? '继续应用' : '应用'
   const apply = useMutation({
     mutationFn: () => api.consolidationApply(run.runId),
-    onSuccess: () => {
-      refresh()
-      setOpen(false)
-    },
+    // Also after a failure: an apply that stopped partway leaves the run `applying` with the error.
+    onSettled: () => refresh(),
+    onSuccess: () => setOpen(false),
   })
   return (
     <>
@@ -389,9 +392,9 @@ function ApplyAction({ run, proposals, enabled }: {
         title={enabled === false ? 'daemon 没有开启 consolidation' : undefined}
         onClick={() => setOpen(true)}
       >
-        应用…
+        {verb}…
       </Button>
-      <Modal open={open} onOpenChange={setOpen} title="应用 consolidation" description={`应用 ${pending.length} 个通过验证的操作。`}>
+      <Modal open={open} onOpenChange={setOpen} title={`${verb} consolidation`} description={`${verb} ${pending.length} 个通过验证的操作。`}>
         <div className="space-y-3 text-sm">
           <ul className="list-disc space-y-1 pl-5 text-zinc-700">
             {OPS.map(({ op, label, effect }) => {
@@ -408,7 +411,7 @@ function ApplyAction({ run, proposals, enabled }: {
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setOpen(false)}>取消</Button>
             <Button disabled={apply.isPending} onClick={() => apply.mutate()}>
-              {apply.isPending ? '应用中…' : '确认应用'}
+              {apply.isPending ? '应用中…' : `确认${verb}`}
             </Button>
           </div>
         </div>
@@ -423,10 +426,9 @@ function RollbackAction({ run, proposals }: { run: ConsolidationRun; proposals: 
   const applied = proposals.filter((p) => p.status === 'applied').length
   const rollback = useMutation({
     mutationFn: () => api.consolidationRollback(run.runId),
-    onSuccess: () => {
-      refresh()
-      setOpen(false)
-    },
+    // Also after a failure: a rollback that stopped partway leaves the run `rolling_back` with the error.
+    onSettled: () => refresh(),
+    onSuccess: () => setOpen(false),
   })
   return (
     <>

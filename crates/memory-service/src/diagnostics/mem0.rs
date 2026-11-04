@@ -168,18 +168,35 @@ async fn selftest() {
         .unwrap();
     t.vecs.write().await.memories.clear();
     mem0_formation::process_jobs(&eng, &t).await.unwrap();
-    assert_eq!(
+    let searchable = || async {
         ingest::get_task(
             &eng,
             &t,
             GetTaskReq {
-                request_id: rid.into()
-            }
+                request_id: rid.into(),
+            },
         )
         .await
-        .unwrap()["searchable"],
-        true
-    );
+        .unwrap()["searchable"]
+            .clone()
+    };
+    assert_eq!(searchable().await, true);
+    // A record that has lost its stored vector since (retired, or waiting to be embedded again after a model
+    // change) does not hold the publication, and every later job, back.
+    t.store
+        .merge_doc(
+            schema::REQUESTS,
+            rid,
+            json!({"status":"indexing","searchable":false}),
+        )
+        .await
+        .unwrap();
+    t.store
+        .set_embedding(schema::MEMORIES, &id, None, "")
+        .await
+        .unwrap();
+    mem0_formation::process_jobs(&eng, &t).await.unwrap();
+    assert_eq!(searchable().await, true);
     // A correction hides the old value before any later query.
     let corrected = management::correct_memory(
         &eng,

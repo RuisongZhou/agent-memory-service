@@ -122,12 +122,15 @@ impl Engine {
         let rebuild = have.as_ref().is_some_and(|h| {
             h.get("embeddingModel") != want.get("embeddingModel") || h.get("dim") != want.get("dim")
         });
-        if have.is_none() || rebuild {
-            t.store.put_doc(schema::INDEX_META, "meta", &want).await?;
-        }
+        // The old model's vectors go before any search can score the new model's queries against them, and the
+        // meta is written last: a start interrupted before it resets and rebuilds again.
         if rebuild {
             tracing::warn!("embedding model changed; scheduling a vector rebuild");
+            t.store.reset_vectors(self.models.dim).await?;
             indexer::schedule_rebuild(t).await?;
+        }
+        if have.is_none() || rebuild {
+            t.store.put_doc(schema::INDEX_META, "meta", &want).await?;
         }
         // vector cache
         {

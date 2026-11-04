@@ -3,7 +3,7 @@
 //! this while holding its write lock, so the loads see the state the commit will extend.
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use super::schema;
 use super::store::{from_doc, hashed_id, safe_id, to_doc, Store, Tx};
@@ -34,14 +34,39 @@ async fn invalidate_views(store: &Store, tx: &mut Tx) -> Result<()> {
     if tx.writes.unavailable.is_empty() {
         return Ok(());
     }
-    let mut records: HashMap<String, MemoryRec> = store
-        .select_as::<MemoryRec>("SELECT * OMIT id, embedding FROM memories", vec![])
-        .await?
-        .into_iter()
-        .map(|m| (m.id.clone(), m))
-        .collect();
+    // The views that may depend on other records (current derivations, profiles and skills) and their sources:
+    // every commit that retires or rewrites a memory runs this under the write lock, so it reads those few, not the
+    // whole table.
+    let active = json!([S_CURRENT, S_CONFLICT, S_CANDIDATE]);
+    let mut records: HashMap<String, MemoryRec> = HashMap::new();
+    for (sql, binds) in [
+        (
+            "SELECT * OMIT id, embedding FROM memories WHERE derivation.currentView = true AND status IN $active",
+            vec![("active", active.clone())],
+        ),
+        (
+            "SELECT * OMIT id, embedding FROM memories WHERE type IN $views AND status IN $active",
+            vec![("active", active.clone()), ("views", json!([T_PROFILE, T_SKILL]))],
+        ),
+    ] {
+        for m in store.select_as::<MemoryRec>(sql, binds).await? {
+            records.insert(m.id.clone(), m);
+        }
+    }
     for (id, doc) in &tx.writes.memory_docs {
         records.insert(id.clone(), from_doc(doc.clone())?);
+    }
+    let sources: Vec<String> = records
+        .values()
+        .filter(|m| is_active(&m.status))
+        .filter_map(rules::current_dependency)
+        .flat_map(|dependency| dependency.sources)
+        .filter(|id| !records.contains_key(id))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    for m in store.get_memories(&sources).await? {
+        records.insert(m.id.clone(), m);
     }
     for id in rules::stale_views(&records, &mut tx.writes.unavailable) {
         tx.merge(

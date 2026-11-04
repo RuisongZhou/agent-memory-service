@@ -154,10 +154,13 @@ async fn llama_install(State(installer): State<Installer>, Json(body): Json<Valu
             Source::Huggingface => "huggingface",
             Source::HfMirror => "hf-mirror",
         };
+        // A process group of its own: launchd stops a job by killing its whole group, which a service restart in
+        // the middle of the download would otherwise take the installer down with.
         let status = tokio::process::Command::new("/bin/sh")
             .args(["-c", r#""$0" "$@" </dev/null >/dev/null 2>&1 &"#])
             .arg(path)
             .args(["models", "--apply", "--json", "--source", source])
+            .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

@@ -3,25 +3,27 @@
 //! puts them into the dialogue outbox. The uploader submits each with `add_memories` naming the run
 //! (`importRunId`): the turn is admitted only while the run is applied, the algorithm's formation deduplicates it
 //! against capture by `platform + turnId`, and the request it creates carries the run's id. The row records that
-//! request and whether it was a duplicate. Rollback retires only the facts every source of which is one of the run's
-//! own requests (`MemoryAlgorithm::source_requests`); the rest belong to capture or to other runs and stay.
+//! request and whether it was a duplicate. After a session's last turn of the run the client queues the session's end
+//! marker under the run too, so formation closes the session's last segment instead of waiting for it to age; its
+//! request is the run's own like the turns'. Rollback retires only the facts every source of which is one of the
+//! run's own requests (`MemoryAlgorithm::source_requests`); the rest belong to capture or to other runs and stay.
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{invalid, load_run};
+use super::{invalid, load_run, run_proposals};
 use crate::app::consolidation::write_patch;
 use crate::runtime::engine::Engine;
 use crate::runtime::instance::Instance;
 use memory_domain::import::apply::turn_fact_rollback_patch;
 use memory_domain::import::{
-    is_session_turn, ImportProposal, ImportRun, ImportUnit, UnitOutcome, APPLIED,
-    ITEM_SESSION_TURN, KIND, PROPOSED, RUN_APPLIED, RUN_APPLYING, UNIT_NEW,
+    is_session_turn, session_end_turn_id, ImportProposal, ImportRun, ImportUnit, UnitOutcome,
+    APPLIED, ITEM_SESSION_TURN, KIND, PROPOSED, RUN_APPLIED, RUN_APPLYING, UNIT_NEW,
 };
 use memory_domain::types::*;
 use memory_rules::util;
 use memory_store::schema;
-use memory_store::store::{from_doc, hashed_id, Tx};
+use memory_store::store::{from_doc, hashed_id, turn_rid, Tx};
 
 /// The row of `turn_id` in run `run_id`: found again from the run and turn id `add_memories` names.
 pub fn proposal_id(run_id: &str, turn_id: &str) -> String {
@@ -75,9 +77,10 @@ pub(super) fn register(
     (outcome, vec![row])
 }
 
-/// `add_memories` with `importRunId`: a session turn the run applied, submitted by the uploader. Refused unless
-/// it is that turn, as a queued `messages` batch from the run's host and project, while the run is applied; then
-/// formed (or found to be a duplicate) like any captured turn, and the row records the request.
+/// `add_memories` with `importRunId`: a session turn the run applied, submitted by the uploader, or the run's end
+/// marker of a session it applied turns of. Refused unless it is that turn, as a queued `messages` batch, or that
+/// marker (`session_end_turn_id`), from the run's host and project while the run is applied; then formed (or found
+/// to be a duplicate) like any captured turn or `SessionEnd` marker, and a turn's row records the request.
 pub async fn submit(
     eng: &Arc<Engine>,
     t: &Arc<Instance>,
@@ -86,14 +89,15 @@ pub async fn submit(
 ) -> ApiResult<Value> {
     let run_id = req.import_run_id.clone().unwrap_or_default();
     let turn_id = req.turn_id.clone().unwrap_or_default();
+    let end_marker = req.session_ended == Some(true);
     if run_id.is_empty()
         || turn_id.is_empty()
-        || req.messages.is_none()
         || req.sync == Some(true)
-        || req.session_ended == Some(true)
+        || req.text.is_some()
+        || end_marker == req.messages.is_some()
     {
         return Err(invalid(
-            "importRunId goes only with a queued messages batch and its turnId",
+            "importRunId goes only with a queued messages batch, or a session's end marker, and its turnId",
         ));
     }
     // Rollback closes the run while holding the gate exclusively: this turn is queued before it looks for the
@@ -111,6 +115,24 @@ pub async fn submit(
             "import run {run_id} imports {} turns of project {}",
             run.host, run.project
         )));
+    }
+    if end_marker {
+        // The marker closes the session's segment like capture's.
+        let session = req
+            .scope
+            .session
+            .as_deref()
+            .expect("admission requires a session");
+        let applied = run_proposals(t, &run_id)
+            .await?
+            .into_iter()
+            .any(|p| p.status == APPLIED && p.turn.is_some_and(|turn| turn.session == session));
+        if turn_id != session_end_turn_id(&run.project, session, &run_id) || !applied {
+            return Err(invalid(format!(
+                "{turn_id} is not the end marker of a session import run {run_id} applied"
+            )));
+        }
+        return eng.add_memories(t, c, req).await;
     }
     let id = proposal_id(&run_id, &turn_id);
     let row: Option<ImportProposal> = match t.store.get_doc(schema::PROPOSALS, &id).await? {
@@ -171,10 +193,11 @@ pub(super) async fn owned_requests(
         .collect())
 }
 
-/// The inverse of one applied session turn, added to `tx`, or why it must wait. A turn never submitted needs
-/// nothing (the run no longer admits it); a duplicate's facts belong to the turn's first submission. Of a request
-/// the run created, every fact formed only from the run's requests is retired, unless a person or a later run
-/// changed it since; a fact also formed from another request stays. A request still forming waits.
+/// The inverse of one applied session turn, added to `tx`, or why it must wait. A turn no request of the run
+/// answers needs nothing (never submitted, and the run no longer admits it); a duplicate's facts belong to the
+/// turn's first submission. Of a request the run created, every fact formed only from the run's requests is
+/// retired, unless a person or a later run changed it since; a fact also formed from another request stays. A
+/// request still forming waits.
 pub(super) async fn undo(
     eng: &Arc<Engine>,
     t: &Arc<Instance>,
@@ -194,14 +217,15 @@ pub(super) async fn undo(
         .as_ref()
         .and_then(|a| a["requestId"].as_str())
         .map(str::to_string);
-    let request_id = match recorded {
-        Some(id) => Some(id),
-        None => t
-            .store
-            .request_for_turn(&run.host, turn_id)
-            .await?
-            .and_then(|r| r["requestId"].as_str().map(str::to_string)),
-    };
+    // A row whose bookkeeping was lost finds its request among the run's own: a turn has one request, and one the
+    // run did not create holds nothing to undo.
+    let request_id = recorded.or_else(|| {
+        let key = json!(turn_rid(&run.host, turn_id));
+        owned
+            .iter()
+            .find(|(_, r)| r["turnKeys"].as_array().is_some_and(|k| k.contains(&key)))
+            .map(|(id, _)| id.clone())
+    });
     let Some(request_id) = request_id else {
         return Ok(Ok(json!({ "submitted": false })));
     };
@@ -255,4 +279,166 @@ pub(super) async fn undo(
     Ok(Ok(
         json!({"requestId": request_id, "retired": retired, "kept": kept}),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::import::{apply, propose, rollback};
+    use crate::test_support::{fresh_store, recording_engine};
+    use memory_domain::import::{
+        ImportProposeReq, ImportRunReq, SessionTurn, MODE_SESSION_TURN, ROLLED_BACK,
+        RUN_ROLLED_BACK,
+    };
+    use memory_rules::import::units::{content_hash, turn_key};
+
+    const PROJECT: &str = "atlas";
+    const HOST: &str = "codex";
+
+    fn unit(session: &str, native: &str) -> ImportUnit {
+        let message = |role: &str, content: &str| InMessage {
+            role: role.into(),
+            content: content.into(),
+            timestamp: "2026-03-01T10:00:00Z".into(),
+        };
+        let prompt = format!("Question {native}?");
+        ImportUnit {
+            unit: format!("{HOST}:session%3A{session}#{native}"),
+            mode: MODE_SESSION_TURN.into(),
+            unit_hash: content_hash(&prompt),
+            text: prompt.clone(),
+            turn: Some(SessionTurn {
+                turn_id: turn_key(PROJECT, session, native),
+                session: session.into(),
+                native_id: native.into(),
+                messages: vec![message("user", &prompt), message("assistant", "Noted.")],
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn batch(run_id: Option<&str>, units: Vec<ImportUnit>, finish: bool) -> ImportProposeReq {
+        ImportProposeReq {
+            project: PROJECT.into(),
+            host: HOST.into(),
+            run_id: run_id.map(str::to_string),
+            finish,
+            units,
+            ..Default::default()
+        }
+    }
+
+    /// A run of session turns on one store: batches proposed at once keep every unit outcome, the run admits its
+    /// end marker of a session it applied and no other, and rollback finds a turn's own request without its row
+    /// having recorded it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runs_turns_keep_their_batches_end_their_sessions_and_roll_back() {
+        let (eng, algorithm) = recording_engine();
+        let (t, caller, dir) = fresh_store(&eng, "import-turns", HOST).await;
+        let first = propose(&eng, &t, batch(None, vec![unit("s1", "p1")], false))
+            .await
+            .unwrap();
+        let run_id = first["run"]["runId"].as_str().unwrap().to_string();
+        // Two pages of a conversation proposed at once: neither loses the other's unit.
+        let (a, b) = tokio::join!(
+            propose(
+                &eng,
+                &t,
+                batch(Some(&run_id), vec![unit("s1", "p2")], false)
+            ),
+            propose(
+                &eng,
+                &t,
+                batch(Some(&run_id), vec![unit("s2", "p3")], false)
+            ),
+        );
+        a.unwrap();
+        b.unwrap();
+        let done = propose(&eng, &t, batch(Some(&run_id), vec![], true))
+            .await
+            .unwrap();
+        let run: ImportRun = serde_json::from_value(done["run"].clone()).unwrap();
+        let mut indices: Vec<usize> = run.units.iter().map(|u| u.index).collect();
+        indices.sort();
+        assert_eq!(indices, [0, 1, 2]);
+        let rows = run_proposals(&t, &run_id).await.unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|p| run
+            .units
+            .iter()
+            .any(|u| u.index == p.cluster && u.unit == p.unit)));
+
+        // The run's end marker of a session it applied turns of goes on to formation; nothing else does.
+        let marker = |session: &str, turn_id: String| AddMemoriesReq {
+            scope: ReqScope {
+                project: Some(PROJECT.into()),
+                session: Some(session.into()),
+                ..Default::default()
+            },
+            turn_id: Some(turn_id),
+            session_ended: Some(true),
+            import_run_id: Some(run_id.clone()),
+            ..Default::default()
+        };
+        let s1_end = || marker("s1", session_end_turn_id(PROJECT, "s1", &run_id));
+        let refused = |out: ApiResult<Value>| matches!(out, Err(ApiError::InvalidArgument(_)));
+        assert!(
+            refused(submit(&eng, &t, &caller, s1_end()).await),
+            "not applied yet"
+        );
+        let req = ImportRunReq {
+            run_id: run_id.clone(),
+            ..Default::default()
+        };
+        apply(&t, req.clone()).await.unwrap();
+        submit(&eng, &t, &caller, s1_end()).await.unwrap();
+        let with_messages = AddMemoriesReq {
+            messages: unit("s1", "p1").turn.map(|turn| turn.messages),
+            ..s1_end()
+        };
+        for wrong in [
+            marker("s1", turn_key(PROJECT, "s1", "session-end:x")),
+            marker("s9", session_end_turn_id(PROJECT, "s9", &run_id)),
+            with_messages,
+        ] {
+            assert!(refused(submit(&eng, &t, &caller, wrong).await));
+        }
+        let added = algorithm.added.lock().unwrap().clone();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].session_ended, Some(true));
+        assert_eq!(added[0].import_run_id.as_deref(), Some(run_id.as_str()));
+
+        // No row recorded its request: p1 was the run's own request, p2 one live capture made, p3 never arrived.
+        let mut tx = Tx::new();
+        for (id, native, run) in [("rqown", "p1", Some(&run_id)), ("rqlive", "p2", None)] {
+            let key = turn_rid(HOST, &turn_key(PROJECT, "s1", native));
+            tx.put(
+                schema::REQUESTS,
+                id,
+                json!({"requestId": id, "importRunId": run, "turnKeys": [key], "status": "completed",
+                       "memoryIds": [], "inputSeq": 1}),
+            )
+            .unwrap();
+        }
+        t.store.commit(tx).await.unwrap();
+        let out = rollback(&eng, &t, req).await.unwrap();
+        assert_eq!(out["run"]["status"], RUN_ROLLED_BACK, "{}", out["run"]);
+        let undone: HashMap<String, Value> = run_proposals(&t, &run_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| {
+                assert_eq!(p.status, ROLLED_BACK);
+                (p.turn.unwrap().native_id, p.rollback.unwrap())
+            })
+            .collect();
+        assert_eq!(
+            undone["p1"],
+            json!({"requestId": "rqown", "retired": [], "kept": []})
+        );
+        assert_eq!(undone["p2"], json!({"submitted": false}));
+        assert_eq!(undone["p3"], json!({"submitted": false}));
+        drop(t);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

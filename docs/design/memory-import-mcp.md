@@ -120,6 +120,8 @@ shim 的处理，和 `agent-memoryd import plan --host jsonl` 加 `propose` 相�
   出处里另记 `via: "mcp-export"`、`exportedFrom`（模型给的 `source`，未经核实）、行号和行里的 `source` 字段。
 - 单元键和 CLI 的 jsonl 一样是 `<平台>:export#<文本哈希前 16 位>`。不同页里出现的相同文本会撞上同一个单元键，而 daemon
   会拒绝同一个 run 里重复的单元，所以 shim 在发后面的页之前先读 run 已有的单元，重复的行按 `duplicate-unit` 跳过。
+  shim 不给同一个 run 的页排队，模型可能同时提交两页；daemon 一次只处理一个 propose 批次（导入设计 6.7），所以两页不会互相
+  覆盖单元结果。两页里有同一行时，后处理的那一批因重复单元被拒，这一页重新提交即可：shim 这时读得到前一页的单元。
 - 按 64 个单元、1 MiB 分批调用 `/admin/import_propose`。shim 因此要能调用 admin 接口；它和 CLI 跑在同一台机器上，本来
   就能访问 daemon，受限的是模型能请求什么。选择在 shim 里做，而不是给 daemon 加一个 `/v1` 端点：jsonl 解析、脱敏和单元
   规则都在客户端（`harness/import/`），daemon 不用改。

@@ -83,18 +83,19 @@ function SettingsForm({ settings: s, restarting, onSaved }: {
   const [tested, setTested] = useState<{ form: Form; result: ModelSettingsTest } | null>(null)
   const set = (name: keyof Form) => (value: string) => setForm((f) => ({ ...f, [name]: value }))
 
+  // The form travels with the call: the fields stay editable while it runs, and a result belongs to what was sent.
   const test = useMutation({
-    mutationFn: () => api.testModelSettings(proposal(form)),
-    onSuccess: (result) => setTested({ form, result }),
+    mutationFn: (sent: Form) => api.testModelSettings(proposal(sent)),
+    onSuccess: (result, sent) => setTested({ form: sent, result }),
   })
   const apply = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (sent: Form) => {
       const before = (await api.health().catch(() => null))?.startedAt
-      const res = await api.applyModelSettings(proposal(form))
+      const res = await api.applyModelSettings(proposal(sent))
       return { res, before }
     },
-    onSuccess: ({ res, before }) => {
-      setTested({ form, result: res.test })
+    onSuccess: ({ res, before }, sent) => {
+      setTested({ form: sent, result: res.test })
       if (res.saved) onSaved(before)
     },
   })
@@ -227,11 +228,11 @@ function SettingsForm({ settings: s, restarting, onSaved }: {
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="secondary" disabled={busy || needed.length > 0} onClick={() => test.mutate()}>
+        <Button variant="secondary" disabled={busy || needed.length > 0} onClick={() => test.mutate(form)}>
           {test.isPending ? <Spinner /> : <Icon name="check" className="size-4" />}
           测试连接
         </Button>
-        <Button disabled={blocked} onClick={() => apply.mutate()}>
+        <Button disabled={blocked} onClick={() => apply.mutate(form)}>
           {apply.isPending ? <Spinner className="text-white" /> : <Icon name="refresh" className="size-4" />}
           保存并重启 daemon
         </Button>

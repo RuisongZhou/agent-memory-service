@@ -38,6 +38,10 @@ def ingest(root, arm, conv, protocol):
     target.mkdir(exist_ok=True)
     if (target / 'save-summary.json').exists():
         raise ValueError('formation already completed; choose a fresh experiment root')
+    if (target / 'saves.jsonl').exists():
+        # A rerun would replay every batch into the partly filled stores, paying for each again.
+        raise ValueError('an earlier formation stopped part way, so its stores are not fresh; choose a fresh '
+                         'experiment root')
     selected = [s for s in locomo.sessions(conv) if s.key in protocol['sessions']]
     names = STORES[arm]
     with relay(root, arm) as relay_url, daemon(root, arm, names or ['store'], paid=arm != 'mem0-sdk',

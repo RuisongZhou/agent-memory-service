@@ -28,6 +28,9 @@ DEFINE TABLE IF NOT EXISTS evidence SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS evidence_turn ON evidence FIELDS platform, turnId;
 DEFINE TABLE IF NOT EXISTS memories SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS memories_status ON memories FIELDS status, type;
+-- The current views and the profiles and skills that integrity checks on each commit retiring a memory.
+DEFINE INDEX IF NOT EXISTS memories_view ON memories FIELDS derivation.currentView;
+DEFINE INDEX IF NOT EXISTS memories_type ON memories FIELDS type;
 DEFINE INDEX IF NOT EXISTS memories_eff ON memories FIELDS effectiveTs;
 DEFINE INDEX IF NOT EXISTS memories_entities ON memories FIELDS entityIds;
 DEFINE INDEX IF NOT EXISTS memories_vec ON memories FIELDS embedding HNSW DIMENSION {dim} DIST COSINE;
@@ -39,6 +42,14 @@ DEFINE TABLE IF NOT EXISTS index_meta SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS store_revisions SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS requests SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS requests_created ON requests FIELDS createdAt;
+-- Every captured turn stays a request with its full messages: the duplicate check of each new turn, the
+-- formation worker's queue (read every pass), a conversation's history and turns, and an import run's requests
+-- are index lookups, not scans of all of them. (SurrealDB does not use an array index for CONTAINS: a turn is found
+-- by `platform, turnId`, the two parts of its `turnKeys` entry.)
+DEFINE INDEX IF NOT EXISTS requests_turn ON requests FIELDS platform, turnId;
+DEFINE INDEX IF NOT EXISTS requests_status ON requests FIELDS status;
+DEFINE INDEX IF NOT EXISTS requests_conversation ON requests FIELDS project, session;
+DEFINE INDEX IF NOT EXISTS requests_import_run ON requests FIELDS importRunId;
 DEFINE TABLE IF NOT EXISTS retrieval_log SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS retrieval_log_created ON retrieval_log FIELDS createdTs;
 DEFINE TABLE IF NOT EXISTS memory_recalls SCHEMALESS;
@@ -47,6 +58,7 @@ DEFINE TABLE IF NOT EXISTS extract_log SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS llm_usage SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS llm_responses SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS proposals SCHEMALESS;
+DEFINE INDEX IF NOT EXISTS proposals_run ON proposals FIELDS runId;
 DEFINE TABLE IF NOT EXISTS consolidation_runs SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS import_runs SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS import_ledger SCHEMALESS;
@@ -593,26 +605,78 @@ impl Store {
 
     // ------------------------------------------------------------ embeddings
 
+    /// Every stored vector of `table`, read a page at a time in key order: one reply with all of them is decoded
+    /// twice over (CBOR, then JSON values) and peaks near a gigabyte for a few tens of thousands of memories.
     pub async fn load_embeddings(&self, table: &str) -> Result<Vec<(String, Vec<f32>)>> {
-        let rows = self
-            .select(
-                &format!("SELECT mid, embedding FROM {table} WHERE embedding != NONE"),
-                vec![],
-            )
-            .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for r in rows {
-            let id = r
-                .get("mid")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let emb = floats(r.get("embedding"));
-            if !id.is_empty() && !emb.is_empty() {
-                out.push((id, emb));
+        self.load_embeddings_paged(table, 500).await
+    }
+
+    async fn load_embeddings_paged(
+        &self,
+        table: &str,
+        page: usize,
+    ) -> Result<Vec<(String, Vec<f32>)>> {
+        let mut out = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let (from, binds) = match &after {
+                Some(key) => (
+                    " AND id > type::record($table, $after)",
+                    vec![("table", json!(table)), ("after", json!(key))],
+                ),
+                None => ("", vec![]),
+            };
+            let rows = self
+                .select(
+                    // `id` is selected because SurrealDB before 3.3 orders only by selected fields.
+                    &format!(
+                        "SELECT id, record::id(id) AS key, mid, embedding FROM {table} \
+                         WHERE embedding != NONE{from} ORDER BY id LIMIT {page}"
+                    ),
+                    binds,
+                )
+                .await?;
+            let last = rows.len() < page;
+            for r in &rows {
+                let id = r
+                    .get("mid")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let emb = floats(r.get("embedding"));
+                if !id.is_empty() && !emb.is_empty() {
+                    out.push((id, emb));
+                }
             }
+            if last {
+                return Ok(out);
+            }
+            after = rows
+                .last()
+                .and_then(|r| r["key"].as_str())
+                .map(str::to_string);
         }
-        Ok(out)
+    }
+
+    /// Drop every memory vector and define the vector index for `dim` anew. Vectors of another embedding model
+    /// are not comparable with its queries, and an HNSW index keeps the dimension it was first defined with
+    /// (`DEFINE INDEX IF NOT EXISTS` at open leaves it), refusing every vector of another length.
+    pub async fn reset_vectors(&self, dim: usize) -> Result<()> {
+        self.query("REMOVE INDEX IF EXISTS memories_vec ON memories", vec![])
+            .await?;
+        let mut tx = Tx::new();
+        tx.raw_table(
+            schema::MEMORIES,
+            "UPDATE memories SET embedding = NONE, embeddingModel = NONE WHERE embedding != NONE RETURN NONE",
+            vec![],
+        );
+        self.commit(tx).await?;
+        self.query(
+            &format!("DEFINE INDEX memories_vec ON memories FIELDS embedding HNSW DIMENSION {dim} DIST COSINE"),
+            vec![],
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn set_embedding(
@@ -778,11 +842,45 @@ mod tests {
             .set_embedding(schema::MEMORIES, &m.id, Some(&[0.1, 0.2, 0.3, 0.4]), "x")
             .await?;
         assert_eq!(store.load_embeddings(schema::MEMORIES).await?[0].0, m.id);
+        // Vectors are read a page at a time, every one of them once.
+        let mut tx = Tx::new();
+        for id in ["mabc124", "mabc125"] {
+            tx.put(
+                schema::MEMORIES,
+                id,
+                to_doc(&MemoryRec {
+                    id: id.into(),
+                    ..m.clone()
+                })?,
+            )?;
+        }
+        store.commit(tx).await?;
+        for id in ["mabc124", "mabc125"] {
+            store
+                .set_embedding(schema::MEMORIES, id, Some(&[0.4, 0.3, 0.2, 0.1]), "x")
+                .await?;
+        }
+        let paged = store.load_embeddings_paged(schema::MEMORIES, 2).await?;
+        let ids: Vec<&str> = paged.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["mabc123", "mabc124", "mabc125"]);
         store.shutdown().await;
         drop(store);
-        let store = Store::open(&dir, surreal(), 4, "").await?;
+        // Reopened for an embedding model of another dimension: the vector index refuses its vectors until the
+        // vectors are reset.
+        let store = Store::open(&dir, surreal(), 3, "").await?;
         assert!(!has_turn_index(&store, "turns_vec").await?);
         assert!(has_turn_index(&store, "turns_key").await?);
+        let three = [0.3, 0.2, 0.1];
+        assert!(store
+            .set_embedding(schema::MEMORIES, &m.id, Some(&three), "y")
+            .await
+            .is_err());
+        store.reset_vectors(3).await?;
+        assert!(store.load_embeddings(schema::MEMORIES).await?.is_empty());
+        store
+            .set_embedding(schema::MEMORIES, &m.id, Some(&three), "y")
+            .await?;
+        assert_eq!(store.memory_embedding(&m.id).await?.unwrap().len(), 3);
         store.shutdown().await;
         drop(store);
         std::fs::remove_dir_all(dir)?;

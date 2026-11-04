@@ -25,7 +25,8 @@ pub async fn add_memories(
     }
     if req.import_run_id.is_some() && req.memory_type.is_some() {
         return Err(ApiError::InvalidArgument(
-            "importRunId goes only with a queued messages batch and its turnId".into(),
+            "importRunId goes only with a queued messages batch, or a session's end marker, and its turnId"
+                .into(),
         ));
     }
     if req.memory_type.as_deref() == Some(T_INSTRUCTION) {

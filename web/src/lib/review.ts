@@ -22,6 +22,17 @@ export function importDecisions(proposals: ImportProposal[], rejected: ReadonlyS
 export const pendingSessionTurns = (proposals: ImportProposal[]) =>
   proposals.filter((p) => p.itemKind === SESSION_TURN && p.status === 'proposed').length
 
+/**
+ * The writes an import or consolidation run accepts. Apply takes a `proposed` run, or resumes one an apply left
+ * `applying` with its error; rollback also takes an `applying` run, so an interrupted apply can be undone instead.
+ */
+export function runActions(run: { status: string; error: string | null }) {
+  return {
+    apply: run.status === 'proposed' || (run.status === 'applying' && !!run.error),
+    rollback: ['applied', 'applying', 'partially_rolled_back', 'rolling_back'].includes(run.status),
+  }
+}
+
 /** What `list_model_responses {failedOnly: true}` keeps: no answer, a non-2xx answer, a body that is not JSON, or
  * output of the wrong shape. Only a decoded 2xx reply records `validOutputShape`. */
 export const responseFailed = (r: ModelResponse) => r.validOutputShape !== true
