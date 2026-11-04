@@ -63,7 +63,8 @@ in this order:
    installed commands survive `cargo clean` or a moved checkout. `--binary PATH` uses an existing
    executable as is, such as a [release binary](deployment.md#release-archive) of the same version.
 4. It installs the [web UI](design/web-ui.md) into `~/.local/share/agent-memory-service/ui`: built with
-   `make ui` when `npm` is on PATH, otherwise the UI bundle of the checkout's version, downloaded from its
+   `make ui` when `npm` is on PATH (skipped while `web/dist` is newer than every source of the build), otherwise
+   the UI bundle of the checkout's version, downloaded from its
    GitHub release (a version with no published release has none) and checked against the release's SHA-256. When
    neither works it goes on without one: install Node.js and npm and rerun `service --apply` to add it.
    A release bundle matches the code only on its release tag; elsewhere the page shows a version banner,

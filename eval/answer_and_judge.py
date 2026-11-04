@@ -9,6 +9,7 @@ F1 / BLEU-1: mem0's metrics code (common/metrics.py).
 
 Writes next to the contexts file:
   answers-<prompt>.jsonl   one record per question (incremental; reruns skip finished qids)
+  answer-protocol-<prompt>.json  the model and token limits; a rerun with others is refused
   summary-<prompt>.json    overall + per category (n, J, F1, BLEU-1, context tokens, search latency
                            mean/p95) and usage per stage from the ledger.
 
@@ -32,9 +33,10 @@ from common import env  # noqa: E402,F401
 from common import jsonl, prompts  # noqa: E402
 from common.answers import build_answer_prompt, fingerprint, summary_stats  # noqa: E402
 from common.env import RESULTS_DIR  # noqa: E402
-from common.llm import LLM, LLMOutputError, FatalAPIError, default_ledger, set_ledger_path  # noqa: E402
+from common.llm import LLM, MODEL, LLMOutputError, FatalAPIError, default_ledger, set_ledger_path  # noqa: E402
 from common.locomo import CATEGORY_NAMES, EVAL_CATEGORIES  # noqa: E402
 from common.metrics import bleu1, f1_score  # noqa: E402
+from common.protocol import guard  # noqa: E402
 from common.reporting import scope_for  # noqa: E402
 
 from common import usage as usage_ledger  # noqa: E402
@@ -158,6 +160,10 @@ async def amain(args) -> None:
     ledger_path = Path(args.results_dir) / "usage_ledger.jsonl"
 
     if not args.summary_only:
+        # The fingerprints cover the prompts only: answers and labels of another model or token limit must not be
+        # resumed or mixed in.
+        guard(ctx_path.parent / f"answer-protocol-{args.answer_prompt}.json", {
+            "model": MODEL, "answer_max_tokens": args.answer_max_tokens, "judge_max_tokens": args.judge_max_tokens})
         done = {r["qid"]: r for r in jsonl.read(out) if r.get("judge_label") in ("CORRECT", "WRONG")}
         todo = [r for r in contexts if done.get(r["qid"], {}).get("source_hash") != fingerprint(r, args.answer_prompt)]
         if args.qids:

@@ -395,7 +395,8 @@ SurrealDB keeps its path, so a restart picks up the new version; after moving `s
 `target/fast/agent-memoryd` in place and a restart picks up the new build, while `cargo clean` removes
 it; install a release binary's upgrades to the same path. The installer records its
 `~/.local/bin/agent-memoryd` instead, and a rerun of `install.sh service --apply` that builds a new binary
-replaces it and restarts the service. After changing an option, rerun `service install --apply` (with `--start` to restart it) or
+replaces it and restarts the service; a rerun also restarts it when the `--binary` file changed since the
+installer last started the service. After changing an option, rerun `service install --apply` (with `--start` to restart it) or
 restart the service as printed.
 
 ### macOS LaunchAgents
