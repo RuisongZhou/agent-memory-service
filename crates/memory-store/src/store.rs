@@ -628,8 +628,9 @@ impl Store {
             };
             let rows = self
                 .select(
+                    // `id` is selected because SurrealDB before 3.3 orders only by selected fields.
                     &format!(
-                        "SELECT record::id(id) AS key, mid, embedding FROM {table} \
+                        "SELECT id, record::id(id) AS key, mid, embedding FROM {table} \
                          WHERE embedding != NONE{from} ORDER BY id LIMIT {page}"
                     ),
                     binds,
