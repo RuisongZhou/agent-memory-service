@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import { formatNumber } from '../lib/format'
 import { NAV, pageMeta } from '../lib/nav'
 import { Icon } from './icons'
+import { PageBoundary } from './PageBoundary'
 import { cx, FOCUS, Loading } from './ui'
 
 /** The overview reads the same open conflicts, so the badge and its card share one request. */
@@ -197,10 +198,12 @@ export function Layout() {
       <VersionBanner />
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <PageHeader />
-        {/* Pages load when first opened (main.tsx); the nav stays while one does. */}
-        <Suspense fallback={<Loading />}>
-          <Outlet />
-        </Suspense>
+        {/* Pages load when first opened (main.tsx); the nav stays while one does, and when one fails. */}
+        <PageBoundary>
+          <Suspense fallback={<Loading />}>
+            <Outlet />
+          </Suspense>
+        </PageBoundary>
       </main>
     </div>
   )

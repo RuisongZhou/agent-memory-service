@@ -253,7 +253,12 @@ Graphiti、memU、本地版 Basic Memory 没有界面；Memobase 的 playground 
   配置，和 `surreal` 可执行文件的路径一样。
 - `GET /ui/` 返回 `index.html`，`/ui/*` 返回目录里的静态文件。前端用 hash 路由，不需要回退到 `index.html`。用 tower-http
   的 `ServeDir`，它会拒绝 `..` 之类越出目录的路径。响应带 `Cache-Control: no-cache`，前端升级后浏览器不会继续用旧文件。
-  daemon 只读这个目录，不写。
+  daemon 只读这个目录，不写。对于已打开的标签页，除概览外的子页面均按需动态加载（文件名带内容哈希）。若前端在标签页
+  打开期间被重新构建或重新安装（资源文件被替换），或 daemon 重启导致页面代码块拉取失败，页面错误边界（`PageBoundary`）
+  会保持侧边栏可用，并向 `/ui/` 发起无缓存请求探测服务；服务就绪时标签页会自动重新加载并切换到新文件自愈，未就绪时提示
+  并每 3 秒重试探活。依托 `sessionStorage` 限制 30 秒内最多自动重载一次，避免死循环；若自动重载后文件仍然缺失，标签页不再
+  自动刷新，而是展示错误信息、提示运行与 daemon 版本一致的源码执行 `make ui` 或重新运行 `bash scripts/install.sh service --apply`，
+  并提供「重新加载」按钮。
 - 网页和 `/v1`、`/admin` 同源，第 6 节的 Host 和 Origin 检查同样作用于 `/ui/*`。
 - 前端和 daemon 用同一个版本号（workspace 的 `version`）。`/health` 报告这个版本，构建时把前端的版本写进
   `version.json`；前端启动时比对，不一致就在页面顶部提示。
