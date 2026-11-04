@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use super::codex::HOST;
 use super::project::within;
 use super::session::{
-    content_text, finish, read_lines, SessionAdapter, SessionDoc, SessionScan, Turn, MAX_TRANSCRIPT,
+    content_text, finish, keep, read_lines, written_before, SessionAdapter, SessionDoc,
+    SessionScan, Turn, MAX_TRANSCRIPT,
 };
 use super::source::{entries, timestamp, ScanContext};
 use crate::harness::project::repository_root;
@@ -48,6 +49,11 @@ impl SessionAdapter for CodexSessions {
         let mut files = Vec::new();
         for root in &roots {
             walk(ctx, root, 0, &mut files, &mut out);
+        }
+        if let Some(since) = &ctx.since {
+            let before = files.len();
+            files.retain(|path| !written_before(path, since));
+            out.unread += before - files.len();
         }
         for path in files {
             let shown = ctx.display(&path);
@@ -123,7 +129,8 @@ struct Open {
     aborted: bool,
 }
 
-/// One rollout of a person's thread in a workspace, read whole, or the reason it is not imported.
+/// One rollout of a person's thread in a workspace, read whole, or the reason it is not imported. Only the turns
+/// asked from `--since` on are kept.
 fn rollout(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
     let meta = session_meta(path)?;
     let payload = &meta["payload"];
@@ -193,32 +200,31 @@ fn rollout(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
         }
         true
     })?;
-    let turns = order
-        .into_iter()
-        .map(|id| {
-            let o = open.remove(&id).expect("every ordered turn is open");
-            let reply = o.reply.unwrap_or_default();
-            let skip = if o.aborted {
-                Some("aborted")
-            } else if o.prompts.is_empty() {
-                Some("no-prompt")
-            } else if !o.completed || reply.trim().is_empty() {
-                Some("no-reply")
-            } else if o.prompt_at.is_empty() {
-                Some("no-time")
-            } else {
-                None
-            };
-            finish(Turn {
-                native_id: id,
-                prompt: o.prompts.join("\n\n"),
-                reply,
-                reply_at: o.reply_at,
-                prompt_at: o.prompt_at,
-                skip: skip.map(str::to_string),
-            })
-        })
-        .collect();
+    let (mut turns, mut before_since) = (Vec::new(), 0);
+    for id in order {
+        let o = open.remove(&id).expect("every ordered turn is open");
+        let reply = o.reply.unwrap_or_default();
+        let skip = if o.aborted {
+            Some("aborted")
+        } else if o.prompts.is_empty() {
+            Some("no-prompt")
+        } else if !o.completed || reply.trim().is_empty() {
+            Some("no-reply")
+        } else if o.prompt_at.is_empty() {
+            Some("no-time")
+        } else {
+            None
+        };
+        let turn = finish(Turn {
+            native_id: id,
+            prompt: o.prompts.join("\n\n"),
+            reply,
+            reply_at: o.reply_at,
+            prompt_at: o.prompt_at,
+            skip: skip.map(str::to_string),
+        });
+        keep(&mut turns, &mut before_since, ctx.since.as_deref(), turn);
+    }
     Ok(SessionDoc {
         host: HOST.into(),
         via: VIA,
@@ -232,6 +238,7 @@ fn rollout(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
             .and_then(timestamp)
             .unwrap_or_default(),
         turns,
+        before_since,
         extra: json!({"cliVersion": payload["cli_version"], "threadSource": source}),
     })
 }
@@ -381,6 +388,15 @@ pub(crate) mod tests {
             ("2026-04-01T09:00:01Z", "2026-04-01T09:00:09Z")
         );
         assert_eq!(doc.turns[4].prompt, "And tests?");
+
+        // From --since on: the turns asked before it are dropped as read (t4 states no time), a person's counted.
+        let mut ctx = f.ctx();
+        ctx.since = Some("2026-04-01T09:02:00Z".into());
+        let out = CodexSessions.scan_sessions(&ctx).unwrap();
+        let doc = &out.sessions[0];
+        let kept: Vec<&str> = doc.turns.iter().map(|t| t.native_id.as_str()).collect();
+        assert_eq!(kept, ["t3", "t5"]);
+        assert_eq!((doc.before_since, out.unread), (1, 0));
     }
 
     #[test]
@@ -458,6 +474,12 @@ pub(crate) mod tests {
         expected.push((format!("{day}/rollout-z.jsonl"), "symlink".into()));
         expected.sort();
         assert_eq!(issues, expected);
+        // Rollouts all last written before --since: none is opened.
+        let mut later = f.ctx();
+        later.since = Some("2999-01-01T00:00:00Z".into());
+        let out = CodexSessions.scan_sessions(&later).unwrap();
+        assert!(out.sessions.is_empty());
+        assert_eq!(out.unread, 6);
         let mut ctx = f.ctx();
         ctx.codex_home = Some(f.home.path().join("nowhere"));
         assert!(CodexSessions.scan_sessions(&ctx).is_err());

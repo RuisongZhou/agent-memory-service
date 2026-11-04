@@ -8,17 +8,20 @@
 //! A turn opens at a `user` record with `turnOrigin` (`origin.kind` where only that is given) and runs to the next
 //! one: the prompt is that record's text, the reply the text blocks of the turn's last assistant message that has
 //! any. Only `human` turns are imported. Tool results, hook context (`attachment` records), meta and command
-//! records carry no `turnOrigin` and open no turn; sidechain records are left out. A transcript whose prompts carry
-//! no `turnOrigin` at all predates the field and is `unknown-format`. The session id and turn id are the
-//! `sessionId` and `promptId` capture files the same turn under.
+//! records carry no `turnOrigin` and open no turn; sidechain records are left out. As capture does (no `Stop`
+//! comes), a turn the person interrupted (a `[Request interrupted by user…]` record follows it) is not imported,
+//! nor one whose reply message stopped for a tool call (`stop_reason: tool_use`): it has no final reply yet, still
+//! running when the transcript was read. A transcript whose prompts carry no `turnOrigin` at all predates the field
+//! and is `unknown-format`. The session id and turn id are the `sessionId` and `promptId` capture files the same
+//! turn under.
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 use super::claude::{HOST, SNIFF_BYTES};
 use super::project::within;
 use super::session::{
-    content_text, finish, first_cwd, read_lines, SessionAdapter, SessionDoc, SessionScan, Turn,
-    MAX_TRANSCRIPT,
+    content_text, finish, first_cwd, keep, read_lines, written_before, SessionAdapter, SessionDoc,
+    SessionScan, Turn, MAX_TRANSCRIPT,
 };
 use super::source::{entries, timestamp, ScanContext};
 use crate::harness::project::repository_root;
@@ -27,6 +30,9 @@ use crate::harness::{invalid, Error};
 pub const VIA: &str = "claude-transcript";
 /// The `turnOrigin` of a turn a person asked.
 const HUMAN: &str = "human";
+/// How the record Claude Code writes when the person stops a turn begins (`[Request interrupted by user]`,
+/// `… for tool use]`).
+const INTERRUPTED: &str = "[Request interrupted by user";
 
 pub struct ClaudeSessions;
 
@@ -66,7 +72,7 @@ impl SessionAdapter for ClaudeSessions {
                     continue;
                 }
             }
-            let transcripts: Vec<PathBuf> = match entries(&dir) {
+            let mut transcripts: Vec<PathBuf> = match entries(&dir) {
                 Ok(listing) => listing
                     .into_iter()
                     .filter(|(name, _)| name.ends_with(".jsonl") && !name.starts_with('.'))
@@ -77,6 +83,11 @@ impl SessionAdapter for ClaudeSessions {
                     continue;
                 }
             };
+            if let Some(since) = &ctx.since {
+                let before = transcripts.len();
+                transcripts.retain(|t| !written_before(t, since));
+                out.unread += before - transcripts.len();
+            }
             // A directory is named after the directory its sessions started in: one look decides for all of them.
             match transcripts.iter().find_map(|t| first_cwd(t, SNIFF_BYTES)) {
                 Some(cwd) if within(&repository_root(&cwd), &ctx.workspaces) => {}
@@ -112,11 +123,15 @@ struct Open {
     cwd: Option<PathBuf>,
     /// `message.id` of the assistant message the reply was taken from.
     reply_message: Option<String>,
+    /// That message's `stop_reason`, once a record of it gives one.
+    reply_stop: Option<String>,
     api_error: bool,
+    interrupted: bool,
 }
 
 impl Open {
-    /// The turn with its verdict: only a person's turn in a workspace, with a reply that is no API error.
+    /// The turn with its verdict: only a person's turn in a workspace that ran to its final reply, which is no
+    /// API error.
     fn close(self, ctx: &ScanContext) -> Turn {
         let mut turn = self.turn;
         turn.skip = if self.origin != HUMAN {
@@ -128,7 +143,9 @@ impl Open {
             .is_some_and(|cwd| !within(&repository_root(&cwd), &ctx.workspaces))
         {
             Some("other-project".into())
-        } else if turn.reply.trim().is_empty() {
+        } else if self.interrupted {
+            Some("aborted".into())
+        } else if turn.reply.trim().is_empty() || self.reply_stop.as_deref() == Some("tool_use") {
             Some("no-reply".into())
         } else if self.api_error {
             Some("api-error".into())
@@ -159,13 +176,14 @@ fn untagged_prompt(record: &Value) -> bool {
             .is_empty()
 }
 
-/// One transcript, read whole, or the reason it is not imported.
+/// One transcript, read whole, or the reason it is not imported. Only the turns asked from `--since` on are kept.
 fn transcript(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
+    let since = ctx.since.as_deref();
     let mut session: Option<String> = None;
     let mut version: Option<String> = None;
     let mut cwd: Option<PathBuf> = None;
     let mut started_at = String::new();
-    let mut turns = Vec::new();
+    let (mut turns, mut before_since) = (Vec::new(), 0);
     let mut open: Option<Open> = None;
     let (mut tagged, mut untagged) = (false, 0usize);
     let file_hash = read_lines(path, MAX_TRANSCRIPT, |line| {
@@ -196,24 +214,33 @@ fn transcript(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
         if record["isSidechain"] == true {
             return true;
         }
+        let text = content_text(&record["message"]["content"]);
         if kind == "user" {
+            if text.starts_with(INTERRUPTED) {
+                if let Some(turn) = open.as_mut() {
+                    turn.interrupted = true;
+                }
+                return true;
+            }
             match origin_of(&record) {
                 Some(origin) => {
                     tagged = true;
                     if let Some(done) = open.take() {
-                        turns.push(done.close(ctx));
+                        keep(&mut turns, &mut before_since, since, done.close(ctx));
                     }
                     open = Some(Open {
                         turn: Turn {
                             native_id: record["promptId"].as_str().unwrap_or_default().into(),
-                            prompt: content_text(&record["message"]["content"]),
+                            prompt: text,
                             prompt_at: at,
                             ..Turn::default()
                         },
                         origin,
                         cwd: record["cwd"].as_str().map(PathBuf::from),
                         reply_message: None,
+                        reply_stop: None,
                         api_error: false,
+                        interrupted: false,
                     });
                 }
                 None => untagged += usize::from(untagged_prompt(&record)),
@@ -223,15 +250,26 @@ fn transcript(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
         let Some(turn) = open.as_mut() else {
             return true;
         };
-        let text = content_text(&record["message"]["content"]);
+        let message = record["message"]["id"].as_str().map(str::to_string);
+        let same = message.is_some() && message == turn.reply_message;
+        // A message's last record (its tool call, when it makes one) tells why it stopped.
+        let stop = record["message"]["stop_reason"]
+            .as_str()
+            .map(str::to_string);
         if text.trim().is_empty() {
+            if same && stop.is_some() {
+                turn.reply_stop = stop;
+            }
             return true;
         }
-        let message = record["message"]["id"].as_str().map(str::to_string);
-        if message.is_some() && message == turn.reply_message {
+        if same {
             turn.turn.reply = format!("{}\n\n{text}", turn.turn.reply);
         } else {
             turn.turn.reply = text;
+            turn.reply_stop = None;
+        }
+        if stop.is_some() {
+            turn.reply_stop = stop;
         }
         turn.reply_message = message;
         turn.turn.reply_at = at;
@@ -239,7 +277,7 @@ fn transcript(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
         true
     })?;
     if let Some(done) = open.take() {
-        turns.push(done.close(ctx));
+        keep(&mut turns, &mut before_since, since, done.close(ctx));
     }
     let Some(session) = session.filter(|s| !s.is_empty()) else {
         return Err(match untagged {
@@ -263,6 +301,7 @@ fn transcript(ctx: &ScanContext, path: &Path) -> Result<SessionDoc, String> {
         file_hash,
         started_at,
         turns,
+        before_since,
         extra: json!({ "version": version }),
     })
 }
@@ -366,16 +405,33 @@ pub(crate) mod tests {
         let f = Fixture::new();
         let w = f.workspace.clone();
         let text = |t: &str| json!([{"type": "text", "text": t}]);
+        // A message's record that says why the message stopped.
+        let stopped = |at: &str, message: &str, blocks: Value, stop: &str| {
+            record(
+                "assistant",
+                at,
+                &w,
+                json!({"message": {"id": message, "role": "assistant", "content": blocks, "stop_reason": stop}}),
+            )
+        };
+        let interrupted = |at: &str, what: &str| {
+            record(
+                "user",
+                at,
+                &w,
+                json!({"message": {"role": "user", "content": text(what)}}),
+            )
+        };
         let lines = vec![
             // A person's turn: tool use in between, the reply is the last message with text, in two records.
             prompt("2026-03-01T10:00:00Z", &w, "human", "p1",
                    "<system-reminder>\nhost context\n</system-reminder>\nWhere do releases go?"),
             json!({"type": "attachment", "sessionId": "sess-1", "attachment": {"content": "<shared-memory>x</shared-memory>"}}).to_string(),
             reply("2026-03-01T10:00:03Z", &w, "msg-1", text("Let me check.")),
-            reply("2026-03-01T10:00:04Z", &w, "msg-1", json!([{"type": "tool_use", "name": "Bash"}])),
+            stopped("2026-03-01T10:00:04Z", "msg-1", json!([{"type": "tool_use", "name": "Bash"}]), "tool_use"),
             tool_result("2026-03-01T10:00:05Z", &w, "p1"),
             reply("2026-03-01T10:00:06Z", &w, "msg-2", text("Releases go to the staging bucket.")),
-            reply("2026-03-01T10:00:07Z", &w, "msg-2", text("Tagged builds go to production.")),
+            stopped("2026-03-01T10:00:07Z", "msg-2", text("Tagged builds go to production."), "end_turn"),
             // A sidechain's records belong to no turn of the main conversation.
             record("assistant", "2026-03-01T10:00:08Z", &w,
                    json!({"isSidechain": true, "message": {"id": "msg-s", "content": text("Subagent says hi.")}})),
@@ -392,6 +448,14 @@ pub(crate) mod tests {
             prompt("2026-03-01T10:04:00Z", &w, "human", "p5", "Try again."),
             record("assistant", "2026-03-01T10:04:01Z", &w,
                    json!({"isApiErrorMessage": true, "message": {"id": "msg-6", "content": text("API Error: overloaded")}})),
+            // A turn the person interrupted, and one still running: their replies are not final.
+            prompt("2026-03-01T10:05:00Z", &w, "human", "p6", "Rewrite the module."),
+            reply("2026-03-01T10:05:01Z", &w, "msg-7", text("I'll start with the parser.")),
+            interrupted("2026-03-01T10:05:02Z", "[Request interrupted by user]"),
+            prompt("2026-03-01T10:06:00Z", &w, "human", "p7", "Do the tests pass?"),
+            reply("2026-03-01T10:06:01Z", &w, "msg-8", text("Let me check the tests.")),
+            stopped("2026-03-01T10:06:02Z", "msg-8", json!([{"type": "tool_use", "name": "Bash"}]), "tool_use"),
+            tool_result("2026-03-01T10:06:03Z", &w, "p7"),
             "{\"type\":\"user\",\"cut".to_string(),
         ];
         let path = f.transcript(&w, "sess-1", &lines);
@@ -427,6 +491,8 @@ pub(crate) mod tests {
                 ("p3", Some("turnOrigin:task_notification")),
                 ("p4", Some("no-reply")),
                 ("p5", Some("api-error")),
+                ("p6", Some("aborted")),
+                ("p7", Some("no-reply")),
             ]
         );
         let first = &doc.turns[0];
@@ -438,6 +504,32 @@ pub(crate) mod tests {
         assert_eq!(
             (first.prompt_at.as_str(), first.reply_at.as_str()),
             ("2026-03-01T10:00:00Z", "2026-03-01T10:00:07Z")
+        );
+
+        // From --since on: the turns asked before it are dropped as read, a person's counted.
+        let mut ctx = f.ctx();
+        ctx.since = Some("2026-03-01T10:02:00Z".into());
+        let out = ClaudeSessions.scan_sessions(&ctx).unwrap();
+        let doc = &out.sessions[0];
+        let kept: Vec<&str> = doc.turns.iter().map(|t| t.native_id.as_str()).collect();
+        assert_eq!(kept, ["p3", "p4", "p5", "p6", "p7"]);
+        assert_eq!((doc.before_since, out.unread), (1, 0));
+        // A transcript last written before --since is not opened.
+        let written = chrono::DateTime::parse_from_rfc3339("2026-03-01T10:06:03Z").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(written.into())
+            .unwrap();
+        ctx.since = Some("2026-03-01T10:06:04Z".into());
+        let out = ClaudeSessions.scan_sessions(&ctx).unwrap();
+        assert!(out.sessions.is_empty() && out.issues.is_empty());
+        assert_eq!(out.unread, 1);
+        ctx.since = Some("2026-03-01T10:06:03Z".into());
+        assert_eq!(
+            ClaudeSessions.scan_sessions(&ctx).unwrap().sessions.len(),
+            1
         );
     }
 

@@ -40,7 +40,8 @@ pub const RUN_PARTIALLY_ROLLED_BACK: &str = "partially_rolled_back";
 pub const PROPOSED: &str = "proposed";
 /// Failed the size or provenance checks when proposed; never applied.
 pub const REJECTED: &str = "rejected";
-/// Declined at apply time, by a review decision or because its source changed since propose.
+/// Declined at apply time, by a review decision (`reject`) or because its source changed since propose
+/// (`source-changed`).
 pub const DROPPED: &str = "dropped";
 pub const APPLIED: &str = "applied";
 /// Rechecked at apply time and left alone (`skipReason`).
@@ -50,6 +51,10 @@ pub const ROLLED_BACK: &str = "rolled_back";
 /// Review decisions.
 pub const ACCEPT: &str = "accept";
 pub const REJECT: &str = "reject";
+/// The decision the client sends for a proposal whose source file changed or vanished after propose: dropped like
+/// a rejected one, but no person declined it, so its unit gets no `declined` ledger row and the next plan of the
+/// current text proposes the unit again.
+pub const SOURCE_CHANGED: &str = "source-changed";
 
 /// `confirmedVia` of a run an agent applied after the person agreed in the conversation (MCP `apply_import`,
 /// docs/design/memory-import-mcp.md §5.3). The CLI's review file and `--yes` send none.
@@ -173,6 +178,13 @@ pub fn session_turn_problem(turn: &SessionTurn, project: &str) -> Option<String>
     }
 }
 
+/// The turn id of the end marker an import run queues after its last turn of `session` (design §6.14), in the
+/// shape capture's `SessionEnd` gives one: the run's own, so a resumed apply queues it once and the daemon admits
+/// it once.
+pub fn session_end_turn_id(project: &str, session: &str, run_id: &str) -> String {
+    turn_key(project, session, &format!("session-end:import:{run_id}"))
+}
+
 /// Whether `p` is a session turn's row rather than a proposal to review.
 pub fn is_session_turn(p: &ImportProposal) -> bool {
     p.mode == MODE_SESSION_TURN
@@ -202,7 +214,7 @@ pub struct ImportProposeReq {
 }
 
 /// `import_run`, `import_apply` and `import_rollback`. `decisions` (apply only) maps proposal ids to
-/// `accept` or `reject`; a proposal without one is accepted. `confirmedVia` (apply only) is `chat` when the
+/// `accept`, `reject` or `source-changed`; a proposal without one is accepted. `confirmedVia` (apply only) is `chat` when the
 /// person agreed in a conversation rather than in a review file; it is kept on the run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -491,5 +503,9 @@ mod tests {
         assert!(
             problem(&|t| t.messages[0].timestamp = "2026-05-03T10:00:00Z".into()).contains("older")
         );
+        // A run's end marker of a session is a capture-shaped key of its own, one per run.
+        let end = session_end_turn_id("proj", "s 1", "ir1");
+        assert_eq!(end, "proj/s%201/session-end%3Aimport%3Air1");
+        assert_ne!(end, session_end_turn_id("proj", "s 1", "ir2"));
     }
 }

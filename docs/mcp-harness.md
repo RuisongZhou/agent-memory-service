@@ -769,8 +769,9 @@ folder) is refused. Hosts without a workspace (WorkBuddy, `jsonl`), and several 
    changed unit left: they stay current unless a proposal replaces them; retract one with the MCP tool
    `correct_memory` (no text). `apply --yes` accepts every proposal instead; a duplicate is linked to the
    existing record of the same text, not written again.
-4. **`apply`** first rereads every source (`--home` as for `propose`) and declines the proposals of files changed
-   since propose. It writes accepted proposals as facts with origin `imported`, whatever their item kind. They
+4. **`apply`** first rereads every source (`--home` as for `propose`; `show --home` carries it into the command it
+   suggests) and drops the proposals of files changed since propose as `source-changed`: no one declined them, so
+   the next plan and propose offer those units again. It writes accepted proposals as facts with origin `imported`, whatever their item kind. They
    are reference material: `get_context` does not list them, while search and automatic recall find them. Import
    never writes an instruction; save a rule you want every host to follow yourself, for example with
    `add_memories` and `memoryType:"instruction"`. A proposal whose text is already a current imported fact links

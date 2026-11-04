@@ -4,7 +4,7 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use super::store::{turn_rid, Store};
+use super::store::Store;
 use memory_domain::types::MemoryRec;
 
 impl Store {
@@ -32,18 +32,6 @@ impl Store {
                  scope.kind = 'project' AND scope.project = $p \
                  ORDER BY recordedTs ASC, mid ASC LIMIT 1",
                 vec![("key", json!(key)), ("p", json!(project))],
-            )
-            .await?
-            .into_iter()
-            .next())
-    }
-
-    /// The request a turn was submitted as: the one whose `turnKeys` hold `platform + turn_id`.
-    pub async fn request_for_turn(&self, platform: &str, turn_id: &str) -> Result<Option<Value>> {
-        Ok(self
-            .select(
-                "SELECT * OMIT id FROM requests WHERE turnKeys CONTAINS $key LIMIT 1",
-                vec![("key", json!(turn_rid(platform, turn_id)))],
             )
             .await?
             .into_iter()
@@ -160,26 +148,18 @@ mod tests {
         assert!(store.current_imported("c", "key1").await?.is_none());
 
         let mut tx = Tx::new();
-        for (id, run, seq, keys) in [
-            ("rq2", Some("ir1"), 2, vec![turn_rid("codex", "p/s/t2")]),
-            ("rq1", Some("ir1"), 1, vec![turn_rid("codex", "p/s/t1")]),
-            ("rq3", None, 3, vec![turn_rid("claude-code", "p/s/t1")]),
+        for (id, run, seq) in [
+            ("rq2", Some("ir1"), 2),
+            ("rq1", Some("ir1"), 1),
+            ("rq3", None, 3),
         ] {
             tx.put(
                 schema::REQUESTS,
                 id,
-                json!({"requestId": id, "importRunId": run, "inputSeq": seq, "turnKeys": keys}),
+                json!({"requestId": id, "importRunId": run, "inputSeq": seq}),
             )?;
         }
         store.commit(tx).await?;
-        let found = store.request_for_turn("codex", "p/s/t1").await?.unwrap();
-        assert_eq!(found["requestId"], "rq1");
-        let other = store
-            .request_for_turn("claude-code", "p/s/t1")
-            .await?
-            .unwrap();
-        assert_eq!(other["requestId"], "rq3");
-        assert!(store.request_for_turn("codex", "p/s/t3").await?.is_none());
         let owned: Vec<Value> = store.import_run_requests("ir1").await?;
         let owned: Vec<&str> = owned
             .iter()

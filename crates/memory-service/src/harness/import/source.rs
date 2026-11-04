@@ -33,6 +33,9 @@ pub struct ScanContext {
     pub from: Option<PathBuf>,
     /// Agent export: the platform label.
     pub label: Option<String>,
+    /// Sessions: `--since` (RFC3339 UTC); transcripts last written before it are not read, and the turns asked
+    /// before it are dropped as they are read.
+    pub since: Option<String>,
 }
 
 impl ScanContext {
@@ -128,6 +131,8 @@ pub struct ScanOutput {
     pub issues: Vec<Issue>,
     /// Past session transcripts (`--include sessions`).
     pub sessions: Vec<SessionDoc>,
+    /// Session transcripts last written before `--since`, not read.
+    pub unread_sessions: usize,
 }
 
 impl ScanOutput {

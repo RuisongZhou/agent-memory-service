@@ -178,7 +178,7 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 `<system-reminder>` 块；笔记和导出不做这一步。读取时不跟随软链接，不读宿主数据目录之外的路径（`--host jsonl` 的 `--from`
 是人指定的文件，不受这条限制）。适配器在选中时间窗口内跳过的轮次在计划里各占一行，写明原因；整个跳过的会话（如
 `thread_source:<x>`、`unknown-format`、`other-project`、`cwd-unresolved`）按路径记在汇总的问题列表里；`--since` 之前和超出
-`--limit` 的轮次只计数。
+`--limit` 的轮次只计数。最后写入早于 `--since` 的 transcript 不打开，只计文件数（6.14）。
 
 ### 6.4 项目映射
 
@@ -289,17 +289,24 @@ Codex CLI/App 0.153–0.163 的 rollout 和 memories 目录，以及 WorkBuddy�
 - propose 按单元数（默认 8，每次请求最多 64）和单元 JSON 的大小（1 MiB，单个更大的单元单独一批）分批，组成一个 run。中断后
   不续传，中断的 run 停在 `proposing`（第 0 节），重新运行就是新的 run。单元失败（例如模型调用出错）不会让整个 run 失败：
   run 照常进入 `proposed`，失败的单元没有提议，也不写台账，下次在新的 run 里重新提出。
+- daemon 一次只处理一个 propose 批次，包括它的模型调用：一批从 run 已有的单元数开始给单元编号，最后整份写回 run，同一个 run
+  的两批同时到达（MCP 的几页不由 shim 排队）就会编出相同的序号，后写的覆盖前一批的单元结果。这把锁只在 propose 之间，
+  形成、apply 和回滚都不等它。
 - 评审文件（`import show` 写出）第一行是表头，之后每条提议一行，变了的单元在提议后面跟着只读的 `previous` 行（6.9），会话
   轮次不列出。提议默认 `accept`，propose 时已经 `rejected` 的默认 `reject`；从评审文件里删掉的提议按 `reject` 处理。
   评审时不能改写文本，需要改的话，apply 之后用 `correct_memory`。
 - apply 必须带 `--review` 或 `--yes`，不会因为漏了评审文件就全部写入。apply 前 CLI 重新读取来源文件，propose 之后
-  改过或消失的文件的提议一律按拒绝处理（`dropped`）。daemon 再逐条复查：propose 之后另一个 run 导入或回滚过同一个单元时标为
+  改过或消失的文件的提议一律丢弃（`dropped`，决定记为 `source-changed` 而不是 `reject`）。这不是人的拒绝，daemon 不为这些
+  单元写 `declined` 台账行（6.9），所以照报告的建议按当前文本重新 plan、propose 时，文件里没改的单元也会再提出来，而不是
+  `unchanged`。`--home` 也要跟着：用 `--home` 做的计划，`propose` 和 `show` 给出的下一步命令都带上它，否则 apply 在别的目录下
+  找不到来源，整个 run 都会按 `source-changed` 丢弃。daemon 再逐条复查：propose 之后另一个 run 导入或回滚过同一个单元时标为
   `skipped` 并写明原因；同一项目里已有内容相同的 current 导入事实时，链接到它而不是再写一条（6.9）。实时形成的同文本事实不算。
 - 命令本身不做交互确认，propose 之后只有显式执行 apply 才会写入；交互式的确认留给安装器（6.18）。
 
 run 的状态是 `proposing → proposed → applying → applied → rolling_back → rolled_back`（或 `partially_rolled_back`，见
 [架构](../architecture.md#import)）。apply 或 rollback 中断后对同一个 run 重新执行会接着做；apply 中断的 run 也可以直接
-回滚。提议的状态：`proposed`、`rejected`（校验未通过）、`dropped`（评审拒绝）、`applied`、`skipped`、`rolled_back`。
+回滚。提议的状态：`proposed`、`rejected`（校验未通过）、`dropped`（评审拒绝，或来源在 propose 之后变了）、`applied`、
+`skipped`、`rolled_back`。
 
 ### 6.8 `imported` 来源
 
@@ -334,7 +341,8 @@ run 的状态是 `proposing → proposed → applying → applied → rolling_ba
 - `memoryIds` 是单元的"活链接"：它当前持有的记录（写入的，或链接到的同文本记录），从一次导入带到下一次，直到被这个单元
   的新提议取代或不再是 current。apply 之后，这次是 `new`、`changed` 或 `reconsidered` 的单元各有一条台账行（失败的单元、
   `unchanged` 的单元和 propose 之后被别的 run 导入过的单元没有）。什么都没写入时（提议全被拒绝、校验全没通过，或者什么都没
-  抽出来）状态记为 `declined`，保留原来的链接，同样的文本不会再被提出来，`propose --reconsider` 可以重新提出。
+  抽出来）状态记为 `declined`，保留原来的链接，同样的文本不会再被提出来，`propose --reconsider` 可以重新提出。提议因来源在
+  propose 之后变了而丢弃的单元（`source-changed`，6.7）没有人拒绝过，不写这一行，保持原来的台账行或没有台账行。
 - 和同一项目里已有的 current 导入事实内容相同（文本空白归一后比较，靠 `importKey`）的提议默认接受，接受即把单元
   链接到那条记录，不再写新的，和 Mem0 的精确去重一样。这样即使另一个单元以后改了自己的文本，这个单元的内容也还在。
 - 单元变了，只在一对一时取代：原样采用的单元以前只留下一条导入事实、这次也只提出一条通过校验的提议时，新事实取代旧事实。
@@ -361,7 +369,10 @@ run 的状态是 `proposing → proposed → applying → applied → rolling_ba
 - Claude 的一轮从一条带 `turnOrigin` 的 user 记录开始，到下一条带 `turnOrigin` 的 user 记录（不论来源）之前结束，而不是到
   下一条 `human` 记录之前：否则 `sdk` 或 `task_notification` 轮次的回复会被算到前面那个人工提问上。回复取这一轮最后一条带
   文本的 assistant 消息（同一 `message.id` 的文本块合并），忽略 thinking 和工具调用；`isSidechain` 记录丢掉。Codex 的一轮
-  按 `turn_id` 归组，提问是这一轮 `UserMessage` 条目的文本，和捕获一样不导入被中止或没有最终回复的轮次。
+  按 `turn_id` 归组，提问是这一轮 `UserMessage` 条目的文本，和捕获一样不导入被中止或没有最终回复的轮次。Claude 也一样：
+  后面跟着 `[Request interrupted by user…]` 记录的轮次（人中断了它）记为 `aborted`，回复所在的消息因工具调用停下
+  （`stop_reason: tool_use`，读 transcript 时这一轮还在运行）记为 `no-reply`。这两种轮次捕获都收不到 `Stop`；导入了的话，
+  "让我看看测试"这样的中间回复会占住这一轮的 turnId，outbox 的 `INSERT OR IGNORE` 和 daemon 的去重之后再也换不成完整的那一轮。
 - 读取范围：Claude 只读每个项目目录下直接的 `*.jsonl`，子代理等子目录不读；Codex 读 `sessions/` 和 `archived_sessions/`。
   解压后超过 512 MiB 的 transcript 不读，提问加回复超过 256 KiB 的轮次（例如贴进来的长日志）标为 `too-large` 跳过。
 - 会话轮次不检查文件哈希：消息随计划一起走，而进行中的会话的 transcript 一直在增长。
@@ -438,10 +449,19 @@ outbox 按 `seq` 先进先出，daemon 只有一个有序的形成 worker。几�
 另开一个 outbox 文件也绕不开 worker 的串行，形成环节没有优先级可用。因此会话导入要：
 
 - 每次计划最多取 `--limit` 轮（默认 200），取 `--since`（默认不限）之后最早的那些，报告里给出下一批的 `--since`，需要更多时
-  分批运行；
+  分批运行。分批不应越来越慢：transcript 只追加，每条记录在它写的时间之后才写下，所以最后写入早于 `--since` 的 transcript 一定
+  没有 `--since` 之后的轮次，不打开，只计文件数；读到的 transcript 里 `--since` 之前的轮次读到就丢掉，只计数，不留在内存里。
+  这里的前提是分叉或恢复的会话复制前面的轮次时保留它们原来的时间：否则一个副本可能比原会话晚过 `--since`，而原会话的
+  transcript 没被打开，副本就不再被认作副本；
 - apply 用 `--rate` 限速（每分钟最多写入的轮数，默认 20），outbox 里还没形成完的作业（包括实时捕获的）达到 `--max-pending`
   （默认 4）时等待。待处理数取自 outbox 而不是 `/admin/stats`：后者要统计每张表，而 outbox 正好反映上传器和形成的进度。
   `--rate 0` 时一次全部写入，也不等待；
+- 一个会话在这个 run 里的最后一轮排进 outbox 之后，紧接着排入这个会话的结束标记，形状和捕获的 `SessionEnd` 一样
+  （`sessionEnded: true`，没有消息），turnId 是 `turn_key(project, session, "session-end:import:<runId>")`。形成按最多 4 轮
+  成段，不满的段要等会话结束或最老的一轮等满 `mem0SegmentWaitSecs`（默认 600 秒）；导入不排结束标记时，几乎每个会话的最后
+  1 到 3 轮都要这样等，上面的等待也跟着停十分钟。标记带着 `importRunId`，daemon 只在 run 已 apply、并且这个会话有它 apply 过的
+  轮次时接受，新建的请求同样记下这个 run：它所在的段形成的事实把它记作来源，回滚时它和轮次一样算这次导入自己的请求（6.16）。
+  turnId 每个 run 一个，重复执行 apply 不会再排一次；outbox 里这个 run 的轮次都被别人占着（实时捕获或更早的 run）时不排；
 - 可以中断：同一个 outbox 里已经有这一轮的作业（实时捕获的，或更早的 run 的）时不替换，对已 apply 的 run 再执行 `apply`
   只补写 daemon 还没记下 `requestId` 的轮次。outbox 里已结束的作业被 `outbox prune` 删掉之后的情况见第 0 节。
 
@@ -463,9 +483,10 @@ Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` �
 - 之后被人更正、删除、被 consolidation 合并过的记录不动，记下 `rollbackSkipReason`，规则和 consolidation 的回滚一样
   （[应用与回滚](../architecture.md#apply-and-rollback)）；之后又被别的 run 导入过的单元要先回滚那个 run。旧版本写入的
   instruction 也按同样的规则撤回（6.2）。
-- 会话轮次：CLI 先把 outbox 里这个 run 还没上传的作业标为 `cancelled`，daemon 再关闭这个 run，之后带它的 `importRunId` 的
-  提交一律拒绝。每一轮的行记下 `requestId` 和 `duplicate`：daemon 找到的请求不是这个 run 建的（实时捕获或别的 run 先提交
-  过）时为 true，响应丢失后重发自己的轮次不算；没记下 `requestId` 的轮次，回滚时按 turnId 去找。回滚只撤回来源请求全部
+- 会话轮次：CLI 先把 outbox 里这个 run 还没上传的作业（轮次和结束标记）标为 `cancelled`，daemon 再关闭这个 run，之后带它的
+  `importRunId` 的提交一律拒绝。每一轮的行记下 `requestId` 和 `duplicate`：daemon 找到的请求不是这个 run 建的（实时捕获或别的
+  run 先提交过）时为 true，响应丢失后重发自己的轮次不算；没记下 `requestId` 的轮次，回滚时在这个 run 自己的请求里按 turnId
+  去找（一轮只有一个请求；找不到的不是没提交过，就是 daemon 已有别处的请求，都不用撤回）。回滚只撤回来源请求全部
   属于这次导入的事实，还有捕获或其他 run 的来源（或来源不明）的事实保留。还在形成中的轮次留到下一次 rollback
   （`partially_rolled_back`）。原始输入保留，turnId 也仍被占用，所以回滚过的轮次再导入只会被当作重复，不会再形成一次。
 - 撤回事实要知道它由哪些请求形成，这个出处在算法的私有表里（Mem0 的 `mem0_sources`）。引擎通过通用的
@@ -504,8 +525,10 @@ Mem0 形成写入的 fact 固定是项目作用域。WorkBuddy 的 `MEMORY.md` �
   [import_sessions.rs](../../crates/memory-service/src/diagnostics/import_sessions.rs)）：propose 不写记忆，
   评审决定，apply 的复查和跳过，重跑不写入，`--reconsider` 和 `declined`，变了的单元取代旧记录，导入不产生指令，回滚和回滚跳过，
   抽取缓存；导入的记录能被 `search_memories` 找到，`get_context` 不列出它们。同一轮先捕获再导入时 daemon 返回
-  `duplicate:true`，在 [commands.rs](../../crates/memory-service/src/harness/import/commands.rs) 的测试里经两个 outbox 验证；
-  对话里粘贴的导出走真实 daemon 的测试在 [chat.rs](../../crates/memory-service/src/harness/import/chat.rs)。
+  `duplicate:true`，在 [commands.rs](../../crates/memory-service/src/harness/import/commands.rs) 的测试里经两个 outbox 验证，
+  同一个测试也验证结束标记让会话的最后一轮不等段满就形成、它参与形成的事实回滚时仍算这次导入的；同一个 run 的 propose 批次
+  同时到达、结束标记的准入和回滚时按 turnId 找回请求，在 [turns.rs](../../crates/memory-engine/src/app/import/turns.rs) 的
+  测试里用引擎自己的存储验证；对话里粘贴的导出走真实 daemon 的测试在 [chat.rs](../../crates/memory-service/src/harness/import/chat.rs)。
 - 不调用付费模型，不跑完整数据集。
 
 ## 9. 待定问题

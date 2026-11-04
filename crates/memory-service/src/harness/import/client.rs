@@ -5,7 +5,7 @@
 //! of a run's proposals, are still as they were.
 use memory_domain::import::{
     is_session_turn, ImportProposal, ImportProposeReq, ImportRun, ImportRunReq, ImportRunsReq,
-    ImportUnit, MODE_SESSION_TURN, PROPOSED, REJECT,
+    ImportUnit, MODE_SESSION_TURN, PROPOSED, REJECT, SOURCE_CHANGED,
 };
 use memory_rules::import::units::content_hash;
 use serde::Serialize;
@@ -45,8 +45,8 @@ pub struct Stale {
     pub why: &'static str,
 }
 
-/// A source file of a run's proposals that changed or vanished after they were proposed; apply declines
-/// its proposals.
+/// A source file of a run's proposals that changed or vanished after they were proposed; apply drops its
+/// proposals as `source-changed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangedSource {
     /// Display form, as `source.path` has it.
@@ -57,7 +57,7 @@ pub struct ChangedSource {
     pub proposals: Vec<String>,
 }
 
-/// What `apply` did: the run afterwards, and the sources whose proposals it declined.
+/// What `apply` did: the run afterwards, and the sources whose proposals it dropped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Applied {
     pub view: RunView,
@@ -277,9 +277,11 @@ impl Client {
         run_view(self.call("import_run", &request, PLATFORM).await?)
     }
 
-    /// Apply a run with the decisions of a review file, or without one with every proposal accepted. First the source file of every proposal still proposed is read again
-    /// under `home`: the proposals of a file that changed or vanished since propose are declined, whatever
-    /// the review says. Calls as the run's host.
+    /// Apply a run with the decisions of a review file, or without one with every proposal accepted. First the
+    /// source file of every proposal still proposed is read again under `home`: the proposals of a file that changed
+    /// or vanished since propose are dropped as `source-changed`, whatever the review says. That is no person's
+    /// decline, so the daemon records none: the next plan of the current text proposes their units again. Calls as
+    /// the run's host.
     pub async fn apply(
         &self,
         run_id: &str,
@@ -293,7 +295,7 @@ impl Client {
         };
         let changed = changed_sources(&current.proposals, home);
         for id in changed.iter().flat_map(|source| &source.proposals) {
-            decisions.insert(id.clone(), REJECT.into());
+            decisions.insert(id.clone(), SOURCE_CHANGED.into());
         }
         let request = ImportRunReq {
             run_id: run_id.into(),
@@ -604,7 +606,7 @@ pub(crate) mod tests {
                 path: "~/x".into(),
                 reason: "derived".into(),
             }],
-            sessions: vec![],
+            ..ScanOutput::default()
         };
         let opts = PlanOptions {
             host: "codex".into(),
@@ -826,17 +828,19 @@ pub(crate) mod tests {
                 },
             ]
         );
-        // Their proposals are declined whatever the review says; one without a source path is left.
+        // Their proposals are dropped whatever the review says, and not as a person's reject; one without a
+        // source path is left.
+        let changed = SOURCE_CHANGED;
         assert_eq!(
             requests.lock().unwrap().last().unwrap().2,
             json!({"runId": "ir1",
-                   "decisions": {"ip1": ACCEPT, "ip2": REJECT, "ip3": REJECT, "ip4": REJECT, "ip5": ACCEPT}})
+                   "decisions": {"ip1": ACCEPT, "ip2": changed, "ip3": changed, "ip4": changed, "ip5": ACCEPT}})
         );
         // Without a review file too.
         client.apply("ir1", None, home.path()).await.unwrap();
         assert_eq!(
             requests.lock().unwrap().last().unwrap().2,
-            json!({"runId": "ir1", "decisions": {"ip2": REJECT, "ip3": REJECT, "ip4": REJECT}})
+            json!({"runId": "ir1", "decisions": {"ip2": changed, "ip3": changed, "ip4": changed}})
         );
     }
 

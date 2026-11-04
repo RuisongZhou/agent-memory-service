@@ -351,7 +351,8 @@ plans an export file, under the connection's platform, and applies the run after
    [memory-rules](../crates/memory-rules/src/import/validate.rs): its `evidence` must quote the unit, its numbers and
    named entities must occur in the unit or its metadata, and it must fit the cap; a failing item is stored as
    `rejected` with the reason. Proposals are rows of the shared `proposals` table with `kind: "import"`; nothing
-   is written to `memories`, and no lock is held during model calls.
+   is written to `memories`. Propose calls are serialised by a lock of their own, held across their model calls;
+   nothing else waits on it.
 3. **Apply**, under the formation lock, one proposal per transaction. A declined proposal is `dropped`. An accepted
    fact becomes a `fact` with origin `imported`, project scope, the source's `statedAt`, `ingestionMode:
    imported`, `detail.import` provenance and an `evidence` row; the indexer embeds it. A current imported fact of

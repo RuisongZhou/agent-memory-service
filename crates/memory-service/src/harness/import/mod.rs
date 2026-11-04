@@ -215,6 +215,10 @@ pub enum ImportCmd {
         force: bool,
         #[command(flatten)]
         daemon: DaemonArgs,
+        /// Home directory the run's `~/` source paths are under, as given to `import plan`, for the apply
+        /// command this suggests [default: $HOME]
+        #[arg(long, value_name = "DIR")]
+        home: Option<PathBuf>,
     },
     /// Write a run's accepted proposals, as a review file decides or with --yes all of them
     #[command(group(clap::ArgGroup::new("decisions").required(true).args(["review", "yes"])))]
@@ -230,7 +234,7 @@ pub enum ImportCmd {
         #[command(flatten)]
         daemon: DaemonArgs,
         /// Home directory the run's `~/` source paths are under, as given to `import plan`; the
-        /// proposals whose source file changed since propose are declined [default: $HOME]
+        /// proposals whose source file changed since propose are dropped as source-changed [default: $HOME]
         #[arg(long, value_name = "DIR")]
         home: Option<PathBuf>,
         #[command(flatten)]
@@ -325,9 +329,11 @@ async fn execute(cmd: ImportCmd) -> Result<(), Error> {
             out,
             force,
             daemon,
+            home: plan_home,
         } => {
             let out = out.as_deref().map(expand);
-            commands::show(&run, out.as_deref(), force, &daemon, &home()).await?
+            let plan_home = plan_home.as_deref().map(expand).unwrap_or_else(home);
+            commands::show(&run, out.as_deref(), force, &daemon, &home(), &plan_home).await?
         }
         ImportCmd::Apply {
             run,
@@ -677,9 +683,14 @@ mod tests {
             ImportCmd::Show {
                 out: None,
                 force: true,
+                home: None,
                 ..
             }
         ));
+        let ImportCmd::Show { home, .. } = parse(&["show", "ir1", "--home", "/h"]).unwrap() else {
+            panic!("show")
+        };
+        assert_eq!(home, Some(PathBuf::from("/h")));
         let ImportCmd::Apply {
             yes: true,
             review: None,
