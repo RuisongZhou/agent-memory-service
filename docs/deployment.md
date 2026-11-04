@@ -228,6 +228,11 @@ small embedding request to check the key and read the vector dimension, and one 
 reranking is enabled. Stored texts and queries are sent to the provider; use `self-hosted` if they must
 stay on your machines.
 
+The web UI's **模型设置** ("Model settings") page changes these settings, the generation endpoint and model, and the
+keys. It tests them against the real endpoints, saves them to the env file and restarts the daemon in place; if they
+do not start, the previous file is put back (see [model settings](design/model-settings.md)). It also installs the
+self-hosted models in one step.
+
 Switching provider or embedding model on an existing data directory re-embeds its memories at the next
 start. The hosted default and BGE-M3 both use 1024 dimensions; for a model with another dimension, start
 with a new data directory.

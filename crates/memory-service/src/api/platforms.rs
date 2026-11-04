@@ -1,7 +1,9 @@
 //! The web UI's platform page (docs/design/platform-connect.md): `/admin/platforms` and `/admin/connect` run the
 //! copy of the installer that `install.sh service` put beside the web UI (`serve --installer`), which alone reads and
 //! writes the platforms' configuration. The daemon turns a request into fixed installer arguments and returns the
-//! installer's JSON object as it is; its `ok` and `error` say whether the run worked.
+//! installer's JSON object as it is; its `ok` and `error` say whether the run worked. The model settings page uses the
+//! same copy for the self-hosted models: `/admin/llama` reports `models --status`, `/admin/llama_install` starts
+//! `models --apply` in the background, since downloading the weights takes longer than any request.
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -97,12 +99,96 @@ fn connect_args(req: &ConnectReq) -> ApiResult<Vec<String>> {
 
 type Installer = Arc<Option<PathBuf>>;
 
-/// `/admin/platforms` and `/admin/connect`; without `installer` both are a 404 that says how to get it.
+/// `/admin/platforms`, `/admin/connect` and the two llama routes; without `installer` each is a 404 that says how
+/// to get it.
 pub fn router<S: Clone + Send + Sync + 'static>(installer: Option<PathBuf>) -> Router<S> {
     Router::new()
         .route("/admin/platforms", post(platforms))
         .route("/admin/connect", post(connect))
+        .route("/admin/llama", post(llama))
+        .route("/admin/llama_install", post(llama_install))
         .with_state(Arc::new(installer))
+}
+
+/// Where the weights come from: the names the installer knows, never a URL from a page.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Source {
+    Huggingface,
+    HfMirror,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LlamaReq {
+    source: Source,
+}
+
+/// How long a started run has to record itself before the start counts as failed.
+const LLAMA_START_WAIT: Duration = Duration::from_secs(10);
+
+fn llama_status() -> Vec<String> {
+    ["models", "--status", "--json"].map(String::from).to_vec()
+}
+
+async fn llama(State(installer): State<Installer>) -> Response {
+    respond(run(&installer, llama_status()).await)
+}
+
+/// Start `models --apply` detached from the daemon (a shell that backgrounds it and exits), so a restart of the
+/// daemon or a closed page does not stop it, then wait until the run has recorded itself.
+async fn llama_install(State(installer): State<Installer>, Json(body): Json<Value>) -> Response {
+    let res = async {
+        let req: LlamaReq =
+            serde_json::from_value(body).map_err(|e| ApiError::InvalidArgument(e.to_string()))?;
+        let before = run(&installer, llama_status()).await?;
+        if before["job"]["state"] == "running" {
+            return Err(ApiError::InvalidArgument(
+                "the self-hosted models are already being installed".into(),
+            ));
+        }
+        let Some(path) = installer.as_ref() else {
+            return Err(ApiError::NotFound(NOT_INSTALLED.into()));
+        };
+        let source = match req.source {
+            Source::Huggingface => "huggingface",
+            Source::HfMirror => "hf-mirror",
+        };
+        let status = tokio::process::Command::new("/bin/sh")
+            .args(["-c", r#""$0" "$@" </dev/null >/dev/null 2>&1 &"#])
+            .arg(path)
+            .args(["models", "--apply", "--json", "--source", source])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map_err(|e| ApiError::Internal(format!("cannot run {}: {e}", path.display())))?;
+        if !status.success() {
+            return Err(ApiError::Internal(format!(
+                "cannot start {}: {status}",
+                path.display()
+            )));
+        }
+        let deadline = tokio::time::Instant::now() + LLAMA_START_WAIT;
+        loop {
+            let now = run(&installer, llama_status()).await?;
+            if now["job"]["startedAt"] != before["job"]["startedAt"]
+                || now["job"]["pid"] != before["job"]["pid"]
+            {
+                return Ok(now);
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(ApiError::Internal(format!(
+                    "the installer did not start within {} s: run `{} models --apply` in a terminal to see why",
+                    LLAMA_START_WAIT.as_secs(),
+                    path.display()
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    };
+    respond(res.await)
 }
 
 async fn platforms(State(installer): State<Installer>) -> Response {
@@ -202,12 +288,20 @@ mod tests {
         let installer = root.path().join("run");
         // Prints its arguments; for host `fail` it refuses as the installer's argument parser does, for `noise` it
         // prints no JSON.
+        let job = root.path().join("job.json");
         std::fs::write(
             &installer,
-            "#!/bin/sh\ncase \"$*\" in\n\
-             *fail*) echo 'install.sh connect: error: argument --host: invalid choice' >&2; exit 2;;\n\
-             *noise*) echo oops; echo 'Traceback: boom' >&2; exit 1;;\nesac\n\
-             printf '{\"ok\": true, \"args\": \"%s\"}' \"$*\"\n",
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n\
+                 *fail*) echo 'install.sh connect: error: argument --host: invalid choice' >&2; exit 2;;\n\
+                 *noise*) echo oops; echo 'Traceback: boom' >&2; exit 1;;\n\
+                 'models --status --json') if [ -f {job} ]; then printf '{{\"job\": %s}}' \"$(cat {job})\"; \
+                 else echo '{{\"job\": null}}'; fi; exit 0;;\n\
+                 models*) printf '{{\"state\": \"running\", \"pid\": %s, \"startedAt\": \"t\", \"args\": \"%s\"}}' \
+                 $$ \"$*\" > {job}; sleep 2; exit 0;;\nesac\n\
+                 printf '{{\"ok\": true, \"args\": \"%s\"}}' \"$*\"\n",
+                job = job.display()
+            ),
         )
         .unwrap();
         assert!(check_installer(&installer).is_err());
@@ -220,7 +314,7 @@ mod tests {
             ..Default::default()
         };
         let eng = engine(cfg);
-        let app = crate::http::router(eng.clone(), PORT, None, Some(installer));
+        let app = crate::http::router(eng.clone(), PORT, None, Some(installer), None);
         let (status, body) = post(&app, "/admin/platforms", json!({})).await;
         assert_eq!(
             (status, &body["args"]),
@@ -283,11 +377,32 @@ mod tests {
                 .contains("Traceback: boom"),
             "{body}"
         );
+        // The self-hosted models: the run is started in the background with a fixed source, never a URL.
+        let (status, body) = post(&app, "/admin/llama", json!({})).await;
+        assert_eq!((status, &body["job"]), (StatusCode::OK, &Value::Null));
+        let (status, body) =
+            post(&app, "/admin/llama_install", json!({"source": "hf-mirror"})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["job"]["state"], "running");
+        assert_eq!(
+            body["job"]["args"],
+            "models --apply --json --source hf-mirror"
+        );
+        let (status, body) =
+            post(&app, "/admin/llama_install", json!({"source": "hf-mirror"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        for bad in [
+            json!({"source": "https://evil.example"}),
+            json!({"source": "hf-mirror", "extra": 1}),
+        ] {
+            let (status, _) = post(&app, "/admin/llama_install", bad.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
         // The other admin actions keep their route.
         let (status, _) = post(&app, "/admin/stats", json!({})).await;
         assert_eq!(status, StatusCode::OK);
 
-        let app = crate::http::router(eng, PORT, None, None);
+        let app = crate::http::router(eng, PORT, None, None, None);
         for (path, body) in [
             ("/admin/platforms", json!({})),
             (

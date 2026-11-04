@@ -2,9 +2,40 @@
 
 By default the daemon uses hosted embedding and rerank models through an API key
 (`MEMORY_MODEL_PROVIDER=api`; see [model provider](deployment.md#4-configure-the-retrieval-models)).
-This guide is for running the models yourself instead. The repository does not install llama.cpp,
-ship weights or supervise model processes; you set them up and point the daemon at them. The
-[helper script](../scripts/self_hosted_models.sh) covers the common case of the BGE models on one machine.
+This guide is for running the models yourself instead. `install.sh models` does it in one step (below); otherwise you
+set them up and point the daemon at them, and the [helper script](../scripts/self_hosted_models.sh) covers the common
+case of the BGE models on one machine.
+
+## One-click install
+
+```sh
+bash scripts/install.sh models            # preview
+bash scripts/install.sh models --apply    # install, download and start
+bash scripts/install.sh models --status
+```
+
+`--apply` takes these steps:
+
+1. It finds `llama-server`: first `--llama-server PATH`, then PATH and Homebrew's prefixes. On macOS without one, it
+   runs `brew install llama.cpp`. On Linux it stops and says how to get one (step 1 below, or a
+   [release](https://github.com/ggml-org/llama.cpp/releases)).
+2. It downloads `bge-m3-Q8_0.gguf` and `bge-reranker-v2-m3-Q8_0.gguf` (about 1.27 GB together) from a pinned commit
+   into `~/.local/share/agent-memory-service/models/`. An interrupted download resumes, and each file must match its
+   pinned size and SHA-256.
+3. It registers each model as a user service, as `local.agent-memory-embed` and `local.agent-memory-rerank`
+   LaunchAgents on macOS or `agent-memory-embed.service` and `agent-memory-rerank.service` systemd user units on Linux.
+   They run the commands in step 2 below on `127.0.0.1:8081` and `:8082`, start at login and restart when they exit.
+4. It waits until both answer.
+
+`--source hf-mirror` (or a mirror's base URL) downloads from a mirror instead of `huggingface.co`, and `--gpu-layers 0`
+runs a CPU-only build. Rerunning is safe: finished downloads, unchanged units and running services are left alone, and
+a unit the command did not write is never replaced. Each run records its steps in
+`~/.local/state/agent-memory-service/llama-install.json`; the servers log to
+`~/.local/state/agent-memory-service/llama/`.
+
+The command does not change the daemon's settings. Switch it over in the web UI's **模型设置** ("Model settings")
+page, whose **一键安装本机检索模型** card also runs this install in the background with per-step progress, or follow
+step 3 below.
 
 ## What the daemon expects
 

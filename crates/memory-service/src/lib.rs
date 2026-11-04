@@ -6,6 +6,7 @@ mod diagnostics;
 pub mod envfile;
 pub mod harness;
 pub mod service;
+pub mod settings;
 #[cfg(test)]
 mod test_support;
 

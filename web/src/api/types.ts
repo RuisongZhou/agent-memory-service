@@ -90,6 +90,8 @@ export interface Health {
   modelDtype: string
   llm: LlmUsage
   memoryStrategy: string
+  /** When this daemon process began serving; absent on a daemon older than the web UI. */
+  startedAt?: string
 }
 
 export interface Stats {
@@ -979,3 +981,115 @@ export interface MemoryReadRes {
   tokensUsed: number
   links: TreeLink[]
 }
+
+/** Where a model setting comes from: a `serve` flag or an environment variable outranks the env file. */
+export type SettingSource = 'flag' | 'environment' | 'file' | 'default'
+
+export interface TextSetting {
+  /** What it is set to; "" when unset and the default applies. */
+  value: string
+  /** What the daemon runs with. */
+  effective: string
+  source: SettingSource
+}
+
+/** An API key: only whether one is set, never the key. */
+export interface KeySetting {
+  set: boolean
+  source: SettingSource
+}
+
+export type TextSettingName =
+  | 'llmBaseUrl'
+  | 'llmModel'
+  | 'modelProvider'
+  | 'embedUrl'
+  | 'rerankUrl'
+  | 'embedModel'
+  | 'rerankModel'
+export type KeySettingName = 'llmKey' | 'modelKey'
+
+export interface ModelSettings {
+  /** The daemon has an env file to save to. */
+  editable: boolean
+  envFile: string | null
+  /** `MEMORY_MOCK_MODELS=1`: the retrieval models are mocks whatever the settings say. */
+  mock: boolean
+  /** Searches rerank, so the rerank model is used. */
+  rerank: boolean
+  fields: Record<TextSettingName, TextSetting> & Record<KeySettingName, KeySetting>
+  models: { backend: string; embedModel: string; rerankModel: string | null; dim: number }
+  /** The last save, when its settings did not start and the previous ones were put back. */
+  rolledBack: { at: string; error: string } | null
+}
+
+export type ModelSettingsReq = Record<TextSettingName, string> & Partial<Record<KeySettingName, string>>
+
+export interface ProbeResult {
+  /** true: it answers; false: it refused or could not be reached; null: it could not be checked. */
+  ok: boolean | null
+  error?: string
+  warning?: string
+}
+
+export interface ModelSettingsTest {
+  ok: boolean
+  retrieval: ProbeResult & {
+    mock?: boolean
+    backend?: string
+    embedModel?: string
+    rerankModel?: string | null
+    dim?: number
+    /** Another embedding model or dimension: every memory is embedded again after the restart. */
+    reembed?: boolean
+  }
+  generation: ProbeResult
+}
+
+export interface ModelSettingsApplyRes {
+  saved: boolean
+  restarting?: boolean
+  test: ModelSettingsTest
+}
+
+export type LlamaStepId = 'llama' | 'embed' | 'rerank' | 'services' | 'ready'
+
+/** One run of `install.sh models --apply`, as it records itself. */
+export interface LlamaJob {
+  state: 'running' | 'done' | 'failed'
+  pid: number
+  source: string
+  startedAt: string
+  finishedAt: string | null
+  error: string | null
+  steps: {
+    id: LlamaStepId
+    label: string
+    state: 'pending' | 'running' | 'done' | 'failed'
+    detail: string | null
+    /** Bytes downloaded, for the two weight files. */
+    done: number | null
+    total: number | null
+  }[]
+}
+
+export interface LlamaStatus {
+  job: LlamaJob | null
+  platform: string
+  manager: 'launchd' | 'systemd'
+  llamaServer: string | null
+  /** macOS with Homebrew: a missing llama-server is installed with `brew install llama.cpp`. */
+  brew: boolean
+  models: {
+    id: 'embed' | 'rerank'
+    name: string
+    file: string
+    size: number
+    url: string
+    downloaded: boolean
+    installed: boolean
+    healthy: boolean
+  }[]
+}
+
+export type LlamaSource = 'huggingface' | 'hf-mirror'

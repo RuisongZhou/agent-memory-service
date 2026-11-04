@@ -305,6 +305,7 @@ sign-in of its own: like the rest of the daemon, it relies on the loopback-only 
 | 检索调试 | Search debugging | Run a query and see ranks, scores, timings and which memories clear the reranker's floor; the query goes to the embedding model and, unless you switch reranking off, the reranker |
 | 上下文预览 | Context preview | See the text `get_context` injects for a project and session, section by section; calls no model |
 | 接入平台 | Connect platforms | Find the platforms on this machine, preview and write their configuration, trust hooks, confirm the first calls arrive, uninstall or roll back |
+| 模型设置 | Model settings | Set the generation, embedding and rerank endpoints, models and keys (keys are never shown again), test them and restart the daemon with them; install llama.cpp and the BGE models as local services in one step |
 | 导入审核 | Import review | Review import runs: accept or reject proposals, apply or roll back a run |
 | consolidation | Consolidation | Propose merges of duplicate or overlapping facts (one generation call per cluster), review them, apply or roll back the batch; off unless the daemon enables `consolidationEnabled` |
 | 冲突 | Conflicts | Compare conflicting records side by side and keep one, with a reason |

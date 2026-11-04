@@ -150,6 +150,12 @@ Graphiti、memU、本地版 Basic Memory 没有界面；Memobase 的 playground 
 |---|---|---|---|
 | 19 | 记忆树浏览：以虚拟文件系统结构浏览 `mem://` 空间（`#/tree`），支持面包屑导航、URI 输入跳转、目录列表、三层阅读（摘要/概览/详情）、防注入对话围栏展示与节点跳转；从检索调试（“出处与原始对话”）和记忆详情（“在记忆树中查看”）提供直接入口 | 见 [记忆树设计](memory-fs.md)；直接复用现有的 `POST /v1/memory_ls` 与 `POST /v1/memory_read` 接口，无新增后端接口；只读不产生模型调用或召回记录 | — |
 
+### 4.6 模型设置
+
+| # | 功能 | 说明 | 缺口 |
+|---|---|---|---|
+| 20 | 模型设置（`#/settings`）：查看和修改生成模型、embedding/rerank 模型的地址、模型名和 key，测试后写入 env 文件并原地重启 daemon；一键安装 llama.cpp 和 BGE 模型，作为本机服务运行 | 见 [模型设置设计](model-settings.md)；接口为 `POST /admin/model_settings`、`/admin/model_settings_test`、`/admin/model_settings_apply`、`/admin/llama`、`/admin/llama_install` | key 只进不出；命令行参数或环境变量设定的项不能在网页里改 |
+
 ## 5. 后端要补的接口
 
 都加在现有的 `/v1/{name}` 或 `/admin/{name}` 分发里，每个接口在入口校验一次参数（AGENTS.md），单元测试放在实现旁边。

@@ -32,12 +32,13 @@ DeepSeek Harness; its `service` command installs and starts the daemon they shar
 
 ## Installer
 
-`scripts/install.sh` has two commands. Both preview unless `--apply` is given.
+`scripts/install.sh` has these commands. `service`, `connect` and `models` preview unless `--apply` is given.
 
 ```sh
 bash scripts/install.sh service --apply                     # the daemon, once per machine; also the upgrade
 bash scripts/install.sh connect --host codex --apply --recall   # one agent platform, once per platform
 bash scripts/install.sh status                              # every platform: on this machine, connected, up to date
+bash scripts/install.sh models --apply                      # self-hosted retrieval models: llama.cpp, BGE weights, services
 ```
 
 The web UI's **接入平台** page does what `status` and `connect` do, with the same installer

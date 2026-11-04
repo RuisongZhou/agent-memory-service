@@ -16,7 +16,7 @@ it, connect a client and use it. The guides here are the reference for each part
 | Import what a client or another assistant remembers | [Import existing memories](mcp-harness.md#import-existing-memories) |
 | Upgrade or uninstall | [README: Operations](../README.md#operations), then the [installer reference](mcp-harness.md#installer) |
 | Run the daemon myself, back it up or restore it | [Deployment and operations](deployment.md) |
-| Keep embedding and reranking on this machine | [Self-hosted retrieval models](self-hosted-models.md); the generation model is set in the [configuration](api.md#configuration) |
+| Keep embedding and reranking on this machine | [Self-hosted retrieval models](self-hosted-models.md), or the web UI's model settings; the generation model is set in the [configuration](api.md#configuration) |
 | Call the HTTP API, or change a setting | [API reference](api.md) |
 | Understand how memories are formed, retrieved and stored | [Architecture](architecture.md) |
 | Fix something that does not work | [Troubleshooting](#troubleshooting) below |
