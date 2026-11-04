@@ -19,13 +19,16 @@ use memory_engine::runtime::indexer;
 
 /// The daemon's routes. `port` is the one its listener is bound to, the only one clients may address it by;
 /// `ui_dir` is the web UI's build output served under `/ui` (`--ui-dir`), `installer` what its platform page runs
-/// (`--installer`). The loopback check covers every route.
+/// (`--installer`), `launch` how `serve` was started, which its model settings page saves and restarts with.
+/// The loopback check covers every route.
 pub fn router(
     eng: Arc<Engine>,
     port: u16,
     ui_dir: Option<&std::path::Path>,
     installer: Option<std::path::PathBuf>,
+    launch: Option<crate::settings::Launch>,
 ) -> Router {
+    STARTED.get_or_init(|| memory_rules::util::now().to_rfc3339());
     Router::new()
         .route("/health", get(health))
         .route("/v1/embeddings", post(embeddings))
@@ -33,6 +36,10 @@ pub fn router(
         .route("/admin/{name}", post(admin))
         .merge(super::ui::router(ui_dir))
         .merge(super::platforms::router(installer))
+        .merge(super::settings::router(
+            eng.clone(),
+            launch.unwrap_or_default(),
+        ))
         .with_state(eng)
         .layer(middleware::from_fn_with_state(port, loopback_only))
 }
@@ -110,10 +117,14 @@ fn parse<T: DeserializeOwned>(v: Value) -> ApiResult<T> {
     serde_json::from_value(v).map_err(|e| ApiError::InvalidArgument(e.to_string()))
 }
 
+/// When this process began serving: a page that saved settings waits for a later one.
+static STARTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 async fn health(State(eng): State<Arc<Engine>>) -> Json<Value> {
     Json(json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
+        "startedAt": STARTED.get(),
         "promptVariant": eng.cfg.prompt_variant,
         "embedModel": eng.models.embed_model_id,
         "rerankModel": eng.models.rerank_model_id,
@@ -302,7 +313,7 @@ mod tests {
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let app = router(engine(cfg), port, None, None);
+        let app = router(engine(cfg), port, None, None, None);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let daemon = format!("http://127.0.0.1:{port}");
         let rebound = format!("evil.example:{port}");

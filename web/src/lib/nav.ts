@@ -40,7 +40,10 @@ export const NAV: { title: string; items: NavItem[] }[] = [
   },
   {
     title: '接入',
-    items: [{ to: '/platforms', label: '接入平台', icon: 'plug' }],
+    items: [
+      { to: '/platforms', label: '接入平台', icon: 'plug' },
+      { to: '/settings', label: '模型设置', icon: 'sliders' },
+    ],
   },
 ]
 
@@ -60,6 +63,7 @@ const PAGES: Record<string, PageMeta> = {
   '/search': { title: '检索调试', description: '查看一次检索的排序、分数和耗时' },
   '/context': { title: '上下文预览', description: '会话开始时 agent 会拿到的上下文' },
   '/platforms': { title: '接入平台', description: '把本机的 agent 平台接到共享记忆' },
+  '/settings': { title: '模型设置', description: '抽取用的生成模型，以及检索用的 embedding 和 rerank 模型' },
   '/imports': { title: '导入审核', description: '逐条审核导入的记忆，应用或回滚' },
   '/consolidation': { title: 'Consolidation', description: '合并重复记忆、找出冲突，应用前可逐条查看' },
   '/conflicts': { title: '冲突', description: '两条记忆说法不一致时，选择保留哪一条' },

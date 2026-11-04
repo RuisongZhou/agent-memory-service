@@ -33,11 +33,17 @@ import type {
   ListTurnsRes,
   ListUncertaintiesReq,
   ListUncertaintiesRes,
+  LlamaSource,
+  LlamaStatus,
   MemoryEntitiesRes,
   MemoryLsReq,
   MemoryLsRes,
   MemoryReadReq,
   MemoryReadRes,
+  ModelSettings,
+  ModelSettingsApplyRes,
+  ModelSettingsReq,
+  ModelSettingsTest,
   PlatformActivityRes,
   PlatformsRes,
   RequestDetail,
@@ -148,4 +154,15 @@ export const api = {
   /** The memory tree agents browse: read-only, no model call, not counted as a recall. */
   memoryLs: (req: MemoryLsReq) => post<MemoryLsRes>('/v1/memory_ls', req),
   memoryRead: (req: MemoryReadReq) => post<MemoryReadRes>('/v1/memory_read', req),
+
+  /** Where the models are and where each setting comes from; keys only as set or not. */
+  modelSettings: () => post<ModelSettings>('/admin/model_settings', {}),
+  /** Tries the settings against the real endpoints; asks for the generation model list, no completion. */
+  testModelSettings: (req: ModelSettingsReq) => post<ModelSettingsTest>('/admin/model_settings_test', req),
+  /** Tries, saves to the env file and restarts the daemon. */
+  applyModelSettings: (req: ModelSettingsReq) => post<ModelSettingsApplyRes>('/admin/model_settings_apply', req),
+  /** The self-hosted models: what is installed and the last install run; 404 NOT_FOUND without an installer copy. */
+  llama: () => post<LlamaStatus>('/admin/llama', {}),
+  /** Starts the install in the background (weights from `source`, about 1.3 GB) and returns its first status. */
+  llamaInstall: (source: LlamaSource) => post<LlamaStatus>('/admin/llama_install', { source }),
 }

@@ -18,6 +18,17 @@ names; `connect` is idempotent, so rerunning it is always safe.
 
 Each entry says what to do if your checkout or data predates the change.
 
+- **The web UI sets the models and installs the self-hosted ones.** A **模型设置** ("Model settings") page (`#/settings`)
+  shows the generation, embedding and rerank endpoints, models and keys, and where each setting comes from; keys are
+  never sent back to the page. It tests new settings against the real endpoints (the generation endpoint only lists
+  its models), writes them to the daemon's `--env-file` and restarts the daemon in place; settings that do not start
+  are rolled back to the previous file. A setting given by a flag or an environment variable cannot be changed there.
+  `bash scripts/install.sh models --apply`, also on that page, installs llama.cpp (Homebrew on macOS), downloads the
+  BGE-M3 and bge-reranker-v2-m3 weights from a pinned commit (about 1.27 GB, resumable, SHA-256 checked) and runs each
+  as a user service on `127.0.0.1:8081` and `:8082`. Upgrade with `bash scripts/install.sh service --apply`, which
+  installs the installer copy the page uses; a daemon started by hand without `--env-file` shows the settings read-only.
+  See [model settings](docs/design/model-settings.md) and [self-hosted retrieval models](docs/self-hosted-models.md).
+
 - **A memory tree exposes records and dialogue turns as a virtual filesystem.** Two new read-only MCP tools and HTTP
   endpoints, `memory_ls` and `memory_read`, allow agents to browse memories hierarchically under `mem://` and inspect
   the dialogue a fact was formed from at level 2. Search results now carry a `uri` placing each record in the tree.

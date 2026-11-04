@@ -26,6 +26,7 @@ const PlatformsPage = page(() => import('./pages/Platforms'), 'PlatformsPage')
 const RecallsPage = page(() => import('./pages/Recalls'), 'RecallsPage')
 const RequestPage = page(() => import('./pages/Tasks'), 'RequestPage')
 const SearchPage = page(() => import('./pages/Search'), 'SearchPage')
+const SettingsPage = page(() => import('./pages/Settings'), 'SettingsPage')
 const TasksPage = page(() => import('./pages/Tasks'), 'TasksPage')
 const TreePage = page(() => import('./pages/Tree'), 'TreePage')
 
@@ -50,6 +51,7 @@ createRoot(document.getElementById('root')!).render(
             <Route path="search" element={<SearchPage />} />
             <Route path="context" element={<ContextPage />} />
             <Route path="platforms" element={<PlatformsPage />} />
+            <Route path="settings" element={<SettingsPage />} />
             <Route path="imports" element={<ImportsPage />} />
             <Route path="imports/:runId" element={<ImportRunPage />} />
             <Route path="consolidation" element={<ConsolidationPage />} />

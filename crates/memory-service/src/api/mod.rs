@@ -2,4 +2,5 @@
 pub mod http;
 pub mod mcp;
 pub mod platforms;
+pub mod settings;
 pub mod ui;

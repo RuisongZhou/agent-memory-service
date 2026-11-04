@@ -12,6 +12,7 @@ use clap::{error::ErrorKind, Parser, Subcommand};
 use memory_service::harness::{self, import::ImportCmd, outbox::Outbox, HookCmd, OutboxCmd};
 use memory_service::runtime::instance::Instance;
 use memory_service::service::{self, ServiceCmd};
+use memory_service::settings;
 use memory_service::{config::ServiceConfig, envfile, http, llm::Llm, models::ModelHub, Engine};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -154,6 +155,10 @@ async fn supervise(eng: Arc<Engine>, store: Arc<Instance>) {
             std::process::exit(0);
         }
         reason = store.store.database_exited() => {
+            if settings::RESTARTING.load(std::sync::atomic::Ordering::SeqCst) {
+                // Saved model settings: the restart stopped it and replaces this process.
+                return std::future::pending().await;
+            }
             tracing::error!("the store's SurrealDB server stopped: {reason}");
             std::process::exit(1);
         }
@@ -248,7 +253,7 @@ fn main() -> anyhow::Result<()> {
                 config,
                 memory_strategy,
                 log_level,
-                env_file: _,
+                env_file,
                 outbox,
                 ui_dir,
                 installer,
@@ -317,24 +322,38 @@ fn main() -> anyhow::Result<()> {
                 if no_reranker {
                     cfg.use_reranker = false;
                 }
-                memory_service::algorithms::validate(&cfg)?;
-                let api_key = std::env::var("QWEN_API_KEY").unwrap_or_default();
-                let llm = Llm::new(
-                    &llm_base_url,
-                    &api_key,
-                    &llm_model,
-                    llm_concurrency,
-                    cfg.llm_timeout_secs,
-                )?;
-                // The retrieval models may use their own key; the generation key is the fallback.
-                let model_api_key = std::env::var("MEMORY_MODEL_API_KEY")
-                    .ok()
-                    .filter(|key| !key.is_empty())
-                    .unwrap_or(api_key);
-                let models =
-                    ModelHub::connect(&cfg, &model_api_key, cfg.use_reranker && cfg.mem0_rerank)
-                        .await?;
-                memory_service::algorithms::settle_models(&mut cfg, &models)?;
+                let launch = settings::Launch::new(env_file.as_deref(), env_keys)?;
+                // The settings the web UI saves: when they do not start, the previous ones are put back.
+                let (llm, models) = match async {
+                    memory_service::algorithms::validate(&cfg)?;
+                    let api_key = std::env::var("QWEN_API_KEY").unwrap_or_default();
+                    let llm = Llm::new(
+                        &llm_base_url,
+                        &api_key,
+                        &llm_model,
+                        llm_concurrency,
+                        cfg.llm_timeout_secs,
+                    )?;
+                    // The retrieval models may use their own key; the generation key is the fallback.
+                    let model_api_key = std::env::var("MEMORY_MODEL_API_KEY")
+                        .ok()
+                        .filter(|key| !key.is_empty())
+                        .unwrap_or(api_key);
+                    let models = ModelHub::connect(
+                        &cfg,
+                        &model_api_key,
+                        cfg.use_reranker && cfg.mem0_rerank,
+                    )
+                    .await?;
+                    memory_service::algorithms::settle_models(&mut cfg, &models)?;
+                    anyhow::Ok((llm, models))
+                }
+                .await
+                {
+                    Ok(started) => started,
+                    Err(e) => return Err(settings::failed(&launch, e)),
+                };
+                settings::started(&launch);
                 let algorithm = memory_service::algorithms::select(cfg.memory_strategy);
                 let eng = Engine::new(cfg, llm, models, algorithm);
                 // open the store eagerly so its workers resume unfinished tasks
@@ -349,6 +368,7 @@ fn main() -> anyhow::Result<()> {
                     listener.local_addr()?.port(),
                     ui_dir.as_deref(),
                     installer,
+                    Some(launch),
                 );
                 tracing::info!("agent-memoryd listening on http://{host}:{port}");
                 axum::serve(listener, app).await?;

@@ -20,6 +20,8 @@ entry runs `agent-memoryd`, so hosts need no Python. Self-hosted model servers a
 `status` reports, for every host, whether it is on this machine, connected and up to date. The web UI's platform
 page (docs/design/platform-connect.md) runs `status --json` and `connect --json` through the copy of this installer
 that `service --apply` installs beside the daemon (runner.py).
+
+`models` installs the self-hosted retrieval models (models.py); the web UI's model settings page runs it the same way.
 """
 
 import argparse
@@ -531,10 +533,11 @@ def check_binary(binary):
 
 # --- arguments --------------------------------------------------------------
 
-COMMANDS = ('service', 'connect', 'status')
+COMMANDS = ('service', 'connect', 'status', 'models')
 USAGE = ('install.sh service [--apply | --dry-run | --uninstall] [options]\n'
          '       install.sh connect --host HOST [--apply | --dry-run | --rollback [BACKUP] | --uninstall] [options]\n'
-         '       install.sh status [--json] [options]')
+         '       install.sh status [--json] [options]\n'
+         '       install.sh models [--apply | --status] [--source huggingface|hf-mirror|URL] [options]')
 SERVICE_DESCRIPTION = ('Install the shared-memory daemon as a user service (LaunchAgent on macOS, systemd user '
                        'unit on Linux): binary, model key, web UI. Run it again after `git pull` to upgrade. '
                        'Preview unless --apply is given.')
@@ -568,7 +571,8 @@ def arguments(argv=None):
             description='Install the shared-memory daemon, then connect agent platforms to it.\n\n'
                         '  service   the daemon: binary, model key, web UI and user service; also the upgrade\n'
                         f"  connect   one platform ({', '.join(HOSTS)}): its MCP bridge and hooks\n"
-                        '  status    every platform: on this machine, connected, up to date',
+                        '  status    every platform: on this machine, connected, up to date\n'
+                        '  models    the self-hosted retrieval models: llama.cpp, BGE weights, two services',
             epilog='Both preview unless --apply is given. See `install.sh service --help` and '
                    '`install.sh connect --host HOST --help`.')
         if command in ('-h', '--help'):
@@ -583,6 +587,9 @@ def arguments(argv=None):
         return command, None, service_arguments(argv[1:])
     if command == 'status':
         return command, None, status_arguments(argv[1:])
+    if command == 'models':
+        import models
+        return command, None, models.arguments(argv[1:])
     return (command, *connect_arguments(argv[1:]))
 
 
@@ -1006,6 +1013,9 @@ def main(argv=None):
             signal.signal(signum, interrupted)
     try:
         command, host, args = arguments(argv)
+        if command == 'models':
+            import models
+            return models.run(args)
         if getattr(args, 'json', False):
             return json_run(command, host, args)
         if command == 'service':
